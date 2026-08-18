@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trustroll"
+version = "0.1.0a0"
+description = "Local-first evidence compiler for FedRAMP 20x VDR"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Kyle Versluis" }
+]
+keywords = ["fedramp", "fedramp-20x", "vdr", "security", "compliance"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Security",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/ktalons/TrustRoll"
+Issues = "https://github.com/ktalons/TrustRoll/issues"
+
+[project.scripts]
+trustroll = "trustroll.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

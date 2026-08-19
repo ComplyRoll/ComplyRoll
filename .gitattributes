@@ -1,0 +1,2 @@
+# Golden outputs are byte-for-byte compatibility contracts. Do not normalize line endings.
+tests/golden/* binary

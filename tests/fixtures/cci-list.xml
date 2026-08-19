@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cci_list>
+  <cci_items>
+    <cci_item id="CCI-000048">
+      <references>
+        <reference version="4" index="AC-8" />
+        <reference version="5" index="AC-8" />
+      </references>
+    </cci_item>
+    <cci_item id="CCI-000366">
+      <references>
+        <reference version="4" index="CM-6" />
+        <reference version="5" index="CM-6 (a)" />
+      </references>
+    </cci_item>
+    <cci_item id="CCI-000795">
+      <references>
+        <reference version="4" index="IA-4" />
+      </references>
+    </cci_item>
+    <cci_item id="CCI-003627">
+      <references>
+        <reference version="5" index="AC-2 (3)" />
+      </references>
+    </cci_item>
+  </cci_items>
+</cci_list>

@@ -7,8 +7,9 @@ It is intended to turn scanner observations, validation runs, and operational ev
 traceable vulnerability cases, class-aware response timelines, and consistent human- and
 machine-readable FedRAMP reports.
 
-> **Project status:** pre-alpha planning and architecture scaffold. TrustRoll does not yet
-> produce a FedRAMP submission package and must not be represented as FedRAMP approved.
+> **Project status:** Phase 0 ingestion kernel complete; Phase 1 VDR case and reporting work has
+> not started. TrustRoll does not yet produce a FedRAMP submission package and must not be
+> represented as FedRAMP approved.
 
 ## Product direction
 
@@ -64,14 +65,52 @@ flowchart TD
 - [`docs/SECURITY.md`](docs/SECURITY.md) — threat model and evidence-handling requirements
 - [`docs/decisions/0001-observation-case-separation.md`](docs/decisions/0001-observation-case-separation.md)
   — first architecture decision record
+- [`docs/decisions/0002-artifact-bound-observation-identity.md`](docs/decisions/0002-artifact-bound-observation-identity.md)
+  — Phase 0 identity and idempotency decision
+- [`docs/decisions/0003-bounded-standard-library-ingestion.md`](docs/decisions/0003-bounded-standard-library-ingestion.md)
+  — Phase 0 input-hardening decision
 
-## Current scaffold
+## Current capabilities
 
-The package currently supplies foundational domain types and a small CLI:
+Phase 0 provides:
+
+- Hardened CKLB, CKL, XCCDF/ARF, and CCI ingestion adapters.
+- Immutable observations with source SHA-256, parser identity/version, ingest time, resource,
+  source identifiers, and structured diagnostics.
+- Stable observation IDs that make reimporting identical artifact bytes with the same parser
+  version idempotent.
+- Bounded JSON/XML input handling with DTD/entity rejection and explicit failed-ingest results.
+- Canonical observation JSON serialization.
+- A pinned manifest for the official FedRAMP rules dataset and schema.
+- A backward-compatible `stigroll` command and source-checkout `stigroll.py` launcher.
+
+The original command remains available from a source checkout:
+
+```bash
+python3 stigroll.py assessment.cklb --cci-list U_CCI_List.xml
+python3 stigroll.py legacy.ckl results.xml --format json
+```
+
+After installation, the same behavior is exposed as `stigroll`. The TrustRoll planning CLI remains:
 
 ```bash
 python3 -m trustroll version
 python3 -m trustroll plan
+```
+
+The hardened adapter API returns observations and diagnostics separately:
+
+```python
+from pathlib import Path
+
+from trustroll.adapters import ingest_stig_artifact
+
+result = ingest_stig_artifact(Path("assessment.cklb"))
+if not result.successful:
+    for diagnostic in result.errors:
+        print(diagnostic.code, diagnostic.message)
+else:
+    print(result.observations[0].to_canonical_json())
 ```
 
 From a source checkout:
@@ -81,8 +120,10 @@ PYTHONPATH=src python3 -m trustroll version
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-No runtime dependencies are required for this initial scaffold. JSON Schema validation, database
-migrations, API support, and source adapters will be added intentionally as their phases begin.
+No runtime dependencies are required for Phase 0. JSON Schema validation, database migrations,
+case correlation, and API support will be added intentionally as their phases begin. The
+standard-library-only runtime is intentional for hardened assessor workstations. Development and
+test commands are documented in [`AGENTS.md`](AGENTS.md).
 
 ## Authoritative sources
 

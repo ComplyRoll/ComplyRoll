@@ -38,6 +38,27 @@ more than one active case unless an explicit, reviewable exception model is late
 | `evidence_refs` | Content-addressed supporting evidence |
 | `source_artifact_digest` | Integrity and idempotency anchor |
 
+`observed_at` may be unknown when a source format does not declare an assessment timestamp.
+TrustRoll records that absence and emits a diagnostic; it does not treat file modification or
+ingestion time as equivalent evidence.
+
+### Phase 0 observation identity
+
+The deterministic observation fingerprint is SHA-256 over:
+
+- Source type and source tool
+- Parser name and parser version
+- Source record identifier
+- Resource type and stable resource identifier
+- Benchmark/profile context key
+- Exact source artifact SHA-256
+
+The artifact digest makes importing identical bytes idempotent while ensuring a later, changed
+assessment remains a separate immutable observation. Parser versioning prevents a changed
+normalizer from silently reusing an earlier identifier. Display text and scanner severity are not
+separate identity inputs, and any change to their source bytes is captured through the artifact
+digest.
+
 ### VulnerabilityCase
 
 | Field | Purpose |

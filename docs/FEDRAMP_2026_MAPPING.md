@@ -5,6 +5,11 @@ Status date: **2026-08-18**
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
 
+Phase 0 records the current pin in `src/trustroll/data/fedramp-rules-source.json`: dataset version
+`2026.07.14.01` at commit `58efbf3d898496dd4a3a419eba78e458bbad5cb6`, with separate rules and
+schema SHA-256 digests. Phase 1 will consume a verified local snapshot selected through that
+manifest rather than embedding the deadline tables below in application constants.
+
 ## Current program context
 
 FedRAMP 20x is a generally available certification type under the Consolidated Rules for 2026.

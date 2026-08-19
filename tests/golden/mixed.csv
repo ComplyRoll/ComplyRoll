@@ -1,0 +1,12 @@
+rule_id,host,status,severity,cat,controls,families,title,source
+V-253260,lab-win-01,open,high,CAT I,,,Windows must remove the Fax Server role,windows-host.ckl
+V-253261,lab-win-01,not_a_finding,medium,CAT II,,,Windows must display logon banner,windows-host.ckl
+V-260469,lab-ubuntu-01,open,medium,CAT II,,,Ubuntu must display the Standard Mandatory DoD Notice,ubuntu-host.cklb
+V-260470,lab-ubuntu-01,open,high,CAT I,,,Ubuntu must disable account identifiers after 35 days of inactivity,ubuntu-host.cklb
+V-260471,lab-ubuntu-01,not_a_finding,low,CAT III,,,Ubuntu must have AIDE installed,ubuntu-host.cklb
+V-260472,lab-ubuntu-01,not_applicable,medium,CAT II,,,Ubuntu must disable Bluetooth,ubuntu-host.cklb
+V-260473,lab-ubuntu-01,not_reviewed,medium,CAT II,,,Ubuntu must audit privileged commands,ubuntu-host.cklb
+V-260474,lab-ubuntu-01,open,high,CAT I,,,Orphan rule with no CCI reference,ubuntu-host.cklb
+banner_etc_issue,lab-ubuntu-02,open,medium,CAT II,,,xccdf_org.ssgproject.content_rule_banner_etc_issue,openscap-results.xml
+package_aide_installed,lab-ubuntu-02,not_a_finding,low,CAT III,,,xccdf_org.ssgproject.content_rule_package_aide_installed,openscap-results.xml
+no_cci_mapping,lab-ubuntu-02,open,high,CAT I,,,xccdf_org.ssgproject.content_rule_no_cci_mapping,openscap-results.xml

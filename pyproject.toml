@@ -30,6 +30,10 @@ Issues = "https://github.com/ktalons/TrustRoll/issues"
 
 [project.scripts]
 trustroll = "trustroll.cli:main"
+stigroll = "trustroll.compat.stigroll:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+trustroll = ["data/*.json"]

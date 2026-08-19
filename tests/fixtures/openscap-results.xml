@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="test">
+  <TestResult id="xccdf_org.open-scap_testresult_default">
+    <target>lab-ubuntu-02</target>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_banner_etc_issue" severity="medium">
+      <result>fail</result>
+      <ident system="https://public.cyber.mil/stigs/cci/">CCI-000048</ident>
+    </rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_package_aide_installed" severity="low">
+      <result>pass</result>
+      <ident system="https://public.cyber.mil/stigs/cci/">CCI-000366</ident>
+    </rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_no_cci_mapping" severity="high">
+      <result>fail</result>
+      <ident system="https://nvd.nist.gov/cce/index.cfm">CCE-80841-9</ident>
+    </rule-result>
+  </TestResult>
+</Benchmark>

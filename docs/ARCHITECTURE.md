@@ -46,6 +46,10 @@ Observations are immutable. The ledger stores the normalized record, original so
 artifact digest, ingest diagnostics, parser version, and timestamps. Reingestion must be
 idempotent.
 
+Phase 0 implements this contract before persistence: an `IngestResult` contains immutable
+`ArtifactProvenance`, `Observation`, and `IngestDiagnostic` records. SQLite persistence begins in
+Phase 1.
+
 ### Case correlation
 
 Correlation groups observations that represent one logical weakness. Grouping is reversible and
@@ -125,23 +129,20 @@ Candidate event types include:
 - `validation.completed`
 - `evidence.attached`
 
-## Package direction
+## Package layout
 
 ```text
 src/trustroll/
-  adapters/
-  domain/
-  policy/
-  store/
-  correlation/
-  projections/
-  schemas/
-  cli/
-  api/
+  adapters/       # Phase 0 adapter contracts, safe parsing, and STIG/XCCDF/CCI implementations
+  compat/         # predecessor-compatible stigroll CLI and renderers
+  data/           # bundled immutable source manifests
+  policy/         # rule-source manifest model; class policy follows in Phase 1
+  cli.py          # TrustRoll project CLI
+  models.py       # framework-independent domain records
 ```
 
-The initial scaffold is intentionally flatter. Split packages when the first real adapter and
-persistence implementation make the boundaries concrete.
+Phase 1 will add `store`, `correlation`, `projections`, and `schemas` packages when their durable
+interfaces are implemented. The domain model remains independent from those implementations.
 
 ## Failure semantics
 
@@ -151,3 +152,6 @@ persistence implementation make the boundaries concrete.
 - Policy unavailable or unverified: block deadline/report certification claims.
 - Schema mismatch: report generation failure with actionable paths.
 - Unknown evaluation factor: preserve unknown; do not invent a default.
+
+An absent source observation timestamp is represented as `None` plus a warning diagnostic. File
+modification or ingestion time is not silently substituted for a scanner-declared timestamp.

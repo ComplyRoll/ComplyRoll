@@ -28,6 +28,21 @@ not deployment documentation to add later.
 - Keep diagnostics separate from report data.
 - A parse error cannot become an empty successful assessment.
 
+### Phase 0 enforced bounds
+
+The standard-library ingestion layer currently enforces:
+
+- 32 MiB maximum per artifact
+- 128 levels of JSON nesting and 500,000 JSON values
+- 128 levels of XML nesting and 500,000 XML elements
+- UTF-8 JSON with duplicate keys and non-standard constants such as `NaN` rejected
+- Complete rejection of XML DTD and entity declarations
+- No archive extraction, XInclude processing, network lookup, or imported-code execution
+
+Callers may lower these limits for their environment. Raising them is an explicit caller decision.
+Compatibility CSV output neutralizes formula-leading cells, and Markdown table output escapes raw
+HTML, delimiters, and embedded line breaks.
+
 ## Evidence integrity
 
 - Use SHA-256 content digests for artifacts.

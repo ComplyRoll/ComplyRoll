@@ -1,0 +1,216 @@
+{
+  "summary": {
+    "total": 11,
+    "hosts": [
+      "lab-ubuntu-01",
+      "lab-ubuntu-02",
+      "lab-win-01"
+    ],
+    "by_status": {
+      "open": 6,
+      "not_a_finding": 3,
+      "not_applicable": 1,
+      "not_reviewed": 1
+    },
+    "open_by_cat": {
+      "CAT I": 4,
+      "CAT II": 2
+    },
+    "open_by_family": {
+      "CM": {
+        "CAT I": 2
+      },
+      "AC": {
+        "CAT II": 2,
+        "CAT I": 1
+      }
+    },
+    "unmapped_open": 2
+  },
+  "findings": [
+    {
+      "rule_id": "V-253260",
+      "host": "lab-win-01",
+      "status": "open",
+      "severity": "high",
+      "cat": "CAT I",
+      "ccis": [
+        "CCI-000366"
+      ],
+      "controls": [
+        "CM-6"
+      ],
+      "families": [
+        "CM"
+      ],
+      "title": "Windows must remove the Fax Server role",
+      "source": "windows-host.ckl"
+    },
+    {
+      "rule_id": "V-253261",
+      "host": "lab-win-01",
+      "status": "not_a_finding",
+      "severity": "medium",
+      "cat": "CAT II",
+      "ccis": [
+        "CCI-000048"
+      ],
+      "controls": [
+        "AC-8"
+      ],
+      "families": [
+        "AC"
+      ],
+      "title": "Windows must display logon banner",
+      "source": "windows-host.ckl"
+    },
+    {
+      "rule_id": "V-260469",
+      "host": "lab-ubuntu-01",
+      "status": "open",
+      "severity": "medium",
+      "cat": "CAT II",
+      "ccis": [
+        "CCI-000048"
+      ],
+      "controls": [
+        "AC-8"
+      ],
+      "families": [
+        "AC"
+      ],
+      "title": "Ubuntu must display the Standard Mandatory DoD Notice",
+      "source": "ubuntu-host.cklb"
+    },
+    {
+      "rule_id": "V-260470",
+      "host": "lab-ubuntu-01",
+      "status": "open",
+      "severity": "high",
+      "cat": "CAT I",
+      "ccis": [
+        "CCI-000366",
+        "CCI-000795",
+        "CCI-003627"
+      ],
+      "controls": [
+        "AC-2",
+        "CM-6"
+      ],
+      "families": [
+        "AC",
+        "CM"
+      ],
+      "title": "Ubuntu must disable account identifiers after 35 days of inactivity",
+      "source": "ubuntu-host.cklb"
+    },
+    {
+      "rule_id": "V-260471",
+      "host": "lab-ubuntu-01",
+      "status": "not_a_finding",
+      "severity": "low",
+      "cat": "CAT III",
+      "ccis": [
+        "CCI-000366"
+      ],
+      "controls": [
+        "CM-6"
+      ],
+      "families": [
+        "CM"
+      ],
+      "title": "Ubuntu must have AIDE installed",
+      "source": "ubuntu-host.cklb"
+    },
+    {
+      "rule_id": "V-260472",
+      "host": "lab-ubuntu-01",
+      "status": "not_applicable",
+      "severity": "medium",
+      "cat": "CAT II",
+      "ccis": [
+        "CCI-000366"
+      ],
+      "controls": [
+        "CM-6"
+      ],
+      "families": [
+        "CM"
+      ],
+      "title": "Ubuntu must disable Bluetooth",
+      "source": "ubuntu-host.cklb"
+    },
+    {
+      "rule_id": "V-260473",
+      "host": "lab-ubuntu-01",
+      "status": "not_reviewed",
+      "severity": "medium",
+      "cat": "CAT II",
+      "ccis": [],
+      "controls": [],
+      "families": [],
+      "title": "Ubuntu must audit privileged commands",
+      "source": "ubuntu-host.cklb"
+    },
+    {
+      "rule_id": "V-260474",
+      "host": "lab-ubuntu-01",
+      "status": "open",
+      "severity": "high",
+      "cat": "CAT I",
+      "ccis": [],
+      "controls": [],
+      "families": [],
+      "title": "Orphan rule with no CCI reference",
+      "source": "ubuntu-host.cklb"
+    },
+    {
+      "rule_id": "banner_etc_issue",
+      "host": "lab-ubuntu-02",
+      "status": "open",
+      "severity": "medium",
+      "cat": "CAT II",
+      "ccis": [
+        "CCI-000048"
+      ],
+      "controls": [
+        "AC-8"
+      ],
+      "families": [
+        "AC"
+      ],
+      "title": "xccdf_org.ssgproject.content_rule_banner_etc_issue",
+      "source": "openscap-results.xml"
+    },
+    {
+      "rule_id": "package_aide_installed",
+      "host": "lab-ubuntu-02",
+      "status": "not_a_finding",
+      "severity": "low",
+      "cat": "CAT III",
+      "ccis": [
+        "CCI-000366"
+      ],
+      "controls": [
+        "CM-6"
+      ],
+      "families": [
+        "CM"
+      ],
+      "title": "xccdf_org.ssgproject.content_rule_package_aide_installed",
+      "source": "openscap-results.xml"
+    },
+    {
+      "rule_id": "no_cci_mapping",
+      "host": "lab-ubuntu-02",
+      "status": "open",
+      "severity": "high",
+      "cat": "CAT I",
+      "ccis": [],
+      "controls": [],
+      "families": [],
+      "title": "xccdf_org.ssgproject.content_rule_no_cci_mapping",
+      "source": "openscap-results.xml"
+    }
+  ]
+}

@@ -40,6 +40,8 @@ TrustRoll is not initially:
 
 Target: 1–2 weeks
 
+**Status: Complete — 2026-08-18**
+
 ### Deliverables
 
 - Port `stigroll` CKL, CKLB, XCCDF, and CCI functionality behind adapter interfaces.
@@ -56,6 +58,25 @@ Target: 1–2 weeks
 - Parser failures cannot silently become clean assessments.
 - Reimporting the same artifact is idempotent.
 - Each observation can be traced to a source artifact and resource.
+
+### Completion record
+
+- The CKLB, CKL, XCCDF/ARF, and CCI implementations now conform to explicit adapter and mapping
+  protocols.
+- The installed `stigroll` entry point and repository-root `stigroll.py` launcher preserve the
+  predecessor's Markdown, CSV, JSON, CCI, mixed-input, and output-file workflows.
+- Every artifact is SHA-256 identified before parsing. Every produced observation records the
+  artifact digest/name, parser/version, resource, source record, ingest time, and diagnostics.
+- Observation identity includes the parser version, exact artifact digest, source record, resource,
+  and benchmark context. Reimporting identical bytes with the same parser produces the same IDs;
+  changed artifacts or parser versions remain new normalized facts.
+- JSON/XML size, structure, nesting, and element limits are enforced. XML DTD and entity
+  declarations are rejected, malformed shapes fail explicitly, CSV formulas are neutralized, and
+  Markdown table fields are escaped.
+- `src/trustroll/data/fedramp-rules-source.json` pins the official dataset and schema by full Git
+  commit, SHA-256 digests, dataset version, schema draft, and retrieval time.
+- Synthetic CKLB, CKL, XCCDF, and CCI fixtures plus predecessor-generated golden files verify
+  compatibility without customer data.
 
 ## Phase 1 — VDR case engine and official VER exports
 
@@ -179,10 +200,8 @@ Target: after the local engine is stable
 
 ## Immediate backlog
 
-1. Import the `stigroll` parser tests and fixtures without changing behavior.
-2. Define the adapter protocol and canonical observation serialization.
-3. Define the SQLite event and projection schema.
-4. Implement rules source pinning and class selection.
-5. Write golden tests for Class B and Class C evaluation and response clocks.
-6. Implement official common-definition and VER schema resolution.
-7. Produce the first end-to-end CKLB → case → VER JSON demonstration.
+1. Define the SQLite event and projection schema.
+2. Implement class-aware policy selection from the pinned rules source.
+3. Write golden tests for Class B and Class C evaluation and response clocks.
+4. Implement official common-definition and VER schema resolution.
+5. Produce the first end-to-end CKLB → case → VER JSON demonstration.

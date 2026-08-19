@@ -41,8 +41,9 @@ Run from the repository root:
 ```bash
 PYTHONPATH=src python3 -m trustroll version
 PYTHONPATH=src python3 -m trustroll plan
+python3 stigroll.py tests/fixtures/windows-host.ckl --format json
 PYTHONPATH=src python3 -m unittest discover -s tests -v
-python3 -m compileall -q src tests
+python3 -m compileall -q src tests stigroll.py
 ```
 
 ## Change expectations

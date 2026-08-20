@@ -9,9 +9,9 @@ It is intended to turn scanner observations, validation runs, and operational ev
 traceable vulnerability cases, class-aware response timelines, and consistent human- and
 machine-readable FedRAMP reports.
 
-> **Project status:** Phase 0 ingestion kernel complete; Phase 1 VDR case and reporting work has
-> not started. ComplyRoll does not yet produce a FedRAMP submission package and must not be
-> represented as FedRAMP approved.
+> **Project status:** Phase 0 ingestion kernel complete; Phase 1 is in progress with the durable
+> event-history and projection-checkpoint foundation implemented. ComplyRoll does not yet produce
+> a FedRAMP submission package and must not be represented as FedRAMP approved.
 
 ## Product direction
 
@@ -71,6 +71,8 @@ flowchart TD
   — Phase 0 identity and idempotency decision
 - [`docs/decisions/0003-bounded-standard-library-ingestion.md`](docs/decisions/0003-bounded-standard-library-ingestion.md)
   — Phase 0 input-hardening decision
+- [`docs/decisions/0004-append-only-sqlite-event-store.md`](docs/decisions/0004-append-only-sqlite-event-store.md)
+  — Phase 1 event-history and projection decision
 
 ## Current capabilities
 
@@ -85,6 +87,14 @@ Phase 0 provides:
 - Canonical observation JSON serialization.
 - A pinned manifest for the official FedRAMP rules dataset and schema.
 - A backward-compatible `stigroll` command and source-checkout `stigroll.py` launcher.
+
+The Phase 1 storage foundation adds:
+
+- A migration-managed SQLite event log with append-only update/delete guards.
+- Transactional batch appends with optimistic per-stream versions and unique event identifiers.
+- Canonical, bounded JSON payloads with SHA-256 integrity checks and explicit payload-schema
+  versions.
+- Ordered global replay and compare-and-swap projection checkpoints that can reset for rebuilds.
 
 The original command remains available from a source checkout:
 
@@ -122,10 +132,10 @@ PYTHONPATH=src python3 -m complyroll version
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-No runtime dependencies are required for Phase 0. JSON Schema validation, database migrations,
-case correlation, and API support will be added intentionally as their phases begin. The
-standard-library-only runtime is intentional for hardened assessor workstations. Development and
-test commands are documented in [`AGENTS.md`](AGENTS.md).
+No runtime dependencies are required. Phase 1 persistence uses Python's standard-library SQLite
+binding. JSON Schema validation, case correlation, and API support will be added intentionally as
+their slices begin. The standard-library-only runtime remains intentional for hardened assessor
+workstations. Development and test commands are documented in [`AGENTS.md`](AGENTS.md).
 
 ## Authoritative sources
 

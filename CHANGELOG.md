@@ -11,6 +11,10 @@ All notable project changes will be documented here.
 
 ### Added
 
+- Started Phase 1 with a migration-managed, append-only SQLite event store.
+- Added transactional batch appends, optimistic stream concurrency, canonical payload digests,
+  bounded event JSON, ordered replay, and rebuildable projection checkpoints.
+- Added ADR 0004 documenting the event-envelope and disposable-projection storage contract.
 - Completed the Phase 0 CKLB, CKL, XCCDF/ARF, and CCI adapter layer.
 - Added artifact provenance, structured diagnostics, canonical observation serialization, and
   artifact-bound deterministic observation IDs.

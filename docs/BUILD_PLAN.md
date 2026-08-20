@@ -1,6 +1,6 @@
 # ComplyRoll build plan
 
-Status date: **2026-08-18**
+Status date: **2026-08-20**
 
 ## Outcome
 
@@ -81,6 +81,17 @@ Target: 1–2 weeks
 ## Phase 1 — VDR case engine and official VER exports
 
 Target: 3–4 weeks
+
+**Status: In progress — started 2026-08-20**
+
+### Current progress
+
+- Schema version 1 establishes an append-only SQLite event log, ordered global replay, unique
+  event and stream-version constraints, canonical payload digests, and projection checkpoints.
+- Event appends are transactional and use expected stream versions to reject lost updates.
+- Projection checkpoints use compare-and-swap semantics and can reset to sequence zero for a
+  deterministic rebuild.
+- ADR 0004 records the event-envelope, migration, integrity, and disposable-projection contract.
 
 ### Deliverables
 
@@ -200,7 +211,7 @@ Target: after the local engine is stable
 
 ## Immediate backlog
 
-1. Define the SQLite event and projection schema.
+1. Define the SQLite event and projection schema. **Complete — 2026-08-20.**
 2. Implement class-aware policy selection from the pinned rules source.
 3. Write golden tests for Class B and Class C evaluation and response clocks.
 4. Implement official common-definition and VER schema resolution.

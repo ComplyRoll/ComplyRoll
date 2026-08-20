@@ -8,6 +8,28 @@ case is the provider's stateful response to one logical weakness.
 One case can contain many observations across resources and time. One observation belongs to no
 more than one active case unless an explicit, reviewable exception model is later introduced.
 
+## Durable event envelope
+
+Material changes are stored as ordered event envelopes. Domain entities remain independent from
+SQLite and are serialized into versioned event payloads at the persistence boundary.
+
+| Field | Purpose |
+|---|---|
+| `sequence` | Monotonic global replay position assigned by SQLite |
+| `event_id` | Globally unique idempotency and conflict identifier |
+| `stream_id` | Aggregate history, such as one vulnerability case |
+| `stream_version` | Monotonic optimistic-concurrency version within the stream |
+| `event_type` | Stable event name such as `case.evaluated` |
+| `event_version` | Payload-schema version for that event type |
+| `occurred_at` | When the represented domain action occurred |
+| `recorded_at` | When ComplyRoll durably appended the envelope |
+| `payload` | Canonical JSON object containing versioned domain data |
+| `metadata` | Canonical JSON object containing actor and method provenance |
+| `payload_sha256` | Integrity digest over the exact canonical payload bytes |
+
+A named projection checkpoint records the last global sequence applied. Projection tables are
+query accelerators, not source history, and must be rebuildable from sequence zero.
+
 ## Core entities
 
 ### InformationResource

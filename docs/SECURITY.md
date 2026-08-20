@@ -51,6 +51,20 @@ HTML, delimiters, and embedded line breaks.
 - Make report snapshots reproducible from event and policy snapshots.
 - Consider signed manifests after the local evidence bundle format stabilizes.
 
+### Phase 1 local persistence protections
+
+- Event appends use one immediate transaction and an expected stream version.
+- Unique event IDs and stream versions reject accidental replay and lost updates.
+- Event payload and metadata JSON are bounded, structurally validated, and serialized canonically.
+- Every payload records a SHA-256 digest that is verified when history is read.
+- SQLite triggers reject application-level updates and deletes from event history.
+- Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
+
+These controls protect against application mistakes and detectable corruption. They do not make a
+database file tamper-proof against a user with direct filesystem write access. File permissions,
+encrypted storage, signed export manifests, backup integrity, and retention controls remain
+deployment or later bundle requirements.
+
 ## Sensitive information
 
 Each evidence artifact requires a sensitivity classification and optional redacted representation.

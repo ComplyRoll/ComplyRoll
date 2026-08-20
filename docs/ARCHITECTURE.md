@@ -115,6 +115,16 @@ Use an append-only event table for material changes and rebuildable projection t
 queries. Evidence bodies should use content-addressed storage rather than being duplicated in
 case rows.
 
+Schema version 1 implements this boundary in `complyroll.store`. Each event has a global sequence,
+unique event ID, stream ID and version, event type and payload-schema version, occurrence and
+recording timestamps, canonical JSON payload and metadata, and a payload SHA-256. Appends use an
+expected stream version and one `BEGIN IMMEDIATE` transaction. SQLite constraints reject duplicate
+event IDs and stream versions, while triggers reject event updates and deletions.
+
+Projection checkpoints are mutable compare-and-swap cursors over the global sequence. Projection
+rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
+will own their query tables and must update those rows and their checkpoint in one transaction.
+
 Candidate event types include:
 
 - `observation.recorded`
@@ -137,12 +147,13 @@ src/complyroll/
   compat/         # predecessor-compatible stigroll CLI and renderers
   data/           # bundled immutable source manifests
   policy/         # rule-source manifest model; class policy follows in Phase 1
+  store/          # SQLite event history, migrations, integrity, and projection checkpoints
   cli.py          # ComplyRoll project CLI
   models.py       # framework-independent domain records
 ```
 
-Phase 1 will add `store`, `correlation`, `projections`, and `schemas` packages when their durable
-interfaces are implemented. The domain model remains independent from those implementations.
+Phase 1 will add `correlation`, `projections`, and `schemas` packages when their durable interfaces
+are implemented. The domain model remains independent from those implementations.
 
 ## Failure semantics
 

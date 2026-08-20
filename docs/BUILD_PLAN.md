@@ -92,6 +92,12 @@ Target: 3–4 weeks
 - Projection checkpoints use compare-and-swap semantics and can reset to sequence zero for a
   deterministic rebuild.
 - ADR 0004 records the event-envelope, migration, integrity, and disposable-projection contract.
+- The official rules snapshot is bundled offline and verified against the pinned commit, version,
+  last-updated value, and SHA-256 before policy selection.
+- Provider-facing 20x Class B and Class C VDR/VER rules are selected from official type, path,
+  class, affected-party, and class-variant structures.
+- Evaluation, PAIN response, reporting recurrence, and acceptance-threshold calculations carry the
+  exact rule ID and dataset provenance; golden tests cover both classes.
 
 ### Deliverables
 
@@ -212,7 +218,7 @@ Target: after the local engine is stable
 ## Immediate backlog
 
 1. Define the SQLite event and projection schema. **Complete — 2026-08-20.**
-2. Implement class-aware policy selection from the pinned rules source.
-3. Write golden tests for Class B and Class C evaluation and response clocks.
+2. Implement class-aware policy selection from the pinned rules source. **Complete — 2026-08-20.**
+3. Write golden tests for Class B and Class C evaluation and response clocks. **Complete — 2026-08-20.**
 4. Implement official common-definition and VER schema resolution.
 5. Produce the first end-to-end CKLB → case → VER JSON demonstration.

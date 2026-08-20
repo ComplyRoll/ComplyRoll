@@ -1,5 +1,61 @@
-"""Pinned policy-source metadata."""
+"""Pinned, class-aware FedRAMP policy selection and deadline calculation."""
 
-from .source import RuleSourceManifest, load_bundled_rule_source_manifest
+from .rules import (
+    CertificationClass,
+    CertificationPath,
+    CertificationProfile,
+    CertificationType,
+    PainTimeframe,
+    PolicyDataError,
+    PolicyDeadline,
+    PolicyProvenance,
+    PolicyRuleNotFoundError,
+    ResponseContext,
+    RuleForce,
+    RuleTimeframe,
+    SelectedPolicy,
+    SelectedRule,
+    TimeframeUnit,
+    UnsupportedTimeframeError,
+    load_bundled_policy,
+    select_policy,
+)
+from .source import (
+    MAX_RULE_SOURCE_BYTES,
+    PolicySourceError,
+    PolicySourceIntegrityError,
+    RuleSourceManifest,
+    RuleSourceSnapshot,
+    load_bundled_rule_source_manifest,
+    load_bundled_rule_source_snapshot,
+    load_rule_source_snapshot,
+)
 
-__all__ = ["RuleSourceManifest", "load_bundled_rule_source_manifest"]
+__all__ = [
+    "MAX_RULE_SOURCE_BYTES",
+    "CertificationClass",
+    "CertificationPath",
+    "CertificationProfile",
+    "CertificationType",
+    "PainTimeframe",
+    "PolicyDataError",
+    "PolicyDeadline",
+    "PolicyProvenance",
+    "PolicyRuleNotFoundError",
+    "PolicySourceError",
+    "PolicySourceIntegrityError",
+    "ResponseContext",
+    "RuleForce",
+    "RuleSourceManifest",
+    "RuleSourceSnapshot",
+    "RuleTimeframe",
+    "SelectedPolicy",
+    "SelectedRule",
+    "TimeframeUnit",
+    "UnsupportedTimeframeError",
+    "load_bundled_policy",
+    "load_bundled_rule_source_manifest",
+    "load_bundled_rule_source_snapshot",
+    "load_rule_source_snapshot",
+    "select_policy",
+]

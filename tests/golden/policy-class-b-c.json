@@ -1,0 +1,81 @@
+{
+  "source": {
+    "commit": "58efbf3d898496dd4a3a419eba78e458bbad5cb6",
+    "dataset_sha256": "135707003f0aaa5ceb10d7d32c2681e5b1585a4eaf4403d0d135837787e5ae8e",
+    "dataset_version": "2026.07.14.01"
+  },
+  "profiles": {
+    "B": {
+      "selected_rule_count": 36,
+      "timeframes": {
+        "VDR-TFR-MVX": {"force": "MUST", "amount": 7, "unit": "days"},
+        "VDR-TFR-PDD": {"force": "SHOULD", "amount": 1, "unit": "months"},
+        "VDR-TFR-PCD": {"force": "SHOULD", "amount": 6, "unit": "months"},
+        "VDR-TFR-PSD": {"force": "SHOULD", "amount": 7, "unit": "days"},
+        "VER-TFR-MHR": {"force": "MUST", "amount": 1, "unit": "months"},
+        "VER-TFR-MRH": {"force": "SHOULD", "amount": 1, "unit": "months"},
+        "VER-TFR-EVU": {"force": "SHOULD", "amount": 7, "unit": "days"},
+        "VER-TFR-MAV": {"force": "MUST", "amount": 192, "unit": "days"}
+      },
+      "response": {
+        "N1": {},
+        "N2": {
+          "irv_lev": {"amount": 96, "unit": "days"},
+          "nirv_lev": {"amount": 160, "unit": "days"},
+          "nlev": {"amount": 192, "unit": "days"}
+        },
+        "N3": {
+          "irv_lev": {"amount": 32, "unit": "days"},
+          "nirv_lev": {"amount": 64, "unit": "days"},
+          "nlev": {"amount": 192, "unit": "days"}
+        },
+        "N4": {
+          "irv_lev": {"amount": 8, "unit": "days"},
+          "nirv_lev": {"amount": 32, "unit": "days"},
+          "nlev": {"amount": 64, "unit": "days"}
+        },
+        "N5": {
+          "irv_lev": {"amount": 4, "unit": "days"},
+          "nirv_lev": {"amount": 8, "unit": "days"},
+          "nlev": {"amount": 32, "unit": "days"}
+        }
+      }
+    },
+    "C": {
+      "selected_rule_count": 36,
+      "timeframes": {
+        "VDR-TFR-MVX": {"force": "MUST", "amount": 3, "unit": "days"},
+        "VDR-TFR-PDD": {"force": "SHOULD", "amount": 14, "unit": "days"},
+        "VDR-TFR-PCD": {"force": "SHOULD", "amount": 1, "unit": "months"},
+        "VDR-TFR-PSD": {"force": "SHOULD", "amount": 3, "unit": "days"},
+        "VER-TFR-MHR": {"force": "MUST", "amount": 1, "unit": "months"},
+        "VER-TFR-MRH": {"force": "SHOULD", "amount": 14, "unit": "days"},
+        "VER-TFR-EVU": {"force": "SHOULD", "amount": 5, "unit": "days"},
+        "VER-TFR-MAV": {"force": "MUST", "amount": 192, "unit": "days"}
+      },
+      "response": {
+        "N1": {},
+        "N2": {
+          "irv_lev": {"amount": 48, "unit": "days"},
+          "nirv_lev": {"amount": 128, "unit": "days"},
+          "nlev": {"amount": 192, "unit": "days"}
+        },
+        "N3": {
+          "irv_lev": {"amount": 16, "unit": "days"},
+          "nirv_lev": {"amount": 32, "unit": "days"},
+          "nlev": {"amount": 128, "unit": "days"}
+        },
+        "N4": {
+          "irv_lev": {"amount": 4, "unit": "days"},
+          "nirv_lev": {"amount": 8, "unit": "days"},
+          "nlev": {"amount": 64, "unit": "days"}
+        },
+        "N5": {
+          "irv_lev": {"amount": 2, "unit": "days"},
+          "nirv_lev": {"amount": 4, "unit": "days"},
+          "nlev": {"amount": 16, "unit": "days"}
+        }
+      }
+    }
+  }
+}

@@ -65,6 +65,17 @@ database file tamper-proof against a user with direct filesystem write access. F
 encrypted storage, signed export manifests, backup integrity, and retention controls remain
 deployment or later bundle requirements.
 
+### Phase 1 policy-source protections
+
+- Runtime policy loading is offline and bounded to an 8 MiB source snapshot.
+- SHA-256 is verified against an immutable commit manifest before JSON parsing.
+- Dataset version and last-updated metadata must also match the manifest.
+- Duplicate JSON keys, non-standard constants, excessive nesting, and excessive values are
+  rejected.
+- Policy selection uses official structured applicability and class variants; it does not parse
+  deadlines from prose.
+- Deadline results retain the source rule, profile, commit, version, date, and digest.
+
 ## Sensitive information
 
 Each evidence artifact requires a sensitivity classification and optional redacted representation.

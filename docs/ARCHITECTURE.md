@@ -2,7 +2,7 @@
 
 ## Design center
 
-TrustRoll is an evidence compiler, not the source of security truth. It consumes source facts,
+ComplyRoll is an evidence compiler, not the source of security truth. It consumes source facts,
 preserves them, records human or automated evaluations, applies a versioned policy, and produces
 projections for specific consumers.
 
@@ -132,12 +132,12 @@ Candidate event types include:
 ## Package layout
 
 ```text
-src/trustroll/
+src/complyroll/
   adapters/       # Phase 0 adapter contracts, safe parsing, and STIG/XCCDF/CCI implementations
   compat/         # predecessor-compatible stigroll CLI and renderers
   data/           # bundled immutable source manifests
   policy/         # rule-source manifest model; class policy follows in Phase 1
-  cli.py          # TrustRoll project CLI
+  cli.py          # ComplyRoll project CLI
   models.py       # framework-independent domain records
 ```
 

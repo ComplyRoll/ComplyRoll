@@ -1,10 +1,10 @@
-# TrustRoll build plan
+# ComplyRoll build plan
 
 Status date: **2026-08-18**
 
 ## Outcome
 
-TrustRoll will compile heterogeneous security and validation evidence into traceable FedRAMP 20x
+ComplyRoll will compile heterogeneous security and validation evidence into traceable FedRAMP 20x
 VDR cases, class-aware response timelines, and consistent official reports.
 
 The initial target is a provider security engineer or assessor working locally or in CI. A hosted
@@ -21,14 +21,14 @@ trust center is a later integration boundary, not the MVP.
 
 ## Product boundaries
 
-TrustRoll is:
+ComplyRoll is:
 
 - A normalized evidence and case engine.
 - A rule-version-aware deadline calculator.
 - A report compiler and validator.
 - A foundation for persistent KSI validation.
 
-TrustRoll is not initially:
+ComplyRoll is not initially:
 
 - A replacement ticketing platform.
 - A complete trust center.
@@ -73,7 +73,7 @@ Target: 1–2 weeks
 - JSON/XML size, structure, nesting, and element limits are enforced. XML DTD and entity
   declarations are rejected, malformed shapes fail explicitly, CSV formulas are neutralized, and
   Markdown table fields are escaped.
-- `src/trustroll/data/fedramp-rules-source.json` pins the official dataset and schema by full Git
+- `src/complyroll/data/fedramp-rules-source.json` pins the official dataset and schema by full Git
   commit, SHA-256 digests, dataset version, schema draft, and retrieval time.
 - Synthetic CKLB, CKL, XCCDF, and CCI fixtures plus predecessor-generated golden files verify
   compatibility without customer data.
@@ -100,15 +100,15 @@ Target: 3–4 weeks
 ### Proposed CLI
 
 ```text
-trustroll rules sync --ref <commit-or-tag>
-trustroll ingest <artifact...>
-trustroll observations list
-trustroll cases list
-trustroll cases evaluate <case-id>
-trustroll deadlines
-trustroll report ver --class C --from <time> --to <time>
-trustroll report historical --class C
-trustroll validate <report.json>
+complyroll rules sync --ref <commit-or-tag>
+complyroll ingest <artifact...>
+complyroll observations list
+complyroll cases list
+complyroll cases evaluate <case-id>
+complyroll deadlines
+complyroll report ver --class C --from <time> --to <time>
+complyroll report historical --class C
+complyroll validate <report.json>
 ```
 
 ### Exit criteria

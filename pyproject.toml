@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "trustroll"
+name = "complyroll"
 version = "0.1.0a0"
-description = "Local-first evidence compiler for FedRAMP 20x VDR"
+description = "Evidence automation for continuous authorization"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -25,15 +25,15 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Repository = "https://github.com/ktalons/TrustRoll"
-Issues = "https://github.com/ktalons/TrustRoll/issues"
+Repository = "https://github.com/ktalons/ComplyRoll"
+Issues = "https://github.com/ktalons/ComplyRoll/issues"
 
 [project.scripts]
-trustroll = "trustroll.cli:main"
-stigroll = "trustroll.compat.stigroll:main"
+complyroll = "complyroll.cli:main"
+stigroll = "complyroll.compat.stigroll:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-trustroll = ["data/*.json"]
+complyroll = ["data/*.json"]

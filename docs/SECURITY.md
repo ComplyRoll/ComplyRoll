@@ -1,6 +1,6 @@
 # Security design requirements
 
-TrustRoll will process sensitive security evidence. Security controls are product requirements,
+ComplyRoll will process sensitive security evidence. Security controls are product requirements,
 not deployment documentation to add later.
 
 ## Threats
@@ -81,7 +81,7 @@ The hosted/API phase must include:
 
 ## Automated decisions
 
-TrustRoll may calculate deterministic rule deadlines and identify missing information. It must not
+ComplyRoll may calculate deterministic rule deadlines and identify missing information. It must not
 silently make contextual security decisions.
 
 The following require explicit rationale and actor provenance:

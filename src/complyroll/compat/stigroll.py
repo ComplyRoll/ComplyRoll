@@ -1,4 +1,4 @@
-"""Backward-compatible stigroll CLI implemented on TrustRoll observations."""
+"""Backward-compatible stigroll CLI implemented on ComplyRoll observations."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from trustroll.adapters import ingest_stig_artifact, load_cci_control_map
-from trustroll.models import Observation, ObservationDisposition, SourceSeverity
+from complyroll.adapters import ingest_stig_artifact, load_cci_control_map
+from complyroll.models import Observation, ObservationDisposition, SourceSeverity
 
 
 SEVERITY_TO_CAT = {

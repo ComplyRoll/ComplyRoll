@@ -6,8 +6,8 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from trustroll.adapters import ingest_stig_artifact, load_cci_control_map
-from trustroll.models import ObservationDisposition
+from complyroll.adapters import ingest_stig_artifact, load_cci_control_map
+from complyroll.models import ObservationDisposition
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -26,7 +26,7 @@ class StigAdapterTests(unittest.TestCase):
         assert result.artifact is not None
         expected_digest = hashlib.sha256(path.read_bytes()).hexdigest()
         self.assertEqual(result.artifact.digest_sha256, expected_digest)
-        self.assertEqual(result.artifact.parser_name, "trustroll.cklb")
+        self.assertEqual(result.artifact.parser_name, "complyroll.cklb")
         self.assertTrue(all(item.parser_version == "1" for item in result.observations))
         self.assertTrue(
             all(item.source_artifact_digest == expected_digest for item in result.observations)
@@ -59,7 +59,7 @@ class StigAdapterTests(unittest.TestCase):
 
         self.assertTrue(result.successful)
         assert result.artifact is not None
-        self.assertEqual(result.artifact.parser_name, "trustroll.ckl")
+        self.assertEqual(result.artifact.parser_name, "complyroll.ckl")
         self.assertEqual(len(result.observations), 2)
 
     def test_xccdf_declared_timestamp_is_preserved(self) -> None:

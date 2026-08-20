@@ -5,7 +5,7 @@
 
 ## Context
 
-Assessment artifacts are untrusted and may be malformed or intentionally hostile. TrustRoll also
+Assessment artifacts are untrusted and may be malformed or intentionally hostile. ComplyRoll also
 needs to run on hardened workstations where adding dependencies may require separate approval.
 
 ## Decision

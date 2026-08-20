@@ -4,6 +4,11 @@ All notable project changes will be documented here.
 
 ## Unreleased
 
+### Changed
+
+- Renamed the project, Python package, CLI, and parser identifiers from TrustRoll to ComplyRoll.
+- Adopted the positioning: "Evidence automation for continuous authorization."
+
 ### Added
 
 - Completed the Phase 0 CKLB, CKL, XCCDF/ARF, and CCI adapter layer.

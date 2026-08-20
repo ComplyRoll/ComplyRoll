@@ -25,21 +25,21 @@ more than one active case unless an explicit, reviewable exception model is late
 
 | Field | Purpose |
 |---|---|
-| `observation_id` | TrustRoll identifier |
+| `observation_id` | ComplyRoll identifier |
 | `fingerprint` | Stable deduplication key |
 | `source_tool` | Scanner, activity, or validation source |
 | `source_record_id` | Rule, CVE, check, ticket, or upstream identifier |
 | `source_type` | STIG, XCCDF, SARIF, SBOM, process health, etc. |
 | `resource` | Affected information resource |
 | `observed_at` | When the condition was observed |
-| `ingested_at` | When TrustRoll received it |
+| `ingested_at` | When ComplyRoll received it |
 | `source_severity` | Original normalized severity without PAIN interpretation |
 | `disposition` | Open, pass, not applicable, not reviewed, error, or unknown |
 | `evidence_refs` | Content-addressed supporting evidence |
 | `source_artifact_digest` | Integrity and idempotency anchor |
 
 `observed_at` may be unknown when a source format does not declare an assessment timestamp.
-TrustRoll records that absence and emits a diagnostic; it does not treat file modification or
+ComplyRoll records that absence and emits a diagnostic; it does not treat file modification or
 ingestion time as equivalent evidence.
 
 ### Phase 0 observation identity
@@ -98,7 +98,7 @@ until remediated.
 ### AcceptedVulnerability
 
 Acceptance is a case state with an explicit rationale and continued monitoring. It is not a
-silent age-based closure. TrustRoll can flag the 192-day categorization requirement but cannot
+silent age-based closure. ComplyRoll can flag the 192-day categorization requirement but cannot
 make the acceptance decision.
 
 ### ValidationDefinition and ValidationRun
@@ -132,4 +132,4 @@ Evidence metadata is separate from its body:
 | IRV | Ability of internet-originating data/actions to reach the weakness |
 | PAIN | Potential adverse effect to federal agency customers |
 
-TrustRoll may display these together but must not silently convert one into another.
+ComplyRoll may display these together but must not silently convert one into another.

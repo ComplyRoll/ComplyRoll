@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from trustroll.compat.stigroll import main  # noqa: E402
+from complyroll.compat.stigroll import main  # noqa: E402
 
 
 if __name__ == "__main__":

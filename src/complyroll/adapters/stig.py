@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 
-from trustroll.models import (
+from complyroll.models import (
     Observation,
     ObservationDisposition,
     ResourceRef,
@@ -161,7 +161,7 @@ def _missing_time_diagnostic(artifact: ArtifactProvenance) -> IngestDiagnostic:
 
 
 class CklbAdapter:
-    name = "trustroll.cklb"
+    name = "complyroll.cklb"
     version = PARSER_VERSION
     media_type = "application/json"
 
@@ -327,7 +327,7 @@ def _ckl_context(root: ET.Element) -> str:
 
 
 class CklAdapter:
-    name = "trustroll.ckl"
+    name = "complyroll.ckl"
     version = PARSER_VERSION
     media_type = "application/xml"
 
@@ -445,7 +445,7 @@ def _find_text(root: ET.Element, names: set[str]) -> str:
 
 
 class XccdfAdapter:
-    name = "trustroll.xccdf"
+    name = "complyroll.xccdf"
     version = PARSER_VERSION
     media_type = "application/xml"
 
@@ -688,7 +688,7 @@ def ingest_stig_artifact(
         elif suffix == ".ckl":
             name, media_type = CklAdapter.name, CklAdapter.media_type
         else:
-            name, media_type = "trustroll.xml-auto", "application/xml"
+            name, media_type = "complyroll.xml-auto", "application/xml"
         artifact = _artifact(
             path,
             content,
@@ -759,7 +759,7 @@ def load_cci_control_map(
     artifact = _artifact(
         path,
         content,
-        adapter_name="trustroll.cci",
+        adapter_name="complyroll.cci",
         media_type="application/xml",
         ingested_at=now,
     )

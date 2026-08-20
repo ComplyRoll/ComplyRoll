@@ -88,7 +88,7 @@ class RuleSourceManifest:
 
 
 def load_bundled_rule_source_manifest() -> RuleSourceManifest:
-    resource = files("trustroll").joinpath("data/fedramp-rules-source.json")
+    resource = files("complyroll").joinpath("data/fedramp-rules-source.json")
     value = json.loads(resource.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("rule-source manifest must contain a JSON object")

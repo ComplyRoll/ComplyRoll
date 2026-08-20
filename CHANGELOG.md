@@ -15,6 +15,10 @@ All notable project changes will be documented here.
 - Added transactional batch appends, optimistic stream concurrency, canonical payload digests,
   bounded event JSON, ordered replay, and rebuildable projection checkpoints.
 - Added ADR 0004 documenting the event-envelope and disposable-projection storage contract.
+- Added an offline, digest-verified official FedRAMP rules snapshot and bounded loader.
+- Added 20x Class B/Class C provider-policy selection and provenance-bearing deadline calculation.
+- Added golden evaluation, recurrence, PAIN response, and acceptance-threshold policy matrices.
+- Added ADR 0005 documenting verified policy selection and fail-closed timeframe behavior.
 - Completed the Phase 0 CKLB, CKL, XCCDF/ARF, and CCI adapter layer.
 - Added artifact provenance, structured diagnostics, canonical observation serialization, and
   artifact-bound deterministic observation IDs.

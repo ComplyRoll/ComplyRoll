@@ -73,6 +73,8 @@ flowchart TD
   — Phase 0 input-hardening decision
 - [`docs/decisions/0004-append-only-sqlite-event-store.md`](docs/decisions/0004-append-only-sqlite-event-store.md)
   — Phase 1 event-history and projection decision
+- [`docs/decisions/0005-select-policy-from-verified-fedramp-rules.md`](docs/decisions/0005-select-policy-from-verified-fedramp-rules.md)
+  — Phase 1 class-aware policy selection and deadline decision
 
 ## Current capabilities
 
@@ -95,6 +97,10 @@ The Phase 1 storage foundation adds:
 - Canonical, bounded JSON payloads with SHA-256 integrity checks and explicit payload-schema
   versions.
 - Ordered global replay and compare-and-swap projection checkpoints that can reset for rebuilds.
+- An offline, digest-verified copy of the pinned official FedRAMP rules dataset.
+- Provider-facing 20x Class B and Class C VDR/VER selection using official applicability data.
+- Provenance-bearing evaluation, response, reporting, and acceptance-threshold deadlines derived
+  from structured source timeframes and PAIN matrices.
 
 The original command remains available from a source checkout:
 

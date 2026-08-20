@@ -86,6 +86,15 @@ The official `FedRAMP/rules` structured JSON is canonical. A policy snapshot rec
 Policy code translates the canonical source into evaluated constraints; it does not maintain a
 second hand-written deadline table.
 
+The Phase 1 policy loader bundles the manifest-pinned official dataset for offline use, verifies
+its exact digest and metadata before parsing, and then selects provider-facing VDR and VER rules
+using the source subset's type, path, class, and affected-party applicability. Class-specific force,
+timeframes, and PAIN matrices are resolved directly from `varies_by_class`. Calculated deadlines
+retain the rule ID, profile, source commit, dataset version, last-updated value, and SHA-256.
+
+Missing structured timeframes remain unknown. Policy code does not extract numbers from prose,
+invent KEV deadlines, or calculate business days without an explicit calendar.
+
 ### Report projections
 
 Reports are disposable projections over durable events and normalized records. Human-readable

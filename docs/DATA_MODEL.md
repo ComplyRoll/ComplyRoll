@@ -30,6 +30,24 @@ SQLite and are serialized into versioned event payloads at the persistence bound
 A named projection checkpoint records the last global sequence applied. Projection tables are
 query accelerators, not source history, and must be rebuildable from sequence zero.
 
+## Policy deadline
+
+A calculated deadline is a derived value with explicit inputs and policy provenance:
+
+| Field | Purpose |
+|---|---|
+| `rule_id` / `rule_name` | Official rule that supplied the timeframe |
+| `force` | Selected MUST, SHOULD, MAY, or negative force for the profile |
+| `start_at` | Detection, completed evaluation, or recurrence anchor |
+| `due_at` | UTC result of applying the structured source timeframe |
+| `timeframe` | Exact source amount and unit |
+| `profile` | Certification type, path, class, and affected party |
+| `provenance` | Repository, commit, dataset version/date, and SHA-256 |
+| `description` | Source context for PAIN response matrix entries when applicable |
+
+An absent structured timeframe is represented as unavailable, not inferred from rule prose. A
+192-day acceptance deadline is an escalation threshold and never an automatic acceptance event.
+
 ## Core entities
 
 ### InformationResource

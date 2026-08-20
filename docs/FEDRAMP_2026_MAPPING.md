@@ -1,14 +1,20 @@
 # FedRAMP 2026 mapping
 
-Status date: **2026-08-18**
+Status date: **2026-08-20**
 
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
 
-Phase 0 records the current pin in `src/complyroll/data/fedramp-rules-source.json`: dataset version
+The current pin is recorded in `src/complyroll/data/fedramp-rules-source.json`: dataset version
 `2026.07.14.01` at commit `58efbf3d898496dd4a3a419eba78e458bbad5cb6`, with separate rules and
-schema SHA-256 digests. Phase 1 will consume a verified local snapshot selected through that
-manifest rather than embedding the deadline tables below in application constants.
+schema SHA-256 digests. Phase 1 now bundles and verifies the exact official dataset bytes before
+selecting provider-facing 20x Class B or Class C rules. Runtime deadlines come from the selected
+structured rules rather than the planning tables below or application constants.
+
+The pinned `VDR-TFR-NMV` rule currently states its three-month expectation in prose without
+structured timeframe fields. ComplyRoll preserves the rule but does not calculate that clock until
+an authoritative structured value is available. KEV due dates likewise require the applicable
+CISA catalog input.
 
 ## Current program context
 

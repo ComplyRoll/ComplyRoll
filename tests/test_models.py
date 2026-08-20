@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime
 
-from trustroll.models import (
+from complyroll.models import (
     CaseStatus,
     Evaluation,
     Observation,
@@ -24,7 +24,7 @@ def sample_observation(**overrides: object) -> Observation:
         "observation_id": "obs-001",
         "source_type": "cklb",
         "source_tool": "stig-viewer",
-        "parser_name": "trustroll.cklb",
+        "parser_name": "complyroll.cklb",
         "parser_version": "1",
         "source_record_id": "V-123456",
         "resource": ResourceRef("host-001", "host"),

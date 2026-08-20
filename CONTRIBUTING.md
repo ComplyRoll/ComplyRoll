@@ -1,6 +1,6 @@
 # Contributing
 
-TrustRoll is pre-alpha. Contributions should make the VDR evidence pipeline more correct,
+ComplyRoll is pre-alpha. Contributions should make the VDR evidence pipeline more correct,
 traceable, or usable without weakening its domain invariants.
 
 ## Development setup

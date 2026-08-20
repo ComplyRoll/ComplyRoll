@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from trustroll.compat.stigroll import Finding, main, render_csv, render_markdown, summarize
+from complyroll.compat.stigroll import Finding, main, render_csv, render_markdown, summarize
 
 
 TEST_ROOT = Path(__file__).parent

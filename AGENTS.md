@@ -1,6 +1,6 @@
 # Repository instructions
 
-TrustRoll is a local-first FedRAMP 20x VDR evidence compiler. Preserve its auditability and avoid
+ComplyRoll is a local-first FedRAMP 20x VDR evidence compiler. Preserve its auditability and avoid
 turning it into a generic compliance dashboard.
 
 ## Start here
@@ -24,7 +24,7 @@ Read these files before changing architecture or domain behavior:
 - Policy calculations must record the pinned FedRAMP rules source and version.
 - Human- and machine-readable projections must use the same normalized records.
 - A detection or response process failure is itself eligible to become an observation and case.
-- Avoid language that implies TrustRoll is FedRAMP approved or government endorsed.
+- Avoid language that implies ComplyRoll is FedRAMP approved or government endorsed.
 
 ## Source and dependency policy
 
@@ -39,8 +39,8 @@ Read these files before changing architecture or domain behavior:
 Run from the repository root:
 
 ```bash
-PYTHONPATH=src python3 -m trustroll version
-PYTHONPATH=src python3 -m trustroll plan
+PYTHONPATH=src python3 -m complyroll version
+PYTHONPATH=src python3 -m complyroll plan
 python3 stigroll.py tests/fixtures/windows-host.ckl --format json
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 python3 -m compileall -q src tests stigroll.py

@@ -1,4 +1,4 @@
-"""Run TrustRoll with ``python -m trustroll``."""
+"""Run ComplyRoll with ``python -m complyroll``."""
 
 from .cli import main
 

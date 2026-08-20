@@ -1,4 +1,4 @@
-"""Foundational TrustRoll domain types.
+"""Foundational ComplyRoll domain types.
 
 These types intentionally keep source observations separate from contextual VDR
 evaluations. Scanner severity cannot assign PAIN.

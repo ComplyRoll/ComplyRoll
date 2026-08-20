@@ -5,7 +5,7 @@ Status date: **2026-08-18**
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
 
-Phase 0 records the current pin in `src/trustroll/data/fedramp-rules-source.json`: dataset version
+Phase 0 records the current pin in `src/complyroll/data/fedramp-rules-source.json`: dataset version
 `2026.07.14.01` at commit `58efbf3d898496dd4a3a419eba78e458bbad5cb6`, with separate rules and
 schema SHA-256 digests. Phase 1 will consume a verified local snapshot selected through that
 manifest rather than embedding the deadline tables below in application constants.
@@ -40,14 +40,14 @@ A VDR vulnerability is not limited to a CVE or scanner finding. Relevant sources
 - Stale Security Decision Record statements
 - Failures in the detection or response process
 
-This scope is why TrustRoll models `Observation` separately from `VulnerabilityCase`.
+This scope is why ComplyRoll models `Observation` separately from `VulnerabilityCase`.
 
 ## Class C operational mapping
 
 These values describe the current rules for planning and tests. Application code must select them
 from the pinned canonical dataset.
 
-| Rule concept | Current Class C expectation | TrustRoll behavior |
+| Rule concept | Current Class C expectation | ComplyRoll behavior |
 |---|---:|---|
 | Machine verification/validation | 3 days, MUST | Coverage and freshness clock |
 | Representative machine detection | 3 days, SHOULD | Sampling record and freshness clock |
@@ -76,7 +76,7 @@ follow applicable CISA KEV due dates.
 
 ## Required evaluation information
 
-TrustRoll must support:
+ComplyRoll must support:
 
 - Provider tracking identifier
 - Detection time and source
@@ -105,7 +105,7 @@ Later output targets:
 - [Security Decision Record](https://fedramp.gov/schemas/fedramp-security-decision-record-schema-2026-06-24.json)
 - [Ongoing Certification Report](https://fedramp.gov/schemas/fedramp-ongoing-certification-report-schema-2026-06-24.json)
 
-FedRAMP schemas are minimum structures. TrustRoll should preserve provider extensions while
+FedRAMP schemas are minimum structures. ComplyRoll should preserve provider extensions while
 validating the required official structure and preventing key collisions.
 
 ## KSI implications
@@ -114,7 +114,7 @@ The current dataset contains 46 KSIs across 10 themes. Class C currently require
 automated verification/validation methods per KSI and six months of historical persistent
 validation metrics.
 
-TrustRoll must record validation definitions and runs, not merely upload evidence files. A useful
+ComplyRoll must record validation definitions and runs, not merely upload evidence files. A useful
 record includes objective, scope, code version, cycle, criteria, result, coverage, evidence,
 provider response, and independent assessor response.
 
@@ -124,7 +124,7 @@ FedRAMP-compatible trust centers require programmatic access, uninterrupted auth
 and access inventory/history. Human and machine-readable formats must remain consistent through
 automation.
 
-TrustRoll's local core should generate the normalized projections; a later trust-center adapter
+ComplyRoll's local core should generate the normalized projections; a later trust-center adapter
 can publish them with authorization, logging, redaction, and availability controls.
 
 ## Nuances to preserve

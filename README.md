@@ -1,6 +1,8 @@
-# TrustRoll
+# ComplyRoll
 
-TrustRoll is a local-first evidence compiler for FedRAMP 20x Vulnerability Detection and
+**Evidence automation for continuous authorization.**
+
+ComplyRoll is a local-first evidence compiler for FedRAMP 20x Vulnerability Detection and
 Response (VDR).
 
 It is intended to turn scanner observations, validation runs, and operational evidence into
@@ -8,12 +10,12 @@ traceable vulnerability cases, class-aware response timelines, and consistent hu
 machine-readable FedRAMP reports.
 
 > **Project status:** Phase 0 ingestion kernel complete; Phase 1 VDR case and reporting work has
-> not started. TrustRoll does not yet produce a FedRAMP submission package and must not be
+> not started. ComplyRoll does not yet produce a FedRAMP submission package and must not be
 > represented as FedRAMP approved.
 
 ## Product direction
 
-TrustRoll's initial product wedge is deliberately narrower than a full GRC platform:
+ComplyRoll's initial product wedge is deliberately narrower than a full GRC platform:
 
 1. Ingest heterogeneous security observations.
 2. Preserve source evidence and provenance.
@@ -26,7 +28,7 @@ TrustRoll's initial product wedge is deliberately narrower than a full GRC platf
 
 The existing [`stigroll`](https://github.com/ktalons/stigroll) project is the planned first
 compatibility adapter. Its CKL, CKLB, XCCDF, and CCI mapping behavior will be preserved while
-TrustRoll introduces the broader VDR case model.
+ComplyRoll introduces the broader VDR case model.
 
 ## Why this exists
 
@@ -34,7 +36,7 @@ FedRAMP 20x is based on measured outcomes and persistent validation. A failed ST
 only a source observation. VDR additionally covers drift, failed validation pipelines, stale
 security decisions, supply-chain exposures, process failures, and other weaknesses.
 
-TrustRoll therefore separates immutable observations from vulnerability cases:
+ComplyRoll therefore separates immutable observations from vulnerability cases:
 
 ```mermaid
 flowchart TD
@@ -49,7 +51,7 @@ flowchart TD
 ## Non-negotiable rules
 
 - Source severity, DISA CAT, CVSS, and PAIN are separate concepts.
-- TrustRoll must never infer PAIN solely from source severity or CVSS.
+- ComplyRoll must never infer PAIN solely from source severity or CVSS.
 - A scanner pass may support a Key Security Indicator (KSI); it does not prove the complete KSI.
 - Grouping observations must not destroy affected-resource or source-level details.
 - Rule calculations must identify the exact pinned FedRAMP rules version used.
@@ -91,11 +93,11 @@ python3 stigroll.py assessment.cklb --cci-list U_CCI_List.xml
 python3 stigroll.py legacy.ckl results.xml --format json
 ```
 
-After installation, the same behavior is exposed as `stigroll`. The TrustRoll planning CLI remains:
+After installation, the same behavior is exposed as `stigroll`. The ComplyRoll planning CLI remains:
 
 ```bash
-python3 -m trustroll version
-python3 -m trustroll plan
+python3 -m complyroll version
+python3 -m complyroll plan
 ```
 
 The hardened adapter API returns observations and diagnostics separately:
@@ -103,7 +105,7 @@ The hardened adapter API returns observations and diagnostics separately:
 ```python
 from pathlib import Path
 
-from trustroll.adapters import ingest_stig_artifact
+from complyroll.adapters import ingest_stig_artifact
 
 result = ingest_stig_artifact(Path("assessment.cklb"))
 if not result.successful:
@@ -116,7 +118,7 @@ else:
 From a source checkout:
 
 ```bash
-PYTHONPATH=src python3 -m trustroll version
+PYTHONPATH=src python3 -m complyroll version
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
@@ -127,7 +129,7 @@ test commands are documented in [`AGENTS.md`](AGENTS.md).
 
 ## Authoritative sources
 
-TrustRoll will consume and pin, rather than copy into application constants:
+ComplyRoll will consume and pin, rather than copy into application constants:
 
 - [FedRAMP Consolidated Rules for 2026](https://www.fedramp.gov/2026/)
 - [FedRAMP machine-readable rules](https://github.com/FedRAMP/rules)
@@ -137,5 +139,5 @@ TrustRoll will consume and pin, rather than copy into application constants:
 
 ## License and status
 
-MIT licensed. TrustRoll is an independent open-source project and is not affiliated with,
+MIT licensed. ComplyRoll is an independent open-source project and is not affiliated with,
 endorsed by, or approved by GSA or FedRAMP.

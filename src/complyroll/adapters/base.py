@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
-from trustroll.models import Observation
+from complyroll.models import Observation
 
 
 class DiagnosticLevel(str, Enum):

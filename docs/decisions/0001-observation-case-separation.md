@@ -15,7 +15,7 @@ different.
 
 ## Decision
 
-TrustRoll will store immutable observations separately from stateful vulnerability cases.
+ComplyRoll will store immutable observations separately from stateful vulnerability cases.
 
 Correlation links observations to cases through explicit events. Grouping will preserve every
 source record and affected resource. Manual split and merge operations will remain auditable.

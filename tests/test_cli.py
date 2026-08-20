@@ -4,7 +4,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 
-from trustroll.cli import main
+from complyroll.cli import main
 
 
 class CliTests(unittest.TestCase):
@@ -13,7 +13,7 @@ class CliTests(unittest.TestCase):
         with redirect_stdout(output):
             result = main(["version"])
         self.assertEqual(result, 0)
-        self.assertEqual(output.getvalue(), "TrustRoll 0.1.0a0\n")
+        self.assertEqual(output.getvalue(), "ComplyRoll 0.1.0a0\n")
 
     def test_plan_lists_all_phases(self) -> None:
         output = io.StringIO()

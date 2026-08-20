@@ -5,7 +5,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from trustroll.adapters import IngestLimits, ingest_stig_artifact
+from complyroll.adapters import IngestLimits, ingest_stig_artifact
 
 
 NOW = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)

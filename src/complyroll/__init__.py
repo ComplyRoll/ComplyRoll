@@ -1,4 +1,4 @@
-"""TrustRoll domain package."""
+"""ComplyRoll domain package."""
 
 from .models import (
     CaseStatus,

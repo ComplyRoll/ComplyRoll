@@ -27,6 +27,6 @@ exact values remain in the immutable observation.
   existing identifier's meaning.
 - A changed artifact produces a new immutable set even when it evaluates the same rules.
 - Whitespace-only source changes also create a new artifact and observations; this is intentional
-  because TrustRoll records received evidence, not a lossy semantic reconstruction of it.
+  because ComplyRoll records received evidence, not a lossy semantic reconstruction of it.
 - Case correlation in Phase 1 must group related observations without treating fingerprint
   equality as the vulnerability-correlation rule.

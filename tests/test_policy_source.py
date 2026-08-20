@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from trustroll.policy import RuleSourceManifest, load_bundled_rule_source_manifest
+from complyroll.policy import RuleSourceManifest, load_bundled_rule_source_manifest
 
 
 class RuleSourceManifestTests(unittest.TestCase):

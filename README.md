@@ -9,9 +9,10 @@ It is intended to turn scanner observations, validation runs, and operational ev
 traceable vulnerability cases, class-aware response timelines, and consistent human- and
 machine-readable FedRAMP reports.
 
-> **Project status:** Phase 0 ingestion kernel complete; Phase 1 is in progress with the durable
-> event-history and projection-checkpoint foundation implemented. ComplyRoll does not yet produce
-> a FedRAMP submission package and must not be represented as FedRAMP approved.
+> **Project status:** Phase 0 ingestion kernel complete; Phase 1 is in progress with durable event
+> history, class-aware policy selection, and verified offline report-schema validation implemented.
+> ComplyRoll does not yet produce a FedRAMP submission package and must not be represented as
+> FedRAMP approved.
 
 ## Product direction
 
@@ -75,6 +76,8 @@ flowchart TD
   — Phase 1 event-history and projection decision
 - [`docs/decisions/0005-select-policy-from-verified-fedramp-rules.md`](docs/decisions/0005-select-policy-from-verified-fedramp-rules.md)
   — Phase 1 class-aware policy selection and deadline decision
+- [`docs/decisions/0006-verify-and-resolve-official-ver-schemas-offline.md`](docs/decisions/0006-verify-and-resolve-official-ver-schemas-offline.md)
+  — Phase 1 official VER schema verification and offline resolution decision
 
 ## Current capabilities
 
@@ -90,7 +93,7 @@ Phase 0 provides:
 - A pinned manifest for the official FedRAMP rules dataset and schema.
 - A backward-compatible `stigroll` command and source-checkout `stigroll.py` launcher.
 
-The Phase 1 storage foundation adds:
+Phase 1 currently adds:
 
 - A migration-managed SQLite event log with append-only update/delete guards.
 - Transactional batch appends with optimistic per-stream versions and unique event identifiers.
@@ -101,6 +104,10 @@ The Phase 1 storage foundation adds:
 - Provider-facing 20x Class B and Class C VDR/VER selection using official applicability data.
 - Provenance-bearing evaluation, response, reporting, and acceptance-threshold deadlines derived
   from structured source timeframes and PAIN matrices.
+- A digest-verified offline registry for the official Common Definitions, Vulnerability Detail,
+  Accepted Vulnerability, and Historical VER Activity schemas.
+- Draft 2020-12 report validation with format checks, actionable JSON Pointers, and exact schema
+  provenance.
 
 The original command remains available from a source checkout:
 
@@ -134,14 +141,18 @@ else:
 From a source checkout:
 
 ```bash
-PYTHONPATH=src python3 -m complyroll version
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m complyroll version
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-No runtime dependencies are required. Phase 1 persistence uses Python's standard-library SQLite
-binding. JSON Schema validation, case correlation, and API support will be added intentionally as
-their slices begin. The standard-library-only runtime remains intentional for hardened assessor
-workstations. Development and test commands are documented in [`AGENTS.md`](AGENTS.md).
+Phase 1 persistence uses Python's standard-library SQLite binding. Official report validation uses
+the major-version-bounded `jsonschema` package with its non-GPL format extra because Python's
+standard library does not implement JSON Schema Draft 2020-12. Schema retrieval remains offline;
+the dependency decision and security boundary are recorded in ADR 0006. Case correlation and API
+support will be added intentionally as their slices begin. Development and test commands are
+documented in [`AGENTS.md`](AGENTS.md).
 
 ## Authoritative sources
 

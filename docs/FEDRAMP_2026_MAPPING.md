@@ -11,6 +11,12 @@ schema SHA-256 digests. Phase 1 now bundles and verifies the exact official data
 selecting provider-facing 20x Class B or Class C rules. Runtime deadlines come from the selected
 structured rules rather than the planning tables below or application constants.
 
+The initial report-schema bundle is independently pinned to official `FedRAMP/schemas` commit
+`ae43ae2952c5dd5c56d54d12e8b92c7db1b3710a`. It contains Common Definitions version `0.2.1` and
+the Vulnerability Detail, Accepted Vulnerability, and Historical VER Activity schemas at version
+`0.1.1`. Each document is digest verified and all cross-document references resolve from the
+offline bundle before validation begins.
+
 The pinned `VDR-TFR-NMV` rule currently states its three-month expectation in prose without
 structured timeframe fields. ComplyRoll preserves the rule but does not calculate that clock until
 an authoritative structured value is available. KEV due dates likewise require the applicable

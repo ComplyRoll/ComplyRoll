@@ -1,0 +1,81 @@
+{
+  "vulnerability-detail": {
+    "certificationPackageOverviewUri": "https://example.com/fedramp/package.json",
+    "reportPeriod": {
+      "from": "2026-08-01T00:00:00Z",
+      "to": "2026-08-20T23:59:59Z"
+    },
+    "vulnerabilities": [
+      {
+        "providerTrackingId": "CASE-SYNTHETIC-001",
+        "detection": {
+          "detectedAt": "2026-08-03T12:30:00Z",
+          "detectionSource": "Synthetic scanner"
+        },
+        "vulnerabilityDescription": "Synthetic validation example",
+        "potentialAgencyImpact": "Synthetic example with no customer information",
+        "evaluationCompletedAt": "2026-08-04T15:00:00Z",
+        "isInternetReachable": false,
+        "isLikelyExploitable": false,
+        "currentRating": 2,
+        "overdueStatus": {
+          "isOverdue": false
+        }
+      }
+    ],
+    "complyrollExtension": {
+      "projectionVersion": 1
+    }
+  },
+  "accepted-vulnerability": {
+    "certificationPackageOverviewUri": "https://example.com/fedramp/package.json",
+    "reportPeriod": {
+      "from": "2026-08-01T00:00:00Z",
+      "to": "2026-08-20T23:59:59Z"
+    },
+    "acceptedVulnerabilities": [
+      {
+        "vulnerabilityDetail": {
+          "providerTrackingId": "CASE-SYNTHETIC-002",
+          "detection": {
+            "detectedAt": "2026-01-10T08:00:00Z",
+            "detectionSource": "Synthetic review"
+          },
+          "vulnerabilityDescription": "Synthetic accepted-vulnerability example",
+          "evaluationCompletedAt": "2026-01-11T08:00:00Z",
+          "isInternetReachable": false,
+          "isLikelyExploitable": false,
+          "currentRating": 2
+        },
+        "acceptanceRationale": "Synthetic provider rationale for validation only"
+      }
+    ]
+  },
+  "historical-activity": {
+    "certificationPackageOverviewUri": "https://example.com/fedramp/package.json",
+    "generatedAt": "2026-08-20T23:59:59Z",
+    "activeVulnerabilities": [
+      {
+        "providerTrackingId": "CASE-SYNTHETIC-001",
+        "detection": {
+          "detectedAt": "2026-08-03T12:30:00Z",
+          "detectionSource": "Synthetic scanner"
+        },
+        "vulnerabilityDescription": "Synthetic validation example"
+      }
+    ],
+    "acceptedVulnerabilities": [
+      {
+        "vulnerabilityDetail": {
+          "providerTrackingId": "CASE-SYNTHETIC-002",
+          "detection": {
+            "detectedAt": "2026-01-10T08:00:00Z",
+            "detectionSource": "Synthetic review"
+          },
+          "vulnerabilityDescription": "Synthetic accepted-vulnerability example"
+        },
+        "acceptanceRationale": "Synthetic provider rationale for validation only"
+      }
+    ]
+  }
+}

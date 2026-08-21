@@ -48,6 +48,25 @@ A calculated deadline is a derived value with explicit inputs and policy provena
 An absent structured timeframe is represented as unavailable, not inferred from rule prose. A
 192-day acceptance deadline is an escalation threshold and never an automatic acceptance event.
 
+## Schema validation result
+
+Official report validation produces an immutable result rather than a boolean with discarded
+context:
+
+| Field | Purpose |
+|---|---|
+| `report_schema` | Vulnerability Detail, Accepted Vulnerability, or Historical Activity target |
+| `provenance` | Official repository, commit, schema ID, schema version, and exact SHA-256 |
+| `issues` | Deterministically sorted structural or format failures |
+| `instance_pointer` | JSON Pointer to the invalid report value |
+| `schema_pointer` | JSON Pointer to the official constraint that failed |
+| `validator` | Draft 2020-12 keyword such as `required`, `enum`, or `format` |
+| `message` | Human-readable validator explanation |
+
+An empty issue tuple means the document satisfies the selected minimum official structure. It is
+not a conclusion that the report is semantically complete, accurate, or compliant with every
+narrative rule.
+
 ## Core entities
 
 ### InformationResource

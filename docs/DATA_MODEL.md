@@ -25,10 +25,12 @@ SQLite and are serialized into versioned event payloads at the persistence bound
 | `recorded_at` | When ComplyRoll durably appended the envelope |
 | `payload` | Canonical JSON object containing versioned domain data |
 | `metadata` | Canonical JSON object containing actor and method provenance |
-| `payload_sha256` | Integrity digest over the exact canonical payload bytes |
+| `payload_sha256` | Integrity digest over the exact canonical payload bytes only; metadata, type, stream, and timestamps are outside it until the planned full-envelope digest and hash chain |
 
 A named projection checkpoint records the last global sequence applied. Projection tables are
-query accelerators, not source history, and must be rebuildable from sequence zero.
+query accelerators, not source history, and must be rebuildable from sequence zero. Committed
+history is gap-free: global sequences and stream versions are contiguous, and reads raise an
+integrity error when a gap shows that an event was removed.
 
 ## Policy deadline
 
@@ -69,7 +71,12 @@ narrative rule.
 
 ## Core entities
 
-### InformationResource
+Implemented in `complyroll.models` today: `ResourceRef`, `EvidenceArtifact`, `Observation`,
+`Evaluation`, and `VulnerabilityCase`. `InformationResource`, `ResponseAction`,
+`AcceptedVulnerability`, `ValidationDefinition`, and `ValidationRun` below are planned Phase 1
+and Phase 3 entities; their tables describe intent, not shipped code.
+
+### InformationResource (planned)
 
 | Field | Purpose |
 |---|---|
@@ -94,12 +101,20 @@ narrative rule.
 | `ingested_at` | When ComplyRoll received it |
 | `source_severity` | Original normalized severity without PAIN interpretation |
 | `disposition` | Open, pass, not applicable, not reviewed, error, or unknown |
-| `evidence_refs` | Content-addressed supporting evidence |
-| `source_artifact_digest` | Integrity and idempotency anchor |
+| `evidence_ids` | Content-addressed supporting evidence |
+| `source_artifact_digest` | Integrity and idempotency anchor (lowercase hex; blank for system observations) |
+| `origin` | `artifact` for observations parsed from a source file; `system` for observations ComplyRoll generates about its own detection and response process (stale scans, missing resources, failed imports) |
 
 `observed_at` may be unknown when a source format does not declare an assessment timestamp.
 ComplyRoll records that absence and emits a diagnostic; it does not treat file modification or
-ingestion time as equivalent evidence.
+ingestion time as equivalent evidence. The official Vulnerability Detail schema requires a
+detection time, so a case built from such an observation needs an explicit, attributable
+detection-time attestation before it can be reported (decision pending in ADR 0007).
+
+System observations carry no artifact name or digest; they require `observed_at` (the detection
+window) and a non-blank `context_key` naming the producing validation or job. Their identity is
+SHA-256 over a JSON-encoded list of origin, source type, tool, parser name and version, record
+identifier, resource, context key, and the UTC observation time (ADR 0002 amendment).
 
 ### Phase 0 observation identity
 
@@ -145,8 +160,11 @@ digest.
 | `evaluator` | Human or automated actor, with method/version |
 
 Evaluation revisions append history. They never rewrite the original completed time or rationale.
+In the in-memory aggregate, `VulnerabilityCase.with_evaluation` moves the previous evaluation into
+`evaluation_history` and refuses to reactivate an ACCEPTED or CLOSED case unless the caller passes
+an explicit reopen flag. Durable history lives in the event log.
 
-### ResponseAction
+### ResponseAction (planned)
 
 Records a partial mitigation, full mitigation, remediation, validation, or other response. It
 includes planned time, completed time, target PAIN, actual result, owner, and evidence.
@@ -154,13 +172,13 @@ includes planned time, completed time, target PAIN, actual result, owner, and ev
 Mitigation and remediation are not interchangeable. A fully mitigated weakness can still exist
 until remediated.
 
-### AcceptedVulnerability
+### AcceptedVulnerability (planned)
 
 Acceptance is a case state with an explicit rationale and continued monitoring. It is not a
 silent age-based closure. ComplyRoll can flag the 192-day categorization requirement but cannot
 make the acceptance decision.
 
-### ValidationDefinition and ValidationRun
+### ValidationDefinition and ValidationRun (planned)
 
 A definition states what is being demonstrated, scope, code or query version, schedule, and clear
 pass/fail/unknown criteria. A run records execution provenance, result, coverage, evidence, and
@@ -176,9 +194,13 @@ Evidence metadata is separate from its body:
 - SHA-256 digest
 - Collected and last-updated times
 - Producer and method version
-- Sensitivity classification
+- Sensitivity classification (`restricted`, `internal`, or `public`; `restricted` by default)
 - Redacted representation
 - Retention status
+
+Of the fields above, the implemented `EvidenceArtifact` carries identifier, digest, type,
+description, collection time, location, and sensitivity. Producer, method version, last-updated
+time, redacted representation, and retention status are planned.
 
 ## Explicitly separate vocabularies
 

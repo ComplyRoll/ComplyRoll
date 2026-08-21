@@ -5,9 +5,10 @@ import json
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from complyroll.models import PainRating
 from complyroll.policy import (
@@ -26,7 +27,6 @@ from complyroll.policy import (
     load_bundled_rule_source_snapshot,
     load_rule_source_snapshot,
 )
-
 
 TEST_ROOT = Path(__file__).parent
 GOLDEN = TEST_ROOT / "golden" / "policy-class-b-c.json"
@@ -207,6 +207,62 @@ class ClassAwarePolicyTests(unittest.TestCase):
         deadline = policy.deadline_for_rule("VER-TFR-MHR", january_end)
 
         self.assertEqual(deadline.due_at, datetime(2027, 2, 28, 12, 0, tzinfo=UTC))
+
+    def test_calendar_months_use_the_configured_provider_timezone(self) -> None:
+        phoenix_profile = CertificationProfile(
+            CertificationClass.B,
+            calendar_timezone="America/Phoenix",
+        )
+        policy = load_bundled_policy(phoenix_profile)
+        phoenix = ZoneInfo("America/Phoenix")
+        start = datetime(2027, 2, 28, 17, 0, tzinfo=phoenix)
+
+        deadline = policy.deadline_for_rule("VER-TFR-MHR", start)
+        local_due = deadline.due_at.astimezone(phoenix)
+
+        self.assertEqual(local_due.date(), date(2027, 3, 28))
+        self.assertEqual(local_due.hour, 17)
+        self.assertEqual(deadline.due_at, datetime(2027, 3, 29, 0, 0, tzinfo=UTC))
+
+    def test_utc_calendar_remains_the_default_and_is_unchanged(self) -> None:
+        utc_policy = self.policies["B"]
+        phoenix_policy = load_bundled_policy(
+            CertificationProfile(CertificationClass.B, calendar_timezone="America/Phoenix")
+        )
+        start = datetime(2027, 2, 28, 17, 0, tzinfo=ZoneInfo("America/Phoenix"))
+
+        self.assertEqual(utc_policy.profile.calendar_timezone, "UTC")
+        self.assertEqual(
+            utc_policy.deadline_for_rule("VER-TFR-MHR", start).due_at,
+            datetime(2027, 4, 1, 0, 0, tzinfo=UTC),
+        )
+        self.assertNotEqual(
+            utc_policy.deadline_for_rule("VER-TFR-MHR", start).due_at,
+            phoenix_policy.deadline_for_rule("VER-TFR-MHR", start).due_at,
+        )
+
+    def test_exact_units_ignore_the_calendar_timezone(self) -> None:
+        phoenix_policy = load_bundled_policy(
+            CertificationProfile(CertificationClass.C, calendar_timezone="America/Phoenix")
+        )
+
+        self.assertEqual(
+            phoenix_policy.evaluation_deadline(START).due_at,
+            START + timedelta(days=5),
+        )
+
+    def test_calendar_timezone_must_be_an_iana_name(self) -> None:
+        with self.assertRaisesRegex(ValueError, "calendar_timezone"):
+            CertificationProfile(CertificationClass.C, calendar_timezone="Mars/Olympus_Mons")
+        with self.assertRaisesRegex(ValueError, "calendar_timezone"):
+            CertificationProfile(CertificationClass.C, calendar_timezone="   ")
+        with self.assertRaisesRegex(ValueError, "calendar_timezone"):
+            CertificationProfile(CertificationClass.C, calendar_timezone="/etc/passwd")
+
+    def test_profile_stays_hashable_with_a_calendar_timezone(self) -> None:
+        profile = CertificationProfile(CertificationClass.C, calendar_timezone="America/Phoenix")
+
+        self.assertEqual(len({profile, replace(profile)}), 1)
 
     def test_rule_without_structured_timeframe_is_not_inferred_from_prose(self) -> None:
         policy = self.policies["C"]

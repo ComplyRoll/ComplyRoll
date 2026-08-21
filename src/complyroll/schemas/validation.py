@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any
 
 from jsonschema import Draft202012Validator
 from referencing.exceptions import Unresolvable
@@ -15,7 +16,6 @@ from .source import (
     SchemaResolutionError,
     load_bundled_schema_bundle,
 )
-
 
 MAX_REPORT_BYTES = 32 * 1024 * 1024
 MAX_REPORT_DEPTH = 128

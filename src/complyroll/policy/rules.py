@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import calendar
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from complyroll.models import PainRating
 
@@ -64,10 +65,19 @@ class ResponseContext(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class CertificationProfile:
+    """One supported FedRAMP 20x profile plus the provider's calendar timezone.
+
+    The timezone stays a string so the profile remains hashable and comparable;
+    `calendar_zone` resolves it. Month and year arithmetic happens in that zone
+    (ADR 0007 Decision 6); hour, day, and week timeframes are exact elapsed
+    durations and never consult it.
+    """
+
     certification_class: CertificationClass
     certification_type: CertificationType = CertificationType.TWENTY_X
     certification_path: CertificationPath = CertificationPath.PROGRAM
     affected_party: str = "Providers"
+    calendar_timezone: str = "UTC"
 
     def __post_init__(self) -> None:
         if not isinstance(self.certification_class, CertificationClass):
@@ -78,6 +88,13 @@ class CertificationProfile:
             raise TypeError("certification_path must be a CertificationPath")
         if not isinstance(self.affected_party, str) or not self.affected_party.strip():
             raise ValueError("affected_party must be non-blank text")
+        _resolve_calendar_zone(self.calendar_timezone)
+
+    @property
+    def calendar_zone(self) -> tzinfo:
+        """Return the validated calendar used for month and year arithmetic."""
+
+        return _resolve_calendar_zone(self.calendar_timezone)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,10 +127,17 @@ class RuleTimeframe:
             return int(self.amount)
         return format(self.amount, "f")
 
-    def deadline_from(self, start: datetime) -> datetime:
-        """Calculate a UTC deadline using the source unit's explicit semantics."""
+    def deadline_from(self, start: datetime, *, calendar: tzinfo = UTC) -> datetime:
+        """Calculate a UTC deadline using the source unit's explicit semantics.
+
+        Hours, days, and weeks are exact elapsed durations. Months and years are
+        calendar arithmetic performed in `calendar` with month-end clamping, then
+        converted back to UTC.
+        """
 
         normalized = _require_aware_utc(start, "start")
+        if not isinstance(calendar, tzinfo):
+            raise TypeError("calendar must be a tzinfo")
         if self.unit is TimeframeUnit.BUSINESS_DAYS:
             raise UnsupportedTimeframeError(
                 "business-day deadlines require an explicit holiday and timezone calendar"
@@ -125,10 +149,14 @@ class RuleTimeframe:
         if self.unit is TimeframeUnit.WEEKS:
             return normalized + _decimal_timedelta(self.amount, seconds_per_unit=604_800)
         if self.unit is TimeframeUnit.MONTHS:
-            return _add_calendar_months(normalized, _require_integral(self.amount, "months"))
+            return _add_calendar_months(
+                normalized,
+                _require_integral(self.amount, "months"),
+                calendar_zone=calendar,
+            )
         if self.unit is TimeframeUnit.YEARS:
             years = _require_integral(self.amount, "years")
-            return _add_calendar_months(normalized, years * 12)
+            return _add_calendar_months(normalized, years * 12, calendar_zone=calendar)
         raise AssertionError(f"unhandled timeframe unit: {self.unit}")
 
 
@@ -262,7 +290,10 @@ class SelectedPolicy:
             rule_name=rule.name,
             force=rule.force,
             start_at=normalized_start,
-            due_at=timeframe.deadline_from(normalized_start),
+            due_at=timeframe.deadline_from(
+                normalized_start,
+                calendar=self.profile.calendar_zone,
+            ),
             timeframe=timeframe,
             profile=self.profile,
             provenance=self.provenance,
@@ -534,9 +565,28 @@ def _decimal_timedelta(amount: Decimal, *, seconds_per_unit: int) -> timedelta:
     return timedelta(microseconds=int(microseconds))
 
 
-def _add_calendar_months(value: datetime, months: int) -> datetime:
-    month_index = value.year * 12 + (value.month - 1) + months
+def _add_calendar_months(value: datetime, months: int, *, calendar_zone: tzinfo = UTC) -> datetime:
+    local = value.astimezone(calendar_zone)
+    month_index = local.year * 12 + (local.month - 1) + months
     year, zero_based_month = divmod(month_index, 12)
     month = zero_based_month + 1
-    day = min(value.day, calendar.monthrange(year, month)[1])
-    return value.replace(year=year, month=month, day=day)
+    day = min(local.day, calendar.monthrange(year, month)[1])
+    return local.replace(year=year, month=month, day=day).astimezone(UTC)
+
+
+def _resolve_calendar_zone(name: object) -> tzinfo:
+    """Return the tzinfo for an IANA name, refusing anything zoneinfo will not load.
+
+    UTC short-circuits so the default profile never depends on a system tz database.
+    """
+
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("calendar_timezone must be non-blank text")
+    if name == "UTC":
+        return UTC
+    try:
+        return ZoneInfo(name)
+    except (KeyError, ValueError) as exc:
+        raise ValueError(
+            f"calendar_timezone must be an IANA time zone name, got {name!r}"
+        ) from exc

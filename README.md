@@ -1,43 +1,144 @@
 # ComplyRoll
 
-**Evidence automation for continuous authorization.**
+**A local-first evidence compiler for FedRAMP® 20x Vulnerability Detection and Response (VDR).**
 
-ComplyRoll is a local-first evidence compiler for FedRAMP 20x Vulnerability Detection and
-Response (VDR).
+ComplyRoll turns scanner observations, validation runs, and operational evidence into traceable
+vulnerability cases, class-aware response clocks, and official-format FedRAMP reports that a
+provider can publish and an independent assessor can recompute.
 
-It is intended to turn scanner observations, validation runs, and operational evidence into
-traceable vulnerability cases, class-aware response timelines, and consistent human- and
-machine-readable FedRAMP reports.
+> **Project status (2026-08-21):** pre-alpha. Phase 0 (hardened ingestion) is complete. Phase 1
+> has its first end-to-end path: `complyroll report vdt` compiles scanner artifacts into a
+> schema-valid Vulnerability Detail Report and `complyroll validate` checks any report against
+> the pinned official schemas. Case history persistence is not wired yet. ComplyRoll does not
+> produce a FedRAMP submission package and must not be represented as FedRAMP approved. It is
+> not yet published on PyPI; install only from this repository.
 
-> **Project status:** Phase 0 ingestion kernel complete; Phase 1 is in progress with durable event
-> history, class-aware policy selection, and verified offline report-schema validation implemented.
-> ComplyRoll does not yet produce a FedRAMP submission package and must not be represented as
-> FedRAMP approved.
+## What runs today
 
-## Product direction
+| Surface | What it does |
+|---|---|
+| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, and ARF files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. Validated against the bundled official schema before anything is written |
+| `complyroll validate REPORT --schema vulnerability-detail\|accepted-vulnerability\|historical-activity` | Validates a report against the pinned official schema, offline, printing JSON Pointers for every failure and the exact schema provenance |
+| `stigroll <files> [--cci-list U_CCI_List.xml] [--format markdown\|csv\|json] [-o FILE]` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output byte-for-byte |
+| `complyroll.adapters.ingest_stig_artifact(path)` | CKLB, CKL, XCCDF, and ARF files become immutable observations with artifact digest, parser identity, timestamps, and structured diagnostics |
+| `complyroll.policy.load_bundled_policy(profile)` | Selects the 36 provider-facing VDR and VER rules for a 20x Class B or Class C profile from the pinned official dataset and calculates evaluation, PAIN response, and acceptance-threshold deadlines with full provenance, in the provider's calendar timezone |
+| `complyroll.store.SQLiteEventStore` | Append-only event log with optimistic concurrency, payload digests, schema and tail-integrity verification, and projection checkpoints. No domain events are written by the product yet |
 
-ComplyRoll's initial product wedge is deliberately narrower than a full GRC platform:
+The report compiler is stateless by design (ADR 0007): the same artifacts, evaluations, options,
+and `--as-of` instant produce the same bytes, which is the property an independent assessor is
+asked to test. Persisted case history, accepted-vulnerability and historical-activity reports,
+and the event-sourced rebuild of this same report are the next slices. See
+[`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
 
-1. Ingest heterogeneous security observations.
-2. Preserve source evidence and provenance.
-3. Group observations into stateful vulnerability cases without losing instance detail.
-4. Capture internet reachability, likely exploitability, and Potential Agency Impact N-rating
-   (PAIN) evaluations.
-5. Calculate applicable Class B or Class C clocks from a pinned official rules version.
-6. Generate schema-valid FedRAMP VER JSON and matching human-readable reports.
-7. Detect failures in the detection and response process itself.
+## Quick start
 
-The existing [`stigroll`](https://github.com/ktalons/stigroll) project is the planned first
-compatibility adapter. Its CKL, CKLB, XCCDF, and CCI mapping behavior will be preserved while
-ComplyRoll introduces the broader VDR case model.
+From a source checkout:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m complyroll version
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Compile the synthetic fixtures into a Vulnerability Detail Report and validate it:
+
+```bash
+complyroll report vdt \
+  tests/fixtures/ubuntu-host.cklb \
+  tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-31T23:59:59Z \
+  --as-of 2026-08-21T12:00:00Z \
+  --detected-at 2026-08-01T00:00:00Z \
+  --evaluations examples/evaluations.json \
+  -o report.json \
+  --markdown report.md
+
+complyroll validate report.json --schema vulnerability-detail
+```
+
+The fixtures declare no assessment timestamp, so `--detected-at` attests one; ComplyRoll never
+substitutes file modification or ingestion time. `--evaluations` supplies the contextual judgement
+a scanner cannot provide (IRV, LEV, PAIN, impact, rationale, evaluator; see
+[`examples/evaluations.json`](examples/evaluations.json)). `--as-of` pins the instant overdue
+flags are computed against, which makes the run reproducible byte for byte; the expected output
+is [`tests/golden/vdt-fixtures.json`](tests/golden/vdt-fixtures.json) and
+[`tests/golden/vdt-fixtures.md`](tests/golden/vdt-fixtures.md).
+
+Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
+key: generator and parser versions, the rules dataset and schema commits and digests, every
+computed deadline with its rule and force, the grouped observation ids and affected resources,
+and the evaluator and rationale. That makes the document the provider's and assessor's working
+record. It includes internal resource identifiers and provider rationale, so redact it before
+sharing with an agency; audience-specific views are a later slice.
+
+Roll up the synthetic fixtures with the predecessor command:
+
+```bash
+stigroll tests/fixtures/windows-host.ckl tests/fixtures/ubuntu-host.cklb --format json
+```
+
+Ingest an artifact and inspect its observations and diagnostics:
+
+```python
+from pathlib import Path
+
+from complyroll.adapters import ingest_stig_artifact
+
+result = ingest_stig_artifact(Path("assessment.cklb"))
+if not result.successful:
+    for diagnostic in result.errors:
+        print(diagnostic.code, diagnostic.message)
+else:
+    print(result.observations[0].to_canonical_json())
+```
+
+Calculate a Class C response target with rule provenance:
+
+```python
+from datetime import UTC, datetime
+
+from complyroll.models import PainRating
+from complyroll.policy import CertificationClass, CertificationProfile, load_bundled_policy
+
+policy = load_bundled_policy(CertificationProfile(CertificationClass.C))
+deadline = policy.response_deadline(
+    datetime(2026, 8, 21, 15, 0, tzinfo=UTC),
+    pain=PainRating.N4,
+    is_internet_reachable=True,
+    is_likely_exploitable=True,
+)
+print(deadline.rule_id, deadline.force.value, deadline.due_at.isoformat())
+print(deadline.provenance.commit, deadline.provenance.dataset_sha256)
+```
+
+Validate a report against the pinned official schema:
+
+```python
+from pathlib import Path
+
+from complyroll.schemas import ReportSchema, validate_bundled_report_bytes
+
+result = validate_bundled_report_bytes(
+    ReportSchema.VULNERABILITY_DETAIL, Path("vulnerability-detail.json").read_bytes()
+)
+for issue in result.issues:
+    print(issue.instance_pointer, issue.validator, issue.message)
+print(result.provenance.schema_version, result.provenance.schema_sha256)
+```
 
 ## Why this exists
 
 FedRAMP 20x is based on measured outcomes and persistent validation. A failed STIG rule or CVE is
 only a source observation. VDR additionally covers drift, failed validation pipelines, stale
-security decisions, supply-chain exposures, process failures, and other weaknesses.
+security decisions, supply-chain exposures, and failures in the detection and response process
+itself. ComplyRoll therefore separates immutable observations from stateful vulnerability cases.
 
-ComplyRoll therefore separates immutable observations from vulnerability cases:
+Target pipeline (the stages after observations are not built yet):
 
 ```mermaid
 flowchart TD
@@ -59,112 +160,62 @@ flowchart TD
 - Human-readable and machine-readable reports must come from the same normalized records.
 - Historical evaluations and evidence must remain reproducible.
 
-## Repository guide
+## For independent assessors
 
-- [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) — phased implementation plan and exit criteria
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system boundaries and component design
-- [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) — observation, case, evaluation, and evidence model
-- [`docs/FEDRAMP_2026_MAPPING.md`](docs/FEDRAMP_2026_MAPPING.md) — current rule and schema mapping
-- [`docs/SECURITY.md`](docs/SECURITY.md) — threat model and evidence-handling requirements
-- [`docs/decisions/0001-observation-case-separation.md`](docs/decisions/0001-observation-case-separation.md)
-  — first architecture decision record
-- [`docs/decisions/0002-artifact-bound-observation-identity.md`](docs/decisions/0002-artifact-bound-observation-identity.md)
-  — Phase 0 identity and idempotency decision
-- [`docs/decisions/0003-bounded-standard-library-ingestion.md`](docs/decisions/0003-bounded-standard-library-ingestion.md)
-  — Phase 0 input-hardening decision
-- [`docs/decisions/0004-append-only-sqlite-event-store.md`](docs/decisions/0004-append-only-sqlite-event-store.md)
-  — Phase 1 event-history and projection decision
-- [`docs/decisions/0005-select-policy-from-verified-fedramp-rules.md`](docs/decisions/0005-select-policy-from-verified-fedramp-rules.md)
-  — Phase 1 class-aware policy selection and deadline decision
-- [`docs/decisions/0006-verify-and-resolve-official-ver-schemas-offline.md`](docs/decisions/0006-verify-and-resolve-official-ver-schemas-offline.md)
-  — Phase 1 official VER schema verification and offline resolution decision
+ComplyRoll is meant to be run cold on provider-supplied artifacts: ingest the raw scanner exports,
+recompute the clocks and the report, and compare against what the provider published. Every
+deadline names its rule identifier, force (MUST or SHOULD), certification class, dataset commit,
+and digest. Assessors do not configure or operate ComplyRoll on a provider's behalf; under the
+2026 recognition rules, advisory work on an offering bars assessing that offering for two years.
 
-## Current capabilities
+## Design documents
 
-Phase 0 provides:
+- [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md): phased implementation plan and exit criteria
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): system boundaries and component design
+- [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md): observation, case, evaluation, and evidence model
+- [`docs/FEDRAMP_2026_MAPPING.md`](docs/FEDRAMP_2026_MAPPING.md): current rule and schema mapping
+- [`docs/SECURITY.md`](docs/SECURITY.md): threat model and evidence-handling requirements
+- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0007
+  (0007 fixes the report mappings: attested detection time, disposition table, clock semantics,
+  overdue wording, the `x-complyroll` extension, and the evaluations file)
+- [`examples/`](examples/): the fixture-to-report demo inputs
+- [`AGENTS.md`](AGENTS.md): repository rules and development commands
 
-- Hardened CKLB, CKL, XCCDF/ARF, and CCI ingestion adapters.
-- Immutable observations with source SHA-256, parser identity/version, ingest time, resource,
-  source identifiers, and structured diagnostics.
-- Stable observation IDs that make reimporting identical artifact bytes with the same parser
-  version idempotent.
-- Bounded JSON/XML input handling with DTD/entity rejection and explicit failed-ingest results.
-- Canonical observation JSON serialization.
-- A pinned manifest for the official FedRAMP rules dataset and schema.
-- A backward-compatible `stigroll` command and source-checkout `stigroll.py` launcher.
+## Dependencies and data
 
-Phase 1 currently adds:
+Persistence uses Python's standard-library SQLite binding. Report validation uses the
+major-version-bounded `jsonschema` package with its non-GPL format extra, because the standard
+library does not implement JSON Schema Draft 2020-12 (ADR 0006). Everything else is the standard
+library.
 
-- A migration-managed SQLite event log with append-only update/delete guards.
-- Transactional batch appends with optimistic per-stream versions and unique event identifiers.
-- Canonical, bounded JSON payloads with SHA-256 integrity checks and explicit payload-schema
-  versions.
-- Ordered global replay and compare-and-swap projection checkpoints that can reset for rebuilds.
-- An offline, digest-verified copy of the pinned official FedRAMP rules dataset.
-- Provider-facing 20x Class B and Class C VDR/VER selection using official applicability data.
-- Provenance-bearing evaluation, response, reporting, and acceptance-threshold deadlines derived
-  from structured source timeframes and PAIN matrices.
-- A digest-verified offline registry for the official Common Definitions, Vulnerability Detail,
-  Accepted Vulnerability, and Historical VER Activity schemas.
-- Draft 2020-12 report validation with format checks, actionable JSON Pointers, and exact schema
-  provenance.
+The official FedRAMP rules dataset and VER schemas are bundled unmodified and pinned to immutable
+upstream commits with SHA-256 digests; see [`NOTICE`](NOTICE) and
+[`src/complyroll/data/README.md`](src/complyroll/data/README.md) for provenance and license.
 
-The original command remains available from a source checkout:
-
-```bash
-python3 stigroll.py assessment.cklb --cci-list U_CCI_List.xml
-python3 stigroll.py legacy.ckl results.xml --format json
-```
-
-After installation, the same behavior is exposed as `stigroll`. The ComplyRoll planning CLI remains:
-
-```bash
-python3 -m complyroll version
-python3 -m complyroll plan
-```
-
-The hardened adapter API returns observations and diagnostics separately:
-
-```python
-from pathlib import Path
-
-from complyroll.adapters import ingest_stig_artifact
-
-result = ingest_stig_artifact(Path("assessment.cklb"))
-if not result.successful:
-    for diagnostic in result.errors:
-        print(diagnostic.code, diagnostic.message)
-else:
-    print(result.observations[0].to_canonical_json())
-```
-
-From a source checkout:
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
-.venv/bin/python -m complyroll version
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-Phase 1 persistence uses Python's standard-library SQLite binding. Official report validation uses
-the major-version-bounded `jsonschema` package with its non-GPL format extra because Python's
-standard library does not implement JSON Schema Draft 2020-12. Schema retrieval remains offline;
-the dependency decision and security boundary are recorded in ADR 0006. Case correlation and API
-support will be added intentionally as their slices begin. Development and test commands are
-documented in [`AGENTS.md`](AGENTS.md).
-
-## Authoritative sources
-
-ComplyRoll will consume and pin, rather than copy into application constants:
+Authoritative sources ComplyRoll consumes and pins rather than copies into constants:
 
 - [FedRAMP Consolidated Rules for 2026](https://www.fedramp.gov/2026/)
 - [FedRAMP machine-readable rules](https://github.com/FedRAMP/rules)
+- [FedRAMP JSON schemas](https://github.com/FedRAMP/schemas)
 - [Vulnerability Detection and Response](https://www.fedramp.gov/2026/reference/vulnerability-detection-and-response/)
 - [Vulnerability Evaluation and Reporting](https://www.fedramp.gov/2026/reference/vulnerability-evaluation-and-reporting/)
 - [Key Security Indicators](https://www.fedramp.gov/2026/reference/key-security-indicators/)
 
-## License and status
+## Disclaimer
 
-MIT licensed. ComplyRoll is an independent open-source project and is not affiliated with,
-endorsed by, or approved by GSA or FedRAMP.
+ComplyRoll is informational tooling, not legal or compliance advice. A report that validates
+against an official schema satisfies that schema's minimum structure; it is not a FedRAMP
+determination, and the provider remains responsible for meeting the Consolidated Rules. Verify
+every clock against <https://www.fedramp.gov/2026/> before relying on it.
+
+## License
+
+ComplyRoll's code is licensed under the Apache License, Version 2.0 (see [`LICENSE`](LICENSE)
+and [`NOTICE`](NOTICE)). The bundled FedRAMP data files are works of the U.S. Government and are
+not covered by that license. The ComplyRoll name is not licensed (Apache License, Section 6).
+Contributions require a Developer Certificate of Origin sign-off
+([`CONTRIBUTING.md`](CONTRIBUTING.md)).
+
+FedRAMP® is a registered trademark of the U.S. General Services Administration. ComplyRoll is an
+independent project and is not affiliated with, endorsed by, or approved by GSA or the FedRAMP
+Program Management Office.

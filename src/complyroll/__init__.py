@@ -6,8 +6,10 @@ from .models import (
     EvidenceArtifact,
     Observation,
     ObservationDisposition,
+    ObservationOrigin,
     PainRating,
     ResourceRef,
+    Sensitivity,
     SourceSeverity,
     VulnerabilityCase,
 )
@@ -18,10 +20,12 @@ __all__ = [
     "EvidenceArtifact",
     "Observation",
     "ObservationDisposition",
+    "ObservationOrigin",
     "PainRating",
     "ResourceRef",
+    "Sensitivity",
     "SourceSeverity",
     "VulnerabilityCase",
 ]
 
-__version__ = "0.1.0a0"
+__version__ = "0.2.0a0"

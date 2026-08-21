@@ -1,26 +1,28 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "complyroll"
-version = "0.1.0a0"
+version = "0.2.0a0"
 description = "Evidence automation for continuous authorization"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
   { name = "Kyle Versluis" }
 ]
 keywords = ["fedramp", "fedramp-20x", "vdr", "security", "compliance"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Security",
+  "Typing :: Typed",
 ]
 dependencies = [
   "jsonschema[format-nongpl]>=4.23,<5",
@@ -38,4 +40,14 @@ stigroll = "complyroll.compat.stigroll:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-complyroll = ["data/*.json"]
+complyroll = ["data/*.json", "data/README.md", "py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# The domain enums subclass (str, Enum) on purpose: members serialize through .value and
+# str(member) must not silently change meaning; StrEnum is not a drop-in here.
+ignore = ["UP042"]

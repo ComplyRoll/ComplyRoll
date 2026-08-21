@@ -5,7 +5,7 @@ Status date: **2026-08-20**
 ## Outcome
 
 ComplyRoll will compile heterogeneous security and validation evidence into traceable FedRAMP 20x
-VDR cases, class-aware response timelines, and consistent official reports.
+VDR cases, class-aware response timelines, and consistent official-format reports.
 
 The initial target is a provider security engineer or assessor working locally or in CI. A hosted
 trust center is a later integration boundary, not the MVP.
@@ -16,7 +16,7 @@ trust center is a later integration boundary, not the MVP.
 |---|---|
 | CSP security engineer | Ingest detections, evaluate context, track mitigation, and detect coverage failures |
 | CSP GRC owner | Produce correct, current, repeatable FedRAMP reports without spreadsheet reconciliation |
-| Independent assessor | Review validation code, failure criteria, evidence, history, and provider rationale |
+| Independent assessor | Recompute and validate cold from provider-supplied artifacts; review validation code, failure criteria, evidence, history, and provider rationale. Assessors do not operate ComplyRoll on the provider's behalf (advisory work bars assessing that offering for two years under `REC-IAS-SEP`) |
 | Agency reviewer | Consume filtered, current, machine-readable certification information |
 
 ## Product boundaries
@@ -112,33 +112,48 @@ Target: 3–4 weeks
 - Explicit IRV, LEV, PAIN, false-positive, and rationale workflow.
 - Class B and Class C policy selection from pinned `FedRAMP/rules` data.
 - Evaluation, mitigation, KEV, reporting, and 192-day acceptance clocks.
-- Official JSON projections for:
+- Official-format JSON projections for:
   - VER-RPT-VDT Vulnerability Detail Report
   - VER-RPT-AVI Accepted Vulnerability Information
   - VER-TFR-MRH Historical VER Activity
 - Markdown or HTML reports generated from the same projection records.
 - JSON Schema validation with offline schema caching and digest verification.
 
-### Proposed CLI
+### CLI
+
+Implemented:
+
+```text
+complyroll report vdt <artifact...> --class C --package-uri <uri> --from <time> --to <time>
+    [--evaluations <file>] [--detected-at <time>] [--as-of <time>] [--calendar-tz <name>]
+    [-o <report.json>] [--markdown <report.md>]
+complyroll validate <report.json> --schema <vulnerability-detail|accepted-vulnerability|historical-activity>
+```
+
+Proposed:
 
 ```text
 complyroll rules sync --ref <commit-or-tag>
-complyroll ingest <artifact...>
+complyroll ingest <artifact...> --db <store>
 complyroll observations list
 complyroll cases list
 complyroll cases evaluate <case-id>
 complyroll deadlines
-complyroll report ver --class C --from <time> --to <time>
+complyroll report avi --class C --from <time> --to <time>
 complyroll report historical --class C
-complyroll validate <report.json>
+complyroll store verify --db <store>
 ```
 
 ### Exit criteria
 
 - A CKLB/XCCDF assessment becomes a schema-valid VER report without spreadsheet manipulation.
-- Every due date can identify the rule version and inputs used in its calculation.
-- Changing an evaluation creates history rather than overwriting the prior evaluation.
-- JSON and human-readable totals reconcile exactly.
+  **Met 2026-08-21 for the stateless path** (`complyroll report vdt`, golden-tested).
+- Every due date can identify the rule version and inputs used in its calculation. **Met** (every
+  deadline in the report carries rule id, force, anchor, inputs, and the dataset commit and digest).
+- Changing an evaluation creates history rather than overwriting the prior evaluation. Open: the
+  in-memory model keeps `evaluation_history`, but nothing is persisted yet.
+- JSON and human-readable totals reconcile exactly. **Met** (both renderers read one record list;
+  a reconciliation test asserts the totals).
 
 ## Phase 2 — Automation, detection coverage, and change integration
 
@@ -226,4 +241,12 @@ Target: after the local engine is stable
 2. Implement class-aware policy selection from the pinned rules source. **Complete — 2026-08-20.**
 3. Write golden tests for Class B and Class C evaluation and response clocks. **Complete — 2026-08-20.**
 4. Implement official common-definition and VER schema resolution. **Complete — 2026-08-20.**
-5. Produce the first end-to-end CKLB → case → VER JSON demonstration.
+5. Produce the first end-to-end CKLB → case → VER JSON demonstration. **Complete (stateless
+   path) — 2026-08-21.** `complyroll report vdt` compiles the fixtures into a schema-valid
+   Vulnerability Detail Report with a Markdown twin (ADR 0007); the event-sourced rebuild of the
+   same report is the next slice.
+6. Persist `observation.recorded`, `detection.attested`, and `case.*` events from the compiler's
+   inputs; rebuild the Vulnerability Detail Report from the event log and reconcile it against the
+   stateless output byte for byte.
+7. Accepted-vulnerability (`VER-RPT-AVI`) and historical-activity (`VER-TFR-MRH`) reports from the
+   same record compiler.

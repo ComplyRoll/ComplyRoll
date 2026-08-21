@@ -78,7 +78,7 @@ class ArtifactProvenance:
         parser_name: str,
         parser_version: str,
         ingested_at: datetime,
-    ) -> "ArtifactProvenance":
+    ) -> ArtifactProvenance:
         digest = hashlib.sha256(content).hexdigest()
         return cls(
             artifact_id=f"artifact-sha256-{digest}",

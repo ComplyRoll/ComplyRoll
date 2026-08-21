@@ -5,10 +5,19 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 from complyroll.adapters import ingest_stig_artifact, load_cci_control_map
+from complyroll.adapters.stig import (
+    CCI_PARSER_VERSION,
+    CKL_PARSER_VERSION,
+    CKLB_PARSER_VERSION,
+    XCCDF_PARSER_VERSION,
+    CklAdapter,
+    CklbAdapter,
+    XccdfAdapter,
+)
 from complyroll.models import ObservationDisposition
-
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FIRST_INGEST = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)
@@ -155,6 +164,67 @@ class StigAdapterTests(unittest.TestCase):
         self.assertFalse(result.successful)
         self.assertIsNotNone(result.artifact)
         self.assertEqual(result.errors[0].code, "unsupported_artifact")
+
+
+class ParserVersionIndependenceTests(unittest.TestCase):
+    """Each adapter owns its identity input, so one bump cannot re-mint the others."""
+
+    def _versions(self, path: Path) -> set[str]:
+        result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+        self.assertTrue(result.successful)
+        assert result.artifact is not None
+        return {result.artifact.parser_version} | {
+            item.parser_version for item in result.observations
+        }
+
+    def test_each_adapter_declares_its_own_constant(self) -> None:
+        self.assertEqual(CklbAdapter.version, CKLB_PARSER_VERSION)
+        self.assertEqual(CklAdapter.version, CKL_PARSER_VERSION)
+        self.assertEqual(XccdfAdapter.version, XCCDF_PARSER_VERSION)
+
+    def test_artifact_provenance_uses_the_adapter_version(self) -> None:
+        self.assertEqual(self._versions(FIXTURES / "ubuntu-host.cklb"), {CKLB_PARSER_VERSION})
+        self.assertEqual(self._versions(FIXTURES / "windows-host.ckl"), {CKL_PARSER_VERSION})
+        self.assertEqual(
+            self._versions(FIXTURES / "openscap-results.xml"), {XCCDF_PARSER_VERSION}
+        )
+
+    def test_bumping_one_adapter_leaves_the_others_untouched(self) -> None:
+        ckl_before = ingest_stig_artifact(
+            FIXTURES / "windows-host.ckl", ingested_at=FIRST_INGEST
+        )
+        xccdf_before = ingest_stig_artifact(
+            FIXTURES / "openscap-results.xml", ingested_at=FIRST_INGEST
+        )
+
+        with mock.patch.object(CklbAdapter, "version", "99"):
+            cklb = ingest_stig_artifact(FIXTURES / "ubuntu-host.cklb", ingested_at=FIRST_INGEST)
+            ckl_after = ingest_stig_artifact(
+                FIXTURES / "windows-host.ckl", ingested_at=FIRST_INGEST
+            )
+            xccdf_after = ingest_stig_artifact(
+                FIXTURES / "openscap-results.xml", ingested_at=FIRST_INGEST
+            )
+
+        self.assertTrue(all(item.parser_version == "99" for item in cklb.observations))
+        self.assertEqual(
+            [item.observation_id for item in ckl_before.observations],
+            [item.observation_id for item in ckl_after.observations],
+        )
+        self.assertEqual(
+            [item.observation_id for item in xccdf_before.observations],
+            [item.observation_id for item in xccdf_after.observations],
+        )
+
+    def test_cci_loader_uses_its_own_parser_version(self) -> None:
+        with mock.patch.object(CklbAdapter, "version", "99"):
+            mapping_result = load_cci_control_map(
+                FIXTURES / "cci-list.xml", ingested_at=FIRST_INGEST
+            )
+
+        self.assertTrue(mapping_result.successful)
+        assert mapping_result.artifact is not None
+        self.assertEqual(mapping_result.artifact.parser_version, CCI_PARSER_VERSION)
 
 
 if __name__ == "__main__":

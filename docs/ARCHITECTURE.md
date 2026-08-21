@@ -170,16 +170,21 @@ Candidate event types include:
 src/complyroll/
   adapters/       # Phase 0 adapter contracts, safe parsing, and STIG/XCCDF/CCI implementations
   compat/         # predecessor-compatible stigroll CLI and renderers
+  correlation/    # correlation v0: open observations grouped into vulnerabilities (ADR 0007)
   data/           # bundled immutable source manifests, rules, and official schemas
   policy/         # verified rule source, class-aware selection, and deadlines
+  reports/        # stateless report compilers, the evaluations file, and Markdown twins
   schemas/        # verified offline schema registry and report validation results
   store/          # SQLite event history, migrations, integrity, and projection checkpoints
-  cli.py          # ComplyRoll project CLI
+  cli.py          # ComplyRoll project CLI (report vdt, validate, version, plan)
   models.py       # framework-independent domain records
 ```
 
-Phase 1 will add `correlation` and `projections` packages when their durable interfaces are
-implemented. The domain model remains independent from those implementations.
+The first report compiler is stateless (ADR 0007): `reports.vdt.compile_vdt_report` is a pure
+function of artifacts, an evaluations file, and explicit package options, and it validates its
+own output before returning. Event-sourced projections that rebuild the same report from durable
+history are the next slice; the stateless output is their reconciliation target. The domain model
+remains independent from both.
 
 ## Failure semantics
 

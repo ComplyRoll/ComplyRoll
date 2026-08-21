@@ -32,16 +32,22 @@ not deployment documentation to add later.
 
 The standard-library ingestion layer currently enforces:
 
-- 32 MiB maximum per artifact
-- 128 levels of JSON nesting and 500,000 JSON values
-- 128 levels of XML nesting and 500,000 XML elements
-- UTF-8 JSON with duplicate keys and non-standard constants such as `NaN` rejected
-- Complete rejection of XML DTD and entity declarations
+- 32 MiB maximum per artifact, read from regular files only with a bounded read loop (FIFOs and
+  devices are refused rather than read to exhaustion)
+- 128 levels of JSON nesting and at most 500,000 JSON values
+- 128 levels of XML nesting and at most 500,000 XML elements
+- UTF-8 JSON (a leading BOM is tolerated) with duplicate keys and non-standard constants such as
+  `NaN` rejected
+- XML DOCTYPE and ENTITY declarations rejected by the parser's declaration handlers, in any
+  encoding expat decodes (UTF-8, UTF-16, and others); external entities are never resolved, and
+  expat's own amplification limiter remains as a backstop. Literal `<!DOCTYPE` text inside CDATA or
+  comments is ordinary character data and is accepted.
 - No archive extraction, XInclude processing, network lookup, or imported-code execution
 
 Callers may lower these limits for their environment. Raising them is an explicit caller decision.
 Compatibility CSV output neutralizes formula-leading cells, and Markdown table output escapes raw
-HTML, delimiters, and embedded line breaks.
+HTML, delimiters, and embedded line breaks. Markdown link and image syntax is not yet neutralized;
+treat rendered roll-ups from untrusted checklists accordingly.
 
 ## Evidence integrity
 
@@ -53,17 +59,28 @@ HTML, delimiters, and embedded line breaks.
 
 ### Phase 1 local persistence protections
 
-- Event appends use one immediate transaction and an expected stream version.
+- Event appends use one immediate transaction and an expected stream version. A failed commit
+  rolls back and raises `EventStoreBusyError`; the connection is never left inside an open
+  transaction.
+- The database runs in WAL journal mode with `synchronous=FULL`, so readers do not block commits
+  and committed history survives power loss.
 - Unique event IDs and stream versions reject accidental replay and lost updates.
 - Event payload and metadata JSON are bounded, structurally validated, and serialized canonically.
-- Every payload records a SHA-256 digest that is verified when history is read.
-- SQLite triggers reject application-level updates and deletes from event history.
+- `payload_sha256` covers the canonical payload bytes only and is verified on every read. The
+  metadata, event type, stream identifier, version, and timestamps are not yet covered by a
+  digest; a full-envelope digest with a per-store hash chain is planned for the next schema
+  version.
+- SQLite triggers reject application-level updates and deletes from event history, and opening a
+  store verifies that the expected tables, indexes, and triggers are still present.
+- Reads verify that global sequences and stream versions are contiguous, so a deleted event is
+  reported as an integrity error instead of being skipped.
 - Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
 
 These controls protect against application mistakes and detectable corruption. They do not make a
 database file tamper-proof against a user with direct filesystem write access. File permissions,
 encrypted storage, signed export manifests, backup integrity, and retention controls remain
-deployment or later bundle requirements.
+deployment or later bundle requirements. Database files are created with the process umask; set a
+restrictive umask or move the file to a protected location on shared hosts.
 
 ### Phase 1 policy-source protections
 
@@ -141,6 +158,18 @@ decisions and must cite their underlying records.
 - Never execute imported validation code without an explicit sandbox and trust decision.
 
 ADR 0006 documents the first runtime dependency: the active, MIT-licensed `jsonschema` Draft
-2020-12 implementation with its non-GPL format extra. The major version is bounded; release builds
-must lock, scan, and inventory the resolved dependency graph. ComplyRoll owns the offline registry
-boundary so the validator never retrieves a schema referenced by untrusted or mutable content.
+2020-12 implementation with its non-GPL format extra. The extra resolves to roughly nineteen
+distributions, of which only `rfc3339-validator` (date-time) and `rfc3986-validator` (uri) back
+the formats ComplyRoll requires; narrowing the dependency to those two packages, committing a
+hashed lock file, and generating an SBOM are open items tracked in `CHANGELOG.md`. The major
+version is bounded; release builds must lock, scan, and inventory the resolved dependency graph.
+ComplyRoll owns the offline registry boundary so the validator never retrieves a schema referenced
+by untrusted or mutable content. If a GPL-licensed `rfc3987` package is installed alongside,
+`jsonschema` prefers it for the `uri` format; keep it out of deployment environments.
+
+## Reporting and sensitive input
+
+Vulnerability reports go through the channel in the repository's root `SECURITY.md`. Real
+assessment artifacts routinely carry Controlled Unclassified Information markings and must never
+be attached to issues, pull requests, or advisories; reproduce with synthetic fixtures or
+redacted copies that keep only rule identifiers and statuses.

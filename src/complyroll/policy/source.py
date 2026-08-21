@@ -10,7 +10,6 @@ from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-
 MAX_RULE_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_RULE_SOURCE_DEPTH = 128
 MAX_RULE_SOURCE_VALUES = 500_000
@@ -61,7 +60,7 @@ class RuleSourceManifest:
     schema_sha256: str
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "RuleSourceManifest":
+    def from_dict(cls, value: dict[str, Any]) -> RuleSourceManifest:
         retrieved_text = _require_text(value.get("retrieved_at"), "retrieved_at")
         if retrieved_text.endswith("Z"):
             retrieved_text = f"{retrieved_text[:-1]}+00:00"

@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
-
 
 COMMON_DEFINITIONS_NAME = "common-definitions"
 MAX_SCHEMA_BYTES = 1024 * 1024
@@ -94,7 +94,7 @@ class SchemaManifestEntry:
     sha256: str
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any], index: int) -> "SchemaManifestEntry":
+    def from_dict(cls, value: dict[str, Any], index: int) -> SchemaManifestEntry:
         prefix = f"schemas[{index}]"
         return cls(
             name=_require_text(value.get("name"), f"{prefix}.name"),
@@ -115,7 +115,7 @@ class SchemaBundleManifest:
     schemas: tuple[SchemaManifestEntry, ...]
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "SchemaBundleManifest":
+    def from_dict(cls, value: dict[str, Any]) -> SchemaBundleManifest:
         raw_schemas = value.get("schemas")
         if not isinstance(raw_schemas, list) or not raw_schemas:
             raise ValueError("schemas must be a non-empty array")

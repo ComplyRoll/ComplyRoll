@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -187,19 +189,23 @@ def _run_report_vdt(args: argparse.Namespace) -> int:
 
     _write_diagnostics(stderr, report.diagnostics)
 
+    # Render everything before writing anything, so a failed second write cannot
+    # leave a half-published pair of reports behind (ADR 0007 amendment).
     json_text = report.to_json()
+    targets: list[tuple[Path, str]] = []
+    if output is not None:
+        targets.append((output, json_text))
+    if markdown is not None:
+        targets.append((markdown, report.to_markdown()))
+
+    try:
+        _write_all_or_nothing(targets)
+    except OSError as exc:
+        location = getattr(exc, "filename", None)
+        return _fail(stderr, "output_write_failed", str(exc), location=location)
+
     if output is None:
         sys.stdout.write(json_text)
-    else:
-        try:
-            output.write_text(json_text, encoding="utf-8")
-        except OSError as exc:
-            return _fail(stderr, "output_write_failed", str(exc), location=str(output))
-    if markdown is not None:
-        try:
-            markdown.write_text(report.to_markdown(), encoding="utf-8")
-        except OSError as exc:
-            return _fail(stderr, "output_write_failed", str(exc), location=str(markdown))
     return 0
 
 
@@ -254,6 +260,46 @@ def _refuse_input_overwrite(
         if resolved in written:
             raise ValueError(f"refusing to write two outputs to the same file {target}")
         written[resolved] = target
+
+
+def _write_all_or_nothing(targets: Sequence[tuple[Path, str]]) -> None:
+    """Write every output, or none of them.
+
+    Each destination is staged in a temporary file beside it and fsynced. Only after
+    every staged write succeeds are the destinations replaced, so a failed Markdown
+    write leaves no JSON behind and a failed JSON write leaves no Markdown.
+    """
+
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for destination, content in targets:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+                staged.append((Path(handle.name), destination))
+    except OSError:
+        _discard(staged)
+        raise
+
+    try:
+        for temporary, destination in staged:
+            os.replace(temporary, destination)
+    except OSError:
+        _discard(staged)
+        raise
+
+
+def _discard(staged: Sequence[tuple[Path, Path]]) -> None:
+    for temporary, _ in staged:
+        temporary.unlink(missing_ok=True)
 
 
 def _write_diagnostics(stream: TextIO, diagnostics: Sequence[ReportDiagnostic]) -> None:

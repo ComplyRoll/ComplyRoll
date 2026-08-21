@@ -22,12 +22,14 @@ MAX_EVALUATIONS_BYTES = 8 * 1024 * 1024
 MAX_EVALUATIONS_DEPTH = 64
 MAX_EVALUATIONS_VALUES = 200_000
 
-#: Dispositions that may close a case, per ADR 0007 Decision 4.
+#: Dispositions that may close a case, per ADR 0007 Decision 4 and its amendment.
+#: A case closed as accepted needs an acceptance rationale and is routed to VER-RPT-AVI.
 CLOSED_DISPOSITIONS = (
     CaseStatus.FULLY_MITIGATED,
     CaseStatus.PARTIALLY_MITIGATED,
     CaseStatus.FALSE_POSITIVE,
     CaseStatus.REMEDIATED,
+    CaseStatus.ACCEPTED,
 )
 
 _ROOT_KEYS = frozenset({"$schema", "evaluations"})
@@ -267,14 +269,17 @@ def _check_disposition_consistency(
             f"{prefix}.closedDisposition is only valid when disposition is 'closed'"
         )
 
-    if disposition is CaseStatus.ACCEPTED:
+    accepts_risk = disposition is CaseStatus.ACCEPTED or (
+        disposition is CaseStatus.CLOSED and closed_disposition is CaseStatus.ACCEPTED
+    )
+    if accepts_risk:
         if acceptance_rationale is None:
             raise ReportInputError(
-                f"{prefix}.acceptanceRationale is required when disposition is 'accepted'"
+                f"{prefix}.acceptanceRationale is required when the case accepts risk"
             )
     elif acceptance_rationale is not None:
         raise ReportInputError(
-            f"{prefix}.acceptanceRationale is only valid when disposition is 'accepted'"
+            f"{prefix}.acceptanceRationale is only valid when the case accepts risk"
         )
 
     if is_false_positive and disposition is not None:

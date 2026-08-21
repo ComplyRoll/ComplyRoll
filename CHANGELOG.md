@@ -56,9 +56,13 @@ Hardening release driven by an independent audit of the Phase 0 and Phase 1 prim
   evaluation, PAIN response, and acceptance-threshold deadlines with rule id and force; overdue
   flags name the rule, force, class, inputs, due instant, dataset commit, and the optional-adoption
   period; `x-complyroll` carries generator, parser, rules, and schema provenance, the attestation,
-  grouped observation ids, affected resources, and the disclaimer. The compiler fails closed on any
-  ingest error, missing detection time, or unmatched evaluation and validates the document before
-  writing it (ADR 0007).
+  grouped observation ids, affected resources, compile diagnostics, and the disclaimer. The report
+  period selects contents (activity-in-period rule with `excluded_by_period` diagnostics and an
+  excluded count); groups with only some timestamped observations are marked `artifact-partial`;
+  effective tracking ids must be unique; a case may close as accepted and is then routed to the
+  accepted-vulnerability path; output files are written all-or-nothing. The compiler fails closed
+  on any ingest error, missing detection time, or unmatched evaluation and validates the document
+  before writing it (ADR 0007 and its amendment).
 - `complyroll validate REPORT --schema ...` for offline validation of any report against the
   pinned official schemas with JSON Pointers and provenance.
 - Correlation v0 (`complyroll.correlation`) and the bounded evaluations-file loader

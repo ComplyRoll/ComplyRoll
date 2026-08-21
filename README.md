@@ -69,12 +69,21 @@ flags are computed against, which makes the run reproducible byte for byte; the 
 is [`tests/golden/vdt-fixtures.json`](tests/golden/vdt-fixtures.json) and
 [`tests/golden/vdt-fixtures.md`](tests/golden/vdt-fixtures.md).
 
+The report period selects contents: a vulnerability appears when it had activity inside
+`--from`/`--to` (detection, evaluation, a PAIN reduction, or a planned reduction), or when it is
+still undisposed and was detected on or before the period end. Every exclusion is reported as an
+`excluded_by_period` diagnostic and counted in the document, so "nothing happened" is
+distinguishable from "nothing was compiled". Output files are written all-or-nothing: a failed
+Markdown write leaves no JSON behind.
+
 Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
-key: generator and parser versions, the rules dataset and schema commits and digests, every
-computed deadline with its rule and force, the grouped observation ids and affected resources,
-and the evaluator and rationale. That makes the document the provider's and assessor's working
-record. It includes internal resource identifiers and provider rationale, so redact it before
-sharing with an agency; audience-specific views are a later slice.
+key: generator and parser versions, the rules dataset and schema commits and digests, the
+compile diagnostics, every computed deadline with its rule and force, the grouped observation ids
+and affected resources, the detection-time source (`artifact`, `artifact-partial`, or
+`attestation`), and the evaluator and rationale. The Markdown twin carries the same detail in a
+per-vulnerability section. That makes the document the provider's and assessor's working record.
+It includes internal resource identifiers and provider rationale, so redact it before sharing
+with an agency; audience-specific views are a later slice.
 
 Roll up the synthetic fixtures with the predecessor command:
 

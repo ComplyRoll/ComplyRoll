@@ -141,6 +141,61 @@ class ReportVdtCommandTests(unittest.TestCase):
             self.assertIn("two outputs to the same file", err)
             self.assertFalse(target.exists())
 
+    def test_a_failed_markdown_write_leaves_no_json_behind(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            markdown_path = Path(directory) / "missing" / "report.md"
+
+            code, out, err = run(
+                [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+            )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_write_failed", err)
+            self.assertFalse(json_path.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_a_failed_json_write_leaves_no_markdown_behind(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "missing" / "report.json"
+            markdown_path = Path(directory) / "report.md"
+
+            code, out, err = run(
+                [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+            )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_write_failed", err)
+            self.assertFalse(markdown_path.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_a_failed_markdown_write_suppresses_the_stdout_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            markdown_path = Path(directory) / "missing" / "report.md"
+
+            code, out, err = run([*REPORT_ARGUMENTS, "--markdown", str(markdown_path)])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_write_failed", err)
+
+    def test_a_successful_run_leaves_no_temporary_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            markdown_path = Path(directory) / "report.md"
+
+            code, _, _ = run(
+                [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+            )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                sorted(item.name for item in Path(directory).iterdir()),
+                ["report.json", "report.md"],
+            )
+
     def test_ingest_failure_exits_one_and_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broken = Path(directory) / "broken.cklb"

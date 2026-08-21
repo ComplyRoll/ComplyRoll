@@ -11,6 +11,7 @@ import json
 import math
 import re
 import sqlite3
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,7 +19,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 from uuid import uuid4
-
 
 SCHEMA_VERSION = 1
 APPLICATION_ID = 0x43524F4C  # ASCII "CROL"
@@ -33,6 +33,14 @@ _NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
 
 class EventStoreError(RuntimeError):
     """Base error for event-store failures visible to callers."""
+
+
+class EventStoreBusyError(EventStoreError):
+    """Raised when SQLite reports the database is locked or busy.
+
+    Callers may retry the same operation; the store connection is left usable and
+    outside any transaction.
+    """
 
 
 class UnsupportedSchemaError(EventStoreError):
@@ -56,7 +64,15 @@ class EventConflictError(EventStoreError):
 
 
 class EventIntegrityError(EventStoreError):
-    """Raised when stored event content does not match its recorded digest."""
+    """Raised when stored history is corrupt, tampered with, or missing rows.
+
+    ``sequence`` carries the global sequence of the offending row when one can be
+    identified, so callers can locate the damage without rescanning history.
+    """
+
+    def __init__(self, message: str, *, sequence: int | None = None) -> None:
+        self.sequence = sequence
+        super().__init__(message)
 
 
 class ProjectionConcurrencyError(EventStoreError):
@@ -168,6 +184,36 @@ _SCHEMA_V1 = (
     """,
 )
 
+_CREATE_OBJECT_PATTERN = re.compile(
+    r"CREATE\s+(TABLE|INDEX|TRIGGER)\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+def _normalize_sql(sql: str) -> str:
+    """Collapse whitespace and case so stored DDL can be compared with the source DDL."""
+
+    return _WHITESPACE_PATTERN.sub(" ", sql).strip().rstrip(";").lower()
+
+
+def _expected_schema() -> dict[tuple[str, str], str]:
+    """Derive ``(type, name) -> normalized DDL`` for every object a healthy store must expose."""
+
+    expected: dict[tuple[str, str], str] = {}
+    for statement in _SCHEMA_V1:
+        match = _CREATE_OBJECT_PATTERN.search(statement)
+        if match is None:  # pragma: no cover - guards against future DDL edits
+            raise EventStoreError("schema statement does not create a named object")
+        expected[(match.group(1).lower(), match.group(2))] = _normalize_sql(statement)
+    return expected
+
+
+EXPECTED_SCHEMA = _expected_schema()
+EXPECTED_SCHEMA_OBJECTS = frozenset(EXPECTED_SCHEMA)
+
 
 class SQLiteEventStore:
     """Append-only SQLite event log with optimistic stream concurrency."""
@@ -177,23 +223,67 @@ class SQLiteEventStore:
         database: str | Path,
         *,
         clock: Callable[[], datetime] | None = None,
+        busy_timeout_ms: int = 5000,
     ) -> None:
+        _require_positive_integer(busy_timeout_ms, "busy_timeout_ms")
         self.database = str(database)
+        self.busy_timeout_ms = busy_timeout_ms
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._connection: sqlite3.Connection | None = sqlite3.connect(
-            self.database,
-            isolation_level=None,
-        )
+        try:
+            connection = sqlite3.connect(self.database, isolation_level=None)
+        except sqlite3.Error as exc:
+            raise _database_open_error(exc) from exc
+        self._connection: sqlite3.Connection | None = connection
         self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.execute("PRAGMA busy_timeout = 5000")
-        self._connection.execute("PRAGMA trusted_schema = OFF")
 
         try:
+            self._configure_connection()
             self._initialize_schema()
         except Exception:
             self.close()
             raise
+
+    def _configure_connection(self) -> None:
+        """Apply the durability and safety pragmas every ComplyRoll connection requires."""
+
+        connection = self._require_open()
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+            connection.execute("PRAGMA trusted_schema = OFF")
+            journal_mode = self._enable_write_ahead_logging(connection)
+            connection.execute("PRAGMA synchronous = FULL")
+        except sqlite3.DatabaseError as exc:
+            raise _database_open_error(exc) from exc
+
+        allowed = {"wal", "memory"} if _is_memory_database(self.database) else {"wal"}
+        if journal_mode not in allowed:
+            raise EventStoreError(
+                f"database refused write-ahead logging and reports journal mode {journal_mode!r}"
+            )
+
+    def _enable_write_ahead_logging(self, connection: sqlite3.Connection) -> str:
+        """Switch the file to WAL once, retrying while another opener holds the lock.
+
+        Changing the journal mode needs exclusive access and SQLite does not apply the
+        busy handler to it, so a second process opening a brand-new store at the same
+        moment would otherwise fail immediately. Reading the mode needs no lock, so an
+        established WAL file never attempts the switch at all.
+        """
+
+        current = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if current == "wal":
+            return current
+        deadline = time.monotonic() + self.busy_timeout_ms / 1000
+        while True:
+            try:
+                row = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            except sqlite3.OperationalError as exc:
+                if not _is_busy_error(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.005)
+                continue
+            return "unknown" if row is None else str(row[0]).lower()
 
     def __enter__(self) -> Self:
         self._require_open()
@@ -219,14 +309,24 @@ class SQLiteEventStore:
         """Return the initialized store schema version."""
 
         connection = self._require_open()
-        return int(connection.execute("PRAGMA user_version").fetchone()[0])
+        with _sqlite_errors("could not read the schema version"):
+            return int(connection.execute("PRAGMA user_version").fetchone()[0])
+
+    @property
+    def journal_mode(self) -> str:
+        """Return the active SQLite journal mode, normally ``wal``."""
+
+        connection = self._require_open()
+        with _sqlite_errors("could not read the journal mode"):
+            return str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
     @property
     def latest_sequence(self) -> int:
         """Return the most recently committed global sequence, or zero."""
 
         connection = self._require_open()
-        row = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM events").fetchone()
+        with _sqlite_errors("could not read event history"):
+            row = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM events").fetchone()
         return int(row[0])
 
     def current_stream_version(self, stream_id: str) -> int:
@@ -234,7 +334,8 @@ class SQLiteEventStore:
 
         _require_name(stream_id, "stream_id")
         connection = self._require_open()
-        return self._current_stream_version(connection, stream_id)
+        with _sqlite_errors("could not read event history"):
+            return self._current_stream_version(connection, stream_id)
 
     def append(
         self,
@@ -259,7 +360,11 @@ class SQLiteEventStore:
             raise EventConflictError("one append batch cannot contain duplicate event identifiers")
 
         connection = self._require_open()
-        with _write_transaction(connection):
+        with (
+            _sqlite_errors("could not append to event history"),
+            self._transaction(connection),
+        ):
+            self._require_sequence_counter_intact(connection)
             actual_version = self._current_stream_version(connection, stream_id)
             if actual_version != expected_version:
                 raise EventConcurrencyError(stream_id, expected_version, actual_version)
@@ -308,6 +413,8 @@ class SQLiteEventStore:
                     raise EventConflictError(
                         f"event {event.event_id!r} conflicts with committed history"
                     ) from exc
+                if cursor.lastrowid is None:
+                    raise EventStoreError("SQLite did not report a sequence for the event")
 
                 appended.append(
                     EventRecord(
@@ -338,11 +445,14 @@ class SQLiteEventStore:
         _require_nonnegative_integer(after_sequence, "after_sequence")
         _require_read_limit(limit)
         connection = self._require_open()
-        rows = connection.execute(
-            "SELECT * FROM events WHERE sequence > ? ORDER BY sequence LIMIT ?",
-            (after_sequence, limit),
-        ).fetchall()
-        return tuple(_event_from_row(row) for row in rows)
+        with _sqlite_errors("could not read event history"):
+            rows = connection.execute(
+                "SELECT * FROM events WHERE sequence > ? ORDER BY sequence LIMIT ?",
+                (after_sequence, limit),
+            ).fetchall()
+        records = tuple(_event_from_row(row) for row in rows)
+        _require_contiguous_sequences(records, after_sequence)
+        return records
 
     def read_stream(
         self,
@@ -357,31 +467,35 @@ class SQLiteEventStore:
         _require_nonnegative_integer(after_version, "after_version")
         _require_read_limit(limit)
         connection = self._require_open()
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM events
-            WHERE stream_id = ? AND stream_version > ?
-            ORDER BY stream_version
-            LIMIT ?
-            """,
-            (stream_id, after_version, limit),
-        ).fetchall()
-        return tuple(_event_from_row(row) for row in rows)
+        with _sqlite_errors("could not read event history"):
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM events
+                WHERE stream_id = ? AND stream_version > ?
+                ORDER BY stream_version
+                LIMIT ?
+                """,
+                (stream_id, after_version, limit),
+            ).fetchall()
+        records = tuple(_event_from_row(row) for row in rows)
+        _require_contiguous_stream_versions(records, stream_id, after_version)
+        return records
 
     def get_projection_checkpoint(self, name: str) -> ProjectionCheckpoint:
         """Return a projection checkpoint, defaulting to sequence zero."""
 
         _require_name(name, "projection_name")
         connection = self._require_open()
-        row = connection.execute(
-            """
-            SELECT projection_name, last_sequence, updated_at
-            FROM projection_checkpoints
-            WHERE projection_name = ?
-            """,
-            (name,),
-        ).fetchone()
+        with _sqlite_errors("could not read projection checkpoints"):
+            row = connection.execute(
+                """
+                SELECT projection_name, last_sequence, updated_at
+                FROM projection_checkpoints
+                WHERE projection_name = ?
+                """,
+                (name,),
+            ).fetchone()
         if row is None:
             return ProjectionCheckpoint(name=name, last_sequence=0, updated_at=None)
         return ProjectionCheckpoint(
@@ -406,7 +520,10 @@ class SQLiteEventStore:
             raise ValueError("last_sequence must not move a projection backward")
 
         connection = self._require_open()
-        with _write_transaction(connection):
+        with (
+            _sqlite_errors("could not advance the projection checkpoint"),
+            self._transaction(connection),
+        ):
             actual_sequence = self._current_projection_sequence(connection, name)
             if actual_sequence != expected_sequence:
                 raise ProjectionConcurrencyError(name, expected_sequence, actual_sequence)
@@ -448,7 +565,10 @@ class SQLiteEventStore:
         _require_name(name, "projection_name")
         _require_nonnegative_integer(expected_sequence, "expected_sequence")
         connection = self._require_open()
-        with _write_transaction(connection):
+        with (
+            _sqlite_errors("could not reset the projection checkpoint"),
+            self._transaction(connection),
+        ):
             actual_sequence = self._current_projection_sequence(connection, name)
             if actual_sequence != expected_sequence:
                 raise ProjectionConcurrencyError(name, expected_sequence, actual_sequence)
@@ -458,10 +578,31 @@ class SQLiteEventStore:
             )
         return ProjectionCheckpoint(name=name, last_sequence=0, updated_at=None)
 
+    def _transaction(self, connection: sqlite3.Connection) -> _write_transaction:
+        return _write_transaction(connection, on_unrecoverable=self._abandon_connection)
+
+    def _abandon_connection(self) -> None:
+        """Close and forget a connection whose transaction state is no longer trustworthy."""
+
+        connection, self._connection = self._connection, None
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
+
     def _initialize_schema(self) -> None:
+        with _sqlite_errors("could not open the database"):
+            self._initialize_schema_unchecked()
+
+    def _initialize_schema_unchecked(self) -> None:
         connection = self._require_open()
-        application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
-        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        try:
+            application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            present = self._schema_objects(connection)
+        except sqlite3.DatabaseError as exc:
+            raise _database_open_error(exc) from exc
 
         if application_id not in (0, APPLICATION_ID):
             raise UnsupportedSchemaError("database belongs to another application")
@@ -470,32 +611,108 @@ class SQLiteEventStore:
                 f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
             )
         if version == 0:
-            with _write_transaction(connection):
-                for statement in _SCHEMA_V1:
-                    connection.execute(statement)
-                connection.execute(
-                    """
-                    INSERT INTO complyroll_schema_migrations (version, description, applied_at)
-                    VALUES (?, ?, ?)
-                    """,
-                    (
-                        SCHEMA_VERSION,
-                        "append-only event history and projection checkpoints",
-                        _format_timestamp(self._clock(), "applied_at"),
-                    ),
+            if present:
+                raise UnsupportedSchemaError(
+                    "database already contains objects and is not an empty ComplyRoll store"
                 )
-                connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
-                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            return
+            with self._transaction(connection):
+                # Re-check under the write lock: a peer process may have initialized the
+                # store while this connection waited for BEGIN IMMEDIATE.
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                if version == 0:
+                    if self._schema_objects(connection):
+                        raise UnsupportedSchemaError(
+                            "database already contains objects and is not an empty "
+                            "ComplyRoll store"
+                        )
+                    for statement in _SCHEMA_V1:
+                        connection.execute(statement)
+                    connection.execute(
+                        """
+                        INSERT INTO complyroll_schema_migrations
+                            (version, description, applied_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (
+                            SCHEMA_VERSION,
+                            "append-only event history and projection checkpoints",
+                            _format_timestamp(self._clock(), "applied_at"),
+                        ),
+                    )
+                    connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    return
+            # A peer initialized the store first; verify its work like any reopen.
+            application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
+            present = self._schema_objects(connection)
+            if version > SCHEMA_VERSION:
+                raise UnsupportedSchemaError(
+                    f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
+                )
 
         if application_id != APPLICATION_ID:
             raise UnsupportedSchemaError("database schema is not marked as a ComplyRoll store")
+
+        missing = sorted(EXPECTED_SCHEMA_OBJECTS - present)
+        if missing:
+            listed = ", ".join(f"{object_type} {name}" for object_type, name in missing)
+            raise UnsupportedSchemaError(f"database is missing schema objects: {listed}")
+
+        definitions = self._schema_definitions(connection)
+        altered = sorted(
+            key
+            for key, expected_sql in EXPECTED_SCHEMA.items()
+            if _normalize_sql(definitions.get(key) or "") != expected_sql
+        )
+        if altered:
+            listed = ", ".join(f"{object_type} {name}" for object_type, name in altered)
+            raise UnsupportedSchemaError(
+                f"database schema objects do not match their expected definitions: {listed}"
+            )
+
         migration = connection.execute(
             "SELECT version FROM complyroll_schema_migrations WHERE version = ?",
             (version,),
         ).fetchone()
         if migration is None:
             raise UnsupportedSchemaError(f"database is missing migration record {version}")
+        self._require_sequence_counter_intact(connection)
+
+    @staticmethod
+    def _schema_objects(connection: sqlite3.Connection) -> frozenset[tuple[str, str]]:
+        rows = connection.execute("SELECT type, name FROM sqlite_master").fetchall()
+        return frozenset((str(row[0]).lower(), str(row[1])) for row in rows)
+
+    @staticmethod
+    def _schema_definitions(connection: sqlite3.Connection) -> dict[tuple[str, str], str | None]:
+        rows = connection.execute("SELECT type, name, sql FROM sqlite_master").fetchall()
+        return {
+            (str(row[0]).lower(), str(row[1])): (None if row[2] is None else str(row[2]))
+            for row in rows
+        }
+
+    @staticmethod
+    def _require_sequence_counter_intact(connection: sqlite3.Connection) -> None:
+        """Detect a truncated tail: the AUTOINCREMENT counter must equal the last stored row.
+
+        A gap inside history is caught on read. Deleting the most recent rows leaves no gap,
+        but SQLite's sequence counter still remembers them, so the two disagree. Checking here
+        also prevents the next append from minting a sequence past the hole and leaving a
+        permanent gap that would fail every later read.
+        """
+
+        row = connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'events'"
+        ).fetchone()
+        counter = 0 if row is None else int(row[0])
+        latest_row = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM events").fetchone()
+        latest = int(latest_row[0])
+        if counter != latest:
+            raise EventIntegrityError(
+                f"event history was truncated: last stored sequence is {latest} but the "
+                f"sequence counter is {counter}",
+                sequence=latest,
+            )
 
     @staticmethod
     def _current_stream_version(connection: sqlite3.Connection, stream_id: str) -> int:
@@ -520,46 +737,122 @@ class SQLiteEventStore:
 
 
 class _write_transaction:
-    """Small transaction context that rolls back every exceptional exit."""
+    """Transaction context that never leaves its connection inside a transaction.
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    Both ``BEGIN IMMEDIATE`` and ``COMMIT`` can fail under contention. Either failure is
+    rolled back and re-raised as an ``EventStoreError``, so a caller never sees a raw
+    ``sqlite3`` error and never inherits a wedged connection that reports uncommitted rows.
+    If the rollback itself fails, the connection can no longer be trusted: it is closed
+    through ``on_unrecoverable`` and the error says so, rather than leaving an open
+    transaction behind a successful-looking store object.
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        on_unrecoverable: Callable[[], None] | None = None,
+    ) -> None:
         self.connection = connection
+        self._on_unrecoverable = on_unrecoverable
 
     def __enter__(self) -> None:
-        self.connection.execute("BEGIN IMMEDIATE")
+        if self.connection.in_transaction:
+            raise EventStoreError("connection is already inside a transaction")
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.Error as exc:
+            rollback_error = self._rollback()
+            raise self._failure(
+                "could not begin a write transaction", exc, rollback_error
+            ) from exc
 
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
-    ) -> bool:
-        if exc_type is None:
+    ) -> None:
+        if exc_value is not None:
+            rollback_error = self._rollback()
+            if rollback_error is not None:
+                self._abandon()
+                raise EventStoreError(
+                    f"could not roll back after {exc_value!r}: {rollback_error}; "
+                    "the store connection was closed"
+                ) from exc_value
+            return
+        try:
             self.connection.execute("COMMIT")
-        else:
+        except sqlite3.Error as exc:
+            rollback_error = self._rollback()
+            raise self._failure(
+                "could not commit the write transaction", exc, rollback_error
+            ) from exc
+
+    def _failure(
+        self,
+        message: str,
+        error: sqlite3.Error,
+        rollback_error: sqlite3.Error | None,
+    ) -> EventStoreError:
+        if rollback_error is None:
+            return _transaction_error(message, error)
+        self._abandon()
+        failure = _transaction_error(message, error, rollback_error)
+        return type(failure)(f"{failure}; the store connection was closed")
+
+    def _rollback(self) -> sqlite3.Error | None:
+        """Roll back, returning any secondary failure instead of masking the first one."""
+
+        if not self.connection.in_transaction:
+            return None
+        try:
             self.connection.execute("ROLLBACK")
-        return False
+        except sqlite3.Error as exc:
+            return exc
+        return None
+
+    def _abandon(self) -> None:
+        """Close a connection whose transaction state can no longer be trusted."""
+
+        close = getattr(self.connection, "close", None)
+        if close is not None:
+            try:
+                close()
+            except sqlite3.Error:
+                pass
+        if self._on_unrecoverable is not None:
+            self._on_unrecoverable()
 
 
 def _event_from_row(row: sqlite3.Row) -> EventRecord:
+    sequence = int(row["sequence"])
     payload_json = str(row["payload_json"])
     expected_digest = str(row["payload_sha256"])
     actual_digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
     if actual_digest != expected_digest:
         raise EventIntegrityError(
-            f"event {row['event_id']!r} payload does not match its recorded digest"
+            f"event {row['event_id']!r} payload does not match its recorded digest",
+            sequence=sequence,
         )
 
     try:
         payload = json.loads(payload_json)
         metadata = json.loads(str(row["metadata_json"]))
     except json.JSONDecodeError as exc:
-        raise EventIntegrityError(f"event {row['event_id']!r} contains invalid JSON") from exc
+        raise EventIntegrityError(
+            f"event {row['event_id']!r} contains invalid JSON",
+            sequence=sequence,
+        ) from exc
     if not isinstance(payload, dict) or not isinstance(metadata, dict):
-        raise EventIntegrityError(f"event {row['event_id']!r} JSON must contain objects")
+        raise EventIntegrityError(
+            f"event {row['event_id']!r} JSON must contain objects",
+            sequence=sequence,
+        )
 
     return EventRecord(
-        sequence=int(row["sequence"]),
+        sequence=sequence,
         event_id=str(row["event_id"]),
         stream_id=str(row["stream_id"]),
         stream_version=int(row["stream_version"]),
@@ -571,6 +864,141 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
         metadata=metadata,
         payload_sha256=expected_digest,
     )
+
+
+def _require_contiguous_sequences(
+    records: Sequence[EventRecord],
+    after_sequence: int,
+) -> None:
+    """Reject a page whose global sequences are not gap-free.
+
+    ``sequence`` is an AUTOINCREMENT key and SQLite rolls ``sqlite_sequence`` back with an
+    aborted transaction, so committed history is contiguous. A gap means a committed row
+    was deleted out of band.
+    """
+
+    expected = after_sequence + 1
+    for record in records:
+        if record.sequence != expected:
+            raise EventIntegrityError(
+                f"event history is missing sequence {expected}; next stored sequence is "
+                f"{record.sequence}",
+                sequence=record.sequence,
+            )
+        expected += 1
+
+
+def _require_contiguous_stream_versions(
+    records: Sequence[EventRecord],
+    stream_id: str,
+    after_version: int,
+) -> None:
+    """Reject a stream page whose versions are not gap-free."""
+
+    expected = after_version + 1
+    for record in records:
+        if record.stream_version != expected:
+            raise EventIntegrityError(
+                f"stream {stream_id!r} is missing version {expected}; next stored version is "
+                f"{record.stream_version}",
+                sequence=record.sequence,
+            )
+        expected += 1
+
+
+def _sqlite_error_name(error: BaseException) -> str:
+    """Return SQLite's symbolic result name (Python 3.11+), or an empty string."""
+
+    return str(getattr(error, "sqlite_errorname", "") or "")
+
+
+def _is_busy_error(error: BaseException) -> bool:
+    name = _sqlite_error_name(error)
+    if name:
+        return name.startswith(("SQLITE_BUSY", "SQLITE_LOCKED"))
+    text = str(error).lower()
+    return "database is locked" in text or "database is busy" in text
+
+
+def _is_corruption_error(error: BaseException) -> bool:
+    name = _sqlite_error_name(error)
+    if name:
+        return name.startswith("SQLITE_CORRUPT")
+    return "malformed" in str(error).lower()
+
+
+def _is_not_a_database_error(error: BaseException) -> bool:
+    name = _sqlite_error_name(error)
+    if name:
+        return name.startswith("SQLITE_NOTADB")
+    return "not a database" in str(error).lower()
+
+
+def _storage_error(
+    context: str,
+    error: sqlite3.Error,
+    rollback_error: sqlite3.Error | None = None,
+) -> EventStoreError:
+    """Map any SQLite failure onto the store's error vocabulary.
+
+    Contention becomes the retryable ``EventStoreBusyError``, a corrupt file becomes
+    ``EventIntegrityError``, a file that is not SQLite at all becomes
+    ``UnsupportedSchemaError``, and everything else (disk full, read-only media, I/O
+    errors) becomes a plain ``EventStoreError`` that still carries SQLite's message.
+    """
+
+    detail = f"{context}: {error}"
+    if rollback_error is not None:
+        detail = f"{detail} (rollback also failed: {rollback_error})"
+    if _is_busy_error(error):
+        return EventStoreBusyError(detail)
+    if _is_corruption_error(error):
+        return EventIntegrityError(detail)
+    if _is_not_a_database_error(error):
+        return UnsupportedSchemaError(f"{context}: not a SQLite database ({error})")
+    return EventStoreError(detail)
+
+
+def _transaction_error(
+    message: str,
+    error: sqlite3.Error,
+    rollback_error: sqlite3.Error | None = None,
+) -> EventStoreError:
+    """Map a SQLite transaction failure onto the store's error vocabulary."""
+
+    return _storage_error(message, error, rollback_error)
+
+
+def _database_open_error(error: sqlite3.Error) -> EventStoreError:
+    """Map a failure while opening or reading a database header."""
+
+    return _storage_error("could not open the database", error)
+
+
+class _sqlite_errors:
+    """Context that converts any escaping ``sqlite3.Error`` into a store error."""
+
+    def __init__(self, context: str) -> None:
+        self.context = context
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if isinstance(exc_value, sqlite3.Error):
+            raise _storage_error(self.context, exc_value) from exc_value
+
+
+def _is_memory_database(database: str) -> bool:
+    if database in ("", ":memory:"):
+        return True
+    lowered = database.lower()
+    return lowered.startswith("file:") and (":memory:" in lowered or "mode=memory" in lowered)
 
 
 def _require_name(value: str, field_name: str) -> None:

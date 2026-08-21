@@ -1,12 +1,13 @@
 """Durable Phase 1 event history and projection checkpoint interfaces."""
 
 from .sqlite import (
-    MAX_EVENTS_PER_APPEND,
     MAX_EVENT_JSON_BYTES,
+    MAX_EVENTS_PER_APPEND,
     EventConcurrencyError,
     EventConflictError,
     EventIntegrityError,
     EventRecord,
+    EventStoreBusyError,
     EventStoreError,
     NewEvent,
     ProjectionCheckpoint,
@@ -22,6 +23,7 @@ __all__ = [
     "EventConflictError",
     "EventIntegrityError",
     "EventRecord",
+    "EventStoreBusyError",
     "EventStoreError",
     "NewEvent",
     "ProjectionCheckpoint",

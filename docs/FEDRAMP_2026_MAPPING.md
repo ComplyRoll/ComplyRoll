@@ -1,6 +1,6 @@
 # FedRAMP 2026 mapping
 
-Status date: **2026-08-20**
+Status date: **2026-08-21**
 
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
@@ -15,19 +15,55 @@ The initial report-schema bundle is independently pinned to official `FedRAMP/sc
 `ae43ae2952c5dd5c56d54d12e8b92c7db1b3710a`. It contains Common Definitions version `0.2.1` and
 the Vulnerability Detail, Accepted Vulnerability, and Historical VER Activity schemas at version
 `0.1.1`. Each document is digest verified and all cross-document references resolve from the
-offline bundle before validation begins.
+offline bundle before validation begins. Digests are of the bytes served by GitHub at that commit;
+`https://fedramp.gov/schemas/` serves the same documents minified, so byte digests differ there
+while the parsed JSON is identical.
 
 The pinned `VDR-TFR-NMV` rule currently states its three-month expectation in prose without
 structured timeframe fields. ComplyRoll preserves the rule but does not calculate that clock until
 an authoritative structured value is available. KEV due dates likewise require the applicable
-CISA catalog input.
+CISA catalog input, and `VDR-TFR-KEV` applies "even if the vulnerability has been fully
+mitigated", so a KEV clock stops on remediation, not on mitigation.
+
+Known cross-pin inconsistency: Common Definitions cites `VER-RPT-PAE` for its `painReductionEvent`
+definition, but no rule with that identifier exists in the pinned dataset and no bundled report
+schema references the definition. "Each completed PAIN reduction" therefore has no official slot
+yet and must ship as a provider extension.
 
 ## Current program context
 
-FedRAMP 20x is a generally available certification type under the Consolidated Rules for 2026.
-The public Class B and Class C pipelines are scheduled to open on August 31, 2026. Class C is the
-practical successor to the prior Moderate route, but certification classes express assurance
-depth rather than replacing agency impact categorization one for one.
+FedRAMP 20x is in Phase 3 under the Consolidated Rules for 2026; FedRAMP describes it as a
+"widely available" certification path with Class A, B, and C rules finalized and Class D in a
+Phase 4 pilot. The Class A pipeline opened August 3, 2026 and the Class B and Class C pipelines
+open August 31, 2026 per the official timeline
+(<https://www.fedramp.gov/2026/timeline/>). Class C is the practical successor to the prior
+Moderate route, but certification classes express assurance depth rather than replacing agency
+impact categorization one for one.
+
+### Effective dates
+
+The dataset's `effective` block for VDR and VER reads "Mandated by CISA BOD 26-04": optional
+adoption 2026-07-04, obtain and maintain by 2026-12-07, default grace until 2027-03-07. Both
+rulesets apply to 20x and Rev5 certifications in Classes B, C, and D. The Consolidated Rules
+become mandatory program-wide on 2027-01-01, no new Rev5 applications are accepted after
+2027-06-11, and all grace periods expire 2028-02-01. Any "compliant as of" output must cite the
+per-ruleset dates from the dataset, not the program-wide ones.
+
+### Force
+
+`VDR-TFR-PVR` (PAIN response targets) and `VER-TFR-EVU` (evaluation window) carry force SHOULD
+for every class. `VER-TFR-MAV` (192-day accepted-vulnerability categorization) and
+`VER-TFR-MHR` (monthly human-readable report) are MUST. The official `overdueStatus` definition
+points at EVU and MAV. A missed PAIN target is overdue against a SHOULD target and must be
+labeled as such, not as a MUST violation.
+
+### Reportable-incident thresholds
+
+`VER-TFR-IRI`: Class C SHOULD (Class A/B MAY) treat internet-reachable, likely-exploitable
+vulnerabilities rated above N3 as FedRAMP reportable incidents until partially mitigated to N3 or
+below. `VER-TFR-NRI`: Class D SHOULD (A/B/C MAY) treat non-internet-reachable, likely-exploitable
+vulnerabilities at N5 as reportable incidents until N4 or below. ComplyRoll should derive an
+incident-candidate flag from class, IRV, LEV, and current PAIN.
 
 ## VDR and VER must be implemented together
 
@@ -103,7 +139,10 @@ ComplyRoll must support:
 - Final disposition
 - Separate accepted-vulnerability rationale
 
-## Official JSON projections
+## Official-format JSON projections
+
+ComplyRoll output validated against these schemas is "official-format" or "schema-valid". It is
+not an official FedRAMP document and schema validity is not a compliance determination.
 
 Initial output targets:
 
@@ -122,9 +161,13 @@ validating the required official structure and preventing key collisions.
 
 ## KSI implications
 
-The current dataset contains 46 KSIs across 10 themes. Class C currently requires at least two
-automated verification/validation methods per KSI and six months of historical persistent
-validation metrics.
+The current dataset contains 46 KSIs across 10 themes. `FRC-CSX-VVK` requires at least two
+automated verification/validation methods per KSI for Class C (one for Class B, four for Class
+D), and `FRC-CSX-MOT` requires six months of historical persistent validation metrics for Class C
+(eighteen for Class D). `SDR-CSX-KMT` additionally requires Class C providers to supply, per KSI,
+a 30-day summary, an up-to-one-year summary, and all daily metric data up to the past year where
+available. Four KSIs (`KSI-CNA-EIS`, `KSI-MLA-ALA`, `KSI-SVC-PRR`, `KSI-SVC-RUD`) are optional for
+Class B and required for Class C through `varies_by_class`.
 
 ComplyRoll must record validation definitions and runs, not merely upload evidence files. A useful
 record includes objective, scope, code version, cycle, criteria, result, coverage, evidence,
@@ -132,9 +175,13 @@ provider response, and independent assessor response.
 
 ## Certification data sharing implications
 
-FedRAMP-compatible trust centers require programmatic access, uninterrupted authorized access,
-and access inventory/history. Human and machine-readable formats must remain consistent through
-automation.
+Trust centers that satisfy the CDS ruleset require documented programmatic access
+(`CDS-TRC-PAC`), uninterrupted authorized access (`CDS-TRC-USH`), an agency access inventory and
+history (`CDS-TRC-AAI`), and access logs with summaries retained at least six months
+(`CDS-TRC-ACL`). Human-readable and machine-readable formats must remain consistent through
+automation (`CDS-CSO-CBF`), and every report carries the FedRAMP identifier (`CDS-CSO-FID`).
+Certification-data snapshots align to each Ongoing Certification Report period (`CDS-CSO-HAD`);
+the report itself is due every three months (`CCM-OCR-AVL`).
 
 ComplyRoll's local core should generate the normalized projections; a later trust-center adapter
 can publish them with authorization, logging, redaction, and availability controls.

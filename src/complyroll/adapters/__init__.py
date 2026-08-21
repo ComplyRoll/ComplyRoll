@@ -11,10 +11,10 @@ from .base import (
 )
 from .safeio import DEFAULT_LIMITS, IngestLimits, InputLimitError, UnsafeXmlError
 from .stig import (
-    CklAdapter,
-    CklbAdapter,
     CciControlMap,
     CciMapResult,
+    CklAdapter,
+    CklbAdapter,
     XccdfAdapter,
     ingest_stig_artifact,
     load_cci_control_map,

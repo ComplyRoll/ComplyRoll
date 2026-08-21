@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a defect in ComplyRoll. Do not attach real assessment artifacts.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Real CKL, CKLB, XCCDF, ARF, and scanner exports routinely contain hostnames, addresses,
+        finding details, and Controlled Unclassified Information (CUI) markings. Never attach
+        them here. Reproduce with the synthetic fixtures under `tests/fixtures/` or a redacted
+        copy that keeps only rule identifiers and statuses.
+  - type: checkboxes
+    id: no-real-artifacts
+    attributes:
+      label: Artifact handling
+      options:
+        - label: I did not attach or paste any real assessment artifact, customer data, or CUI.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: ComplyRoll version
+      description: Output of `python -m complyroll version`.
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version and platform
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Commands and the synthetic or redacted input used.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Diagnostics, tracebacks, or output. Redact anything sensitive.
+    validations:
+      required: true

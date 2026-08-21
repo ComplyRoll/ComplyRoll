@@ -36,8 +36,16 @@ from .safeio import (
     read_bounded,
 )
 
+# Each adapter owns its own parser version because the version is an observation identity
+# input (ADR 0002). A shared constant would re-mint every unchanged observation whenever
+# one parser is corrected.
+CKLB_PARSER_VERSION = "1"
+CKL_PARSER_VERSION = "1"
+XCCDF_PARSER_VERSION = "1"
+CCI_PARSER_VERSION = "1"
+# Covers the pre-dispatch XML stage, which fails before an adapter has been chosen.
+XML_DISPATCH_PARSER_VERSION = "1"
 
-PARSER_VERSION = "1"
 PREFER_REVISION = "5"
 CCI_PATTERN = re.compile(r"CCI-\d{6}")
 CONTROL_PATTERN = re.compile(r"\b([A-Z]{2})-(\d+)")
@@ -162,7 +170,7 @@ def _missing_time_diagnostic(artifact: ArtifactProvenance) -> IngestDiagnostic:
 
 class CklbAdapter:
     name = "complyroll.cklb"
-    version = PARSER_VERSION
+    version = CKLB_PARSER_VERSION
     media_type = "application/json"
 
     def parse(
@@ -180,7 +188,8 @@ class CklbAdapter:
             raise AdapterParseError("JSON has no non-empty 'stigs' array")
 
         diagnostics: list[IngestDiagnostic] = []
-        target = data.get("target_data") if isinstance(data.get("target_data"), Mapping) else {}
+        raw_target = data.get("target_data")
+        target: Mapping[str, object] = raw_target if isinstance(raw_target, Mapping) else {}
         host = _text(target.get("host_name")) or _text(target.get("ip_address"))
         if not host:
             host = Path(artifact.name).stem
@@ -328,7 +337,7 @@ def _ckl_context(root: ET.Element) -> str:
 
 class CklAdapter:
     name = "complyroll.ckl"
-    version = PARSER_VERSION
+    version = CKL_PARSER_VERSION
     media_type = "application/xml"
 
     def parse(
@@ -446,7 +455,7 @@ def _find_text(root: ET.Element, names: set[str]) -> str:
 
 class XccdfAdapter:
     name = "complyroll.xccdf"
-    version = PARSER_VERSION
+    version = XCCDF_PARSER_VERSION
     media_type = "application/xml"
 
     def parse(
@@ -578,7 +587,7 @@ def _artifact(
     content: bytes,
     *,
     adapter_name: str,
-    adapter_version: str = PARSER_VERSION,
+    adapter_version: str,
     media_type: str,
     ingested_at: datetime,
 ) -> ArtifactProvenance:
@@ -639,6 +648,7 @@ def ingest_stig_artifact(
                 path,
                 content,
                 adapter_name=adapter.name,
+                adapter_version=adapter.version,
                 media_type=adapter.media_type,
                 ingested_at=now,
             )
@@ -649,6 +659,7 @@ def ingest_stig_artifact(
                 path,
                 content,
                 adapter_name=adapter.name,
+                adapter_version=adapter.version,
                 media_type=adapter.media_type,
                 ingested_at=now,
             )
@@ -663,6 +674,7 @@ def ingest_stig_artifact(
                 path,
                 content,
                 adapter_name=adapter.name,
+                adapter_version=adapter.version,
                 media_type=adapter.media_type,
                 ingested_at=now,
             )
@@ -684,15 +696,19 @@ def ingest_stig_artifact(
             )
     except (json.JSONDecodeError, ValueError) as exc:
         if suffix in {".cklb", ".json"}:
-            name, media_type = CklbAdapter.name, CklbAdapter.media_type
+            name, version = CklbAdapter.name, CklbAdapter.version
+            media_type = CklbAdapter.media_type
         elif suffix == ".ckl":
-            name, media_type = CklAdapter.name, CklAdapter.media_type
+            name, version = CklAdapter.name, CklAdapter.version
+            media_type = CklAdapter.media_type
         else:
-            name, media_type = "complyroll.xml-auto", "application/xml"
+            name, version = "complyroll.xml-auto", XML_DISPATCH_PARSER_VERSION
+            media_type = "application/xml"
         artifact = _artifact(
             path,
             content,
             adapter_name=name,
+            adapter_version=version,
             media_type=media_type,
             ingested_at=now,
         )
@@ -760,6 +776,7 @@ def load_cci_control_map(
         path,
         content,
         adapter_name="complyroll.cci",
+        adapter_version=CCI_PARSER_VERSION,
         media_type="application/xml",
         ingested_at=now,
     )

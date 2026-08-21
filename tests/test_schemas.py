@@ -25,7 +25,6 @@ from complyroll.schemas import (
     validate_report,
 )
 
-
 TEST_ROOT = Path(__file__).parent
 GOLDEN = TEST_ROOT / "golden" / "ver-schema-examples.json"
 SCHEMA_COMMIT = "ae43ae2952c5dd5c56d54d12e8b92c7db1b3710a"

@@ -14,7 +14,6 @@ from pathlib import Path
 from complyroll.adapters import ingest_stig_artifact, load_cci_control_map
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
 
-
 SEVERITY_TO_CAT = {
     "high": "CAT I",
     "medium": "CAT II",
@@ -67,7 +66,7 @@ class Finding:
         return sorted({control.split("-")[0] for control in self.controls})
 
     @classmethod
-    def from_observation(cls, observation: Observation) -> "Finding":
+    def from_observation(cls, observation: Observation) -> Finding:
         status = {
             ObservationDisposition.OPEN: "open",
             ObservationDisposition.PASS: "not_a_finding",

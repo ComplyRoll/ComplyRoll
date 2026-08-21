@@ -8,7 +8,6 @@ from pathlib import Path
 
 from complyroll.compat.stigroll import Finding, main, render_csv, render_markdown, summarize
 
-
 TEST_ROOT = Path(__file__).parent
 FIXTURES = TEST_ROOT / "fixtures"
 GOLDEN = TEST_ROOT / "golden"

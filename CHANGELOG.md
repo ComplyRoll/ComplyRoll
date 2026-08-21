@@ -19,6 +19,11 @@ All notable project changes will be documented here.
 - Added 20x Class B/Class C provider-policy selection and provenance-bearing deadline calculation.
 - Added golden evaluation, recurrence, PAIN response, and acceptance-threshold policy matrices.
 - Added ADR 0005 documenting verified policy selection and fail-closed timeframe behavior.
+- Added a digest-verified offline registry for official FedRAMP Common Definitions and the three
+  initial VER report schemas.
+- Added Draft 2020-12 report validation with enforced formats, actionable JSON Pointers, bounded
+  raw JSON parsing, schema provenance, and fail-closed reference resolution.
+- Added ADR 0006 documenting immutable schema pinning and the `jsonschema` dependency boundary.
 - Completed the Phase 0 CKLB, CKL, XCCDF/ARF, and CCI adapter layer.
 - Added artifact provenance, structured diagnostics, canonical observation serialization, and
   artifact-bound deterministic observation IDs.

@@ -76,6 +76,17 @@ deployment or later bundle requirements.
   deadlines from prose.
 - Deadline results retain the source rule, profile, commit, version, date, and digest.
 
+### Phase 1 report-schema protections
+
+- Four official schema documents are pinned to one immutable `FedRAMP/schemas` commit.
+- SHA-256, `$schema`, `$id`, and `$schemaVersion` are verified before registry construction.
+- Every schema is checked as Draft 2020-12 and every `$ref` is pre-resolved.
+- The immutable registry contains only bundled resources and has no network retrieval callback.
+- Raw report JSON uses byte, depth, and value-count bounds and rejects duplicate keys and
+  non-standard constants.
+- URI, date, and date-time formats are enforced instead of treated as unchecked annotations.
+- Validation issues preserve instance/schema JSON Pointers and exact source provenance.
+
 ## Sensitive information
 
 Each evidence artifact requires a sensitivity classification and optional redacted representation.
@@ -128,3 +139,8 @@ decisions and must cite their underlying records.
 - Generate an SBOM for releases once packaging begins.
 - Document why security-sensitive parsers and schema validators are selected.
 - Never execute imported validation code without an explicit sandbox and trust decision.
+
+ADR 0006 documents the first runtime dependency: the active, MIT-licensed `jsonschema` Draft
+2020-12 implementation with its non-GPL format extra. The major version is bounded; release builds
+must lock, scan, and inventory the resolved dependency graph. ComplyRoll owns the offline registry
+boundary so the validator never retrieves a schema referenced by untrusted or mutable content.

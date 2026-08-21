@@ -98,6 +98,11 @@ Target: 3–4 weeks
   class, affected-party, and class-variant structures.
 - Evaluation, PAIN response, reporting recurrence, and acceptance-threshold calculations carry the
   exact rule ID and dataset provenance; golden tests cover both classes.
+- Official Common Definitions and the three initial VER report schemas are pinned to one immutable
+  `FedRAMP/schemas` commit, digest verified, resolved offline, and checked as Draft 2020-12 schemas.
+- Report validation returns deterministic, actionable JSON Pointers and complete schema
+  provenance; golden examples cover Vulnerability Detail, Accepted Vulnerability, and Historical
+  Activity documents.
 
 ### Deliverables
 
@@ -220,5 +225,5 @@ Target: after the local engine is stable
 1. Define the SQLite event and projection schema. **Complete — 2026-08-20.**
 2. Implement class-aware policy selection from the pinned rules source. **Complete — 2026-08-20.**
 3. Write golden tests for Class B and Class C evaluation and response clocks. **Complete — 2026-08-20.**
-4. Implement official common-definition and VER schema resolution.
+4. Implement official common-definition and VER schema resolution. **Complete — 2026-08-20.**
 5. Produce the first end-to-end CKLB → case → VER JSON demonstration.

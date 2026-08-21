@@ -39,11 +39,13 @@ Read these files before changing architecture or domain behavior:
 Run from the repository root:
 
 ```bash
-PYTHONPATH=src python3 -m complyroll version
-PYTHONPATH=src python3 -m complyroll plan
-python3 stigroll.py tests/fixtures/windows-host.ckl --format json
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-python3 -m compileall -q src tests stigroll.py
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m complyroll version
+.venv/bin/python -m complyroll plan
+.venv/bin/python stigroll.py tests/fixtures/windows-host.ckl --format json
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m compileall -q src tests stigroll.py
 ```
 
 ## Change expectations

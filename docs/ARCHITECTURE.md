@@ -114,6 +114,22 @@ Later projections:
 - Ongoing Certification Report
 - Trust-center API resources
 
+### Schema validation
+
+The initial Phase 1 validator bundles the official FedRAMP Common Definitions, Vulnerability
+Detail, Accepted Vulnerability, and Historical VER Activity schemas from one immutable
+`FedRAMP/schemas` commit. A manifest pins every `$id`, `$schemaVersion`, and SHA-256. Loading rejects
+digest or metadata drift before building a Draft 2020-12 registry.
+
+Only verified bundled resources are registered. Every `$ref` is resolved during bundle loading,
+and the registry has no remote retrieval callback. Report validation therefore works offline and
+fails closed if a required document or fragment is absent. Validation results contain exact source
+provenance and sorted issues with instance and schema JSON Pointers.
+
+The official schemas intentionally allow provider extensions. ComplyRoll preserves that behavior;
+additional semantic checks such as report-period ordering and projection reconciliation belong to
+the report compiler rather than an altered copy of the official schema.
+
 ## Storage direction
 
 The MVP uses SQLite because it provides transactions, constraints, portability, and standard
@@ -154,15 +170,16 @@ Candidate event types include:
 src/complyroll/
   adapters/       # Phase 0 adapter contracts, safe parsing, and STIG/XCCDF/CCI implementations
   compat/         # predecessor-compatible stigroll CLI and renderers
-  data/           # bundled immutable source manifests
-  policy/         # rule-source manifest model; class policy follows in Phase 1
+  data/           # bundled immutable source manifests, rules, and official schemas
+  policy/         # verified rule source, class-aware selection, and deadlines
+  schemas/        # verified offline schema registry and report validation results
   store/          # SQLite event history, migrations, integrity, and projection checkpoints
   cli.py          # ComplyRoll project CLI
   models.py       # framework-independent domain records
 ```
 
-Phase 1 will add `correlation`, `projections`, and `schemas` packages when their durable interfaces
-are implemented. The domain model remains independent from those implementations.
+Phase 1 will add `correlation` and `projections` packages when their durable interfaces are
+implemented. The domain model remains independent from those implementations.
 
 ## Failure semantics
 

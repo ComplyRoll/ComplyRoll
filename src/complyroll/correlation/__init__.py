@@ -42,12 +42,26 @@ class VulnerabilityGroup:
     description: str
     earliest_observed_at: datetime | None
     detection_sources: tuple[str, ...]
+    untimestamped_observation_ids: tuple[str, ...] = ()
 
     @property
     def observation_ids(self) -> tuple[str, ...]:
         """Return every supporting observation identifier in source order."""
 
         return tuple(observation.observation_id for observation in self.observations)
+
+    @property
+    def has_partial_timestamps(self) -> bool:
+        """Return True when some but not all observations declare a source time.
+
+        The earliest known timestamp is still the detection time: the weakness was
+        demonstrably detected by then, and an observation that declares no time
+        cannot move that instant earlier with evidence (ADR 0007 amendment).
+        """
+
+        return (
+            self.earliest_observed_at is not None and bool(self.untimestamped_observation_ids)
+        )
 
     @property
     def detection_source(self) -> str:
@@ -138,6 +152,7 @@ def _build_group(
     identifiers: set[str] = set()
     tools: set[str] = set()
     observed_times: list[datetime] = []
+    untimestamped: list[str] = []
     title = ""
     description = ""
 
@@ -150,6 +165,8 @@ def _build_group(
         tools.add(observation.source_tool)
         if observation.observed_at is not None:
             observed_times.append(observation.observed_at)
+        else:
+            untimestamped.append(observation.observation_id)
         if not title and observation.title.strip():
             title = observation.title
         if not description and observation.description.strip():
@@ -167,6 +184,7 @@ def _build_group(
         description=description,
         earliest_observed_at=min(observed_times) if observed_times else None,
         detection_sources=tuple(sorted(tools)),
+        untimestamped_observation_ids=tuple(untimestamped),
     )
 
 

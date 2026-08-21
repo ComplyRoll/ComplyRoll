@@ -193,6 +193,69 @@ of the audit findings were language limits. The decision is revisited at Phase 2
 TypeScript sibling is ever built, it consumes ComplyRoll's JSON outputs, which forces the
 canonical-form decision recorded in ADR 0004.
 
+## Amendment 2026-08-21: rules the first implementation left implicit
+
+A cross-vendor review of the first implementation found four places where this record was
+silent and the code therefore did something defensible but undocumented. The rules below close
+them.
+
+### Report period selects contents
+
+`reportPeriod` is not a label. A vulnerability appears in a Vulnerability Detail Report for a
+period when it had activity in that period, consistent with `VER-RPT-PER` (summarize all
+activity since the previous report) and the schema description ("non-accepted vulnerabilities
+with activity in this period"). The compiler's rule, with both bounds inclusive:
+
+- A vulnerability detected after the period end is excluded.
+- A vulnerability with no recorded disposition is included whenever it was detected on or before
+  the period end: an open weakness is activity in every period until it is resolved.
+- A vulnerability with a recorded disposition is included only if some recorded activity instant
+  falls inside the period: detection, completed evaluation, a PAIN reduction event, or the
+  projected next reduction. A weakness resolved before the period began, with nothing recorded
+  inside it, belongs to an earlier report.
+
+Every exclusion is reported as an `excluded_by_period` diagnostic naming the tracking identifier
+and the reason, and the report-level extension records the excluded count, so a reader can tell
+"nothing happened" from "nothing was compiled".
+
+### Partially timestamped groups
+
+Decision 2 covered groups where every observation carries a source timestamp and groups where
+none does. A group with both kinds uses the earliest known source timestamp as `detectedAt`; the
+weakness was demonstrably detected by then, and an observation that declares no time cannot move
+that instant earlier with evidence. The compiler records `detectedAtSource` as
+`artifact-partial` for such groups, lists the observation identifiers that carried no timestamp
+in the vulnerability extension, and emits a `detection_time_partial` warning. A supplied
+attestation never overrides a known source timestamp.
+
+### Effective tracking identifiers are unique
+
+A `trackingId` override in the evaluations file may rename one vulnerability; it may not merge
+two. After matching, the compiler requires every effective tracking identifier to be unique and
+fails with a diagnostic naming both evaluation entries and both vulnerabilities otherwise.
+
+### Output writes are all-or-nothing
+
+The CLI renders every requested output before writing any of them, writes each to a temporary
+file beside its destination, and replaces the destinations only after every write succeeds. A
+failed Markdown write therefore leaves no JSON behind, and a failed JSON write leaves no
+Markdown. When JSON goes to standard output, the Markdown file is written first.
+
+### Closed cases may close as accepted
+
+`closedDisposition` accepts `accepted` in addition to the four mitigation outcomes. A case closed
+as accepted requires an `acceptanceRationale` and is routed exactly like a directly accepted
+case: excluded from the detail report and carried for `VER-RPT-AVI`.
+
+### The two renderings carry the same audit content
+
+The Markdown twin gains a detail section per vulnerability (description, detection source,
+affected resources, evaluation, impact, rationale, every computed deadline, the overdue
+explanation, projected and completed PAIN reductions, remediation state), and the JSON extension
+gains the compile diagnostics and each artifact's observation count, so neither rendering omits
+material the other carries. The attestation record in the extension carries the count of
+vulnerabilities it covered, as Decision 2 already required.
+
 ## Consequences
 
 - `complyroll report vdt` and `complyroll validate` become the first user-facing commands, and

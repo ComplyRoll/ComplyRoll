@@ -162,6 +162,40 @@ class GroupingTests(unittest.TestCase):
         self.assertEqual(timed.earliest_observed_at, early)
         self.assertIsNone(untimed.earliest_observed_at)
 
+    def test_a_mixed_group_names_its_untimestamped_observations(self) -> None:
+        early = datetime(2026, 8, 1, tzinfo=UTC)
+        group = group_open_observations(
+            (
+                _observation(source_record_id="V-1", resource_id="a", observed_at=early),
+                _observation(source_record_id="V-1", resource_id="b", observed_at=None),
+            )
+        )[0]
+
+        self.assertTrue(group.has_partial_timestamps)
+        self.assertEqual(group.earliest_observed_at, early)
+        self.assertEqual(group.untimestamped_observation_ids, ("obs-V-1-b",))
+
+    def test_a_fully_timestamped_group_has_no_partial_flag(self) -> None:
+        early = datetime(2026, 8, 1, tzinfo=UTC)
+        group = group_open_observations(
+            (_observation(source_record_id="V-1", resource_id="a", observed_at=early),)
+        )[0]
+
+        self.assertFalse(group.has_partial_timestamps)
+        self.assertEqual(group.untimestamped_observation_ids, ())
+
+    def test_a_fully_untimestamped_group_is_not_partial(self) -> None:
+        group = group_open_observations(
+            (
+                _observation(source_record_id="V-1", resource_id="a"),
+                _observation(source_record_id="V-1", resource_id="b"),
+            )
+        )[0]
+
+        self.assertFalse(group.has_partial_timestamps)
+        self.assertIsNone(group.earliest_observed_at)
+        self.assertEqual(len(group.untimestamped_observation_ids), 2)
+
     def test_detection_sources_and_identifiers_are_a_sorted_union(self) -> None:
         group = group_open_observations(
             (

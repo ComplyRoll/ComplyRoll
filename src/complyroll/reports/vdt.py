@@ -11,7 +11,7 @@ stops the run with diagnostics and no output.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -186,6 +186,7 @@ class CompiledArtifact:
             "parser": self.parser,
             "parserVersion": self.parser_version,
             "sizeBytes": self.size_bytes,
+            "observationCount": self.observation_count,
         }
 
 
@@ -211,10 +212,42 @@ class CompiledVulnerability:
     final_disposition: str | None = None
     remediated: bool = False
     status: CaseStatus | None = None
+    untimestamped_observation_ids: tuple[str, ...] = ()
+    original_tracking_id: str = ""
 
     @property
     def is_evaluated(self) -> bool:
         return self.evaluation is not None
+
+    @property
+    def has_disposition(self) -> bool:
+        """Return True when a disposition of record exists for this vulnerability."""
+
+        return self.final_disposition is not None or self.status is CaseStatus.ACCEPTED
+
+    @property
+    def activity_instants(self) -> tuple[datetime, ...]:
+        """Return every recorded activity instant, for report-period selection.
+
+        Detection, the completed evaluation, each completed PAIN reduction, and the
+        projected next reduction are the recorded activity a period can contain
+        (ADR 0007 amendment, report period selects contents).
+        """
+
+        instants = [self.detected_at]
+        evaluation = self.evaluation
+        if evaluation is not None:
+            instants.append(evaluation.completed_at)
+            instants.extend(event.reduced_at for event in evaluation.pain_reduction_events)
+            if evaluation.projected_next_reduction is not None:
+                instants.append(evaluation.projected_next_reduction.estimated_at)
+        return tuple(instants)
+
+    @property
+    def evaluation_location(self) -> str:
+        """Return the evaluations-file location behind this record, if any."""
+
+        return self.evaluation.location if self.evaluation is not None else "no evaluation entry"
 
     @property
     def current_rating(self) -> PainRating | None:
@@ -277,6 +310,7 @@ class CompiledVulnerability:
                 for item in self.resources
             ],
             "sourceIdentifiers": list(self.source_identifiers),
+            "untimestampedObservationIds": list(self.untimestamped_observation_ids),
             "deadlines": [item.to_dict() for item in self.deadlines],
             "remediated": self.remediated,
             "painReductionEvents": [
@@ -308,6 +342,7 @@ class ReportMetadata:
     generator_version: str
     parser_versions: tuple[tuple[str, str], ...]
     attestation_applied_to: tuple[str, ...] = ()
+    excluded_by_period: int = 0
 
     @property
     def attestation(self) -> datetime | None:
@@ -378,9 +413,7 @@ def compile_vdt_report(
     policy = select_policy(snapshot, options.profile)
     schema_provenance = _schema_provenance()
 
-    records: list[CompiledVulnerability] = []
-    accepted: list[AcceptedVulnerability] = []
-    attested: list[str] = []
+    compiled: list[CompiledVulnerability] = []
     missing_detection: list[str] = []
 
     for group in groups:
@@ -388,39 +421,31 @@ def compile_vdt_report(
         if detected_at is None:
             missing_detection.append(group.tracking_id)
             continue
-        if detected_source == "attestation":
-            attested.append(group.tracking_id)
-        record = _build_record(
-            group=group,
-            detected_at=detected_at,
-            detected_at_source=detected_source,
-            evaluation=matches.get(group.tracking_id),
-            policy=policy,
-            snapshot=snapshot,
-            options=options,
-        )
-        if record.status is CaseStatus.ACCEPTED:
-            evaluation = record.evaluation
-            rationale = evaluation.acceptance_rationale if evaluation else None
-            accepted.append(
-                AcceptedVulnerability(
-                    vulnerability=record,
-                    acceptance_rationale=rationale or "",
-                )
-            )
+        if detected_source == "artifact-partial":
             diagnostics.append(
                 ReportDiagnostic(
-                    level=DiagnosticLevel.INFO,
-                    code="accepted_excluded",
+                    level=DiagnosticLevel.WARNING,
+                    code="detection_time_partial",
                     message=(
-                        f"{record.tracking_id} is an accepted vulnerability and belongs in "
-                        "the VER-RPT-AVI report, not the Vulnerability Detail Report"
+                        f"{group.tracking_id} groups "
+                        f"{len(group.untimestamped_observation_ids)} observation(s) that "
+                        "declare no source timestamp; the earliest known timestamp is the "
+                        "detection time"
                     ),
-                    location=record.source_record_id,
+                    location=group.source_record_id,
                 )
             )
-            continue
-        records.append(record)
+        compiled.append(
+            _build_record(
+                group=group,
+                detected_at=detected_at,
+                detected_at_source=detected_source,
+                evaluation=matches.get(group.tracking_id),
+                policy=policy,
+                snapshot=snapshot,
+                options=options,
+            )
+        )
 
     if missing_detection:
         raise ReportCompileError(
@@ -436,6 +461,12 @@ def compile_vdt_report(
             )
         )
 
+    _require_unique_tracking_ids(compiled)
+    records, accepted, excluded = _select_for_period(compiled, options, diagnostics)
+    attested = tuple(
+        sorted(item.tracking_id for item in records if item.detected_at_source == "attestation")
+    )
+
     metadata = ReportMetadata(
         options=options,
         artifacts=tuple(artifacts),
@@ -443,9 +474,10 @@ def compile_vdt_report(
         schema_provenance=schema_provenance,
         generator_version=__version__,
         parser_versions=_parser_versions(observations),
-        attestation_applied_to=tuple(sorted(attested)),
+        attestation_applied_to=attested,
+        excluded_by_period=excluded,
     )
-    document = _build_document(tuple(records), metadata)
+    document = _build_document(tuple(records), metadata, tuple(diagnostics))
     validation = validate_bundled_report(ReportSchema.VULNERABILITY_DETAIL, document)
     if not validation.is_valid:
         raise ReportCompileError(
@@ -502,7 +534,9 @@ def _ingest_all(
                 level=item.level,
                 code=item.code,
                 message=item.message,
-                location=item.location or str(path),
+                # The artifact name, never the supplied path: diagnostics are embedded in
+                # the report, which must not depend on the caller's directory layout.
+                location=item.location or path.name,
             )
             if item.level is DiagnosticLevel.ERROR:
                 errors.append(entry)
@@ -614,11 +648,126 @@ def _resolve_detection_time(
     group: VulnerabilityGroup,
     options: ReportOptions,
 ) -> tuple[datetime | None, str]:
+    """Resolve one group's detection time without ever guessing one.
+
+    A supplied attestation applies only to groups where no observation declares a
+    source timestamp; it never overrides a known one (ADR 0007 amendment).
+    """
+
     if group.earliest_observed_at is not None:
-        return group.earliest_observed_at.astimezone(UTC), "artifact"
+        source = "artifact-partial" if group.has_partial_timestamps else "artifact"
+        return group.earliest_observed_at.astimezone(UTC), source
     if options.detected_at_attestation is not None:
         return options.detected_at_attestation.astimezone(UTC), "attestation"
     return None, "missing"
+
+
+def _require_unique_tracking_ids(records: Sequence[CompiledVulnerability]) -> None:
+    """Refuse a trackingId override that would merge two vulnerabilities.
+
+    An override may rename one vulnerability; it may not collapse two into one
+    (ADR 0007 amendment).
+    """
+
+    claimed: dict[str, CompiledVulnerability] = {}
+    collisions: list[ReportDiagnostic] = []
+    for record in records:
+        previous = claimed.get(record.tracking_id)
+        if previous is None:
+            claimed[record.tracking_id] = record
+            continue
+        collisions.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.ERROR,
+                code="tracking_id_collision",
+                message=(
+                    f"effective tracking id {record.tracking_id!r} is claimed by "
+                    f"{previous.evaluation_location} (originally "
+                    f"{previous.original_tracking_id}) and {record.evaluation_location} "
+                    f"(originally {record.original_tracking_id}); an override may rename "
+                    "one vulnerability but may not merge two"
+                ),
+                location=record.evaluation_location,
+            )
+        )
+    if collisions:
+        raise ReportCompileError(collisions)
+
+
+def _select_for_period(
+    records: Sequence[CompiledVulnerability],
+    options: ReportOptions,
+    diagnostics: list[ReportDiagnostic],
+) -> tuple[list[CompiledVulnerability], list[AcceptedVulnerability], int]:
+    """Split compiled records into reported, accepted, and excluded by period.
+
+    `reportPeriod` is not a label. A vulnerability appears in the report for a period
+    when it had activity in that period (VER-RPT-PER), with both bounds inclusive.
+    """
+
+    reported: list[CompiledVulnerability] = []
+    accepted: list[AcceptedVulnerability] = []
+    excluded = 0
+
+    for record in records:
+        if record.status is CaseStatus.ACCEPTED:
+            evaluation = record.evaluation
+            rationale = evaluation.acceptance_rationale if evaluation else None
+            accepted.append(
+                AcceptedVulnerability(
+                    vulnerability=record,
+                    acceptance_rationale=rationale or "",
+                )
+            )
+            diagnostics.append(
+                ReportDiagnostic(
+                    level=DiagnosticLevel.INFO,
+                    code="accepted_excluded",
+                    message=(
+                        f"{record.tracking_id} is an accepted vulnerability and belongs in "
+                        "the VER-RPT-AVI report, not the Vulnerability Detail Report"
+                    ),
+                    location=record.source_record_id,
+                )
+            )
+            continue
+        reason = _period_exclusion_reason(record, options)
+        if reason is not None:
+            excluded += 1
+            diagnostics.append(
+                ReportDiagnostic(
+                    level=DiagnosticLevel.INFO,
+                    code="excluded_by_period",
+                    message=f"{record.tracking_id} {reason}",
+                    location=record.source_record_id,
+                )
+            )
+            continue
+        reported.append(record)
+    return reported, accepted, excluded
+
+
+def _period_exclusion_reason(
+    record: CompiledVulnerability,
+    options: ReportOptions,
+) -> str | None:
+    """Return why a record falls outside the report period, or None if it belongs."""
+
+    period_from = options.period_from
+    period_to = options.period_to
+    if record.detected_at > period_to:
+        return (
+            f"was detected {_iso(record.detected_at)}, after the period ended "
+            f"{_iso(period_to)}"
+        )
+    if not record.has_disposition:
+        return None
+    if any(period_from <= instant <= period_to for instant in record.activity_instants):
+        return None
+    return (
+        f"has disposition {record.final_disposition!r} and no recorded activity between "
+        f"{_iso(period_from)} and {_iso(period_to)}"
+    )
 
 
 def _build_record(
@@ -689,6 +838,8 @@ def _build_record(
         final_disposition=final_disposition,
         remediated=status is CaseStatus.REMEDIATED,
         status=status,
+        untimestamped_observation_ids=group.untimestamped_observation_ids,
+        original_tracking_id=group.tracking_id,
     )
 
 
@@ -849,6 +1000,7 @@ def _schema_provenance() -> SchemaProvenance:
 def _build_document(
     records: Sequence[CompiledVulnerability],
     metadata: ReportMetadata,
+    diagnostics: Sequence[ReportDiagnostic],
 ) -> dict[str, Any]:
     options = metadata.options
     attestation: dict[str, Any] | None = None
@@ -856,6 +1008,7 @@ def _build_document(
         attestation = {
             "detectedAt": _iso(options.detected_at_attestation),
             "appliedTo": list(metadata.attestation_applied_to),
+            "count": len(metadata.attestation_applied_to),
         }
     return {
         "certificationPackageOverviewUri": options.package_uri,
@@ -886,6 +1039,8 @@ def _build_document(
             "parserVersions": dict(metadata.parser_versions),
             "artifacts": [artifact.to_dict() for artifact in metadata.artifacts],
             "detectionTimeAttestation": attestation,
+            "excludedByPeriod": metadata.excluded_by_period,
+            "diagnostics": [diagnostic.to_dict() for diagnostic in diagnostics],
             "disclaimer": DISCLAIMER,
         },
     }
@@ -940,6 +1095,7 @@ def _render_markdown(report: CompiledVdtReport) -> str:
     write(f"| Not yet evaluated | {sum(1 for item in records if not item.is_evaluated)} |")
     write(f"| Overdue | {sum(1 for item in records if item.is_overdue)} |")
     write(f"| Accepted, reported under VER-RPT-AVI | {len(report.accepted)} |")
+    write(f"| Excluded by report period | {metadata.excluded_by_period} |")
     for rating in PainRating:
         count = sum(1 for item in records if item.current_rating is rating)
         write(f"| Current PAIN {rating.name} | {count} |")
@@ -983,6 +1139,11 @@ def _render_markdown(report: CompiledVdtReport) -> str:
                 + " |"
             )
         write("")
+
+        write("## Vulnerability details")
+        write("")
+        for item in records:
+            _write_detail(write, item)
 
     write("## Detection time attestation")
     write("")
@@ -1031,6 +1192,102 @@ def _render_markdown(report: CompiledVdtReport) -> str:
     write("")
     write(DISCLAIMER)
     return "\n".join(lines) + "\n"
+
+
+def _write_detail(write: Callable[[str], None], item: CompiledVulnerability) -> None:
+    """Render one vulnerability's full audit detail into the Markdown twin.
+
+    The JSON extension and this section carry the same material, so neither
+    rendering omits what the other holds (ADR 0007 amendment).
+    """
+
+    evaluation = item.evaluation
+    write(f"### {_cell(item.tracking_id)}: {_cell(item.source_record_id)}")
+    write("")
+    write(f"- **Description:** {_cell(item.description)}")
+    write(f"- **Detection source:** {_cell(item.detection_source)}")
+    write(
+        f"- **Detected at:** {_iso(item.detected_at)} "
+        f"(source: {_cell(item.detected_at_source)})"
+    )
+    if item.untimestamped_observation_ids:
+        write(
+            "- **Observations without a source timestamp:** "
+            + ", ".join(_cell(value) for value in item.untimestamped_observation_ids)
+        )
+    resources = ", ".join(
+        f"{_cell(resource.resource_type)} {_cell(resource.resource_id)}"
+        for resource in item.resources
+    )
+    write(f"- **Affected resources:** {resources or 'n/a'}")
+    identifiers = ", ".join(_cell(value) for value in item.source_identifiers)
+    write(f"- **Source identifiers:** {identifiers or 'n/a'}")
+
+    if evaluation is None:
+        write("- **Evaluation:** not yet completed")
+    else:
+        write(
+            f"- **Evaluation completed:** {_iso(evaluation.completed_at)} by "
+            f"{_cell(evaluation.evaluator)}"
+        )
+        write(
+            f"- **Internet reachable:** {_flag(evaluation.is_internet_reachable)}; "
+            f"**likely exploitable:** {_flag(evaluation.is_likely_exploitable)}; "
+            f"**PAIN:** {evaluation.pain.name}"
+        )
+        write(
+            "- **Potential agency impact:** "
+            f"{_cell(evaluation.potential_agency_impact)}"
+        )
+        write(f"- **Rationale:** {_cell(evaluation.rationale)}")
+        if evaluation.supplementary_risk_information is not None:
+            write(
+                "- **Supplementary risk information:** "
+                f"{_cell(evaluation.supplementary_risk_information)}"
+            )
+        projection = evaluation.projected_next_reduction
+        if projection is None:
+            write("- **Projected next reduction:** none planned")
+        else:
+            write(
+                f"- **Projected next reduction:** {projection.target_rating.name} by "
+                f"{_iso(projection.estimated_at)}"
+            )
+        if evaluation.pain_reduction_events:
+            reductions = ", ".join(
+                f"{event.rating.name} at {_iso(event.reduced_at)}"
+                for event in evaluation.pain_reduction_events
+            )
+            write(f"- **Completed PAIN reductions:** {reductions}")
+        else:
+            write("- **Completed PAIN reductions:** none recorded")
+
+    disposition = _cell(item.final_disposition) if item.final_disposition else "active"
+    write(f"- **Disposition:** {disposition}; **remediated:** {_flag(item.remediated)}")
+    if item.is_overdue:
+        write(f"- **Overdue:** {_cell(item.overdue_explanation)}")
+    else:
+        write("- **Overdue:** not overdue")
+    write("")
+    write("| Rule | Name | Force | Anchor | Start | Due | Satisfied |")
+    write("|---|---|---|---|---|---|---|")
+    for deadline in item.deadlines:
+        write(
+            "| "
+            + " | ".join(
+                (
+                    _cell(deadline.rule_id),
+                    _cell(deadline.rule_name),
+                    _cell(deadline.force),
+                    _cell(deadline.anchor),
+                    _iso(deadline.start_at),
+                    _iso(deadline.due_at),
+                    _flag(deadline.satisfied),
+                )
+            )
+            + " |"
+        )
+    write("")
 
 
 def _flag(value: bool) -> str:

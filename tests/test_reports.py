@@ -13,6 +13,7 @@ from complyroll.models import CaseStatus
 from complyroll.policy import CertificationClass
 from complyroll.reports import (
     FINAL_DISPOSITIONS,
+    MAX_EVALUATIONS_BYTES,
     CompiledVdtReport,
     EvaluationSet,
     ReportCompileError,
@@ -22,6 +23,25 @@ from complyroll.reports import (
     load_evaluations,
     parse_evaluations,
 )
+
+MIXED_TIMESTAMP_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="mixed">
+  <TestResult id="shared" end-time="2026-08-03T09:00:00Z">
+    <target>lab-timed</target>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_banner_etc_issue" severity="medium">
+      <result>fail</result>
+      <ident system="https://public.cyber.mil/stigs/cci/">CCI-000048</ident>
+    </rule-result>
+  </TestResult>
+  <TestResult id="shared">
+    <target>lab-untimed</target>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_banner_etc_issue" severity="medium">
+      <result>fail</result>
+      <ident system="https://public.cyber.mil/stigs/cci/">CCI-000048</ident>
+    </rule-result>
+  </TestResult>
+</Benchmark>
+"""
 
 REPO_ROOT = Path(__file__).parent.parent
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
@@ -46,12 +66,14 @@ def options(
     detected_at: datetime | None = DETECTED_AT,
     certification_class: CertificationClass = CertificationClass.C,
     calendar_timezone: str = "UTC",
+    period_from: datetime = PERIOD_FROM,
+    period_to: datetime = PERIOD_TO,
 ) -> ReportOptions:
     return ReportOptions(
         certification_class=certification_class,
         package_uri=PACKAGE_URI,
-        period_from=PERIOD_FROM,
-        period_to=PERIOD_TO,
+        period_from=period_from,
+        period_to=period_to,
         as_of=as_of,
         calendar_timezone=calendar_timezone,
         detected_at_attestation=detected_at,
@@ -131,6 +153,17 @@ class GoldenReportTests(unittest.TestCase):
         self.assertEqual(again.to_json(), self.report.to_json())
         self.assertEqual(again.to_markdown(), self.report.to_markdown())
 
+    def test_the_report_does_not_depend_on_how_artifacts_were_addressed(self) -> None:
+        absolute = compile_vdt_report(
+            [path.resolve() for path in ARTIFACTS],
+            options=options(),
+            evaluations=load_evaluations(EXAMPLES / "evaluations.json"),
+        )
+
+        self.assertEqual(absolute.to_json(), self.report.to_json())
+        self.assertEqual(absolute.to_markdown(), self.report.to_markdown())
+        self.assertNotIn(str(REPO_ROOT), absolute.to_json())
+
     def test_markdown_totals_reconcile_with_the_json(self) -> None:
         markdown = self.report.to_markdown()
         vulnerabilities = self.report.document["vulnerabilities"]
@@ -152,6 +185,10 @@ class GoldenReportTests(unittest.TestCase):
         self.assertEqual(summary["Evaluated"], evaluated)
         self.assertEqual(summary["Not yet evaluated"], len(vulnerabilities) - evaluated)
         self.assertEqual(summary["Overdue"], overdue)
+        self.assertEqual(
+            summary["Excluded by report period"],
+            self.report.document["x-complyroll"]["excludedByPeriod"],
+        )
         for rating in range(1, 6):
             expected = sum(1 for item in vulnerabilities if item.get("currentRating") == rating)
             self.assertEqual(summary[f"Current PAIN N{rating}"], expected)
@@ -586,6 +623,377 @@ class OverdueTests(unittest.TestCase):
         self.assertEqual(deadlines[1]["anchor"], "evaluation")
         self.assertEqual(deadlines[1]["timeframe"], {"amount": 4, "unit": "days"})
         self.assertEqual(deadlines[0]["anchor"], "detection")
+
+
+class ReportPeriodSelectionTests(unittest.TestCase):
+    """The report period selects contents; it is not a label (ADR 0007 amendment)."""
+
+    def test_a_vulnerability_detected_after_the_period_end_is_excluded(self) -> None:
+        report = compile_fixtures(
+            detected_at=datetime(2026, 9, 15, tzinfo=AS_OF.tzinfo),
+            as_of=datetime(2026, 9, 20, tzinfo=AS_OF.tzinfo),
+        )
+
+        self.assertEqual(report.document["vulnerabilities"], [])
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 6)
+        excluded = [item for item in report.diagnostics if item.code == "excluded_by_period"]
+        self.assertEqual(len(excluded), 6)
+        self.assertIn("after the period ended", excluded[0].message)
+        self.assertTrue(excluded[0].message.startswith("case-"))
+
+    def test_a_vulnerability_detected_inside_the_period_is_included(self) -> None:
+        report = compile_fixtures(detected_at=datetime(2026, 8, 15, tzinfo=AS_OF.tzinfo))
+
+        self.assertEqual(len(report.document["vulnerabilities"]), 6)
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 0)
+
+    def test_an_undisposed_vulnerability_detected_before_the_period_is_included(self) -> None:
+        report = compile_fixtures(detected_at=datetime(2026, 6, 1, tzinfo=AS_OF.tzinfo))
+
+        self.assertEqual(len(report.document["vulnerabilities"]), 6)
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 0)
+
+    def test_a_disposed_vulnerability_with_activity_only_before_the_period_is_excluded(
+        self,
+    ) -> None:
+        report = compile_fixtures(
+            detected_at=datetime(2026, 7, 1, tzinfo=AS_OF.tzinfo),
+            evaluations=evaluations_from(
+                completedAt="2026-07-05T00:00:00Z", disposition="fully_mitigated"
+            ),
+        )
+
+        descriptions = [
+            item["vulnerabilityDescription"] for item in report.document["vulnerabilities"]
+        ]
+        self.assertEqual(len(descriptions), 5)
+        self.assertFalse(any(text.startswith("V-260470") for text in descriptions))
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 1)
+        excluded = [item for item in report.diagnostics if item.code == "excluded_by_period"]
+        self.assertIn("no recorded activity between", excluded[0].message)
+
+    def test_a_disposed_vulnerability_with_activity_inside_the_period_is_included(self) -> None:
+        report = compile_fixtures(
+            detected_at=datetime(2026, 7, 1, tzinfo=AS_OF.tzinfo),
+            evaluations=evaluations_from(
+                completedAt="2026-08-05T00:00:00Z", disposition="fully_mitigated"
+            ),
+        )
+
+        self.assertEqual(len(report.document["vulnerabilities"]), 6)
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 0)
+
+    def test_a_pain_reduction_event_inside_the_period_keeps_a_disposed_record(self) -> None:
+        report = compile_fixtures(
+            detected_at=datetime(2026, 7, 1, tzinfo=AS_OF.tzinfo),
+            evaluations=evaluations_from(
+                completedAt="2026-07-05T00:00:00Z",
+                disposition="fully_mitigated",
+                painReductionEvents=[{"reducedAt": "2026-08-10T00:00:00Z", "rating": 2}],
+            ),
+        )
+
+        self.assertEqual(len(report.document["vulnerabilities"]), 6)
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 0)
+
+    def test_a_projected_reduction_inside_the_period_keeps_a_disposed_record(self) -> None:
+        report = compile_fixtures(
+            detected_at=datetime(2026, 7, 1, tzinfo=AS_OF.tzinfo),
+            evaluations=evaluations_from(
+                completedAt="2026-07-05T00:00:00Z",
+                disposition="partially_mitigated",
+                projectedNextReduction={
+                    "estimatedAt": "2026-08-20T00:00:00Z",
+                    "targetRating": 2,
+                },
+            ),
+        )
+
+        self.assertEqual(len(report.document["vulnerabilities"]), 6)
+
+    def test_both_period_bounds_are_inclusive(self) -> None:
+        at_end = compile_fixtures(detected_at=PERIOD_TO, as_of=datetime(2026, 9, 5, tzinfo=UTC))
+        at_start = compile_fixtures(
+            detected_at=datetime(2026, 7, 1, tzinfo=UTC),
+            evaluations=evaluations_from(
+                completedAt="2026-08-01T00:00:00Z", disposition="fully_mitigated"
+            ),
+        )
+
+        self.assertEqual(len(at_end.document["vulnerabilities"]), 6)
+        self.assertEqual(at_end.document["x-complyroll"]["excludedByPeriod"], 0)
+        self.assertEqual(len(at_start.document["vulnerabilities"]), 6)
+        self.assertEqual(at_start.document["x-complyroll"]["excludedByPeriod"], 0)
+
+    def test_an_excluded_record_does_not_appear_in_the_attestation_list(self) -> None:
+        report = compile_fixtures(
+            detected_at=datetime(2026, 9, 15, tzinfo=AS_OF.tzinfo),
+            as_of=datetime(2026, 9, 20, tzinfo=AS_OF.tzinfo),
+        )
+
+        self.assertIsNone(report.document["x-complyroll"]["detectionTimeAttestation"])
+
+
+class TrackingIdUniquenessTests(unittest.TestCase):
+    def test_two_overrides_to_one_identifier_are_refused(self) -> None:
+        payload = json.loads(evaluation_json(trackingId="PROVIDER-1"))
+        second = dict(payload["evaluations"][0])
+        second["match"] = {"sourceRecordId": "V-253260", "sourceType": "ckl"}
+        payload["evaluations"].append(second)
+        evaluations = parse_evaluations(json.dumps(payload).encode("utf-8"))
+
+        with self.assertRaises(ReportCompileError) as caught:
+            compile_fixtures(evaluations=evaluations)
+
+        diagnostic = caught.exception.diagnostics[0]
+        self.assertEqual(diagnostic.code, "tracking_id_collision")
+        self.assertIn("PROVIDER-1", diagnostic.message)
+        self.assertIn("evaluations[0]", diagnostic.message)
+        self.assertIn("evaluations[1]", diagnostic.message)
+        self.assertIn("case-490f49bfdd1bd019", diagnostic.message)
+        self.assertIn("case-1f3e011db93cc89e", diagnostic.message)
+
+    def test_an_override_onto_an_unevaluated_natural_identifier_is_refused(self) -> None:
+        evaluations = evaluations_from(trackingId="case-9bed0d8f88355393")
+
+        with self.assertRaises(ReportCompileError) as caught:
+            compile_fixtures(evaluations=evaluations)
+
+        self.assertEqual(caught.exception.diagnostics[0].code, "tracking_id_collision")
+        self.assertIn("no evaluation entry", caught.exception.diagnostics[0].message)
+
+    def test_distinct_overrides_are_accepted(self) -> None:
+        payload = json.loads(evaluation_json(trackingId="PROVIDER-1"))
+        second = dict(payload["evaluations"][0])
+        second["match"] = {"sourceRecordId": "V-253260", "sourceType": "ckl"}
+        second["trackingId"] = "PROVIDER-2"
+        payload["evaluations"].append(second)
+        evaluations = parse_evaluations(json.dumps(payload).encode("utf-8"))
+
+        report = compile_fixtures(evaluations=evaluations)
+        identifiers = {
+            item["providerTrackingId"] for item in report.document["vulnerabilities"]
+        }
+
+        self.assertIn("PROVIDER-1", identifiers)
+        self.assertIn("PROVIDER-2", identifiers)
+
+
+class PartialTimestampTests(unittest.TestCase):
+    def _compile(self, **overrides: object) -> CompiledVdtReport:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mixed-timestamps.xml"
+            path.write_text(MIXED_TIMESTAMP_XCCDF, encoding="utf-8")
+            return compile_fixtures(artifacts=(path,), **overrides)
+
+    def test_the_earliest_known_timestamp_is_the_detection_time(self) -> None:
+        report = self._compile()
+        vulnerability = report.document["vulnerabilities"][0]
+
+        self.assertEqual(len(report.document["vulnerabilities"]), 1)
+        self.assertEqual(vulnerability["detection"]["detectedAt"], "2026-08-03T09:00:00Z")
+        self.assertEqual(vulnerability["x-complyroll"]["detectedAtSource"], "artifact-partial")
+        self.assertEqual(len(vulnerability["x-complyroll"]["resources"]), 2)
+
+    def test_the_untimestamped_observations_are_named(self) -> None:
+        report = self._compile()
+        untimestamped = report.document["vulnerabilities"][0]["x-complyroll"][
+            "untimestampedObservationIds"
+        ]
+
+        self.assertEqual(len(untimestamped), 1)
+        self.assertIn(untimestamped[0], report.document["vulnerabilities"][0]["x-complyroll"][
+            "observationIds"
+        ])
+
+    def test_a_partial_group_raises_a_warning(self) -> None:
+        report = self._compile()
+        partial = [item for item in report.diagnostics if item.code == "detection_time_partial"]
+
+        self.assertEqual(len(partial), 1)
+        self.assertEqual(partial[0].level.value, "warning")
+        self.assertIn("declare no source timestamp", partial[0].message)
+
+    def test_an_attestation_never_overrides_a_known_source_timestamp(self) -> None:
+        report = self._compile(detected_at=datetime(2026, 1, 1, tzinfo=UTC))
+        vulnerability = report.document["vulnerabilities"][0]
+
+        self.assertEqual(vulnerability["detection"]["detectedAt"], "2026-08-03T09:00:00Z")
+        self.assertIsNone(report.document["x-complyroll"]["detectionTimeAttestation"])
+
+    def test_a_fully_timestamped_group_reports_no_untimestamped_observations(self) -> None:
+        fully_timed = MIXED_TIMESTAMP_XCCDF.replace(
+            '<TestResult id="shared">',
+            '<TestResult id="shared" end-time="2026-08-04T09:00:00Z">',
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "timed.xml"
+            path.write_text(fully_timed, encoding="utf-8")
+            report = compile_fixtures(artifacts=(path,))
+
+        extension = report.document["vulnerabilities"][0]["x-complyroll"]
+        self.assertEqual(extension["untimestampedObservationIds"], [])
+        self.assertEqual(extension["detectedAtSource"], "artifact")
+        self.assertEqual(
+            [item.code for item in report.diagnostics if item.code == "detection_time_partial"],
+            [],
+        )
+
+
+class ClosedAsAcceptedTests(unittest.TestCase):
+    def test_a_case_closed_as_accepted_leaves_the_detail_report(self) -> None:
+        report = compile_fixtures(
+            evaluations=evaluations_from(
+                disposition="closed",
+                closedDisposition="accepted",
+                acceptanceRationale="Risk accepted under SDR-22 with quarterly review.",
+            )
+        )
+
+        descriptions = [
+            item["vulnerabilityDescription"] for item in report.document["vulnerabilities"]
+        ]
+        self.assertFalse(any(text.startswith("V-260470") for text in descriptions))
+        self.assertEqual(len(report.accepted), 1)
+        self.assertIn("SDR-22", report.accepted[0].acceptance_rationale)
+
+    def test_closing_as_accepted_requires_an_acceptance_rationale(self) -> None:
+        payload = evaluation_json(disposition="closed", closedDisposition="accepted")
+        with self.assertRaisesRegex(ReportInputError, "acceptanceRationale is required"):
+            parse_evaluations(payload.encode("utf-8"))
+
+    def test_an_acceptance_rationale_without_acceptance_is_refused(self) -> None:
+        payload = evaluation_json(
+            disposition="closed",
+            closedDisposition="remediated",
+            acceptanceRationale="Not applicable here.",
+        )
+        with self.assertRaisesRegex(ReportInputError, "only valid when the case accepts risk"):
+            parse_evaluations(payload.encode("utf-8"))
+
+
+class RenderingParityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.report = compile_vdt_report(
+            list(ARTIFACTS),
+            options=options(),
+            evaluations=load_evaluations(EXAMPLES / "evaluations.json"),
+        )
+
+    def test_every_vulnerability_has_a_markdown_detail_section(self) -> None:
+        markdown = self.report.to_markdown()
+        headings = re.findall(r"^### (\S+): ", markdown, re.M)
+
+        self.assertEqual(
+            headings,
+            [item["providerTrackingId"] for item in self.report.document["vulnerabilities"]],
+        )
+
+    def test_the_detail_sections_carry_the_json_audit_material(self) -> None:
+        markdown = self.report.to_markdown()
+
+        for vulnerability in self.report.document["vulnerabilities"]:
+            extension = vulnerability["x-complyroll"]
+            with self.subTest(tracking=vulnerability["providerTrackingId"]):
+                self.assertIn(extension["detectedAtSource"], markdown)
+                for deadline in extension["deadlines"]:
+                    self.assertIn(deadline["ruleName"], markdown)
+                    self.assertIn(deadline["dueAt"], markdown)
+                for resource in extension["resources"]:
+                    self.assertIn(resource["resourceId"], markdown)
+                if extension["rationale"]:
+                    self.assertIn(extension["rationale"], markdown)
+                if extension["evaluator"]:
+                    self.assertIn(extension["evaluator"], markdown)
+
+    def test_the_extension_carries_the_compile_diagnostics(self) -> None:
+        extension = self.report.document["x-complyroll"]
+
+        self.assertEqual(
+            extension["diagnostics"],
+            [item.to_dict() for item in self.report.diagnostics],
+        )
+        self.assertTrue(extension["diagnostics"])
+
+    def test_every_artifact_reports_its_observation_count(self) -> None:
+        artifacts = self.report.document["x-complyroll"]["artifacts"]
+
+        self.assertEqual([item["observationCount"] for item in artifacts], [6, 2, 3])
+        self.assertEqual(
+            sum(item["observationCount"] for item in artifacts),
+            sum(item.observation_count for item in self.report.metadata.artifacts),
+        )
+
+    def test_the_attestation_count_matches_the_markdown_note(self) -> None:
+        attestation = self.report.document["x-complyroll"]["detectionTimeAttestation"]
+        markdown = self.report.to_markdown()
+
+        self.assertEqual(attestation["count"], len(attestation["appliedTo"]))
+        self.assertIn(
+            f"for {attestation['count']} vulnerability record(s)",
+            markdown,
+        )
+
+
+class TimestampAndBoundsTests(unittest.TestCase):
+    def test_a_non_utc_offset_is_normalized_to_utc(self) -> None:
+        report = compile_fixtures(
+            evaluations=evaluations_from(completedAt="2026-08-04T05:00:00-07:00")
+        )
+
+        self.assertEqual(
+            find_vulnerability(report, "V-260470")["evaluationCompletedAt"],
+            "2026-08-04T12:00:00Z",
+        )
+
+    def test_offsets_are_preserved_across_every_timestamp_field(self) -> None:
+        report = compile_fixtures(
+            evaluations=evaluations_from(
+                completedAt="2026-08-04T05:00:00-07:00",
+                projectedNextReduction={
+                    "estimatedAt": "2026-08-24T09:00:00+02:00",
+                    "targetRating": 2,
+                },
+                painReductionEvents=[{"reducedAt": "2026-08-10T21:30:00+05:30", "rating": 3}],
+            )
+        )
+        vulnerability = find_vulnerability(report, "V-260470")
+
+        self.assertEqual(
+            vulnerability["projectedNextReduction"]["estimatedAt"], "2026-08-24T07:00:00Z"
+        )
+        self.assertEqual(
+            vulnerability["x-complyroll"]["painReductionEvents"][0]["reducedAt"],
+            "2026-08-10T16:00:00Z",
+        )
+
+    def test_a_file_at_exactly_the_byte_limit_is_accepted(self) -> None:
+        prefix = b'{"evaluations": [], "$schema": "'
+        suffix = b'"}'
+        padding = MAX_EVALUATIONS_BYTES - len(prefix) - len(suffix)
+        content = prefix + (b"x" * padding) + suffix
+
+        self.assertEqual(len(content), MAX_EVALUATIONS_BYTES)
+        self.assertEqual(parse_evaluations(content).entries, ())
+
+    def test_one_byte_over_the_limit_is_refused(self) -> None:
+        prefix = b'{"evaluations": [], "$schema": "'
+        suffix = b'"}'
+        padding = MAX_EVALUATIONS_BYTES - len(prefix) - len(suffix) + 1
+        content = prefix + (b"x" * padding) + suffix
+
+        self.assertEqual(len(content), MAX_EVALUATIONS_BYTES + 1)
+        with self.assertRaisesRegex(ReportInputError, "maximum is"):
+            parse_evaluations(content)
+
+    def test_an_oversize_file_on_disk_is_refused_before_it_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evaluations.json"
+            path.write_bytes(b"x" * (MAX_EVALUATIONS_BYTES + 1))
+
+            with self.assertRaisesRegex(ReportInputError, "maximum is"):
+                load_evaluations(path)
 
 
 class ReportOptionsTests(unittest.TestCase):

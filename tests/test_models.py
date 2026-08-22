@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -25,8 +26,16 @@ SAMPLE_ARTIFACT_FINGERPRINT = "84fd0d425515b938bcdd1c227bf654a52a26072a58426e0b1
 
 
 def sample_observation(**overrides: object) -> Observation:
+    """Build one artifact-bound observation carrying the identifier adapters derive.
+
+    Artifact-bound observations are named after their own fingerprint, and
+    `Observation.from_canonical_dict` requires that, so the default fixture spells the
+    identifier the same way every adapter does. Tests that care about a different
+    identifier still pass one.
+    """
+
     values: dict[str, object] = {
-        "observation_id": "obs-001",
+        "observation_id": f"obs-{SAMPLE_ARTIFACT_FINGERPRINT}",
         "source_type": "cklb",
         "source_tool": "stig-viewer",
         "parser_name": "complyroll.cklb",
@@ -475,6 +484,211 @@ class WrongTypeInputTests(unittest.TestCase):
             with self.subTest(field=field_name):
                 with self.assertRaises(TypeError):
                     sample_observation(**{**base, field_name: value})
+
+
+class CanonicalRoundTripTests(unittest.TestCase):
+    """ADR 0008 freezes `to_canonical_dict` as the `observation.recorded` payload.
+
+    A stored payload is untrusted bytes, so the reader has to be the exact inverse of
+    the writer: every key required, no key invented, timestamps spelled the one way
+    this observation would spell them, and a fingerprint that still describes the
+    fields it was derived from.
+    """
+
+    def test_a_written_observation_reads_back_equal(self) -> None:
+        observation = sample_observation()
+
+        rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+
+        self.assertEqual(rebuilt, observation)
+        self.assertEqual(rebuilt.to_canonical_dict(), observation.to_canonical_dict())
+
+    def test_a_system_observation_reads_back_equal(self) -> None:
+        observation = system_observation(
+            source_identifiers=["CCI-000001"],
+            source_metadata={"job": "freshness"},
+            evidence_ids=["ev-1"],
+        )
+
+        rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+
+        self.assertEqual(rebuilt, observation)
+        self.assertEqual(rebuilt.fingerprint, observation.fingerprint)
+
+    def test_unsorted_metadata_reads_back_canonically_equal_not_dataclass_equal(self) -> None:
+        # The store writes canonical JSON with sorted keys, so metadata pairs come back
+        # in key order rather than in the order the parser produced them. What the
+        # round trip guarantees is canonical-JSON equality, not dataclass equality.
+        observation = sample_observation(
+            source_metadata=(("rule_version", "1"), ("check_id", "C-1")),
+        )
+        stored = json.loads(json.dumps(observation.to_canonical_dict(), sort_keys=True))
+
+        rebuilt = Observation.from_canonical_dict(stored)
+
+        self.assertEqual(rebuilt.to_canonical_json(), observation.to_canonical_json())
+        self.assertEqual(rebuilt.source_metadata, (("check_id", "C-1"), ("rule_version", "1")))
+        self.assertNotEqual(rebuilt, observation)
+
+    def test_sorted_metadata_reads_back_dataclass_equal(self) -> None:
+        observation = sample_observation(
+            source_metadata=(("check_id", "C-1"), ("rule_version", "1")),
+        )
+        stored = json.loads(json.dumps(observation.to_canonical_dict(), sort_keys=True))
+
+        rebuilt = Observation.from_canonical_dict(stored)
+
+        self.assertEqual(rebuilt, observation)
+
+    def test_an_observation_without_a_source_timestamp_reads_back_equal(self) -> None:
+        observation = sample_observation(observed_at=None)
+
+        rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+
+        self.assertIsNone(rebuilt.observed_at)
+        self.assertEqual(rebuilt, observation)
+
+    def test_an_offset_timestamp_reads_back_as_the_same_instant(self) -> None:
+        eastern = timezone(timedelta(hours=-5))
+        observation = sample_observation(observed_at=NOW.astimezone(eastern))
+
+        rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+
+        self.assertEqual(rebuilt.observed_at, NOW)
+        self.assertEqual(rebuilt, observation)
+
+    def _stored(self, **overrides: object) -> dict[str, object]:
+        payload = sample_observation().to_canonical_dict()
+        payload.update(overrides)
+        return payload
+
+    def test_a_z_suffixed_timestamp_is_refused(self) -> None:
+        stored = self._stored(ingested_at="2026-08-18T20:00:00Z")
+
+        with self.assertRaisesRegex(ValueError, "canonical timestamp text"):
+            Observation.from_canonical_dict(stored)
+
+    def test_an_offset_without_a_colon_is_refused(self) -> None:
+        stored = self._stored(ingested_at="2026-08-18T20:00:00+0000")
+
+        with self.assertRaisesRegex(ValueError, "canonical timestamp text"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_trailing_zero_fraction_is_refused(self) -> None:
+        stored = self._stored(ingested_at="2026-08-18T20:00:00.000000+00:00")
+
+        with self.assertRaisesRegex(ValueError, "canonical timestamp text"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_naive_timestamp_is_refused(self) -> None:
+        stored = self._stored(ingested_at="2026-08-18T20:00:00")
+
+        with self.assertRaisesRegex(ValueError, "must include a UTC offset"):
+            Observation.from_canonical_dict(stored)
+
+    def test_an_offset_carrying_seconds_is_refused(self) -> None:
+        # Python parses '+01:02:03' and re-serializes it unchanged, so the canonical
+        # comparison alone would wave it through. RFC 3339 offsets are whole minutes.
+        for field_name in ("ingested_at", "observed_at"):
+            with self.subTest(field=field_name):
+                stored = self._stored(**{field_name: "2026-08-18T20:00:00+01:02:03"})
+
+                with self.assertRaisesRegex(ValueError, "whole number of minutes"):
+                    Observation.from_canonical_dict(stored)
+
+    def test_an_offset_of_whole_minutes_is_accepted(self) -> None:
+        india = timezone(timedelta(hours=5, minutes=30))
+        observation = sample_observation(observed_at=NOW.astimezone(india))
+
+        rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+
+        self.assertEqual(rebuilt.observed_at, NOW)
+
+    def test_text_that_is_not_a_timestamp_is_refused(self) -> None:
+        stored = self._stored(observed_at="last Tuesday")
+
+        with self.assertRaisesRegex(ValueError, "must be an RFC 3339 timestamp"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_non_canonical_source_timestamp_is_refused(self) -> None:
+        stored = self._stored(observed_at="2026-08-18T20:00:00Z")
+
+        with self.assertRaisesRegex(ValueError, "canonical timestamp text"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_tampered_fingerprint_is_refused(self) -> None:
+        stored = self._stored(fingerprint="f" * 64)
+
+        with self.assertRaisesRegex(ValueError, "fingerprint does not match"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_tampered_field_moves_the_fingerprint_and_is_refused(self) -> None:
+        stored = self._stored(source_record_id="V-000000")
+
+        with self.assertRaisesRegex(ValueError, "fingerprint does not match"):
+            Observation.from_canonical_dict(stored)
+
+    def test_an_artifact_observation_must_carry_its_derived_identifier(self) -> None:
+        # The fingerprint still describes the fields, so only the name was moved.
+        # Adapters always assign the derived identifier, so a foreign one at rest is
+        # a rename nothing legitimate performed.
+        stored = self._stored(observation_id="obs-someone-elses-name")
+
+        with self.assertRaisesRegex(ValueError, "observation_id does not match"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_system_observation_may_be_named_anything(self) -> None:
+        # System observations are bound to the producing job rather than to received
+        # bytes, and their identifiers are the caller's to choose (ADR 0002 amendment).
+        observation = system_observation(observation_id="obs-freshness-2026-08-18")
+
+        rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+
+        self.assertEqual(rebuilt, observation)
+        self.assertNotEqual(rebuilt.observation_id, rebuilt.derived_observation_id)
+
+    def test_a_missing_key_is_refused(self) -> None:
+        stored = self._stored()
+        del stored["context_key"]
+
+        with self.assertRaisesRegex(ValueError, "missing field\\(s\\): context_key"):
+            Observation.from_canonical_dict(stored)
+
+    def test_an_unknown_key_is_refused(self) -> None:
+        stored = self._stored(severity_score=9.8)
+
+        with self.assertRaisesRegex(ValueError, "unsupported field\\(s\\): severity_score"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_resource_that_gained_a_key_is_refused(self) -> None:
+        stored = self._stored(
+            resource={"resource_id": "host-001", "resource_type": "host", "owner": "team"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "resource has unsupported field\\(s\\): owner"):
+            Observation.from_canonical_dict(stored)
+
+    def test_an_unknown_enum_value_is_refused(self) -> None:
+        stored = self._stored(disposition="undecided")
+
+        with self.assertRaisesRegex(ValueError, "disposition must be one of"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_wrong_typed_field_is_a_type_error(self) -> None:
+        for field_name, value in (
+            ("observation_id", 7),
+            ("resource", "host-001"),
+            ("source_identifiers", "CCI-000001"),
+            ("source_metadata", [["rule_id", "SV-1"]]),
+            ("disposition", 1),
+        ):
+            with self.subTest(field=field_name):
+                with self.assertRaises(TypeError):
+                    Observation.from_canonical_dict(self._stored(**{field_name: value}))
+
+    def test_a_payload_that_is_not_a_mapping_is_a_type_error(self) -> None:
+        with self.assertRaisesRegex(TypeError, "canonical observation must be a mapping"):
+            Observation.from_canonical_dict(["observation_id"])  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

@@ -2,6 +2,63 @@
 
 All notable project changes will be documented here.
 
+## Unreleased
+
+### Added
+
+- Persisted history (ADR 0008). Typed version-1 event contracts for `artifact.ingested`,
+  `observation.recorded`, `case.created`, `case.observation_linked`, `detection.attested`,
+  `case.evaluated`, `case.pain_reduced`, `case.disposition_recorded`, and `case.identified`,
+  validated on every append by `complyroll.events.EventRepository`; event metadata records the
+  actor, method, tool version, and a per-run identifier.
+- `complyroll ingest`, `complyroll cases correlate`, `complyroll cases attest-detection`,
+  `complyroll cases evaluate`, `complyroll cases list`, `complyroll cases history`,
+  `complyroll report vdt --db`, and `complyroll store verify`. Every write is idempotent: a
+  repeated command appends nothing and a changed evaluation appends a new `case.evaluated`
+  event instead of overwriting the earlier one.
+- An event-sourced rebuild of the Vulnerability Detail Report that rehydrates recorded
+  observations, folds each case stream, and runs the same record compiler; its output is
+  byte-identical to the stateless report for the same inputs and that equality is a test.
+- `Observation.from_canonical_dict` (the inverse of the ADR 0002 canonical form) and
+  `SQLiteEventStore.verify_history`, which walks the log checking digests, contiguity, the
+  sequence counter, and schema definitions and returns a structured report.
+- `SQLiteEventStore.open_for_verification`, a diagnostic open path that never creates or modifies
+  the file, so `store verify` reports faults (a truncated tail, an altered or missing schema
+  object) on stores the normal open refuses instead of raising. The normal open and every append
+  now also refuse a hole anywhere in history (event count versus highest sequence, per stream
+  and globally), not only a truncated tail, and `store verify` validates every payload against
+  its published contract after the store-level walk.
+- `cases evaluate` refuses an evaluations file that would give two cases the same effective
+  tracking id, and warns (`disposition_retained`, `reduction_retained`,
+  `identification_retained`) when an entry omits a disposition, PAIN reductions, or a tracking-id
+  override the case already holds, because no retraction event exists. An evaluations file that
+  states the same PAIN reduction twice is refused on both paths. `cases attest-detection`
+  reports cases where any observation already carries a source timestamp as not applicable, and
+  `--all-missing` skips cases that are already attested. Every command except `ingest` reports
+  `store_missing` rather than creating an empty store, and a failed `ingest` creates no file.
+- The `case.disposition_recorded` contract enforces the evaluations file's cross-field rules
+  (closed needs a closed disposition; a rationale only with acceptance; acceptance needs a
+  rationale) at append and in the fold; the `observation.recorded` contract accepts only the
+  exact timestamp text the canonical writer produces, and the repository reads every observation
+  payload back through the canonical reader before storing it. Completed PAIN reductions render in
+  canonical order on both paths, and a disposition recorded without an evaluation makes the
+  replay fail closed.
+- A `[tool.mypy]` configuration so the type gate is reproducible from the repository.
+- A `release.yml` workflow that publishes to PyPI through trusted publishing (OIDC, no stored
+  token) when a `v<version>` tag is pushed: the tag must equal the `pyproject` version, the suite
+  runs on the exact tree being published, and the publish job is gated by a `pypi` environment.
+
+### Changed
+
+- Repository and issue URLs point at the `ComplyRoll` GitHub organization
+  (`github.com/ComplyRoll/ComplyRoll`); the previous path redirects.
+- The Vulnerability Detail Report compiler is split into `compile_records`, shared by the
+  stateless and persisted paths so neither can drift from the other; `compile_vdt_report` keeps
+  its signature, behavior, and output. Detection-time attestations are per case on the persisted
+  path: when every attested case shares one instant the report carries the same
+  `detectionTimeAttestation` block as before; otherwise the block lists each instant with the
+  tracking ids it covers and has no single `detectedAt`.
+
 ## 0.2.0a0 - 2026-08-21
 
 Hardening release driven by an independent audit of the Phase 0 and Phase 1 primitives.

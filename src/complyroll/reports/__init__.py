@@ -13,6 +13,7 @@ from .evaluations import (
     parse_evaluations,
     parse_rfc3339,
 )
+from .replay import compile_vdt_report_from_history
 from .vdt import (
     ACTIVE_STATUSES,
     DISCLAIMER,
@@ -23,10 +24,12 @@ from .vdt import (
     CompiledDeadline,
     CompiledVdtReport,
     CompiledVulnerability,
+    DetectionAttestation,
     ReportCompileError,
     ReportDiagnostic,
     ReportMetadata,
     ReportOptions,
+    compile_records,
     compile_vdt_report,
 )
 
@@ -42,6 +45,7 @@ __all__ = [
     "CompiledDeadline",
     "CompiledVdtReport",
     "CompiledVulnerability",
+    "DetectionAttestation",
     "EvaluationInput",
     "EvaluationMatch",
     "EvaluationSet",
@@ -52,7 +56,9 @@ __all__ = [
     "ReportInputError",
     "ReportMetadata",
     "ReportOptions",
+    "compile_records",
     "compile_vdt_report",
+    "compile_vdt_report_from_history",
     "load_evaluations",
     "parse_evaluations",
     "parse_rfc3339",

@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
+from urllib.parse import quote
 from uuid import uuid4
 
 SCHEMA_VERSION = 1
@@ -135,6 +136,37 @@ class ProjectionCheckpoint:
     updated_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class IntegrityFault:
+    """One integrity problem found by `verify_history`.
+
+    ``sequence`` locates the offending row when one can be identified, and is None for
+    a fault that belongs to the database rather than to a single event.
+    """
+
+    sequence: int | None
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrityReport:
+    """The outcome of one full walk of stored history."""
+
+    ok: bool
+    checked_events: int
+    faults: tuple[IntegrityFault, ...]
+
+    def render(self) -> str:
+        """Return a single-line summary suitable for a command's output."""
+
+        if self.ok:
+            return f"ok: {self.checked_events} event(s) verified"
+        return (
+            f"faults: {len(self.faults)} problem(s) in {self.checked_events} verified event(s)"
+        )
+
+
 _SCHEMA_V1 = (
     """
     CREATE TABLE complyroll_schema_migrations (
@@ -243,14 +275,56 @@ class SQLiteEventStore:
             self.close()
             raise
 
+    @classmethod
+    def open_for_verification(
+        cls,
+        database: str | Path,
+        *,
+        busy_timeout_ms: int = 5000,
+    ) -> Self:
+        """Open an existing store read-only so `verify_history` can describe a damaged file.
+
+        The normal constructor refuses a database whose schema objects, migration record,
+        sequence counter, or history contiguity are wrong, which makes exactly those faults
+        impossible to report.
+        This path applies the same connection-scoped pragmas but runs no verification and
+        creates no schema, and SQLite itself is opened read-only, so inspecting a file never
+        changes it. A path with no file behind it is an error, never a new empty database.
+
+        The store this returns is for reading only: every write, `append` included, is
+        refused by SQLite. Use the constructor for anything that must record history.
+        """
+
+        _require_positive_integer(busy_timeout_ms, "busy_timeout_ms")
+        path = Path(database)
+        if not path.is_file():
+            raise EventStoreError(f"could not open the database: no file at {str(database)!r}")
+
+        store = cls.__new__(cls)
+        store.database = str(database)
+        store.busy_timeout_ms = busy_timeout_ms
+        store._clock = lambda: datetime.now(UTC)
+        store._connection = None
+        try:
+            connection = sqlite3.connect(_read_only_uri(path), uri=True, isolation_level=None)
+        except sqlite3.Error as exc:
+            raise _database_open_error(exc) from exc
+        store._connection = connection
+        connection.row_factory = sqlite3.Row
+
+        try:
+            store._configure_read_only_connection()
+        except Exception:
+            store.close()
+            raise
+        return store
+
     def _configure_connection(self) -> None:
-        """Apply the durability and safety pragmas every ComplyRoll connection requires."""
+        """Apply the durability and safety pragmas every writable connection requires."""
 
         connection = self._require_open()
         try:
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
-            connection.execute("PRAGMA trusted_schema = OFF")
+            self._configure_shared_pragmas(connection)
             journal_mode = self._enable_write_ahead_logging(connection)
             connection.execute("PRAGMA synchronous = FULL")
         except sqlite3.DatabaseError as exc:
@@ -261,6 +335,28 @@ class SQLiteEventStore:
             raise EventStoreError(
                 f"database refused write-ahead logging and reports journal mode {journal_mode!r}"
             )
+
+    def _configure_read_only_connection(self) -> None:
+        """Apply only the pragmas that cannot write, then prove the header is readable.
+
+        The journal-mode switch and `PRAGMA synchronous` are deliberately absent: the first
+        rewrites the file header on a store that is not already in WAL mode, and the second
+        only governs writes this connection cannot make.
+        """
+
+        connection = self._require_open()
+        try:
+            self._configure_shared_pragmas(connection)
+            connection.execute("PRAGMA user_version").fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise _database_open_error(exc) from exc
+
+    def _configure_shared_pragmas(self, connection: sqlite3.Connection) -> None:
+        """Set the connection-scoped pragmas that never touch the database file."""
+
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+        connection.execute("PRAGMA trusted_schema = OFF")
 
     def _enable_write_ahead_logging(self, connection: sqlite3.Connection) -> str:
         """Switch the file to WAL once, retrying while another opener holds the lock.
@@ -365,6 +461,7 @@ class SQLiteEventStore:
             self._transaction(connection),
         ):
             self._require_sequence_counter_intact(connection)
+            self._require_history_contiguous(connection, stream_id=stream_id)
             actual_version = self._current_stream_version(connection, stream_id)
             if actual_version != expected_version:
                 raise EventConcurrencyError(stream_id, expected_version, actual_version)
@@ -481,6 +578,170 @@ class SQLiteEventStore:
         records = tuple(_event_from_row(row) for row in rows)
         _require_contiguous_stream_versions(records, stream_id, after_version)
         return records
+
+    def verify_history(self) -> IntegrityReport:
+        """Walk the whole log and report every integrity fault instead of raising one.
+
+        The checks are the ones the read path performs one page at a time, plus the two
+        that only a full walk can make: every payload digest, global sequence
+        contiguity, per-stream version contiguity, the AUTOINCREMENT counter against the
+        last stored row, and the stored schema definitions against the source DDL. A
+        fault is collected, never raised, so a damaged store can still be described. A
+        SQLite failure (unreadable file, I/O error) is still an error, not a fault.
+
+        Faults arrive in a fixed order: schema objects sorted by ``(type, name)``, then the
+        migration record, then the sequence counter, then rows by ascending sequence. A
+        store opened through `open_for_verification` reaches the first four, which the
+        normal constructor refuses to open at all. When the `events` table is itself gone
+        the schema faults are reported and the walk is skipped rather than letting SQLite
+        raise, and the migration table is read only when it is present.
+        """
+
+        connection = self._require_open()
+        faults: list[IntegrityFault] = []
+        checked = 0
+        with _sqlite_errors("could not verify event history"):
+            present = self._schema_objects(connection)
+            faults.extend(self._schema_faults(connection))
+            faults.extend(self._migration_faults(connection, present))
+            if ("table", "events") not in present:
+                return IntegrityReport(ok=not faults, checked_events=0, faults=tuple(faults))
+            faults.extend(self._counter_faults(connection, present))
+            expected_sequence = 1
+            stream_versions: dict[str, int] = {}
+            after_sequence = 0
+            while True:
+                rows = connection.execute(
+                    "SELECT * FROM events WHERE sequence > ? ORDER BY sequence LIMIT ?",
+                    (after_sequence, MAX_READ_BATCH),
+                ).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    checked += 1
+                    sequence = int(row["sequence"])
+                    after_sequence = sequence
+                    faults.extend(_payload_faults(row, sequence))
+                    if sequence != expected_sequence:
+                        faults.append(
+                            IntegrityFault(
+                                sequence=sequence,
+                                code="sequence_gap",
+                                message=(
+                                    f"event history is missing sequence {expected_sequence}; "
+                                    f"next stored sequence is {sequence}"
+                                ),
+                            )
+                        )
+                        expected_sequence = sequence
+                    expected_sequence += 1
+
+                    stream_id = str(row["stream_id"])
+                    stream_version = int(row["stream_version"])
+                    expected_version = stream_versions.get(stream_id, 0) + 1
+                    if stream_version != expected_version:
+                        faults.append(
+                            IntegrityFault(
+                                sequence=sequence,
+                                code="stream_version_gap",
+                                message=(
+                                    f"stream {stream_id!r} is missing version "
+                                    f"{expected_version}; next stored version is "
+                                    f"{stream_version}"
+                                ),
+                            )
+                        )
+                    stream_versions[stream_id] = stream_version
+        return IntegrityReport(ok=not faults, checked_events=checked, faults=tuple(faults))
+
+    def _schema_faults(self, connection: sqlite3.Connection) -> tuple[IntegrityFault, ...]:
+        """Report missing or rewritten schema objects, ordered by ``(type, name)``.
+
+        Missing and altered objects share one ordering so a reader walks the schema once,
+        rather than reading the missing ones and then starting over on the altered ones.
+        """
+
+        definitions = self._schema_definitions(connection)
+        faults: list[IntegrityFault] = []
+        for key in sorted(EXPECTED_SCHEMA_OBJECTS):
+            object_type, name = key
+            if key not in definitions:
+                faults.append(
+                    IntegrityFault(
+                        sequence=None,
+                        code="schema_object_missing",
+                        message=f"database is missing {object_type} {name}",
+                    )
+                )
+            elif _normalize_sql(definitions[key] or "") != EXPECTED_SCHEMA[key]:
+                faults.append(
+                    IntegrityFault(
+                        sequence=None,
+                        code="schema_object_altered",
+                        message=f"{object_type} {name} does not match its expected definition",
+                    )
+                )
+        return tuple(faults)
+
+    @staticmethod
+    def _migration_faults(
+        connection: sqlite3.Connection,
+        present: frozenset[tuple[str, str]],
+    ) -> tuple[IntegrityFault, ...]:
+        """Report a missing migration record, reading the table only when it exists.
+
+        A database whose migration table is gone already carries a `schema_object_missing`
+        fault for it, and querying the absent table would raise instead of reporting.
+        """
+
+        if ("table", "complyroll_schema_migrations") not in present:
+            return ()
+        migration = connection.execute(
+            "SELECT version FROM complyroll_schema_migrations WHERE version = ?",
+            (SCHEMA_VERSION,),
+        ).fetchone()
+        if migration is not None:
+            return ()
+        return (
+            IntegrityFault(
+                sequence=None,
+                code="migration_missing",
+                message=f"database is missing migration record {SCHEMA_VERSION}",
+            ),
+        )
+
+    @staticmethod
+    def _counter_faults(
+        connection: sqlite3.Connection,
+        present: frozenset[tuple[str, str]],
+    ) -> tuple[IntegrityFault, ...]:
+        """Report a truncated tail: the AUTOINCREMENT counter outruns the last row.
+
+        ``sqlite_sequence`` exists only while some table declares AUTOINCREMENT, so a
+        database that lost it reads as a counter of zero rather than raising.
+        """
+
+        counter = 0
+        if ("table", "sqlite_sequence") in present:
+            row = connection.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'events'"
+            ).fetchone()
+            counter = 0 if row is None else int(row[0])
+        latest = int(
+            connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM events").fetchone()[0]
+        )
+        if counter == latest:
+            return ()
+        return (
+            IntegrityFault(
+                sequence=latest,
+                code="sequence_counter_mismatch",
+                message=(
+                    f"event history was truncated: last stored sequence is {latest} but the "
+                    f"sequence counter is {counter}"
+                ),
+            ),
+        )
 
     def get_projection_checkpoint(self, name: str) -> ProjectionCheckpoint:
         """Return a projection checkpoint, defaulting to sequence zero."""
@@ -650,6 +911,28 @@ class SQLiteEventStore:
                     f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
                 )
 
+        self._verify_existing_schema(
+            connection,
+            application_id=application_id,
+            version=version,
+            present=present,
+        )
+
+    def _verify_existing_schema(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        application_id: int,
+        version: int,
+        present: frozenset[tuple[str, str]],
+    ) -> None:
+        """Refuse a database whose marking, schema, migration, counter, or history is wrong.
+
+        Only the writable open path runs these checks. `open_for_verification` skips them
+        so `verify_history` can describe the same damage as faults instead of refusing to
+        open the file at all.
+        """
+
         if application_id != APPLICATION_ID:
             raise UnsupportedSchemaError("database schema is not marked as a ComplyRoll store")
 
@@ -677,6 +960,7 @@ class SQLiteEventStore:
         if migration is None:
             raise UnsupportedSchemaError(f"database is missing migration record {version}")
         self._require_sequence_counter_intact(connection)
+        self._require_history_contiguous(connection)
 
     @staticmethod
     def _schema_objects(connection: sqlite3.Connection) -> frozenset[tuple[str, str]]:
@@ -695,10 +979,10 @@ class SQLiteEventStore:
     def _require_sequence_counter_intact(connection: sqlite3.Connection) -> None:
         """Detect a truncated tail: the AUTOINCREMENT counter must equal the last stored row.
 
-        A gap inside history is caught on read. Deleting the most recent rows leaves no gap,
-        but SQLite's sequence counter still remembers them, so the two disagree. Checking here
-        also prevents the next append from minting a sequence past the hole and leaving a
-        permanent gap that would fail every later read.
+        Deleting the most recent rows leaves no gap between the rows that remain, but
+        SQLite's sequence counter still remembers them, so the two disagree. That is the one
+        shape a contiguity check cannot see, and `_require_history_contiguous` covers every
+        other one; together they keep an append from ever writing past missing history.
         """
 
         row = connection.execute(
@@ -713,6 +997,104 @@ class SQLiteEventStore:
                 f"sequence counter is {counter}",
                 sequence=latest,
             )
+
+    @classmethod
+    def _require_history_contiguous(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        stream_id: str | None = None,
+    ) -> None:
+        """Refuse history with a hole in it, not only history with a truncated tail.
+
+        The counter check above sees rows deleted off the end and nothing else. A row
+        removed from the middle leaves the counter and the last stored sequence agreeing,
+        so such a file used to open normally and the next append minted a sequence past the
+        hole, making the gap permanent and every later full read fail. ADR 0008 says append
+        refuses to write past a hole, which has to mean any hole.
+
+        Two counts find one: the stored row count must equal MAX(sequence), and each
+        stream's row count must equal its own MAX(stream_version). Both are index-backed
+        aggregates, run once per open and once per append, which is the cost Phase 1
+        volumes carry. ``stream_id`` narrows the per-stream half to the one stream an append
+        is about to touch; the constructor passes none and checks every stream at once.
+
+        `open_for_verification` never reaches this: it exists to inspect damaged files, and
+        `verify_history` reports the same damage as `sequence_gap` and `stream_version_gap`
+        faults instead.
+        """
+
+        cls._require_sequences_contiguous(connection)
+        if stream_id is None:
+            cls._require_all_streams_contiguous(connection)
+        else:
+            cls._require_stream_contiguous(connection, stream_id)
+
+    @staticmethod
+    def _require_sequences_contiguous(connection: sqlite3.Connection) -> None:
+        """Require the global log to hold every sequence from 1 to the highest stored one."""
+
+        row = connection.execute(
+            """
+            SELECT COUNT(*), COALESCE(MIN(sequence), 0), COALESCE(MAX(sequence), 0)
+            FROM events
+            """
+        ).fetchone()
+        stored, lowest, highest = int(row[0]), int(row[1]), int(row[2])
+        if stored == 0 or (stored == highest and lowest == 1):
+            return
+        raise _sequence_gap_error(connection, stored=stored, lowest=lowest, highest=highest)
+
+    @staticmethod
+    def _require_all_streams_contiguous(connection: sqlite3.Connection) -> None:
+        """Require every stream to hold every version from 1 to its own highest.
+
+        One grouped aggregate covers the whole log, and the offending streams are ordered by
+        identifier so the same damaged file always names the same stream.
+        """
+
+        row = connection.execute(
+            """
+            SELECT stream_id, COUNT(*), MIN(stream_version), MAX(stream_version)
+            FROM events
+            GROUP BY stream_id
+            HAVING COUNT(*) <> MAX(stream_version) OR MIN(stream_version) <> 1
+            ORDER BY stream_id
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return
+        raise _stream_version_gap_error(
+            connection,
+            stream_id=str(row[0]),
+            stored=int(row[1]),
+            lowest=int(row[2]),
+            highest=int(row[3]),
+        )
+
+    @staticmethod
+    def _require_stream_contiguous(connection: sqlite3.Connection, stream_id: str) -> None:
+        """Require one stream to hold every version from 1 to its own highest."""
+
+        row = connection.execute(
+            """
+            SELECT COUNT(*), COALESCE(MIN(stream_version), 0), COALESCE(MAX(stream_version), 0)
+            FROM events
+            WHERE stream_id = ?
+            """,
+            (stream_id,),
+        ).fetchone()
+        stored, lowest, highest = int(row[0]), int(row[1]), int(row[2])
+        if stored == 0 or (stored == highest and lowest == 1):
+            return
+        raise _stream_version_gap_error(
+            connection,
+            stream_id=stream_id,
+            stored=stored,
+            lowest=lowest,
+            highest=highest,
+        )
 
     @staticmethod
     def _current_stream_version(connection: sqlite3.Connection, stream_id: str) -> int:
@@ -866,6 +1248,130 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
     )
 
 
+def _payload_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ...]:
+    """Check one stored row's payload digest and JSON without raising."""
+
+    payload_json = str(row["payload_json"])
+    expected_digest = str(row["payload_sha256"])
+    actual_digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    if actual_digest != expected_digest:
+        return (
+            IntegrityFault(
+                sequence=sequence,
+                code="payload_digest_mismatch",
+                message=(
+                    f"event {str(row['event_id'])!r} payload does not match its recorded digest"
+                ),
+            ),
+        )
+    try:
+        payload = json.loads(payload_json)
+        metadata = json.loads(str(row["metadata_json"]))
+    except json.JSONDecodeError:
+        return (
+            IntegrityFault(
+                sequence=sequence,
+                code="payload_not_json",
+                message=f"event {str(row['event_id'])!r} contains invalid JSON",
+            ),
+        )
+    if not isinstance(payload, dict) or not isinstance(metadata, dict):
+        return (
+            IntegrityFault(
+                sequence=sequence,
+                code="payload_not_object",
+                message=f"event {str(row['event_id'])!r} JSON must contain objects",
+            ),
+        )
+    return ()
+
+
+def _sequence_gap_error(
+    connection: sqlite3.Connection,
+    *,
+    stored: int,
+    lowest: int,
+    highest: int,
+) -> EventIntegrityError:
+    """Name the first sequence missing from the global log, in the read path's wording.
+
+    The lowest stored sequence whose predecessor is absent bounds the first hole from
+    above, and history that no longer starts at 1 answers this query with its own first
+    row. Both lookups ride the primary key, and the query runs only once damage is already
+    known, so the walk it costs is never paid by a healthy store.
+    """
+
+    row = connection.execute(
+        """
+        SELECT MIN(e.sequence)
+        FROM events AS e
+        WHERE e.sequence > 1
+          AND NOT EXISTS (SELECT 1 FROM events AS p WHERE p.sequence = e.sequence - 1)
+        """
+    ).fetchone()
+    following = None if row is None or row[0] is None else int(row[0])
+    if following is None:
+        # Every stored row has its predecessor, so the count can only disagree with the
+        # highest sequence because some row carries a sequence at or below zero.
+        return EventIntegrityError(
+            f"event history holds {stored} event(s) but its sequences run from {lowest} to "
+            f"{highest}",
+            sequence=highest,
+        )
+    return EventIntegrityError(
+        f"event history is missing sequence {following - 1}; next stored sequence is "
+        f"{following}",
+        sequence=following,
+    )
+
+
+def _stream_version_gap_error(
+    connection: sqlite3.Connection,
+    *,
+    stream_id: str,
+    stored: int,
+    lowest: int,
+    highest: int,
+) -> EventIntegrityError:
+    """Name the first version missing from one stream, in the read path's wording.
+
+    The bare ``sequence`` beside ``MIN(stream_version)`` is the sequence of the row that
+    produced the minimum: SQLite defines bare columns that way when a query aggregates with
+    a single MIN or MAX, so locating the row costs no second query.
+    """
+
+    row = connection.execute(
+        """
+        SELECT MIN(e.stream_version), e.sequence
+        FROM events AS e
+        WHERE e.stream_id = ?
+          AND e.stream_version > 1
+          AND NOT EXISTS (
+              SELECT 1
+              FROM events AS p
+              WHERE p.stream_id = e.stream_id AND p.stream_version = e.stream_version - 1
+          )
+        """,
+        (stream_id,),
+    ).fetchone()
+    following = None if row is None or row[0] is None else int(row[0])
+    if following is None:
+        # Unlike a sequence, a stream version cannot fall below one while the table's CHECK
+        # and its UNIQUE (stream_id, stream_version) stand, so a count that outruns the
+        # highest version means the schema itself was rewritten. Reaching this without a
+        # message would be worse than the guard costing a branch.
+        return EventIntegrityError(
+            f"stream {stream_id!r} holds {stored} event(s) but its versions run from "
+            f"{lowest} to {highest}",
+            sequence=None,
+        )
+    return EventIntegrityError(
+        f"stream {stream_id!r} is missing version {following - 1}; next stored version is "
+        f"{following}",
+        sequence=int(row[1]),
+    )
+
+
 def _require_contiguous_sequences(
     records: Sequence[EventRecord],
     after_sequence: int,
@@ -992,6 +1498,16 @@ class _sqlite_errors:
     ) -> None:
         if isinstance(exc_value, sqlite3.Error):
             raise _storage_error(self.context, exc_value) from exc_value
+
+
+def _read_only_uri(path: Path) -> str:
+    """Build the SQLite URI that opens an existing file read-only and creates nothing.
+
+    Percent-encoding matters: a path holding ``?`` or ``#`` would otherwise be read as URI
+    syntax and silently address a different file.
+    """
+
+    return f"file:{quote(str(path))}?mode=ro"
 
 
 def _is_memory_database(database: str) -> bool:

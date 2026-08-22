@@ -10,7 +10,14 @@ build/
 dist/
 htmlcov/
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
+# Outputs the README quick start writes into the repository root
+/report.json
+/report.md
+/report-from-history.json
+/report-from-history.md
 .DS_Store
 Plans/

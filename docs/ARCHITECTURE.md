@@ -150,19 +150,11 @@ Projection checkpoints are mutable compare-and-swap cursors over the global sequ
 rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
 will own their query tables and must update those rows and their checkpoint in one transaction.
 
-Candidate event types include:
-
-- `observation.recorded`
-- `case.created`
-- `case.observation_linked`
-- `case.evaluated`
-- `case.rating_reduced`
-- `case.action_planned`
-- `case.action_completed`
-- `case.accepted`
-- `case.closed`
-- `validation.completed`
-- `evidence.attached`
+Event types with published version-1 contracts (ADR 0008): `artifact.ingested`,
+`observation.recorded`, `case.created`, `case.observation_linked`, `detection.attested`,
+`case.evaluated`, `case.pain_reduced`, `case.disposition_recorded`, `case.identified`.
+Candidates for later slices: `case.action_planned`, `case.action_completed`,
+`validation.completed`, `evidence.attached`.
 
 ## Package layout
 
@@ -172,19 +164,26 @@ src/complyroll/
   compat/         # predecessor-compatible stigroll CLI and renderers
   correlation/    # correlation v0: open observations grouped into vulnerabilities (ADR 0007)
   data/           # bundled immutable source manifests, rules, and official schemas
+  events/         # typed event contracts (JSON Schemas), stream ids, and the validating repository (ADR 0008)
+  history/        # the fold: rehydrated observations, case state, history listings, idempotent writers
   policy/         # verified rule source, class-aware selection, and deadlines
-  reports/        # stateless report compilers, the evaluations file, and Markdown twins
+  reports/        # the record compiler, the stateless and replayed report paths, the evaluations file
   schemas/        # verified offline schema registry and report validation results
   store/          # SQLite event history, migrations, integrity, and projection checkpoints
-  cli.py          # ComplyRoll project CLI (report vdt, validate, version, plan)
+  cli.py          # ComplyRoll project CLI (ingest, cases, report vdt, store verify, validate, version, plan)
   models.py       # framework-independent domain records
 ```
 
-The first report compiler is stateless (ADR 0007): `reports.vdt.compile_vdt_report` is a pure
-function of artifacts, an evaluations file, and explicit package options, and it validates its
-own output before returning. Event-sourced projections that rebuild the same report from durable
-history are the next slice; the stateless output is their reconciliation target. The domain model
-remains independent from both.
+The report compiler has two entry paths that share one record compiler (ADR 0007, ADR 0008).
+The stateless path is a pure function of artifacts, an evaluations file, and explicit package
+options. The persisted path reads `observation.recorded` payloads back into observations, folds
+each case stream into its current state (attestation, every evaluation in order, reductions,
+disposition, identifier override), and hands the result to the same compiler, so the rebuilt
+report is byte-identical to the stateless one for the same inputs; that equality is the
+slice's acceptance test and stays a regression test. Event payloads are validated against the
+contracts in `events/` on every append; the store itself stays a generic envelope log. The fold
+runs in memory at Phase 1 volumes; projection tables and checkpoints remain available for when
+that stops being enough. The domain model remains independent from all of it.
 
 ## Failure semantics
 

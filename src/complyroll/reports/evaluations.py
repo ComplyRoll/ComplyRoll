@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -318,23 +318,47 @@ def _parse_projection(value: Any, prefix: str) -> ProjectedReduction | None:
 
 
 def _parse_reduction_events(value: Any, prefix: str) -> tuple[PainReductionEvent, ...]:
+    """Parse the completed PAIN reductions, refusing a reduction stated twice.
+
+    A reduction is one event in history, keyed by the instant it happened and the
+    rating it reached (ADR 0008 Decision 2), so the persisted path can only ever store
+    one copy of a repeated entry while the stateless path would report both. Refusing
+    the repeat at the parse boundary keeps the two paths reading the same file the same
+    way. Entries that share an instant but reach different ratings are distinct events
+    and are still accepted, as are two spellings of two different instants.
+    """
+
     if value is None:
         return ()
     if not isinstance(value, list):
         raise ReportInputError(f"{prefix} must be an array")
     events: list[PainReductionEvent] = []
+    first_stated: dict[tuple[datetime, PainRating], int] = {}
     for index, raw_event in enumerate(value):
         item_prefix = f"{prefix}[{index}]"
         if not isinstance(raw_event, dict):
             raise ReportInputError(f"{item_prefix} must be an object")
         _reject_unknown_keys(raw_event, frozenset({"reducedAt", "rating"}), item_prefix)
-        events.append(
-            PainReductionEvent(
-                reduced_at=_parse_timestamp(raw_event.get("reducedAt"), f"{item_prefix}.reducedAt"),
-                rating=_parse_rating(raw_event.get("rating"), f"{item_prefix}.rating"),
-            )
+        event = PainReductionEvent(
+            reduced_at=_parse_timestamp(raw_event.get("reducedAt"), f"{item_prefix}.reducedAt"),
+            rating=_parse_rating(raw_event.get("rating"), f"{item_prefix}.rating"),
         )
+        earlier = first_stated.get((event.reduced_at, event.rating))
+        if earlier is not None:
+            raise ReportInputError(
+                f"{item_prefix} repeats the PAIN {int(event.rating)} reduction at "
+                f"{_utc_text(event.reduced_at)} that {prefix}[{earlier}] already states; "
+                "one reduction is one event, so a repeated entry cannot be recorded"
+            )
+        first_stated[(event.reduced_at, event.rating)] = index
+        events.append(event)
     return tuple(events)
+
+
+def _utc_text(value: datetime) -> str:
+    """Render one instant the way history stores it, so an error names one spelling."""
+
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_status(value: Any, field_name: str) -> CaseStatus | None:

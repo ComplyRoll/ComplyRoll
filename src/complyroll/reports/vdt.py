@@ -11,8 +11,8 @@ stops the run with diagnostics and no output.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,11 @@ from urllib.parse import urlsplit
 
 from complyroll import __version__
 from complyroll.adapters import DiagnosticLevel, ingest_stig_artifact
-from complyroll.correlation import VulnerabilityGroup, correlate_observations
+from complyroll.correlation import (
+    VulnerabilityGroup,
+    correlate_observations,
+    group_open_observations,
+)
 from complyroll.models import CaseStatus, Observation, PainRating, ResourceRef
 from complyroll.policy import (
     CertificationClass,
@@ -140,6 +144,27 @@ class ReportOptions:
             self.certification_class,
             calendar_timezone=self.calendar_timezone,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionAttestation:
+    """Attested detection times for groups whose sources declare none.
+
+    `default` is the stateless `--detected-at` and applies to every group that needs
+    one. `by_tracking_id` carries per-case attestations read back from
+    `detection.attested` events and wins over the default for the cases it names. An
+    attestation never overrides a detection time a source artifact declares (ADR 0007
+    amendment).
+    """
+
+    default: datetime | None = None
+    by_tracking_id: Mapping[str, datetime] = field(default_factory=dict)
+
+    def for_tracking_id(self, tracking_id: str) -> datetime | None:
+        """Return the instant attested for one group, or None when none applies."""
+
+        attested = self.by_tracking_id.get(tracking_id)
+        return self.default if attested is None else attested
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,12 +368,15 @@ class ReportMetadata:
     parser_versions: tuple[tuple[str, str], ...]
     attestation_applied_to: tuple[str, ...] = ()
     excluded_by_period: int = 0
+    attestation_detected_at: datetime | None = None
 
     @property
     def attestation(self) -> datetime | None:
+        """Return the single attested instant, or None when there is not exactly one."""
+
         if not self.attestation_applied_to:
             return None
-        return self.options.detected_at_attestation
+        return self.attestation_detected_at
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,9 +416,45 @@ def compile_vdt_report(
     if evaluations is not None and not isinstance(evaluations, EvaluationSet):
         raise TypeError("evaluations must be an EvaluationSet")
 
-    diagnostics: list[ReportDiagnostic] = []
-    artifacts, observations = _ingest_all(artifact_paths, options, diagnostics)
+    ingest_diagnostics: list[ReportDiagnostic] = []
+    artifacts, observations = _ingest_all(artifact_paths, options, ingest_diagnostics)
+    groups = group_open_observations(observations)
+    matches = _match_evaluations(groups, evaluations)
+    return compile_records(
+        artifacts=artifacts,
+        observations=observations,
+        ingest_diagnostics=ingest_diagnostics,
+        evaluations_by_tracking_id=matches,
+        attestation=DetectionAttestation(default=options.detected_at_attestation),
+        options=options,
+    )
 
+
+def compile_records(
+    *,
+    artifacts: Sequence[CompiledArtifact],
+    observations: Sequence[Observation],
+    ingest_diagnostics: Sequence[ReportDiagnostic],
+    evaluations_by_tracking_id: Mapping[str, EvaluationInput],
+    attestation: DetectionAttestation,
+    options: ReportOptions,
+) -> CompiledVdtReport:
+    """Compile one report from already-normalized records.
+
+    Both the stateless path and the event-sourced rebuild call this, so neither can
+    drift from the other by construction (ADR 0008 Decision 5). Callers own how the
+    artifacts, observations, ingest diagnostics, and evaluations were obtained;
+    everything downstream of them happens here. `ingest_diagnostics` are the notes the
+    caller raised while assembling those inputs, and they lead the compiled diagnostics
+    list in the order they were given.
+    """
+
+    if not isinstance(options, ReportOptions):
+        raise TypeError("options must be a ReportOptions")
+    if not isinstance(attestation, DetectionAttestation):
+        raise TypeError("attestation must be a DetectionAttestation")
+
+    diagnostics: list[ReportDiagnostic] = list(ingest_diagnostics)
     correlation = correlate_observations(observations)
     for observation in correlation.unresolved:
         diagnostics.append(
@@ -407,8 +471,6 @@ def compile_vdt_report(
         )
 
     groups = correlation.groups
-    matches = _match_evaluations(groups, evaluations)
-
     snapshot = load_bundled_rule_source_snapshot()
     policy = select_policy(snapshot, options.profile)
     schema_provenance = _schema_provenance()
@@ -417,7 +479,7 @@ def compile_vdt_report(
     missing_detection: list[str] = []
 
     for group in groups:
-        detected_at, detected_source = _resolve_detection_time(group, options)
+        detected_at, detected_source = _resolve_detection_time(group, attestation)
         if detected_at is None:
             missing_detection.append(group.tracking_id)
             continue
@@ -440,7 +502,7 @@ def compile_vdt_report(
                 group=group,
                 detected_at=detected_at,
                 detected_at_source=detected_source,
-                evaluation=matches.get(group.tracking_id),
+                evaluation=evaluations_by_tracking_id.get(group.tracking_id),
                 policy=policy,
                 snapshot=snapshot,
                 options=options,
@@ -476,6 +538,7 @@ def compile_vdt_report(
         parser_versions=_parser_versions(observations),
         attestation_applied_to=attested,
         excluded_by_period=excluded,
+        attestation_detected_at=_attested_instant(records),
     )
     document = _build_document(tuple(records), metadata, tuple(diagnostics))
     validation = validate_bundled_report(ReportSchema.VULNERABILITY_DETAIL, document)
@@ -646,7 +709,7 @@ def _matches(entry: EvaluationInput, group: VulnerabilityGroup) -> bool:
 
 def _resolve_detection_time(
     group: VulnerabilityGroup,
-    options: ReportOptions,
+    attestation: DetectionAttestation,
 ) -> tuple[datetime | None, str]:
     """Resolve one group's detection time without ever guessing one.
 
@@ -657,9 +720,51 @@ def _resolve_detection_time(
     if group.earliest_observed_at is not None:
         source = "artifact-partial" if group.has_partial_timestamps else "artifact"
         return group.earliest_observed_at.astimezone(UTC), source
-    if options.detected_at_attestation is not None:
-        return options.detected_at_attestation.astimezone(UTC), "attestation"
+    attested = attestation.for_tracking_id(group.tracking_id)
+    if attested is not None:
+        return attested.astimezone(UTC), "attestation"
     return None, "missing"
+
+
+def _attested_instant(records: Sequence[CompiledVulnerability]) -> datetime | None:
+    """Return the one instant every attested record shares, or None if they differ.
+
+    The instant is read off the record, never looked up again by identifier. An
+    operator's `trackingId` override renames a record after its detection time is
+    resolved, so `record.tracking_id` is no longer a key into the attestation map
+    while `record.original_tracking_id` is; resolving the shared instant from the
+    resolved records leaves no key to get wrong. `_attestation_groups` reads the same
+    field, so the scalar form and the grouped form describe one set of facts.
+    """
+
+    instants = {
+        record.detected_at
+        for record in records
+        if record.detected_at_source == "attestation"
+    }
+    if len(instants) != 1:
+        return None
+    return next(iter(instants))
+
+
+def _attestation_groups(
+    records: Sequence[CompiledVulnerability],
+) -> tuple[tuple[datetime, tuple[str, ...]], ...]:
+    """Group the attested records by the instant attested for each, earliest first.
+
+    Both renderings read this, so the JSON block and the Markdown twin can never
+    describe different groupings of the same records.
+    """
+
+    grouped: dict[datetime, list[str]] = {}
+    for record in records:
+        if record.detected_at_source != "attestation":
+            continue
+        grouped.setdefault(record.detected_at, []).append(record.tracking_id)
+    return tuple(
+        (instant, tuple(sorted(tracking_ids)))
+        for instant, tracking_ids in sorted(grouped.items())
+    )
 
 
 def _require_unique_tracking_ids(records: Sequence[CompiledVulnerability]) -> None:
@@ -780,6 +885,8 @@ def _build_record(
     snapshot: RuleSourceSnapshot,
     options: ReportOptions,
 ) -> CompiledVulnerability:
+    if evaluation is not None:
+        evaluation = _canonical_reductions(evaluation)
     status = evaluation.resolved_status if evaluation is not None else None
     if evaluation is not None and evaluation.case_status is CaseStatus.CLOSED and status is None:
         raise ReportCompileError(
@@ -841,6 +948,24 @@ def _build_record(
         untimestamped_observation_ids=group.untimestamped_observation_ids,
         original_tracking_id=group.tracking_id,
     )
+
+
+def _canonical_reductions(evaluation: EvaluationInput) -> EvaluationInput:
+    """Return the evaluation with its completed PAIN reductions in canonical order.
+
+    Order is by instant, then by rating. The stateless path reads reductions in the
+    order an evaluations file states them and the persisted path in the order they were
+    appended, and neither order is a fact about the vulnerability, so ordering them
+    here is what lets the two paths render the same history the same way (ADR 0008
+    Decision 5). Both renderings read the record this returns, so the JSON array and
+    the Markdown line can never disagree.
+    """
+
+    events = evaluation.pain_reduction_events
+    ordered = tuple(sorted(events, key=lambda item: (item.reduced_at, int(item.rating))))
+    if ordered == events:
+        return evaluation
+    return replace(evaluation, pain_reduction_events=ordered)
 
 
 def _describe(group: VulnerabilityGroup) -> str:
@@ -1003,13 +1128,7 @@ def _build_document(
     diagnostics: Sequence[ReportDiagnostic],
 ) -> dict[str, Any]:
     options = metadata.options
-    attestation: dict[str, Any] | None = None
-    if metadata.attestation_applied_to and options.detected_at_attestation is not None:
-        attestation = {
-            "detectedAt": _iso(options.detected_at_attestation),
-            "appliedTo": list(metadata.attestation_applied_to),
-            "count": len(metadata.attestation_applied_to),
-        }
+    attestation = _attestation_block(records, metadata)
     return {
         "certificationPackageOverviewUri": options.package_uri,
         "reportPeriod": {
@@ -1043,6 +1162,39 @@ def _build_document(
             "diagnostics": [diagnostic.to_dict() for diagnostic in diagnostics],
             "disclaimer": DISCLAIMER,
         },
+    }
+
+
+def _attestation_block(
+    records: Sequence[CompiledVulnerability],
+    metadata: ReportMetadata,
+) -> dict[str, Any] | None:
+    """Return the `detectionTimeAttestation` object, or None when none was needed.
+
+    One shared instant publishes the scalar form the stateless path has always
+    emitted. Differing instants, reachable only when history attested cases
+    separately, publish one entry per instant instead: a single report-level
+    `detectedAt` would be a false statement about the records it does not cover, so
+    there is no scalar key at all (ADR 0008 amendment).
+    """
+
+    applied_to = metadata.attestation_applied_to
+    if not applied_to:
+        return None
+    shared = metadata.attestation
+    if shared is not None:
+        return {
+            "detectedAt": _iso(shared),
+            "appliedTo": list(applied_to),
+            "count": len(applied_to),
+        }
+    return {
+        "appliedTo": list(applied_to),
+        "count": len(applied_to),
+        "attestations": [
+            {"detectedAt": _iso(instant), "appliedTo": list(tracking_ids)}
+            for instant, tracking_ids in _attestation_groups(records)
+        ],
     }
 
 
@@ -1149,11 +1301,21 @@ def _render_markdown(report: CompiledVdtReport) -> str:
     write("")
     attested = metadata.attestation_applied_to
     attestation = metadata.attestation
-    if attestation is None or not attested:
+    if not attested:
         write(
             "Every reported vulnerability carried a detection time from its source artifact. "
             "No attestation was needed."
         )
+    elif attestation is None:
+        write(
+            "The operator attested per-case detection times for "
+            f"{len(attested)} vulnerability record(s) whose source artifacts declare no "
+            "assessment timestamp. ComplyRoll never substitutes file modification or "
+            "ingestion time for a detection time."
+        )
+        write("")
+        for instant, tracking_ids in _attestation_groups(records):
+            write(f"- **{_iso(instant)}:** {', '.join(_cell(value) for value in tracking_ids)}")
     else:
         write(
             f"The operator attested a detection time of {_iso(attestation)} for "
@@ -1338,10 +1500,12 @@ __all__ = [
     "CompiledDeadline",
     "CompiledVdtReport",
     "CompiledVulnerability",
+    "DetectionAttestation",
     "ReportCompileError",
     "ReportDiagnostic",
     "ReportInputError",
     "ReportMetadata",
     "ReportOptions",
+    "compile_records",
     "compile_vdt_report",
 ]

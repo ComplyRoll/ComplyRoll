@@ -436,7 +436,7 @@
     "generatedAt": "2026-08-21T12:00:00Z",
     "generator": {
       "name": "complyroll",
-      "version": "0.2.0a0"
+      "version": "0.3.0a0"
     },
     "parserVersions": {
       "complyroll.ckl": "1",

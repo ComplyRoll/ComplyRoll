@@ -12,7 +12,7 @@
 |---|---|---|
 | Rules dataset | https://github.com/FedRAMP/rules at 58efbf3d898496dd4a3a419eba78e458bbad5cb6 (version 2026.07.14.01, updated 2026-07-14) | 135707003f0aaa5ceb10d7d32c2681e5b1585a4eaf4403d0d135837787e5ae8e |
 | Report schema | https://github.com/FedRAMP/schemas at ae43ae2952c5dd5c56d54d12e8b92c7db1b3710a (https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json version 0.1.1) | 5e9499e8cb9d0367c888ce41040175270fc9f007ae4f61d0ced34cca81cfe497 |
-| Generator | complyroll 0.2.0a0 | n/a |
+| Generator | complyroll 0.3.0a0 | n/a |
 
 ## Summary
 

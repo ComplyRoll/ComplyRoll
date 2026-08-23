@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "complyroll"
-version = "0.2.0a0"
+version = "0.3.0a0"
 description = "Evidence automation for continuous authorization"
 readme = "README.md"
 requires-python = ">=3.11"

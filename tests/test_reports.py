@@ -9,16 +9,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from complyroll import __version__
+from complyroll.adapters import IngestResult, ingest_stig_artifact
+from complyroll.correlation import group_open_observations
 from complyroll.models import CaseStatus
 from complyroll.policy import CertificationClass
 from complyroll.reports import (
     FINAL_DISPOSITIONS,
     MAX_EVALUATIONS_BYTES,
+    CompiledArtifact,
     CompiledVdtReport,
+    DetectionAttestation,
     EvaluationSet,
     ReportCompileError,
     ReportInputError,
     ReportOptions,
+    compile_records,
     compile_vdt_report,
     load_evaluations,
     parse_evaluations,
@@ -112,11 +117,134 @@ def compile_fixtures(
     )
 
 
+def ingest_text(text: str, name: str) -> IngestResult:
+    """Parse one artifact written from text, exactly as the report path parses it."""
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / name
+        path.write_text(text, encoding="utf-8")
+        return ingest_stig_artifact(path, ingested_at=AS_OF)
+
+
+def compiled_artifact(result: IngestResult) -> CompiledArtifact:
+    """Return the artifact provenance `compile_records` expects for one ingest."""
+
+    artifact = result.artifact
+    if artifact is None:
+        raise AssertionError("the artifact under test must parse")
+    return CompiledArtifact(
+        name=artifact.name,
+        sha256=artifact.digest_sha256,
+        parser=artifact.parser_name,
+        parser_version=artifact.parser_version,
+        size_bytes=artifact.size_bytes,
+        observation_count=len(result.observations),
+    )
+
+
 def find_vulnerability(report: CompiledVdtReport, source_record_id: str) -> dict[str, object]:
     for item in report.document["vulnerabilities"]:
         if str(item["vulnerabilityDescription"]).startswith(source_record_id):
             return item
     raise AssertionError(f"no vulnerability for {source_record_id}")
+
+
+def markdown_section(markdown: str, heading: str) -> str:
+    """Return one top-level Markdown section body, without its heading line."""
+
+    parts = markdown.split(f"\n## {heading}\n", 1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].split("\n## ", 1)[0]
+
+
+def markdown_detail_sections(markdown: str) -> tuple[tuple[str, str], ...]:
+    """Return each vulnerability detail section as (heading, body), in report order.
+
+    The renderer walks the compiled records once for the summary table and once for
+    the detail sections, so section `i` is vulnerability `i`. Pairing by position
+    rather than by heading text keeps this reader independent of how a tracking
+    identifier is escaped into a heading.
+    """
+
+    body = markdown_section(markdown, "Vulnerability details")
+    sections: list[tuple[str, str]] = []
+    heading: str | None = None
+    lines: list[str] = []
+    for line in body.splitlines():
+        if line.startswith("### "):
+            if heading is not None:
+                sections.append((heading, "\n".join(lines)))
+            heading = line[4:]
+            lines = []
+            continue
+        lines.append(line)
+    if heading is not None:
+        sections.append((heading, "\n".join(lines)))
+    return tuple(sections)
+
+
+def markdown_table_rows(section: str, width: int, header: str) -> dict[str, tuple[str, ...]]:
+    """Return one Markdown table's data rows, keyed by their first cell."""
+
+    rows: dict[str, tuple[str, ...]] = {}
+    for line in section.splitlines():
+        if not line.startswith("| ") or not line.endswith(" |"):
+            continue
+        cells = tuple(cell.strip() for cell in line[2:-2].split(" | "))
+        if len(cells) != width or cells[0] == header:
+            continue
+        rows[cells[0]] = cells
+    return rows
+
+
+def assert_markdown_carries_the_json(
+    test: unittest.TestCase,
+    report: CompiledVdtReport,
+) -> None:
+    """Assert the Markdown twin states every audit fact the JSON document carries.
+
+    The two renderings are built from one record list, so this walks the compiled JSON
+    and demands the Markdown twin say the same thing about every vulnerability: the
+    observations grouped into it, each computed deadline with its due instant and
+    whether it is satisfied, and every source artifact with the parser version that
+    read it (ADR 0007 amendment, the two renderings carry the same audit content).
+    """
+
+    markdown = report.to_markdown()
+    vulnerabilities = report.document["vulnerabilities"]
+    sections = markdown_detail_sections(markdown)
+    test.assertEqual(len(sections), len(vulnerabilities))
+
+    for (heading, body), vulnerability in zip(sections, vulnerabilities, strict=True):
+        extension = vulnerability["x-complyroll"]
+        for observation_id in extension["observationIds"]:
+            test.assertIn(observation_id, body, f"{heading} omits {observation_id}")
+        for observation_id in extension["untimestampedObservationIds"]:
+            test.assertIn(observation_id, body, f"{heading} omits {observation_id}")
+
+        rows = markdown_table_rows(body, 7, "Rule")
+        deadlines = extension["deadlines"]
+        test.assertEqual(len(rows), len(deadlines), f"{heading} deadline rows")
+        for deadline in deadlines:
+            row = rows.get(deadline["ruleId"])
+            test.assertIsNotNone(row, f"{heading} omits deadline {deadline['ruleId']}")
+            assert row is not None
+            test.assertEqual(row[5], deadline["dueAt"], f"{heading} {deadline['ruleId']} due")
+            test.assertEqual(
+                row[6],
+                "yes" if deadline["satisfied"] else "no",
+                f"{heading} {deadline['ruleId']} satisfied",
+            )
+
+    inputs = markdown_table_rows(markdown_section(markdown, "Inputs"), 4, "Artifact")
+    artifacts = report.document["x-complyroll"]["artifacts"]
+    test.assertEqual(len(inputs), len(artifacts))
+    for artifact in artifacts:
+        row = inputs.get(artifact["name"])
+        test.assertIsNotNone(row, f"the Inputs table omits {artifact['name']}")
+        assert row is not None
+        test.assertEqual(row[2], f"{artifact['parser']} {artifact['parserVersion']}")
 
 
 class GoldenReportTests(unittest.TestCase):
@@ -779,6 +907,44 @@ class TrackingIdUniquenessTests(unittest.TestCase):
         self.assertIn("PROVIDER-2", identifiers)
 
 
+class DetectionAttestationTests(unittest.TestCase):
+    """A per-case attestation wins over the default, and both stay optional.
+
+    The persisted path reads one instant per case out of `detection.attested` events
+    while the stateless path has only `--detected-at`, so this resolution order is the
+    seam where the two paths could disagree (ADR 0008 amendment).
+    """
+
+    FIRST_CASE = "case-00000000000000a1"
+    SECOND_CASE = "case-00000000000000a2"
+    PER_CASE = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+
+    def test_a_per_case_instant_wins_over_the_default(self) -> None:
+        attestation = DetectionAttestation(
+            default=DETECTED_AT,
+            by_tracking_id={self.FIRST_CASE: self.PER_CASE},
+        )
+
+        self.assertEqual(attestation.for_tracking_id(self.FIRST_CASE), self.PER_CASE)
+
+    def test_a_case_the_map_does_not_name_falls_back_to_the_default(self) -> None:
+        attestation = DetectionAttestation(
+            default=DETECTED_AT,
+            by_tracking_id={self.FIRST_CASE: self.PER_CASE},
+        )
+
+        self.assertEqual(attestation.for_tracking_id(self.SECOND_CASE), DETECTED_AT)
+
+    def test_a_per_case_instant_applies_without_any_default(self) -> None:
+        attestation = DetectionAttestation(by_tracking_id={self.FIRST_CASE: self.PER_CASE})
+
+        self.assertEqual(attestation.for_tracking_id(self.FIRST_CASE), self.PER_CASE)
+        self.assertIsNone(attestation.for_tracking_id(self.SECOND_CASE))
+
+    def test_an_empty_attestation_applies_to_nothing(self) -> None:
+        self.assertIsNone(DetectionAttestation().for_tracking_id(self.FIRST_CASE))
+
+
 class PartialTimestampTests(unittest.TestCase):
     def _compile(self, **overrides: object) -> CompiledVdtReport:
         with tempfile.TemporaryDirectory() as directory:
@@ -806,6 +972,25 @@ class PartialTimestampTests(unittest.TestCase):
             "observationIds"
         ])
 
+    def test_the_markdown_lists_every_observation_and_marks_the_untimestamped(self) -> None:
+        # The JSON extension names both the whole group and the members that declared
+        # no time; a detail section that named only the untimestamped ones dropped the
+        # observation the detection time actually came from.
+        report = self._compile()
+        extension = report.document["vulnerabilities"][0]["x-complyroll"]
+        untimestamped = extension["untimestampedObservationIds"]
+        rendered = ", ".join(
+            f"{value} (no source timestamp)" if value in untimestamped else value
+            for value in extension["observationIds"]
+        )
+
+        self.assertEqual(len(extension["observationIds"]), 2)
+        self.assertEqual(len(untimestamped), 1)
+        self.assertIn(f"- **Observations:** {rendered}", report.to_markdown())
+
+    def test_a_partly_timestamped_group_renders_the_same_facts_in_both_forms(self) -> None:
+        assert_markdown_carries_the_json(self, self._compile())
+
     def test_a_partial_group_raises_a_warning(self) -> None:
         report = self._compile()
         partial = [item for item in report.diagnostics if item.code == "detection_time_partial"]
@@ -819,6 +1004,31 @@ class PartialTimestampTests(unittest.TestCase):
         vulnerability = report.document["vulnerabilities"][0]
 
         self.assertEqual(vulnerability["detection"]["detectedAt"], "2026-08-03T09:00:00Z")
+        self.assertIsNone(report.document["x-complyroll"]["detectionTimeAttestation"])
+
+    def test_a_per_case_attestation_never_overrides_a_source_timestamp(self) -> None:
+        # The persisted path can attest one case at a time, so the rule the stateless
+        # `--detected-at` obeys has to hold for a named case too: the earliest known
+        # source time wins, and the attestation covers nothing.
+        result = ingest_text(MIXED_TIMESTAMP_XCCDF, "mixed-timestamps.xml")
+        groups = group_open_observations(result.observations)
+        self.assertEqual(len(groups), 1)
+
+        report = compile_records(
+            artifacts=(compiled_artifact(result),),
+            observations=result.observations,
+            ingest_diagnostics=(),
+            evaluations_by_tracking_id={},
+            attestation=DetectionAttestation(
+                by_tracking_id={groups[0].tracking_id: datetime(2026, 1, 1, tzinfo=UTC)}
+            ),
+            options=options(detected_at=None),
+        )
+        vulnerability = report.document["vulnerabilities"][0]
+
+        self.assertEqual(len(report.document["vulnerabilities"]), 1)
+        self.assertEqual(vulnerability["detection"]["detectedAt"], "2026-08-03T09:00:00Z")
+        self.assertEqual(vulnerability["x-complyroll"]["detectedAtSource"], "artifact-partial")
         self.assertIsNone(report.document["x-complyroll"]["detectionTimeAttestation"])
 
     def test_a_fully_timestamped_group_reports_no_untimestamped_observations(self) -> None:
@@ -838,6 +1048,11 @@ class PartialTimestampTests(unittest.TestCase):
             [item.code for item in report.diagnostics if item.code == "detection_time_partial"],
             [],
         )
+        self.assertIn(
+            "- **Observations:** " + ", ".join(extension["observationIds"]),
+            report.to_markdown(),
+        )
+        assert_markdown_carries_the_json(self, report)
 
 
 class ClosedAsAcceptedTests(unittest.TestCase):
@@ -906,6 +1121,52 @@ class RenderingParityTests(unittest.TestCase):
                     self.assertIn(extension["rationale"], markdown)
                 if extension["evaluator"]:
                     self.assertIn(extension["evaluator"], markdown)
+
+    def test_the_markdown_twin_states_every_fact_the_json_carries(self) -> None:
+        assert_markdown_carries_the_json(self, self.report)
+
+    def test_every_compiled_deadline_publishes_whether_it_is_satisfied(self) -> None:
+        # The Markdown twin printed a Satisfied column the JSON extension had no field
+        # for, so a machine reader could not tell a met clock from a missed one.
+        deadlines = [
+            deadline
+            for item in self.report.document["vulnerabilities"]
+            for deadline in item["x-complyroll"]["deadlines"]
+        ]
+
+        self.assertEqual(len(deadlines), 10)
+        for deadline in deadlines:
+            self.assertIn("satisfied", deadline, deadline["ruleId"])
+            self.assertIsInstance(deadline["satisfied"], bool)
+
+    def test_the_json_satisfied_value_states_the_clock_it_describes(self) -> None:
+        satisfied = {
+            (item["providerTrackingId"], deadline["ruleId"]): deadline["satisfied"]
+            for item in self.report.document["vulnerabilities"]
+            for deadline in item["x-complyroll"]["deadlines"]
+        }
+
+        # An evaluated case satisfies its evaluation clock; a case with a recorded
+        # disposition satisfies its response and acceptance clocks; a case with neither
+        # satisfies nothing.
+        self.assertTrue(satisfied[("case-1f3e011db93cc89e", "VER-TFR-EVU")])
+        self.assertTrue(satisfied[("case-1f3e011db93cc89e", "VDR-TFR-PVR")])
+        self.assertTrue(satisfied[("case-1f3e011db93cc89e", "VER-TFR-MAV")])
+        self.assertTrue(satisfied[("case-490f49bfdd1bd019", "VER-TFR-EVU")])
+        self.assertFalse(satisfied[("case-490f49bfdd1bd019", "VDR-TFR-PVR")])
+        self.assertFalse(satisfied[("case-9bed0d8f88355393", "VER-TFR-EVU")])
+
+    def test_a_report_with_no_evaluations_still_renders_both_forms_alike(self) -> None:
+        report = compile_fixtures()
+
+        assert_markdown_carries_the_json(self, report)
+        self.assertTrue(
+            all(
+                deadline["satisfied"] is False
+                for item in report.document["vulnerabilities"]
+                for deadline in item["x-complyroll"]["deadlines"]
+            )
+        )
 
     def test_the_extension_carries_the_compile_diagnostics(self) -> None:
         extension = self.report.document["x-complyroll"]
@@ -1040,6 +1301,130 @@ class ReportOptionsTests(unittest.TestCase):
         self.assertEqual(
             report.document["x-complyroll"]["calendarTimezone"], "America/Phoenix"
         )
+
+
+class PainReductionOrderTests(unittest.TestCase):
+    """Completed PAIN reductions render in one canonical order (ADR 0008 Decision 5).
+
+    The persisted path reads reductions in the order they were appended and the
+    stateless path in the order the file states them, so the rendered order is a seam
+    where the two paths could disagree while describing the same facts. Sorting by
+    instant, then rating, in the shared record compiler closes it for both.
+    """
+
+    OUT_OF_ORDER = (
+        {"reducedAt": "2026-08-12T16:00:00Z", "rating": 3},
+        {"reducedAt": "2026-08-06T16:00:00Z", "rating": 4},
+    )
+
+    def compile_with(self, events: Sequence[dict[str, object]]) -> CompiledVdtReport:
+        return compile_fixtures(evaluations=evaluations_from(painReductionEvents=list(events)))
+
+    def test_the_json_array_is_sorted_by_instant(self) -> None:
+        report = self.compile_with(self.OUT_OF_ORDER)
+
+        record = find_vulnerability(report, "V-260470")
+        extension = record["x-complyroll"]
+        assert isinstance(extension, dict)
+
+        self.assertEqual(
+            extension["painReductionEvents"],
+            [
+                {"reducedAt": "2026-08-06T16:00:00Z", "rating": 4},
+                {"reducedAt": "2026-08-12T16:00:00Z", "rating": 3},
+            ],
+        )
+
+    def test_the_markdown_twin_lists_the_same_order(self) -> None:
+        report = self.compile_with(self.OUT_OF_ORDER)
+
+        self.assertIn(
+            "- **Completed PAIN reductions:** N4 at 2026-08-06T16:00:00Z, "
+            "N3 at 2026-08-12T16:00:00Z",
+            report.to_markdown(),
+        )
+
+    def test_two_reductions_at_one_instant_sort_by_rating(self) -> None:
+        report = self.compile_with(
+            (
+                {"reducedAt": "2026-08-06T16:00:00Z", "rating": 4},
+                {"reducedAt": "2026-08-06T16:00:00Z", "rating": 2},
+            )
+        )
+
+        record = find_vulnerability(report, "V-260470")
+        extension = record["x-complyroll"]
+        assert isinstance(extension, dict)
+
+        self.assertEqual(
+            [item["rating"] for item in extension["painReductionEvents"]], [2, 4]
+        )
+
+    def test_an_already_ordered_file_is_unchanged(self) -> None:
+        ordered = tuple(reversed(self.OUT_OF_ORDER))
+
+        report = self.compile_with(ordered)
+        record = find_vulnerability(report, "V-260470")
+        extension = record["x-complyroll"]
+        assert isinstance(extension, dict)
+
+        self.assertEqual(extension["painReductionEvents"], list(ordered))
+
+
+class RepeatedPainReductionTests(unittest.TestCase):
+    """One reduction is one event, so a file may not state it twice (ADR 0008)."""
+
+    def test_a_repeated_reduction_names_both_entries(self) -> None:
+        payload = evaluation_json(
+            painReductionEvents=[
+                {"reducedAt": "2026-08-12T16:00:00Z", "rating": 3},
+                {"reducedAt": "2026-08-12T16:00:00Z", "rating": 3},
+            ]
+        )
+
+        with self.assertRaises(ReportInputError) as caught:
+            parse_evaluations(payload.encode("utf-8"))
+
+        message = str(caught.exception)
+        self.assertIn("evaluations[0].painReductionEvents[1] repeats", message)
+        self.assertIn("evaluations[0].painReductionEvents[0] already states", message)
+        self.assertIn("PAIN 3", message)
+        self.assertIn("2026-08-12T16:00:00Z", message)
+
+    def test_two_spellings_of_one_instant_are_one_reduction(self) -> None:
+        payload = evaluation_json(
+            painReductionEvents=[
+                {"reducedAt": "2026-08-12T16:00:00Z", "rating": 3},
+                {"reducedAt": "2026-08-12T09:00:00-07:00", "rating": 3},
+            ]
+        )
+
+        with self.assertRaises(ReportInputError) as caught:
+            parse_evaluations(payload.encode("utf-8"))
+
+        message = str(caught.exception)
+        self.assertIn("evaluations[0].painReductionEvents[1] repeats", message)
+        self.assertIn("2026-08-12T16:00:00Z", message)
+
+    def test_two_ratings_at_one_instant_are_distinct_reductions(self) -> None:
+        evaluations = evaluations_from(
+            painReductionEvents=[
+                {"reducedAt": "2026-08-12T16:00:00Z", "rating": 3},
+                {"reducedAt": "2026-08-12T16:00:00Z", "rating": 4},
+            ]
+        )
+
+        self.assertEqual(len(evaluations.entries[0].pain_reduction_events), 2)
+
+    def test_two_instants_one_rating_are_distinct_reductions(self) -> None:
+        evaluations = evaluations_from(
+            painReductionEvents=[
+                {"reducedAt": "2026-08-12T16:00:00Z", "rating": 3},
+                {"reducedAt": "2026-08-13T16:00:00Z", "rating": 3},
+            ]
+        )
+
+        self.assertEqual(len(evaluations.entries[0].pain_reduction_events), 2)
 
 
 if __name__ == "__main__":

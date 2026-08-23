@@ -128,20 +128,26 @@ complyroll report vdt <artifact...> --class C --package-uri <uri> --from <time> 
     [--evaluations <file>] [--detected-at <time>] [--as-of <time>] [--calendar-tz <name>]
     [-o <report.json>] [--markdown <report.md>]
 complyroll validate <report.json> --schema <vulnerability-detail|accepted-vulnerability|historical-activity>
+complyroll ingest <artifact...> --db <store> [--as-of <time>] [--actor <name>]
+complyroll cases correlate --db <store> [--actor <name>]
+complyroll cases attest-detection --db <store> --detected-at <time> --rationale <text>
+    (--case <tracking-id> | --all-missing) [--actor <name>]
+complyroll cases evaluate --db <store> --evaluations <file> [--actor <name>]
+complyroll cases list --db <store>
+complyroll cases history <tracking-id> --db <store>
+complyroll report vdt --db <store> --class C --package-uri <uri> --from <time> --to <time>
+    [--as-of <time>] [--calendar-tz <name>] [-o <report.json>] [--markdown <report.md>]
+complyroll store verify --db <store>
 ```
 
 Proposed:
 
 ```text
 complyroll rules sync --ref <commit-or-tag>
-complyroll ingest <artifact...> --db <store>
-complyroll observations list
-complyroll cases list
-complyroll cases evaluate <case-id>
-complyroll deadlines
+complyroll observations list --db <store>
+complyroll deadlines --db <store>
 complyroll report avi --class C --from <time> --to <time>
 complyroll report historical --class C
-complyroll store verify --db <store>
 ```
 
 ### Exit criteria
@@ -150,8 +156,10 @@ complyroll store verify --db <store>
   **Met 2026-08-21 for the stateless path** (`complyroll report vdt`, golden-tested).
 - Every due date can identify the rule version and inputs used in its calculation. **Met** (every
   deadline in the report carries rule id, force, anchor, inputs, and the dataset commit and digest).
-- Changing an evaluation creates history rather than overwriting the prior evaluation. Open: the
-  in-memory model keeps `evaluation_history`, but nothing is persisted yet.
+- Changing an evaluation creates history rather than overwriting the prior evaluation. **Met
+  2026-08-22** (ADR 0008: `cases evaluate` appends a second `case.evaluated` event for a changed
+  evaluation, `cases history` lists both, `report vdt --db` carries the latest, and the rebuilt
+  report is byte-identical to the stateless goldens, asserted in tests).
 - JSON and human-readable totals reconcile exactly. **Met** (both renderers read one record list;
   a reconciliation test asserts the totals).
 
@@ -244,9 +252,11 @@ Target: after the local engine is stable
 5. Produce the first end-to-end CKLB → case → VER JSON demonstration. **Complete (stateless
    path) — 2026-08-21.** `complyroll report vdt` compiles the fixtures into a schema-valid
    Vulnerability Detail Report with a Markdown twin (ADR 0007); the event-sourced rebuild of the
-   same report is the next slice.
+   same report landed with item 6.
 6. Persist `observation.recorded`, `detection.attested`, and `case.*` events from the compiler's
    inputs; rebuild the Vulnerability Detail Report from the event log and reconcile it against the
-   stateless output byte for byte.
+   stateless output byte for byte. **Complete, 2026-08-22** (ADR 0008: typed event contracts,
+   `ingest`, `cases correlate|attest-detection|evaluate|list|history`, `report vdt --db`,
+   `store verify`; the reconciliation is a test against the stateless goldens).
 7. Accepted-vulnerability (`VER-RPT-AVI`) and historical-activity (`VER-TFR-MRH`) reports from the
    same record compiler.

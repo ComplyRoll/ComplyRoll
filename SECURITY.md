@@ -5,7 +5,7 @@
 Please do not open a public issue for a security problem.
 
 Use GitHub private vulnerability reporting for this repository:
-<https://github.com/ktalons/ComplyRoll/security/advisories/new>. If that is unavailable, email
+<https://github.com/ComplyRoll/ComplyRoll/security/advisories/new>. If that is unavailable, email
 the maintainer at the address recorded in the project's git history with the subject
 `ComplyRoll security report`.
 

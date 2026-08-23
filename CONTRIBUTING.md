@@ -23,6 +23,11 @@ python3 -m compileall -q src tests stigroll.py
 python3 -m unittest discover -s tests -v
 ```
 
+Run the suite only through `unittest discover -s tests`: `tests/` is not a package, and the test
+modules import shared helpers from one another by plain module name. The lint and type gates are
+`ruff check src tests stigroll.py` and `mypy` from the repository root; both read their
+configuration from `pyproject.toml`.
+
 Please include:
 
 - Tests for new behavior.

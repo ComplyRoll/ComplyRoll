@@ -29,8 +29,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/ktalons/ComplyRoll"
-Issues = "https://github.com/ktalons/ComplyRoll/issues"
+Repository = "https://github.com/ComplyRoll/ComplyRoll"
+Issues = "https://github.com/ComplyRoll/ComplyRoll/issues"
 
 [project.scripts]
 complyroll = "complyroll.cli:main"
@@ -51,3 +51,14 @@ select = ["E", "F", "W", "I", "UP", "B"]
 # The domain enums subclass (str, Enum) on purpose: members serialize through .value and
 # str(member) must not silently change meaning; StrEnum is not a drop-in here.
 ignore = ["UP042"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["complyroll"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+# jsonschema ships no inline types and the project declares no stub dependency; the
+# validator boundary is covered by tests rather than by static typing.
+module = ["jsonschema", "jsonschema.*"]
+ignore_missing_imports = true

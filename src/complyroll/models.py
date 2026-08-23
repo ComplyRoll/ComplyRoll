@@ -10,7 +10,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum, IntEnum
 from typing import Any, Self, TypeVar
 
@@ -159,6 +159,116 @@ def _coerce_pair_tuple(value: object, field_name: str) -> tuple[tuple[str, str],
             raise TypeError(f"{field_name} entries must be (key, value) string pairs")
         pairs.append((parts[0], parts[1]))
     return tuple(pairs)
+
+
+#: Every key `Observation.to_canonical_dict` emits, and therefore every key
+#: `Observation.from_canonical_dict` requires (ADR 0008 freezes this dictionary).
+CANONICAL_OBSERVATION_KEYS = frozenset(
+    {
+        "observation_id",
+        "fingerprint",
+        "source_type",
+        "source_tool",
+        "parser_name",
+        "parser_version",
+        "source_record_id",
+        "resource",
+        "observed_at",
+        "ingested_at",
+        "disposition",
+        "source_severity",
+        "title",
+        "description",
+        "source_artifact_digest",
+        "source_artifact_name",
+        "source_identifiers",
+        "source_metadata",
+        "evidence_ids",
+        "context_key",
+        "origin",
+    }
+)
+
+
+def _require_exact_keys(
+    value: Mapping[str, Any],
+    expected: frozenset[str],
+    field_name: str,
+) -> None:
+    """Reject a stored mapping that gained or lost a key relative to its contract."""
+
+    present = set(value)
+    missing = sorted(expected - present)
+    unknown = sorted(present - expected)
+    if missing:
+        raise ValueError(f"{field_name} is missing field(s): {', '.join(missing)}")
+    if unknown:
+        raise ValueError(f"{field_name} has unsupported field(s): {', '.join(unknown)}")
+
+
+def _canonical_text(value: object, field_name: str, *, allow_blank: bool = False) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be text, got {type(value).__name__}")
+    if not allow_blank and not value.strip():
+        raise ValueError(f"{field_name} must not be blank")
+    return value
+
+
+def _canonical_timestamp(value: object, field_name: str) -> datetime:
+    """Parse timestamp text that `to_canonical_dict` could have written, and no other.
+
+    The parsed instant must re-serialize through the same `datetime.isoformat()` call
+    the canonical dictionary uses, so a basic-format or `Z`-suffixed spelling cannot
+    be read in and written back out as different bytes (ADR 0008).
+
+    Re-serialization alone is not enough for the offset: Python parses `+01:02:03` and
+    writes it back unchanged, so an offset that is not a whole number of minutes would
+    pass the comparison. RFC 3339 has no such offset, so it is refused by name.
+    """
+
+    text = _canonical_text(value, field_name)
+    normalized = f"{text[:-1]}+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an RFC 3339 timestamp, got {text!r}") from exc
+    offset = parsed.utcoffset()
+    if parsed.tzinfo is None or offset is None:
+        raise ValueError(f"{field_name} must include a UTC offset, got {text!r}")
+    if offset % timedelta(minutes=1):
+        raise ValueError(
+            f"{field_name} must use a UTC offset of a whole number of minutes, "
+            f"got {text!r}"
+        )
+    canonical = parsed.isoformat()
+    if canonical != text:
+        raise ValueError(
+            f"{field_name} must be canonical timestamp text: got {text!r}, "
+            f"which this observation would write as {canonical!r}"
+        )
+    return parsed
+
+
+def _canonical_enum(value: object, enum_type: type[EnumT], field_name: str) -> EnumT:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be text, got {type(value).__name__}")
+    try:
+        return enum_type(value)
+    except ValueError as exc:
+        allowed = ", ".join(str(member.value) for member in enum_type)
+        raise ValueError(f"{field_name} must be one of: {allowed}") from exc
+
+
+def _canonical_text_list(value: object, field_name: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise TypeError(f"{field_name} must be an array of strings")
+    return _coerce_str_tuple(value, field_name)
+
+
+def _canonical_text_map(value: object, field_name: str) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be an object of string values")
+    return _coerce_pair_tuple(value, field_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +485,100 @@ class Observation:
             separators=(",", ":"),
             sort_keys=True,
         )
+
+    @classmethod
+    def from_canonical_dict(cls, value: Mapping[str, Any]) -> Observation:
+        """Rebuild an observation from `to_canonical_dict` output, reversing it exactly.
+
+        The dictionary is stored, untrusted history (ADR 0008 freezes it as the
+        `observation.recorded` payload contract), so every key is required, unknown
+        keys are rejected, timestamp text must be spelled exactly as this observation
+        would write it, and the recorded fingerprint must match the one the rebuilt
+        observation derives from its own fields. An artifact-bound observation must
+        also carry the derived identifier its adapter assigned; a system observation
+        is named by whatever produced it, so its identifier is the caller's to choose.
+
+        What the round trip guarantees is canonical-JSON equality, not dataclass
+        equality: the canonical form sorts object keys, so `source_metadata` pairs come
+        back in key order and only an observation whose pairs were already sorted
+        rebuilds equal to the one that was written.
+        """
+
+        if not isinstance(value, Mapping):
+            raise TypeError(
+                f"canonical observation must be a mapping, got {type(value).__name__}"
+            )
+        _require_exact_keys(value, CANONICAL_OBSERVATION_KEYS, "canonical observation")
+
+        resource = value["resource"]
+        if not isinstance(resource, Mapping):
+            raise TypeError("resource must be a mapping")
+        _require_exact_keys(resource, frozenset({"resource_id", "resource_type"}), "resource")
+
+        observed_at = value["observed_at"]
+        observation = cls(
+            observation_id=_canonical_text(value["observation_id"], "observation_id"),
+            source_type=_canonical_text(value["source_type"], "source_type"),
+            source_tool=_canonical_text(value["source_tool"], "source_tool"),
+            parser_name=_canonical_text(value["parser_name"], "parser_name"),
+            parser_version=_canonical_text(value["parser_version"], "parser_version"),
+            source_record_id=_canonical_text(value["source_record_id"], "source_record_id"),
+            resource=ResourceRef(
+                resource_id=_canonical_text(resource["resource_id"], "resource.resource_id"),
+                resource_type=_canonical_text(
+                    resource["resource_type"], "resource.resource_type"
+                ),
+            ),
+            observed_at=(
+                None if observed_at is None else _canonical_timestamp(observed_at, "observed_at")
+            ),
+            ingested_at=_canonical_timestamp(value["ingested_at"], "ingested_at"),
+            disposition=_canonical_enum(
+                value["disposition"], ObservationDisposition, "disposition"
+            ),
+            source_severity=_canonical_enum(
+                value["source_severity"], SourceSeverity, "source_severity"
+            ),
+            title=_canonical_text(value["title"], "title", allow_blank=True),
+            description=_canonical_text(value["description"], "description", allow_blank=True),
+            source_artifact_digest=_canonical_text(
+                value["source_artifact_digest"], "source_artifact_digest", allow_blank=True
+            ),
+            source_artifact_name=_canonical_text(
+                value["source_artifact_name"], "source_artifact_name", allow_blank=True
+            ),
+            source_identifiers=_canonical_text_list(
+                value["source_identifiers"], "source_identifiers"
+            ),
+            source_metadata=_canonical_text_map(value["source_metadata"], "source_metadata"),
+            evidence_ids=_canonical_text_list(value["evidence_ids"], "evidence_ids"),
+            context_key=_canonical_text(value["context_key"], "context_key", allow_blank=True),
+            origin=_canonical_enum(value["origin"], ObservationOrigin, "origin"),
+        )
+
+        recorded_fingerprint = value["fingerprint"]
+        if (
+            not isinstance(recorded_fingerprint, str)
+            or recorded_fingerprint != observation.fingerprint
+        ):
+            raise ValueError(
+                "fingerprint does not match the observation it describes: recorded "
+                f"{recorded_fingerprint!r}, derived {observation.fingerprint!r}"
+            )
+        if (
+            observation.origin is ObservationOrigin.ARTIFACT
+            and observation.observation_id != observation.derived_observation_id
+        ):
+            # Every adapter names an artifact-bound observation after its own
+            # fingerprint, so a foreign name at rest is a rename no writer performed.
+            # The payload digest catches a tampered stream; this catches a tampered
+            # row a re-digested store would otherwise carry.
+            raise ValueError(
+                "observation_id does not match the identifier this observation "
+                f"derives: recorded {observation.observation_id!r}, derived "
+                f"{observation.derived_observation_id!r}"
+            )
+        return observation
 
 
 @dataclass(frozen=True, slots=True)

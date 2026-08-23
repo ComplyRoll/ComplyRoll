@@ -23,7 +23,7 @@ provider can publish and an independent assessor can recompute.
 | `complyroll ingest ARTIFACT... --db STORE [--as-of T] [--actor NAME]` | Records each artifact and its observations as typed events (`artifact.ingested`, `observation.recorded`) in an append-only SQLite store, validated against published contracts before they are written. Re-running over the same bytes appends nothing |
 | `complyroll cases correlate\|attest-detection\|evaluate\|list\|history --db STORE` | Opens one case per vulnerability, records attested detection times and operator evaluations as events, lists cases, and prints one case's full history. A changed evaluation appends a second `case.evaluated` event; the earlier one stays readable |
 | `complyroll report vdt --db STORE --class C --package-uri URI --from T --to T [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Vulnerability Detail Report from the event log through the same record compiler as the stateless path. The output is byte-identical to the stateless report for the same inputs, and that equality is a test |
-| `complyroll store verify --db STORE` | Walks the whole log checking payload digests, sequence and stream-version contiguity, the sequence counter, the schema definitions, and every payload against its published event contract, and exits non-zero on any fault, including on files the normal open refuses |
+| `complyroll store verify --db STORE` | Walks the whole log checking payload digests, sequence and stream-version contiguity, the sequence counter, and the schema definitions, then audits the domain (every payload against its published contract, every event against its stream kind and the artifact identity its stream names, every artifact stream for completeness in both directions and for repeated observation identifiers, every metadata envelope), and exits non-zero on any fault, including on files the normal open refuses |
 | `complyroll validate REPORT --schema vulnerability-detail\|accepted-vulnerability\|historical-activity` | Validates a report against the pinned official schema, offline, printing JSON Pointers for every failure and the exact schema provenance |
 | `stigroll <files> [--cci-list U_CCI_List.xml] [--format markdown\|csv\|json] [-o FILE]` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output byte-for-byte |
 | `complyroll.adapters.ingest_stig_artifact(path)` | CKLB, CKL, XCCDF, and ARF files become immutable observations with artifact digest, parser identity, timestamps, and structured diagnostics |
@@ -81,14 +81,17 @@ The report period selects contents: a vulnerability appears when it had activity
 still undisposed and was detected on or before the period end. Every exclusion is reported as an
 `excluded_by_period` diagnostic and counted in the document, so "nothing happened" is
 distinguishable from "nothing was compiled". Output files are written all-or-nothing: a failed
-Markdown write leaves no JSON behind.
+Markdown write leaves no JSON behind, a failure while publishing restores the previous files, and a
+rollback that itself fails names the files left in their new state and where their previous
+content was kept.
 
 Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
 key: generator and parser versions, the rules dataset and schema commits and digests, the
 compile diagnostics, every computed deadline with its rule and force, the grouped observation ids
 and affected resources, the detection-time source (`artifact`, `artifact-partial`, or
-`attestation`), and the evaluator and rationale. The Markdown twin carries the same detail in a
-per-vulnerability section. That makes the document the provider's and assessor's working record.
+`attestation`), and the evaluator and rationale. The JSON is the complete machine record; the
+Markdown twin renders the same records for a reader, with a per-vulnerability detail section and
+a parity test proving every identifier, deadline, and artifact it prints is in the JSON. That makes the document the provider's and assessor's working record.
 It includes internal resource identifiers and provider rationale, so redact it before sharing
 with an agency; audience-specific views are a later slice.
 
@@ -131,7 +134,9 @@ re-running any of those commands appends nothing. Change one PAIN rating in a co
 `examples/evaluations.json`, run `cases evaluate` again with it, and
 `complyroll cases history <tracking-id> --db complyroll.db` shows both evaluations while the
 report carries the latest one. Nothing can update or delete an event; a correction is a new
-event with its rationale, and `store verify` proves the log is intact.
+event with its rationale, and `store verify` checks both the bytes (digests, contiguity, the
+sequence counter, the schema) and the domain (every payload against its contract, every event
+against its stream, every artifact stream complete, every metadata envelope well formed).
 
 Roll up the synthetic fixtures with the predecessor command:
 

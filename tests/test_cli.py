@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing, redirect_stderr, redirect_stdout, suppress
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from complyroll import __version__
+from complyroll import cli as cli_module
 from complyroll.adapters import ingest_stig_artifact
 from complyroll.cli import main
 from complyroll.events import EventRepository
+from complyroll.history import AUDIT_FAULT_CODES
+from complyroll.models import Observation
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -44,6 +51,56 @@ REPORT_ARGUMENTS = (
     "--evaluations",
     str(EXAMPLES / "evaluations.json"),
 )
+
+#: What a destination held before a run that fails part way through publishing it. The
+#: rollback has to put exactly this back.
+PREVIOUS_REPORT = '{"note": "the report a previous run published"}\n'
+#: The Markdown beside it, for the pair a failed publication leaves mixed.
+PREVIOUS_MARKDOWN = "# the report a previous run published\n"
+
+
+
+class ReplaceFailingOnCall:
+    """An `os.replace` that fails on the numbered calls it is given, and works otherwise.
+
+    A rollback replaces files too, so a fake that failed for good could not tell a
+    rollback that ran from one that never did: the restore would fail the same way.
+    Naming several calls is how a failed publication whose rollback also fails is built:
+    call 2 is the second destination, call 3 is the restore of the first.
+    """
+
+    def __init__(self, *fail_on: int) -> None:
+        self.real = os.replace
+        self.fail_on = frozenset(fail_on)
+        self.calls = 0
+
+    def __call__(self, source: Any, destination: Any) -> None:
+        self.calls += 1
+        if self.calls in self.fail_on:
+            # The call number is in the text so a failed restore can be told apart from
+            # the failed publication that provoked it: the rollback message has to carry
+            # the restore's own error rather than repeating the first one.
+            raise OSError(
+                errno.EIO, f"simulated replace failure on call {self.calls}", str(destination)
+            )
+        self.real(source, destination)
+
+
+def unlink_failing_on(path: Path) -> Callable[..., None]:
+    """Return a `Path.unlink` that fails for one path and works for every other one.
+
+    The rollback removes a destination this run created rather than restoring one it
+    replaced, and that removal can fail too. Nothing else the run touches is affected.
+    """
+
+    real = Path.unlink
+
+    def unlink(self: Path, *, missing_ok: bool = False) -> None:
+        if self == path:
+            raise OSError(errno.EIO, "simulated unlink failure", str(self))
+        real(self, missing_ok=missing_ok)
+
+    return unlink
 
 
 def run(argv: Sequence[str]) -> tuple[int, str, str]:
@@ -215,6 +272,258 @@ class ReportVdtCommandTests(unittest.TestCase):
                 sorted(item.name for item in Path(directory).iterdir()),
                 ["report.json", "report.md"],
             )
+
+    def test_a_failed_second_replace_restores_the_first_destination(self) -> None:
+        # Staging every file first stops a rendering failure from half-publishing a pair.
+        # It cannot stop the second rename from failing once the first has landed, which
+        # left new JSON beside stale Markdown until the rollback arrived.
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            json_path = workspace / "report.json"
+            markdown_path = workspace / "report.md"
+            json_path.write_text(PREVIOUS_REPORT, encoding="utf-8")
+            failing = ReplaceFailingOnCall(2)
+
+            with patch("os.replace", failing):
+                code, out, err = run(
+                    [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_write_failed", err)
+            self.assertEqual(json_path.read_text(encoding="utf-8"), PREVIOUS_REPORT)
+            self.assertFalse(markdown_path.exists())
+            # The third call is the restore, so the rollback demonstrably ran.
+            self.assertEqual(failing.calls, 3)
+            self.assertEqual([item.name for item in workspace.iterdir()], ["report.json"])
+
+    def test_a_failed_second_replace_removes_a_first_destination_it_created(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            json_path = workspace / "report.json"
+            markdown_path = workspace / "report.md"
+            failing = ReplaceFailingOnCall(2)
+
+            with patch("os.replace", failing):
+                code, out, err = run(
+                    [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_write_failed", err)
+            self.assertFalse(json_path.exists())
+            self.assertFalse(markdown_path.exists())
+            # Nothing existed to restore, so the rollback unlinked instead of replacing.
+            self.assertEqual(failing.calls, 2)
+            self.assertEqual(list(workspace.iterdir()), [])
+
+    def test_a_failed_rollback_keeps_the_previous_bytes_and_names_them(self) -> None:
+        # The rollback itself can fail, and it used to fail in silence: the restore error
+        # was suppressed, the preserved copy was deleted straight after, and the operator
+        # was told only about the original write failure while the outputs were mixed and
+        # the previous content was gone (ADR 0007 amendment).
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            json_path = workspace / "report.json"
+            markdown_path = workspace / "report.md"
+            json_path.write_text(PREVIOUS_REPORT, encoding="utf-8")
+            failing = ReplaceFailingOnCall(2, 3)
+
+            with patch("os.replace", failing):
+                code, out, err = run(
+                    [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_rollback_failed", err)
+            # The original failure, the destination left in its new state, and the file
+            # holding what it held before are all in the one line the operator reads.
+            self.assertIn("simulated replace failure", err)
+            self.assertIn(str(json_path), err)
+            keepers = [item for item in workspace.iterdir() if item.name.endswith(".keep")]
+            self.assertEqual(len(keepers), 1)
+            self.assertIn(str(keepers[0]), err)
+            self.assertEqual(keepers[0].read_text(encoding="utf-8"), PREVIOUS_REPORT)
+            self.assertEqual(
+                json_path.read_text(encoding="utf-8"),
+                (GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8"),
+            )
+            self.assertFalse(markdown_path.exists())
+            self.assertEqual(failing.calls, 3)
+            self.assertEqual(
+                sorted(item.name for item in workspace.iterdir()),
+                sorted(["report.json", keepers[0].name]),
+            )
+
+    def test_a_failed_restore_names_its_own_error_beside_the_write_failure(self) -> None:
+        # Both destinations already hold a previous report, so both are preserved. Call 2
+        # is the Markdown publication and call 3 is the restore of the JSON, and they fail
+        # for reasons of their own: a permission problem and a full filesystem call for
+        # different remedies, so the operator is told which one stopped the restore rather
+        # than being handed the write failure twice.
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            json_path = workspace / "report.json"
+            markdown_path = workspace / "report.md"
+            json_path.write_text(PREVIOUS_REPORT, encoding="utf-8")
+            markdown_path.write_text(PREVIOUS_MARKDOWN, encoding="utf-8")
+            failing = ReplaceFailingOnCall(2, 3)
+
+            with patch("os.replace", failing):
+                code, out, err = run(
+                    [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertEqual(failing.calls, 3)
+            self.assertIn("error: output_rollback_failed", err)
+            # The write failure that stopped the publication, and the restore's own error.
+            self.assertIn("simulated replace failure on call 2", err)
+            self.assertIn("restore failed: ", err)
+            self.assertIn("simulated replace failure on call 3", err)
+
+            keepers = [item for item in workspace.iterdir() if item.name.endswith(".keep")]
+            self.assertEqual(len(keepers), 1)
+            self.assertTrue(keepers[0].name.startswith(".report.json."))
+            self.assertIn(str(keepers[0]), err)
+            # Exactly three files: the new JSON, the untouched previous Markdown, and the
+            # one keeper holding the previous JSON. The Markdown keeper is gone because
+            # the Markdown was never replaced, and no temporary is left behind.
+            self.assertEqual(
+                sorted(item.name for item in workspace.iterdir()),
+                sorted(["report.json", "report.md", keepers[0].name]),
+            )
+            self.assertEqual(keepers[0].read_text(encoding="utf-8"), PREVIOUS_REPORT)
+            self.assertEqual(markdown_path.read_text(encoding="utf-8"), PREVIOUS_MARKDOWN)
+            self.assertEqual(
+                json_path.read_text(encoding="utf-8"),
+                (GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8"),
+            )
+
+    def test_a_rollback_that_cannot_remove_what_it_created_says_so(self) -> None:
+        # No destination existed, so there is nothing to restore and no keeper to name;
+        # the removal of the file this run created can still fail, and that also leaves a
+        # destination in its new state the operator has to be told about.
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            json_path = workspace / "report.json"
+            markdown_path = workspace / "report.md"
+            failing = ReplaceFailingOnCall(2)
+
+            with (
+                patch("os.replace", failing),
+                patch("pathlib.Path.unlink", unlink_failing_on(json_path)),
+            ):
+                code, out, err = run(
+                    [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_rollback_failed", err)
+            self.assertIn("simulated replace failure", err)
+            self.assertIn(f"{json_path} holds this run's content", err)
+            self.assertIn("could not remove", err)
+            self.assertIn("removal failed: ", err)
+            self.assertIn("simulated unlink failure", err)
+            self.assertEqual(
+                json_path.read_text(encoding="utf-8"),
+                (GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8"),
+            )
+            self.assertFalse(markdown_path.exists())
+
+    def test_a_destination_that_is_a_symlink_is_refused_before_anything_is_staged(self) -> None:
+        # Publishing replaces the destination and restores it from a copy of its bytes,
+        # so a link would be followed on the way in and replaced on the way back: the
+        # content would survive and the link would not (ADR 0007 amendment).
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            target = workspace / "target.json"
+            target.write_text(PREVIOUS_REPORT, encoding="utf-8")
+            link = workspace / "report.json"
+            link.symlink_to(target)
+
+            code, out, err = run([*REPORT_ARGUMENTS, "-o", str(link)])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_is_symlink", err)
+            # The path is the diagnostic's location, so the message does not repeat it:
+            # one line naming the same path twice reads as two different paths at a glance.
+            self.assertEqual(err.count(str(link)), 1)
+            self.assertIn(f"[{link}]", err)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(target.read_text(encoding="utf-8"), PREVIOUS_REPORT)
+            self.assertEqual(
+                sorted(item.name for item in workspace.iterdir()),
+                ["report.json", "target.json"],
+            )
+
+    def test_a_symlink_destination_is_refused_before_any_artifact_is_parsed(self) -> None:
+        # The check needs the paths and nothing else, so it runs beside the input-overwrite
+        # refusal rather than at publication time. An artifact that cannot be parsed proves
+        # the ordering: the run never reaches it.
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            broken = workspace / "broken.cklb"
+            broken.write_text("{not json", encoding="utf-8")
+            link = workspace / "report.json"
+            link.symlink_to(workspace / "gone.json")
+
+            code, out, err = run(
+                [
+                    "report",
+                    "vdt",
+                    str(broken),
+                    "--class",
+                    "C",
+                    "--package-uri",
+                    "https://example.test/cpo",
+                    "--from",
+                    "2026-08-01T00:00:00Z",
+                    "--to",
+                    "2026-08-31T23:59:59Z",
+                    "-o",
+                    str(link),
+                ]
+            )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_is_symlink", err)
+            self.assertNotIn("broken.cklb", err)
+            self.assertEqual(err.count(str(link)), 1)
+            self.assertEqual(
+                sorted(item.name for item in workspace.iterdir()),
+                ["broken.cklb", "report.json"],
+            )
+            self.assertTrue(link.is_symlink())
+            self.assertFalse(link.exists())
+
+    def test_a_dangling_markdown_symlink_is_refused_and_no_json_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            json_path = workspace / "report.json"
+            link = workspace / "report.md"
+            link.symlink_to(workspace / "gone.md")
+
+            code, out, err = run(
+                [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(link)]
+            )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_is_symlink", err)
+            self.assertEqual(err.count(str(link)), 1)
+            self.assertIn(f"[{link}]", err)
+            self.assertTrue(link.is_symlink())
+            self.assertFalse(link.exists())
+            self.assertFalse(json_path.exists())
+            self.assertEqual([item.name for item in workspace.iterdir()], ["report.md"])
 
     def test_ingest_failure_exits_one_and_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -470,6 +779,40 @@ PARTIAL_TIMESTAMP_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+#: The run identifier the smuggled events below carry. It is a canonical version-4 UUID
+#: so the metadata is not a second fault alongside the payload each test is about.
+SMUGGLED_RUN_ID = "run-00000000-0000-4000-8000-000000000004"
+
+#: The metadata a smuggled event carries when a test is not about metadata: exactly the
+#: envelope this version writes, so `audit_history` has nothing to say about it.
+SMUGGLED_METADATA = {
+    "actor": "smuggler",
+    "method": "cli",
+    "tool": "complyroll",
+    "toolVersion": __version__,
+    "runId": SMUGGLED_RUN_ID,
+}
+#: Streams no fixture writes, one of each kind, so a smuggled event is the only event on
+#: the stream and its fault is the only thing the audit finds there.
+SMUGGLED_ARTIFACT_STREAM = f"artifact/{'b' * 64}/complyroll.cklb/1"
+SMUGGLED_CASE_STREAM = f"case/{UNKNOWN_CASE}"
+#: A second well-formed tracking id no fixture produces, for the case whose recorded
+#: identifier and stream disagree.
+OTHER_UNKNOWN_CASE = "case-00000000000000fe"
+
+#: The audit fault codes the `store verify` tests below cover, checked against
+#: `AUDIT_FAULT_CODES` so a new code cannot ship without one.
+COVERED_AUDIT_CODES = {
+    "artifact_duplicate_observation",
+    "artifact_incomplete",
+    "artifact_overfull",
+    "artifact_stream_mismatch",
+    "case_tracking_id_mismatch",
+    "event_metadata_invalid",
+    "event_stream_mismatch",
+    "payload_contract_invalid",
+}
+
 #: A source timestamp Python parses and RFC 3339 forbids: an offset carrying seconds.
 #: `observation.recorded` stores exactly what `to_canonical_dict` writes, and this is
 #: text the replay reader refuses, so the contract refuses to store it in the first
@@ -699,8 +1042,11 @@ class PersistedSequenceTests(PersistedStoreTestCase):
         out, _ = self.attest_missing()
 
         self.assertEqual(
-            out,
-            "attested 6 case(s), skipped 0 unchanged case(s), 0 not applicable case(s)\n",
+            out.splitlines(),
+            [
+                "selected 6 case(s) with no source timestamp on any observation",
+                "attested 6 case(s), skipped 0 unchanged case(s), 0 not applicable case(s)",
+            ],
         )
 
         out, _ = self.evaluate()
@@ -844,6 +1190,56 @@ class PersistedIngestTests(PersistedStoreTestCase):
         self.assertFalse(self.database.exists())
         self.assertEqual(list(self.workspace.iterdir()), [artifact])
 
+    def test_a_refused_second_artifact_records_neither_on_an_existing_store(self) -> None:
+        # Each `record_ingest` used to commit its own transaction, so the first artifact
+        # of this run stayed durable while the second was refused, and the summary was
+        # buffered until after the failure and so printed nothing at all: empty output
+        # while the store had grown. One transaction around the run fixes both halves
+        # (ADR 0008, second amendment).
+        self.succeeds(
+            [
+                "ingest",
+                PERSISTED_ARTIFACTS[0],
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+                "--actor",
+                "golden",
+            ]
+        )
+        before = self.latest_sequence()
+        refused = self.workspace / "odd.xml"
+        refused.write_text(SUB_MINUTE_OFFSET_XCCDF, encoding="utf-8")
+
+        code, out, err = run(
+            [
+                "ingest",
+                PERSISTED_ARTIFACTS[1],
+                str(refused),
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: event_contract_invalid", err)
+        self.assertEqual(self.latest_sequence(), before)
+        self.assertEqual(len(self.records()), before)
+        self.assertNotIn(
+            "windows-host.ckl",
+            {
+                str(record.payload.get("name"))
+                for record in self.records()
+                if record.event_type == "artifact.ingested"
+            },
+        )
+        verified, _ = self.succeeds(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(verified, f"ok: {before} event(s) verified\n")
+
     def test_a_refused_payload_leaves_an_existing_store_untouched(self) -> None:
         self.ingest_fixtures()
         before = self.latest_sequence()
@@ -858,6 +1254,166 @@ class PersistedIngestTests(PersistedStoreTestCase):
         self.assertIn("error: event_contract_invalid", err)
         self.assertTrue(self.database.is_file())
         self.assertEqual(self.latest_sequence(), before)
+
+
+class PersistedStorePublicationTests(PersistedStoreTestCase):
+    """A new store is built beside its destination and linked in, and never unlinked.
+
+    Recording existence up front and unlinking the path on failure is a race: a
+    concurrent ingest can create and populate a real store between the check and the
+    failure, and the failing run would delete it (ADR 0008, second amendment).
+    """
+
+    def refused_artifact(self) -> Path:
+        """Write an artifact that parses and whose payload the contract then refuses.
+
+        The refusal lands with the store already open, which is the only way a failure
+        reaches the publication step at all.
+        """
+
+        artifact = self.workspace / "odd.xml"
+        artifact.write_text(SUB_MINUTE_OFFSET_XCCDF, encoding="utf-8")
+        return artifact
+
+    def ingest_refused(self) -> tuple[int, str, str]:
+        return run(
+            [
+                "ingest",
+                str(self.refused_artifact()),
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+
+    def test_a_successful_first_ingest_leaves_exactly_the_database_file(self) -> None:
+        self.ingest_fixtures()
+
+        self.assertEqual(
+            sorted(item.name for item in self.workspace.iterdir()),
+            ["history.db"],
+        )
+
+    def test_a_failed_first_ingest_leaves_no_file_and_no_temporary(self) -> None:
+        code, out, err = self.ingest_refused()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: event_contract_invalid", err)
+        self.assertFalse(self.database.exists())
+        self.assertEqual([item.name for item in self.workspace.iterdir()], ["odd.xml"])
+
+    def test_a_failed_ingest_leaves_an_existing_store_byte_identical(self) -> None:
+        self.ingest_fixtures()
+        before = self.database.read_bytes()
+
+        code, _, err = self.ingest_refused()
+
+        self.assertEqual(code, 1)
+        self.assertIn("error: event_contract_invalid", err)
+        self.assertEqual(self.database.read_bytes(), before)
+        self.assertEqual(
+            sorted(item.name for item in self.workspace.iterdir()),
+            ["history.db", "odd.xml"],
+        )
+
+    def test_a_dangling_store_link_is_named_rather_than_reported_as_a_conflict(self) -> None:
+        # `Path.exists` follows links, so a dangling one reads as a path with no store:
+        # the run built a store beside it, `os.link` refused the name the link already
+        # occupies, and the operator was told a store had appeared while the run was
+        # building, which is not what happened.
+        link = self.workspace / "link.db"
+        link.symlink_to(self.workspace / "gone.db")
+
+        code, out, err = run(
+            [
+                "ingest",
+                *PERSISTED_ARTIFACTS,
+                "--db",
+                str(link),
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: store_unavailable", err)
+        self.assertNotIn("store_conflict", err)
+        # The link is the diagnostic's location; the message names only what it points at.
+        self.assertEqual(err.count(str(link)), 1)
+        self.assertIn(f"[{link}]", err)
+        self.assertIn("gone.db", err)
+        self.assertTrue(link.is_symlink())
+        self.assertFalse(link.exists())
+        self.assertEqual([item.name for item in self.workspace.iterdir()], ["link.db"])
+
+    def test_a_link_to_a_real_store_is_opened_in_place(self) -> None:
+        # The refusal above is for a link with nothing behind it. A link to a store is a
+        # store: the run reads the history already there and appends through the link.
+        self.ingest_fixtures()
+        before = self.latest_sequence()
+        artifact = self.workspace / "partial.xml"
+        artifact.write_text(PARTIAL_TIMESTAMP_XCCDF, encoding="utf-8")
+        link = self.workspace / "link.db"
+        link.symlink_to(self.database)
+
+        out, _ = self.succeeds(
+            [
+                "ingest",
+                PERSISTED_ARTIFACTS[0],
+                str(artifact),
+                "--db",
+                str(link),
+                "--as-of",
+                INGESTED_AT,
+                "--actor",
+                "golden",
+            ]
+        )
+
+        self.assertEqual(out.splitlines()[0], "ubuntu-host.cklb: already_recorded")
+        self.assertTrue(out.splitlines()[1].startswith("partial.xml: recorded "))
+        self.assertGreater(self.latest_sequence(), before)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(
+            sorted(item.name for item in self.workspace.iterdir()),
+            ["history.db", "link.db", "partial.xml"],
+        )
+
+    def test_a_store_that_appears_while_building_is_reported_not_clobbered(self) -> None:
+        appeared = b"a store another run published"
+        real_record_ingest = cli_module.record_ingest
+
+        def publish_a_rival_store_first(*args: Any, **kwargs: Any) -> Any:
+            # Stands in for the concurrent ingest that wins the race to the destination
+            # while this run is still filling its temporary store.
+            if not self.database.exists():
+                self.database.write_bytes(appeared)
+            return real_record_ingest(*args, **kwargs)
+
+        with patch.object(cli_module, "record_ingest", publish_a_rival_store_first):
+            code, out, err = run(
+                [
+                    "ingest",
+                    *PERSISTED_ARTIFACTS,
+                    "--db",
+                    str(self.database),
+                    "--as-of",
+                    INGESTED_AT,
+                ]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: store_conflict", err)
+        self.assertIn(str(self.database), err)
+        self.assertEqual(self.database.read_bytes(), appeared)
+        self.assertEqual(
+            sorted(item.name for item in self.workspace.iterdir()),
+            ["history.db"],
+        )
 
 
 class PersistedAttestationTests(PersistedStoreTestCase):
@@ -875,8 +1431,11 @@ class PersistedAttestationTests(PersistedStoreTestCase):
         out, _ = self.attest_missing()
 
         self.assertEqual(
-            out,
-            "attested 0 case(s), skipped 0 unchanged case(s), 0 not applicable case(s)\n",
+            out.splitlines(),
+            [
+                "selected 0 case(s) with no source timestamp on any observation",
+                "attested 0 case(s), skipped 0 unchanged case(s), 0 not applicable case(s)",
+            ],
         )
         self.assertEqual(self.latest_sequence(), before)
 
@@ -1059,34 +1618,63 @@ class PersistedMetadataTests(PersistedStoreTestCase):
 
 
 class StoreVerifyCommandTests(PersistedStoreTestCase):
-    def smuggle(self, event_type: str, payload: dict[str, Any]) -> int:
+    def smuggle(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        stream_id: str = SMUGGLED_ARTIFACT_STREAM,
+        metadata: dict[str, str] | None = None,
+        expected_version: int = 0,
+    ) -> int:
         """Append one event straight to the store, past the contract the repository holds.
 
-        `EventRepository` is the only writer that checks a payload, so this is how a
-        stored event that no contract admits comes to exist: another tool, an older
-        version, or a contract tightened after the event was written.
+        `EventRepository` is the only writer that checks a payload, its stream, and its
+        metadata, so this is how history no writer would produce comes to exist: another
+        tool, an older version, or a rule tightened after the event was written. Each
+        argument defaults to something the audit has nothing to say about, so a test only
+        has to spell the one fault it is about. `expected_version` is the version the
+        stream is already at, which is zero for the unused streams above and the last
+        stored version for a test that adds an event to a stream the fixtures wrote.
         """
 
         with SQLiteEventStore(self.database) as store:
             appended = store.append(
-                f"artifact/{'b' * 64}/complyroll.cklb/1",
+                stream_id,
                 [
                     NewEvent(
                         event_type=event_type,
                         occurred_at=datetime(2026, 8, 21, 12, 0, tzinfo=UTC),
                         payload=payload,
-                        metadata={
-                            "actor": "smuggler",
-                            "method": "cli",
-                            "tool": "complyroll",
-                            "toolVersion": __version__,
-                            "runId": "run-smuggled",
-                        },
+                        metadata=metadata or dict(SMUGGLED_METADATA),
                     )
                 ],
-                expected_version=0,
+                expected_version=expected_version,
             )
         return appended[0].sequence
+
+    def relabelled(self, payload: Mapping[str, Any], source_record_id: str) -> dict[str, Any]:
+        """Return one stored observation as a different finding on the same artifact.
+
+        Both the fingerprint and the identifier derive from the observation's fields, so
+        moving the source record moves both: the result still names the artifact its
+        stream names, and is not a repeat of anything the stream already holds. An
+        overfull stream and a stream holding one observation twice are different faults.
+        """
+
+        moved = replace(
+            Observation.from_canonical_dict(payload), source_record_id=source_record_id
+        )
+        return replace(moved, observation_id=moved.derived_observation_id).to_canonical_dict()
+
+    def artifact_stream(self) -> tuple[EventRecord, ...]:
+        """Return the whole first artifact stream in the log, in stream order."""
+
+        records = self.records()
+        observation = next(
+            record for record in records if record.event_type == "observation.recorded"
+        )
+        return tuple(record for record in records if record.stream_id == observation.stream_id)
 
     def test_a_clean_store_verifies_and_exits_zero(self) -> None:
         self.populate()
@@ -1096,8 +1684,13 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(err, "")
         self.assertTrue(out.startswith("ok: "))
         self.assertIn("event(s) verified", out)
-        # The contract pass read the whole log and found nothing to say about it.
+        # The domain audit read the whole log and found nothing to say about it.
         self.assertEqual(out, f"ok: {self.latest_sequence()} event(s) verified\n")
+
+    def test_the_audited_codes_are_exactly_the_ones_these_tests_cover(self) -> None:
+        # A new audit fault code with no command test would otherwise ship reported by
+        # `audit_history` and unproven at the command line.
+        self.assertEqual(set(AUDIT_FAULT_CODES), COVERED_AUDIT_CODES)
 
     def test_a_payload_no_contract_admits_is_named_and_exits_one(self) -> None:
         # Nothing here is damaged: the payload was stored faithfully and its digest
@@ -1114,14 +1707,14 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assertIn(f"error: payload_contract_invalid: sequence {sequence}:", err)
+        self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
         self.assertIn("/ingested_at", err)
-        self.assertIn("1 payload(s) do not satisfy their published contract", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
 
     def test_a_spelling_only_the_reader_refuses_is_named_and_exits_one(self) -> None:
         # The contract's pattern admits a whole second spelled with six zero digits; the
-        # replay reader does not. The contract pass reads observation payloads back
-        # through that reader, so verify cannot call this store healthy.
+        # replay reader does not. The audit reads observation payloads back through that
+        # reader, so verify cannot call this store healthy.
         self.populate()
         result = ingest_stig_artifact(
             FIXTURES / "ubuntu-host.cklb",
@@ -1135,7 +1728,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assertIn(f"error: payload_contract_invalid: sequence {sequence}:", err)
+        self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
         self.assertIn("is not readable", err)
 
     def test_an_event_type_no_contract_publishes_is_named_and_exits_one(self) -> None:
@@ -1145,8 +1738,316 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         code, _, err = run(["store", "verify", "--db", str(self.database)])
 
         self.assertEqual(code, 1)
-        self.assertIn(f"error: payload_contract_invalid: sequence {sequence}:", err)
+        self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
         self.assertIn("no published contract for event 'case.retracted'", err)
+
+    def test_a_payload_its_own_contract_refuses_is_named_and_exits_one(self) -> None:
+        self.populate()
+        sequence = self.smuggle(
+            "case.pain_reduced",
+            {"reducedAt": "2026-08-10T00:00:00Z", "rating": 9},
+            stream_id=SMUGGLED_CASE_STREAM,
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
+        self.assertIn("/rating", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def case_stream(self, tracking_id: str) -> tuple[EventRecord, ...]:
+        """Return one fixture case stream in the log, in stream order."""
+
+        stream_id = f"case/{tracking_id}"
+        return tuple(record for record in self.records() if record.stream_id == stream_id)
+
+    def report_from_history(self) -> tuple[int, str, str]:
+        """Compile the persisted report with the golden options, without requiring exit 0."""
+
+        return run(
+            [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+
+    def smuggle_disposition(self, **overrides: Any) -> int:
+        """Append one disposition onto a real case stream, past the contract."""
+
+        stream = self.case_stream(UBUNTU_CASE)
+        self.assertTrue(stream)
+        payload: dict[str, Any] = {
+            "status": "closed",
+            "closedDisposition": "remediated",
+            "acceptanceRationale": None,
+            "recordedAt": "2026-08-21T12:00:00Z",
+        }
+        payload.update(overrides)
+        return self.smuggle(
+            "case.disposition_recorded",
+            payload,
+            stream_id=stream[0].stream_id,
+            expected_version=stream[-1].stream_version,
+        )
+
+    def test_an_incoherent_disposition_is_reported_as_a_contract_failure(self) -> None:
+        # `EventContractError` and `HistoryError` are siblings, and the class decides what
+        # the operator reads: the fold validates before it parses, so a smuggled payload
+        # its contract refuses is `event_contract_invalid` rather than `history_invalid`.
+        self.populate()
+        sequence = self.smuggle_disposition(closedDisposition=None)
+
+        verify_code, _, verify_err = run(["store", "verify", "--db", str(self.database)])
+        report_code, report_out, report_err = self.report_from_history()
+
+        self.assertEqual(verify_code, 1)
+        self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", verify_err)
+        self.assertEqual(report_code, 1)
+        self.assertEqual(report_out, "")
+        self.assertIn("error: event_contract_invalid", report_err)
+        self.assertNotIn("history_invalid", report_err)
+        self.assertIn("/closedDisposition", report_err)
+
+    def smuggle_whitespace_rationale(self) -> int:
+        """Append a disposition accepting risk on a rationale of three spaces.
+
+        The rule lived in `DispositionRecord` alone until now, so this exact store passed
+        `store verify` and was then refused by `report vdt --db`. It lives in the contract,
+        so both commands read it the same way.
+        """
+
+        return self.smuggle_disposition(
+            status="accepted", closedDisposition=None, acceptanceRationale="   "
+        )
+
+    def test_a_rationale_of_whitespace_is_named_and_exits_one(self) -> None:
+        self.populate()
+        sequence = self.smuggle_whitespace_rationale()
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
+        self.assertIn("/acceptanceRationale", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_the_report_refuses_the_same_rationale_verify_refuses(self) -> None:
+        # The pairing that was missing: `store verify` used to certify this store and
+        # `report vdt --db` used to refuse it as history_invalid. Both refuse it now, and
+        # the report's refusal is a contract failure because that is where the rule lives.
+        self.populate()
+        self.smuggle_whitespace_rationale()
+
+        code, out, err = self.report_from_history()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: event_contract_invalid", err)
+        self.assertNotIn("history_invalid", err)
+        self.assertIn("/acceptanceRationale", err)
+
+    def test_an_incomplete_artifact_stream_is_named_and_exits_one(self) -> None:
+        # An artifact event declaring observations no observation event follows is what
+        # an ingest interrupted by an older version left behind. Every byte verifies.
+        self.populate()
+        sequence = self.smuggle(
+            "artifact.ingested",
+            {
+                "name": "phantom.cklb",
+                "sha256": "c" * 64,
+                "sizeBytes": 128,
+                "mediaType": "application/json",
+                "parserName": "complyroll.cklb",
+                "parserVersion": "1",
+                "ingestedAt": "2026-08-21T12:00:00Z",
+                "observationCount": 2,
+                "diagnostics": [],
+            },
+            stream_id=f"artifact/{'c' * 64}/complyroll.cklb/1",
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: artifact_incomplete:", err)
+        self.assertIn("declared 2 observations, found 0", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_an_observation_on_another_artifact_stream_is_named_and_exits_one(self) -> None:
+        # An observation copied verbatim onto another artifact's stream is the right kind
+        # of event for that stream and is internally consistent, so every check there was
+        # passed it: it rehydrated under bytes it never came from and its finding was
+        # counted twice. The stream id is the artifact's identity, so the payload has to
+        # name the same digest, parser, and parser version (ADR 0008, second amendment).
+        self.populate()
+        recorded = next(
+            record for record in self.records() if record.event_type == "observation.recorded"
+        )
+        sequence = self.smuggle("observation.recorded", recorded.payload)
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: artifact_stream_mismatch:", err)
+        self.assertIn(SMUGGLED_ARTIFACT_STREAM, err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_an_overfull_artifact_stream_is_named_and_exits_one(self) -> None:
+        # The mirror of the incomplete stream above. Here the extra observation belongs to
+        # the artifact whose stream holds it, so its identity is beyond reproach and only
+        # the count gives it away: seven observations on a stream that declared six is a
+        # finding the artifact does not carry.
+        self.populate()
+        stream = self.artifact_stream()
+        declared = stream[0]
+        self.assertEqual(declared.event_type, "artifact.ingested")
+        self.smuggle(
+            "observation.recorded",
+            self.relabelled(stream[1].payload, "V-999999"),
+            stream_id=declared.stream_id,
+            expected_version=stream[-1].stream_version,
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {declared.sequence}: artifact_overfull:", err)
+        self.assertIn("declared 6 observations, found 7", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def rebased(self, payload: Mapping[str, Any], digest: str) -> dict[str, Any]:
+        """Return one stored observation as the same finding read out of other bytes.
+
+        The digest is part of an artifact-bound observation's identity, so moving it moves
+        the fingerprint and the identifier with it. The result names the smuggled stream
+        rather than the fixture's, which is what lets a forged stream be built beside the
+        real ones without touching them.
+        """
+
+        moved = replace(
+            Observation.from_canonical_dict(payload), source_artifact_digest=digest
+        )
+        return replace(moved, observation_id=moved.derived_observation_id).to_canonical_dict()
+
+    def test_one_observation_recorded_twice_is_named_and_exits_one(self) -> None:
+        # A forged head: it declares two observations and the stream carries two, so the
+        # count adds up; both name exactly the artifact the stream names, so the identity
+        # check is satisfied; and one finding still rehydrates twice.
+        self.populate()
+        digest = "b" * 64
+        payload = self.rebased(self.artifact_stream()[1].payload, digest)
+        self.smuggle(
+            "artifact.ingested",
+            {
+                "name": "forged.cklb",
+                "sha256": digest,
+                "sizeBytes": 4096,
+                "mediaType": "application/json",
+                "parserName": "complyroll.cklb",
+                "parserVersion": "1",
+                "ingestedAt": "2026-08-21T12:00:00Z",
+                "observationCount": 2,
+                "diagnostics": [],
+            },
+        )
+        self.smuggle("observation.recorded", payload, expected_version=1)
+        sequence = self.smuggle("observation.recorded", payload, expected_version=2)
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: artifact_duplicate_observation:", err)
+        self.assertIn(SMUGGLED_ARTIFACT_STREAM, err)
+        self.assertIn(str(payload["observation_id"]), err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_a_case_created_naming_another_tracking_id_is_named_and_exits_one(self) -> None:
+        self.populate()
+        sequence = self.smuggle(
+            "case.created",
+            {
+                "trackingId": OTHER_UNKNOWN_CASE,
+                "sourceType": "ckl",
+                "sourceRecordId": "V-000001",
+                "contextKey": "A retired benchmark",
+                "title": "A weakness recorded by an earlier run",
+                "description": "Recorded from an artifact that is no longer supplied.",
+                "createdAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=SMUGGLED_CASE_STREAM,
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch:", err)
+        self.assertIn(OTHER_UNKNOWN_CASE, err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_an_event_on_the_wrong_kind_of_stream_is_named_and_exits_one(self) -> None:
+        # A `detection.attested` on an artifact stream is read by nobody: the fold reads
+        # attestations off case streams only, so the log looks healthy and a case quietly
+        # has no attested detection time.
+        self.populate()
+        sequence = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: event_stream_mismatch:", err)
+        self.assertIn("detection.attested", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_a_metadata_envelope_outside_the_rules_is_named_and_exits_one(self) -> None:
+        # A run identifier that is not a version-4 UUID cannot group a run, so two
+        # spellings of one run read as two, and the store used to keep it verbatim.
+        self.populate()
+        sequence = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=SMUGGLED_CASE_STREAM,
+            metadata={**SMUGGLED_METADATA, "runId": "run-not-a-uuid"},
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: event_metadata_invalid:", err)
+        self.assertIn("runId", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
 
     def test_a_rewritten_payload_is_named_and_exits_one(self) -> None:
         self.populate()
@@ -1335,9 +2236,13 @@ class AllMissingSelectionTests(PersistedStoreTestCase):
         out, err = self.attest_missing()
 
         self.assertEqual(
-            out,
-            f"attested {len(untimestamped)} case(s), skipped 0 unchanged case(s), "
-            "0 not applicable case(s)\n",
+            out.splitlines(),
+            [
+                f"selected {len(untimestamped)} case(s) with no source timestamp on "
+                "any observation",
+                f"attested {len(untimestamped)} case(s), skipped 0 unchanged case(s), "
+                "0 not applicable case(s)",
+            ],
         )
         self.assertNotIn("attestation_not_applicable", err)
         self.assertNotIn("detection.attested", self.history_of(partly_timestamped[0]))
@@ -1357,6 +2262,16 @@ class HelpTextTests(unittest.TestCase):
             text,
         )
         self.assertIn("re-attesting it requires an explicit --case", text)
+
+    def test_both_artifact_arguments_name_every_accepted_format(self) -> None:
+        # ARF has been ingested since Phase 0 and the help text never said so, so an
+        # operator holding one had no way to know the command would read it.
+        for argv in (["ingest"], ["report", "vdt"]):
+            with self.subTest(command=" ".join(argv)):
+                text = help_text(argv)
+
+                self.assertIn("ARF", text)
+                self.assertIn("CKLB, CKL, XCCDF, or ARF file", text)
 
     def test_store_verify_names_the_sidecar_files_a_walk_can_leave(self) -> None:
         text = help_text(["store", "verify"])

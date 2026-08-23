@@ -237,6 +237,36 @@ class WriteTransactionTests(unittest.TestCase):
 
         self.assertEqual(connection.statements, [])
 
+    def test_a_joined_context_issues_no_statement_of_its_own(self) -> None:
+        """Joining is how an append inside `transaction()` stops committing on its own."""
+
+        connection = FakeConnection(in_transaction=True)
+
+        with _write_transaction(connection, joined=True):  # type: ignore[arg-type]
+            connection.execute("INSERT")
+
+        self.assertEqual(connection.statements, ["INSERT"])
+        self.assertTrue(connection.in_transaction)
+
+    def test_a_joined_context_leaves_a_body_failure_to_the_enclosing_block(self) -> None:
+        connection = FakeConnection(in_transaction=True)
+
+        with self.assertRaisesRegex(ValueError, "domain rule"):
+            with _write_transaction(connection, joined=True):  # type: ignore[arg-type]
+                raise ValueError("domain rule violated")
+
+        self.assertEqual(connection.statements, [])
+        self.assertTrue(connection.in_transaction)
+
+    def test_joining_nothing_is_refused_rather_than_writing_unprotected(self) -> None:
+        connection = FakeConnection()
+
+        with self.assertRaisesRegex(EventStoreError, "expected an enclosing"):
+            with _write_transaction(connection, joined=True):  # type: ignore[arg-type]
+                pass
+
+        self.assertEqual(connection.statements, [])
+
 
 class SQLiteEventStoreTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -673,6 +703,204 @@ class SQLiteEventStoreTests(unittest.TestCase):
 
         applied = store._connection.execute("PRAGMA busy_timeout").fetchone()[0]
         self.assertEqual(int(applied), 250)
+
+
+class StoreTransactionTests(unittest.TestCase):
+    """One `BEGIN IMMEDIATE` across several store calls, or none of their writes.
+
+    Every check a writer makes before appending is a claim about the whole log, and a claim
+    made outside a transaction is only true until the next writer commits. Holding the write
+    lock from the first read to the last append is what makes the claim survive the append.
+    """
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.database_path = Path(self.temporary_directory.name) / "complyroll.db"
+
+    def open_store(self, *, busy_timeout_ms: int = 5000) -> SQLiteEventStore:
+        store = SQLiteEventStore(
+            self.database_path,
+            clock=lambda: RECORDED_AT,
+            busy_timeout_ms=busy_timeout_ms,
+        )
+        self.addCleanup(store.close)
+        return store
+
+    def test_a_transaction_commits_every_append_it_holds(self) -> None:
+        store = self.open_store()
+
+        with store.transaction():
+            store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+            store.append("case/case-001", [sample_event("evt-2")], expected_version=1)
+
+        self.assertEqual([record.event_id for record in store.read_all()], ["evt-1", "evt-2"])
+        self.assertFalse(store.in_transaction)
+
+    def test_an_exception_after_the_first_append_leaves_zero_events(self) -> None:
+        store = self.open_store()
+
+        with self.assertRaisesRegex(ValueError, "the caller changed its mind"):
+            with store.transaction():
+                store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+                self.assertEqual(store.latest_sequence, 1)
+                raise ValueError("the caller changed its mind")
+
+        self.assertEqual(store.read_all(), ())
+        self.assertEqual(store.latest_sequence, 0)
+        self.assertEqual(store.current_stream_version("case/case-001"), 0)
+        self.assertFalse(store.in_transaction)
+
+    def test_a_rolled_back_transaction_is_invisible_to_another_connection(self) -> None:
+        store = self.open_store()
+        reader = SQLiteEventStore(self.database_path, busy_timeout_ms=100)
+        self.addCleanup(reader.close)
+
+        with self.assertRaises(ValueError):
+            with store.transaction():
+                store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+                raise ValueError("abandoned")
+
+        self.assertEqual(reader.read_all(), ())
+
+    def test_reads_inside_the_transaction_see_its_own_pending_writes(self) -> None:
+        store = self.open_store()
+
+        with store.transaction():
+            store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+
+            self.assertEqual(store.current_stream_version("case/case-001"), 1)
+            self.assertEqual([record.event_id for record in store.read_all()], ["evt-1"])
+            self.assertEqual(store.latest_sequence, 1)
+
+    def test_a_second_writer_is_busy_while_the_transaction_is_open_and_writes_after(
+        self,
+    ) -> None:
+        holder = self.open_store()
+        contender = SQLiteEventStore(self.database_path, busy_timeout_ms=100)
+        self.addCleanup(contender.close)
+
+        with holder.transaction():
+            holder.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+
+            started = time.monotonic()
+            with self.assertRaises(EventStoreBusyError):
+                contender.append("case/case-002", [sample_event("evt-2")], expected_version=0)
+            elapsed = time.monotonic() - started
+
+            self.assertLess(elapsed, 2.0)
+            self.assertEqual(contender.read_all(), ())
+
+        appended = contender.append(
+            "case/case-002", [sample_event("evt-2")], expected_version=0
+        )
+
+        self.assertEqual(appended[0].sequence, 2)
+        self.assertEqual(
+            [record.event_id for record in contender.read_all()], ["evt-1", "evt-2"]
+        )
+
+    def test_a_second_transaction_cannot_start_while_one_is_open(self) -> None:
+        holder = self.open_store()
+        contender = SQLiteEventStore(self.database_path, busy_timeout_ms=100)
+        self.addCleanup(contender.close)
+
+        with holder.transaction():
+            with self.assertRaises(EventStoreBusyError):
+                with contender.transaction():
+                    pass
+
+        with contender.transaction():
+            contender.append("case/case-002", [sample_event("evt-2")], expected_version=0)
+
+        self.assertEqual(contender.latest_sequence, 1)
+
+    def test_nesting_a_transaction_on_one_store_is_refused(self) -> None:
+        store = self.open_store()
+
+        with store.transaction():
+            with self.assertRaisesRegex(EventStoreError, "already inside a transaction"):
+                with store.transaction():
+                    pass
+            store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+
+        self.assertEqual(store.latest_sequence, 1)
+        self.assertFalse(store.in_transaction)
+
+    def test_a_refused_nesting_leaves_the_store_usable_afterwards(self) -> None:
+        store = self.open_store()
+
+        with self.assertRaises(EventStoreError):
+            with store.transaction():
+                with store.transaction():
+                    pass
+
+        self.assertFalse(store.in_transaction)
+        store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+        self.assertEqual(store.latest_sequence, 1)
+
+    def test_a_projection_checkpoint_advanced_inside_a_transaction_rolls_back_too(
+        self,
+    ) -> None:
+        store = self.open_store()
+        store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+
+        with self.assertRaises(ValueError):
+            with store.transaction():
+                store.advance_projection("case-list", expected_sequence=0, last_sequence=1)
+                self.assertEqual(store.get_projection_checkpoint("case-list").last_sequence, 1)
+                raise ValueError("abandoned")
+
+        self.assertEqual(store.get_projection_checkpoint("case-list").last_sequence, 0)
+
+    def test_append_outside_a_transaction_still_commits_on_its_own(self) -> None:
+        store = self.open_store()
+
+        store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+        reader = SQLiteEventStore(self.database_path, busy_timeout_ms=100)
+        self.addCleanup(reader.close)
+
+        self.assertEqual([record.event_id for record in reader.read_all()], ["evt-1"])
+        self.assertFalse(store.in_transaction)
+
+    def test_a_stale_expected_version_inside_a_transaction_discards_the_batch(self) -> None:
+        store = self.open_store()
+
+        with self.assertRaises(EventConcurrencyError):
+            with store.transaction():
+                store.append("case/case-001", [sample_event("evt-1")], expected_version=0)
+                store.append("case/case-001", [sample_event("evt-2")], expected_version=0)
+
+        self.assertEqual(store.read_all(), ())
+
+    def test_a_rollback_that_fails_closes_the_store_rather_than_trusting_it(self) -> None:
+        """The wedge protection an append has, a transaction has: a connection whose
+        rollback failed cannot be trusted, so it is closed and the store says so."""
+
+        store = self.open_store()
+        real = store._connection
+        assert real is not None
+        real.close()
+        broken = _FakeConnection(fail_on={"ROLLBACK"}, error="disk I/O error")
+        store._connection = broken  # type: ignore[assignment]
+
+        with self.assertRaises(EventStoreError) as raised:
+            with store.transaction():
+                raise RuntimeError("body failure")
+
+        self.assertIn("closed", str(raised.exception))
+        self.assertTrue(broken.closed)
+        self.assertFalse(store.in_transaction)
+        with self.assertRaisesRegex(EventStoreError, "closed"):
+            _ = store.latest_sequence
+
+    def test_a_closed_store_refuses_to_start_a_transaction(self) -> None:
+        store = SQLiteEventStore(self.database_path, clock=lambda: RECORDED_AT)
+        store.close()
+
+        with self.assertRaisesRegex(EventStoreError, "closed"):
+            with store.transaction():
+                pass
 
 
 class _FakeConnection:

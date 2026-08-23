@@ -241,6 +241,19 @@ file beside its destination, and replaces the destinations only after every writ
 failed Markdown write therefore leaves no JSON behind, and a failed JSON write leaves no
 Markdown. When JSON goes to standard output, the Markdown file is written first.
 
+*Amended 2026-08-22.* The destinations are published one rename at a time, so the rule is made
+good by rollback rather than by a single atomic step: before any destination is replaced, each
+existing destination is preserved beside itself, and a failure during publication restores every
+destination that was already replaced and removes every temporary file, so an ordinary failure
+leaves the previous files exactly as they were. When the rollback itself fails, the preserved copy
+of every destination that could not be restored is left beside it and the command fails with
+`output_rollback_failed`, naming the original error, each destination left in its new state, and
+the file holding its previous content; a mixed pair of outputs is reported, never silent. A
+destination that is a symbolic link is refused before anything is staged (`output_is_symlink`),
+because restoring bytes through a link would keep the content and lose the link. What two
+renames cannot promise is power-failure atomicity across two paths: a crash between the two
+renames can leave one destination updated, which the next run overwrites.
+
 ### Closed cases may close as accepted
 
 `closedDisposition` accepts `accepted` in addition to the four mitigation outcomes. A case closed
@@ -255,6 +268,14 @@ explanation, projected and completed PAIN reductions, remediation state), and th
 gains the compile diagnostics and each artifact's observation count, so neither rendering omits
 material the other carries. The attestation record in the extension carries the count of
 vulnerabilities it covered, as Decision 2 already required.
+
+*Amended 2026-08-22.* Stated precisely: the JSON document is the complete machine record, and
+every fact the Markdown prints is present in it, including each deadline's `satisfied` flag. The
+Markdown twin is the human rendering of the same records: it carries every vulnerability,
+observation identifier (marking the ones with no source timestamp), deadline with its rule, due
+instant and satisfied state, and artifact with its parser version, and a parity test walks the
+compiled records to prove it. Two things are deliberately abbreviated in Markdown only: artifact
+digests are shown truncated, and byte sizes are omitted.
 
 ## Consequences
 

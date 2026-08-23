@@ -14,6 +14,7 @@ the same facts still appends nothing.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -154,6 +155,22 @@ class EvaluationOutcome:
         )
 
 
+def _transaction_scope(repository: EventRepository) -> AbstractContextManager[Any]:
+    """Open one store transaction, or join the caller's when one is already open.
+
+    Each writer here is atomic on its own, and `SQLiteEventStore.transaction` refuses to
+    nest, so a caller that needs several writer calls to commit or roll back together had
+    no way to ask for it: `complyroll ingest` recorded each artifact in its own
+    transaction, and a run that failed on the second artifact left the first durable while
+    the buffered summary printed nothing. Joining an open transaction makes the writer's
+    own scope a no-op and leaves the outer block to decide (ADR 0008, second amendment).
+    """
+
+    if repository.store.in_transaction:
+        return nullcontext()
+    return repository.transaction()
+
+
 def content_digest(event_type: str, payload: Mapping[str, Any]) -> str:
     """Digest one payload's asserted content, ignoring its clerical filing time."""
 
@@ -172,12 +189,19 @@ def record_ingest(
     metadata: EventMetadata,
     ingested_at: datetime,
 ) -> IngestOutcome:
-    """Record one artifact ingestion and its observations, once.
+    """Record one artifact ingestion and its observations, once and atomically.
 
-    An artifact stream that already carries every observation is left alone and
-    reported as already recorded. A stream that was interrupted part way through
-    resumes at the observation it stopped on, so a crash cannot silently cost history.
-    A different parser version is a different stream (ADR 0002).
+    The artifact event and every observation are written inside one store transaction, so
+    an interrupted run records the whole artifact or none of it. That matters because the
+    artifact event declares the observation count: a stream holding a prefix of what it
+    declared is a claim history cannot support, and both verification and replay used to
+    accept one. The resume path below still exists for streams an earlier version wrote in
+    separate batches, so a store already carrying such a prefix can be finished rather than
+    condemned. A caller that already holds a transaction has this one join it instead, so
+    `complyroll ingest` can make a whole run of artifacts all-or-nothing.
+
+    An artifact stream that already carries every observation is left alone and reported as
+    already recorded. A different parser version is a different stream (ADR 0002).
 
     One artifact ingestion is one instant: a resumed tail is stamped with the instant
     the stream was opened with rather than with this run's, so an artifact interrupted
@@ -188,6 +212,24 @@ def record_ingest(
 
     artifact = ingest_result.artifact
     if artifact is None or ingest_result.errors:
+        raise HistoryError("only a successful ingest can be recorded as history")
+    with _transaction_scope(repository):
+        return _record_ingest(
+            repository, ingest_result, metadata=metadata, ingested_at=ingested_at
+        )
+
+
+def _record_ingest(
+    repository: EventRepository,
+    ingest_result: IngestResult,
+    *,
+    metadata: EventMetadata,
+    ingested_at: datetime,
+) -> IngestOutcome:
+    """Read the stream and write what is missing, inside the caller's transaction."""
+
+    artifact = ingest_result.artifact
+    if artifact is None:  # pragma: no cover - the caller refuses a failed ingest first
         raise HistoryError("only a successful ingest can be recorded as history")
 
     stream_id = artifact_stream_id(
@@ -272,9 +314,26 @@ def correlate_cases(
     A case stream is created only when none exists for the tracking identifier, and an
     observation is linked only once, so re-running after a new ingest appends exactly
     the new links.
+
+    The rehydration and every append run in one store transaction. A second run that starts
+    while this one is working contends on the write lock and then reads history including
+    everything this run wrote, rather than deciding a case does not exist and creating a
+    second one.
     """
 
     _require_aware(now, "now")
+    with _transaction_scope(repository):
+        return _correlate_cases(repository, metadata=metadata, now=now)
+
+
+def _correlate_cases(
+    repository: EventRepository,
+    *,
+    metadata: EventMetadata,
+    now: datetime,
+) -> CorrelationOutcome:
+    """Correlate and link inside the caller's transaction."""
+
     groups = group_open_observations(rehydrate_observations(repository))
     created: list[str] = []
     linked = 0
@@ -338,12 +397,36 @@ def attest_detection(
     report. A case with no links at all is still missing a timestamp, so it is
     attested. A case that already carries the same attested instant and rationale is
     skipped.
+
+    Every case this call touches is read and written in one store transaction, so a
+    concurrent run cannot read a case as unattested that this one has already attested.
     """
 
     _require_aware(detected_at, "detected_at")
     _require_aware(now, "now")
     if not isinstance(rationale, str) or not rationale.strip():
         raise HistoryError("rationale must be non-blank text")
+    with _transaction_scope(repository):
+        return _attest_detection(
+            repository,
+            tracking_ids,
+            detected_at=detected_at,
+            rationale=rationale,
+            metadata=metadata,
+            now=now,
+        )
+
+
+def _attest_detection(
+    repository: EventRepository,
+    tracking_ids: Iterable[str],
+    *,
+    detected_at: datetime,
+    rationale: str,
+    metadata: EventMetadata,
+    now: datetime,
+) -> AttestationOutcome:
+    """Attest the selected cases inside the caller's transaction."""
 
     payload = {
         "detectedAt": iso_utc(detected_at),
@@ -404,11 +487,29 @@ def apply_evaluations(
     compiler refuses as well. That check runs before the first append, so a refused
     run leaves history exactly as it found it. Facts the store holds and the file no
     longer states are kept and reported in `EvaluationOutcome.warnings`.
+
+    The fold, the checks, and every append run inside one store transaction. Uniqueness
+    across cases is a claim about the whole log, and two runs that each folded a store
+    without the other's writes could both pass it and both commit the same provider
+    identifier. Holding the write lock from the fold to the last append makes the second
+    run wait, re-fold, and see the first run's events.
     """
 
     if not isinstance(evaluation_set, EvaluationSet):
         raise TypeError("evaluation_set must be an EvaluationSet")
     _require_aware(now, "now")
+    with _transaction_scope(repository):
+        return _apply_evaluations(repository, evaluation_set, metadata=metadata, now=now)
+
+
+def _apply_evaluations(
+    repository: EventRepository,
+    evaluation_set: EvaluationSet,
+    *,
+    metadata: EventMetadata,
+    now: datetime,
+) -> EvaluationOutcome:
+    """Fold, check, and append inside the caller's transaction."""
 
     streams = _case_streams(repository)
     cases = tuple(
@@ -649,7 +750,7 @@ def _reduction_retained_warning(
         f"reduction_retained: {case.tracking_id}: {entry.location} no longer states "
         f"{len(retained)} recorded PAIN reduction(s) ({described}); ComplyRoll has no "
         "retraction event, so the recorded reductions stand, and changing them needs a "
-        "new disposition with a rationale"
+        "new evaluation entry with a rationale"
     )
 
 

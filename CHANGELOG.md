@@ -43,6 +43,37 @@ All notable project changes will be documented here.
   payload back through the canonical reader before storing it. Completed PAIN reductions render in
   canonical order on both paths, and a disposition recorded without an evaluation makes the
   replay fail closed.
+- `SQLiteEventStore.transaction()`: one write transaction that every append inside it joins. The
+  case writers fold, check, and append inside one transaction, so concurrent `cases evaluate`
+  runs cannot both record the same provider tracking id, an artifact is ingested atomically, and
+  one `ingest` run is all-or-nothing across its artifacts on a new store and an existing one
+  alike. The fold refuses an incomplete or overfull artifact stream and an event whose artifact
+  identity differs from its stream or repeats an observation identifier within the stream, and
+  `store verify` reports them (`artifact_incomplete`, `artifact_overfull`,
+  `artifact_stream_mismatch`, `artifact_duplicate_observation`). A whitespace-only acceptance
+  rationale is refused by the `case.disposition_recorded` contract itself, so the fold carries no
+  cross-field rule the audit cannot see.
+- The repository parses every timestamp field of every contract as a real instant (hour 24
+  included, which Python would otherwise roll into the next day), refuses an event stored on
+  the wrong kind of stream or a `case.created` on another case's stream, and enforces the
+  metadata rules (`run-<uuid4>`, a published method, `tool` equal to `complyroll`, a non-blank
+  version); `store verify` audits all of these at rest through
+  `complyroll.history.audit_history`. The rules are public
+  as `complyroll.events.metadata_breaches`, `timestamp_pointers_for`, and
+  `event_belongs_on_stream`, and the parser-version split as `complyroll.history.artifact_history`.
+- When one artifact has streams under several parser versions, replay uses the newest and
+  reports older streams as `artifact_superseded`.
+- Output files publish with rollback: a failure while replacing the destinations restores the
+  previous files, a rollback that itself fails exits with `output_rollback_failed` naming every
+  destination left in its new state and the kept copy of its previous content, and a symbolic
+  link is refused as a destination (`output_is_symlink`). A new store is built at a temporary
+  path beside the destination and published with a hard link only on success, which refuses to
+  overwrite a store that appeared meanwhile (`store_conflict`); `ingest` never deletes the
+  destination path, and refuses a dangling symbolic link as `--db` (`store_unavailable`).
+- JSON deadline objects carry `satisfied`; the Markdown detail section lists every observation
+  id of a partly timestamped group and marks the untimestamped ones; a parity test walks the
+  records. Help text names ARF; `--all-missing` reports how many cases it selected; the
+  `reduction_retained` warning points at a new evaluation entry.
 - A `[tool.mypy]` configuration so the type gate is reproducible from the repository.
 - A `release.yml` workflow that publishes to PyPI through trusted publishing (OIDC, no stored
   token) when a `v<version>` tag is pushed: the tag must equal the `pyproject` version, the suite
@@ -50,6 +81,11 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- Every command that folds observations (`cases correlate`, `cases attest-detection`,
+  `cases evaluate`, `report vdt --db`) fails closed on a store carrying an artifact stream with
+  fewer observations than its `artifact.ingested` event declares. Only an interrupted ingest
+  from an earlier version leaves such a stream; re-running `ingest` for that artifact completes
+  it, and `store verify` names it as `artifact_incomplete`.
 - Repository and issue URLs point at the `ComplyRoll` GitHub organization
   (`github.com/ComplyRoll/ComplyRoll`); the previous path redirects.
 - The Vulnerability Detail Report compiler is split into `compile_records`, shared by the

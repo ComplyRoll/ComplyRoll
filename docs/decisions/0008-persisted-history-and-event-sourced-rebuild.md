@@ -204,11 +204,78 @@ implicit. They bind the persisted path from this date.
   `report vdt --db`, `store verify`) reports `store_missing` when the path does not exist;
   `ingest` parses every artifact before it opens or creates the store, so a run that fails on any
   artifact leaves no file behind. A resumed ingest stamps the replayed observations with the
-  ingestion instant already recorded on the artifact event, not the resuming run's. `report vdt` refuses
-  `--db` together with artifacts, `--evaluations`, or `--detected-at` (`invalid_option`): the
-  persisted path takes those facts from history.
+  ingestion instant already recorded on the artifact event, not the resuming run's. `report vdt`
+  refuses `--db` together with artifacts, `--evaluations`, or `--detected-at` (`invalid_option`):
+  the persisted path takes those facts from history.
 - **Stored text is canonical or rejected.** `Observation.from_canonical_dict` accepts a timestamp
   only when the parsed value re-serializes to the exact stored text.
+
+## Amendment 2026-08-22 (second): rules a cross-vendor audit showed were unenforced
+
+An OpenAI-engine audit of the committed slice found invariants the text promised and nothing
+enforced, mostly at concurrency and contract boundaries. They bind from this date.
+
+- **Writers run in one store transaction.** `SQLiteEventStore.transaction()` opens one
+  `BEGIN IMMEDIATE` transaction that every append inside it joins. `cases correlate`,
+  `cases attest-detection`, and `cases evaluate` fold, check, and append inside one such
+  transaction, so two concurrent runs serialize on the write lock and the second re-folds after
+  the first commits; the effective-tracking-id uniqueness rule therefore holds across streams,
+  not only within one run's memory.
+- **An artifact is ingested atomically, and an `ingest` run is all-or-nothing.** `record_ingest`
+  writes the artifact event and every observation inside one transaction, and the writers join a
+  transaction their caller already holds, so `complyroll ingest` wraps every artifact of one run in
+  a single transaction: a run that fails on any artifact leaves the store exactly as it was, on a
+  new store and an existing one alike, and an empty summary means nothing became durable. A
+  stream that nonetheless holds fewer observations than its artifact event declares (history
+  written by an older version) is incomplete: the fold refuses it and `store verify` reports
+  `artifact_incomplete`. The mirror holds too: a stream holding more observations than it declared
+  is `artifact_overfull`, and an `artifact.ingested` or `observation.recorded` whose digest, parser
+  name, or parser version differs from the stream it sits on is `artifact_stream_mismatch`; an
+  observation identifier repeated within one stream is `artifact_duplicate_observation`. All three
+  are refused at append, refused by the fold, and reported at rest, so an observation can never be
+  counted under an artifact it did not come from, nor counted twice under its own.
+- **Only `ingest` creates a store, and it never deletes one.** A new store is built at a
+  temporary path beside the destination and published only when the whole run succeeded; a
+  failure removes the temporary file and nothing else. No command unlinks a path it did not
+  create in the same run. A `--db` path that is a symbolic link with nothing behind it is refused
+  (`store_unavailable`, naming the link's target) rather than built beside and then reported as a
+  conflict; a link to a real store is opened in place.
+- **Every timestamp is a real instant.** The repository parses every timestamp-typed field of
+  every contract (the set is derived from the schemas, nested and nullable fields included), so an
+  impossible date or hour is refused at append and reported by `store verify`, not discovered by
+  the fold. Hour 24 is refused explicitly: Python parses `T24:00:00Z` and rolls the date
+  forward, which would move a deadline into the next day in silence. The derivation walks the
+  applicator branches a contract may carry (`oneOf`, `anyOf`, `allOf`, `if`, `then`, `else`,
+  `dependentSchemas`) and refuses, at import, a contract carrying a `$ref` anywhere or a timestamp
+  inside any array form, so a field it cannot reach cannot be published.
+- **Events belong to their stream.** `artifact.ingested` and `observation.recorded` are accepted
+  only on artifact streams, every `case.*` event and `detection.attested` only on case streams,
+  and a `case.created` only on the stream its `trackingId` names. `store verify` reports any
+  event stored on the wrong kind of stream.
+- **Metadata is enforced, not described.** `runId` must be `run-` followed by a canonical
+  version-4 UUID, `method` one of the published methods (`cli`, `library`), `tool` exactly
+  `complyroll`, and `toolVersion` non-blank; the repository refuses anything else at append and
+  `store verify` reports it at rest.
+- **The newest parser stream wins.** When one artifact digest has streams under several parser
+  versions, the fold rehydrates only the stream with the newest version. Versions compare as
+  tuples of integers when every dot-separated component of every candidate is an ASCII number,
+  with leading and trailing zero components ignored so `1`, `01`, and `1.0` are one version and
+  `10` follows `9`; otherwise they compare as text. Two streams that tie leave the later-recorded
+  one current, so the choice never depends on read order. The fold then reads only it and the
+  replay reports each older stream as `artifact_superseded`. Decision 5's byte identity with the
+  stateless report holds for a log in which no artifact has a superseded stream. Once one does,
+  the persisted report differs from the stateless one by exactly that diagnostic in the
+  extension block and the Markdown diagnostics list, even when the installed parser version
+  equals the newest recorded one: the history holds a fact the files alone do not, and the report
+  says so rather than hiding it to preserve the bytes.
+- **`store verify` audits the domain, not only the bytes.** After the store-level walk it runs
+  `audit_history`: every payload against its contract and, for observations, the reader; every
+  event against its stream kind and, on artifact streams, against the artifact identity the
+  stream names; every artifact stream for completeness in both directions and for repeated
+  observation identifiers; every metadata envelope against the rules above. Every cross-field
+  rule of the disposition contract, including that an acceptance rationale carries text and not
+  only whitespace, lives in the contract itself, so nothing the fold refuses is invisible to the
+  audit. The README's claim is scoped to exactly that.
 
 ## Rejected alternatives
 

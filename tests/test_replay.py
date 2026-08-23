@@ -12,12 +12,13 @@ import re
 import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from test_reports import ARTIFACTS, EXAMPLES, FIXTURES, GOLDEN, find_vulnerability, options
 
-from complyroll.adapters import ingest_stig_artifact
+from complyroll.adapters import IngestResult, ingest_stig_artifact
 from complyroll.events import (
     EventMetadata,
     EventRepository,
@@ -51,6 +52,9 @@ EARLIER_ATTESTED_AT = datetime(2026, 7, 15, 0, 0, tzinfo=UTC)
 #: A later instant, for re-attesting one case after the rest were attested together.
 LATER_ATTESTED_AT = datetime(2026, 8, 2, 0, 0, tzinfo=UTC)
 RATIONALE = "The fixtures declare no assessment timestamp; the assessment ran on 1 August."
+#: One fixed run identifier for every acceptance store, so a replay stays reproducible.
+#: The repository requires `run-` followed by a canonical lowercase version-4 UUID.
+RUN_ID = "run-8c4a0e2e-1f4d-4a3b-9c2e-6f0d5b7a1e33"
 
 WINDOWS_CASE = "case-490f49bfdd1bd019"
 #: A well-formed tracking id no fixture produces, for the stale-case path.
@@ -59,6 +63,13 @@ ORPHAN_CASE = "case-00000000000000ff"
 #: The one fixture that correlates to a single case, so a store built from it holds
 #: exactly one attested record and an override cannot hide behind a second one.
 WINDOWS_ONLY = (FIXTURES / "windows-host.ckl",)
+
+#: The attestation block a `WINDOWS_ONLY` store publishes when nothing renames the case.
+SOLE_ATTESTATION = {
+    "detectedAt": "2026-08-01T00:00:00Z",
+    "appliedTo": [WINDOWS_CASE],
+    "count": 1,
+}
 
 WINDOWS_EVALUATION: Mapping[str, object] = {
     "match": {"sourceRecordId": "V-253260", "sourceType": "ckl"},
@@ -104,7 +115,7 @@ class StoreFixture(unittest.TestCase):
         self.addCleanup(store.close)
         self.store = store
         self.repository = EventRepository(store)
-        self.metadata = EventMetadata(actor="golden", run_id="run-acceptance")
+        self.metadata = EventMetadata(actor="golden", run_id=RUN_ID)
 
     def ingest(self, paths: Sequence[Path] = ARTIFACTS) -> None:
         """Record every artifact in the order the golden report lists them."""
@@ -216,7 +227,13 @@ class StoreFixture(unittest.TestCase):
         artifacts: Sequence[Path],
         evaluations: Path,
     ) -> CompiledVdtReport:
-        """Assert both renderings of both paths match byte for byte, and return one."""
+        """Assert both renderings of both paths match byte for byte, and return one.
+
+        Both sides of this comparison run `compile_records`, so it proves the two
+        paths hand that compiler the same records and proves nothing about what the
+        compiler then wrote. Every caller pairs it with assertions naming the concrete
+        strings a reader of the report would see.
+        """
 
         replayed = self.replay()
         stateless = self.stateless(artifacts, evaluations)
@@ -224,6 +241,18 @@ class StoreFixture(unittest.TestCase):
         self.assertEqual(replayed.to_json(), stateless.to_json())
         self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
         return replayed
+
+    def attestation_block(self, report: CompiledVdtReport) -> object:
+        """Return the report-level detection-time attestation block."""
+
+        return report.document["x-complyroll"]["detectionTimeAttestation"]
+
+    def sole_vulnerability(self, report: CompiledVdtReport) -> dict[str, object]:
+        """Return the one reported vulnerability, asserting the report holds one."""
+
+        vulnerabilities = report.document["vulnerabilities"]
+        self.assertEqual(len(vulnerabilities), 1)
+        return dict(vulnerabilities[0])
 
 
 class ReconciliationTests(StoreFixture):
@@ -459,11 +488,16 @@ class OverriddenAttestationTests(StoreFixture):
 
         report = self.assert_paths_agree(WINDOWS_ONLY, path)
         block = report.document["x-complyroll"]["detectionTimeAttestation"]
+        record = self.sole_vulnerability(report)
 
-        self.assertEqual(block["detectedAt"], "2026-08-01T00:00:00Z")
-        self.assertEqual(block["appliedTo"], ["PROVIDER-1"])
-        self.assertEqual(block["count"], 1)
+        self.assertEqual(
+            block,
+            {"detectedAt": "2026-08-01T00:00:00Z", "appliedTo": ["PROVIDER-1"], "count": 1},
+        )
         self.assertNotIn("attestations", block)
+        self.assertEqual(record["providerTrackingId"], "PROVIDER-1")
+        self.assertEqual(record["detection"]["detectedAt"], "2026-08-01T00:00:00Z")
+        self.assertNotIn("finalDisposition", record)
 
     def test_the_markdown_twin_states_one_attested_instant(self) -> None:
         path = self.write_evaluations([windows_evaluation(trackingId="PROVIDER-1")])
@@ -490,12 +524,20 @@ class OverriddenAttestationTests(StoreFixture):
 
         report = self.assert_paths_agree(ARTIFACTS, path)
         block = report.document["x-complyroll"]["detectionTimeAttestation"]
+        identifiers = [
+            item["providerTrackingId"] for item in report.document["vulnerabilities"]
+        ]
 
         self.assertEqual(block["detectedAt"], "2026-08-01T00:00:00Z")
         self.assertIn("PROVIDER-1", block["appliedTo"])
         self.assertNotIn(WINDOWS_CASE, block["appliedTo"])
         self.assertEqual(block["count"], 6)
         self.assertNotIn("attestations", block)
+        self.assertEqual(sorted(block["appliedTo"]), sorted(identifiers))
+        self.assertEqual(
+            find_vulnerability(report, "V-253260")["detection"]["detectedAt"],
+            "2026-08-01T00:00:00Z",
+        )
 
     def re_attested_override(self) -> tuple[str, ...]:
         """Attest every case together, then re-attest the one case that is overridden.
@@ -576,10 +618,14 @@ class OverriddenAttestationTests(StoreFixture):
         identifiers = {
             item["providerTrackingId"] for item in report.document["vulnerabilities"]
         }
+        block = report.document["x-complyroll"]["detectionTimeAttestation"]
 
         self.assertIn("PROVIDER-1", identifiers)
         self.assertNotIn(WINDOWS_CASE, identifiers)
         self.assertEqual(find_vulnerability(report, "V-253260")["providerTrackingId"], "PROVIDER-1")
+        self.assertEqual(block["detectedAt"], "2026-08-01T00:00:00Z")
+        self.assertEqual(block["count"], 6)
+        self.assertIn("### PROVIDER-1: V-253260", report.to_markdown())
 
 
 class ReplayedPainReductionOrderTests(StoreFixture):
@@ -655,10 +701,12 @@ class ReplayedDispositionTests(StoreFixture):
         )
 
         report = self.assert_paths_agree(WINDOWS_ONLY, path)
+        record = self.sole_vulnerability(report)
 
-        self.assertEqual(
-            report.document["vulnerabilities"][0]["finalDisposition"], "Fully Mitigated"
-        )
+        self.assertEqual(record["providerTrackingId"], WINDOWS_CASE)
+        self.assertEqual(record["finalDisposition"], "Fully Mitigated")
+        self.assertEqual(self.attestation_block(report), SOLE_ATTESTATION)
+        self.assertIn("- **Disposition:** Fully Mitigated", report.to_markdown())
         self.assertEqual(
             [item.code for item in report.diagnostics if item.code == "closed_without_disposition"],
             [],
@@ -670,10 +718,12 @@ class ReplayedDispositionTests(StoreFixture):
         )
 
         report = self.assert_paths_agree(WINDOWS_ONLY, path)
+        record = self.sole_vulnerability(report)
 
-        self.assertEqual(
-            report.document["vulnerabilities"][0]["finalDisposition"], "False Positive"
-        )
+        self.assertEqual(record["providerTrackingId"], WINDOWS_CASE)
+        self.assertEqual(record["finalDisposition"], "False Positive")
+        self.assertEqual(self.attestation_block(report), SOLE_ATTESTATION)
+        self.assertIn("- **Disposition:** False Positive", report.to_markdown())
 
     def test_an_accepted_case_rehydrates_its_acceptance_rationale(self) -> None:
         path = self.evaluated_store(
@@ -685,8 +735,15 @@ class ReplayedDispositionTests(StoreFixture):
 
         self.assertEqual(len(report.accepted), 1)
         self.assertEqual(report.accepted[0].acceptance_rationale, self.ACCEPTANCE)
+        self.assertEqual(report.accepted[0].vulnerability.tracking_id, WINDOWS_CASE)
         self.assertEqual(stateless.accepted[0].acceptance_rationale, self.ACCEPTANCE)
         self.assertEqual(report.document["vulnerabilities"], [])
+        # Nothing is reported, so no record carries an attested detection time and the
+        # block states no instant at all rather than one covering zero records.
+        self.assertIsNone(self.attestation_block(report))
+        self.assertIn(
+            "No open vulnerabilities were reported for this period.", report.to_markdown()
+        )
 
     def test_closing_as_accepted_rehydrates_its_acceptance_rationale(self) -> None:
         path = self.evaluated_store(
@@ -701,6 +758,13 @@ class ReplayedDispositionTests(StoreFixture):
 
         self.assertEqual(len(report.accepted), 1)
         self.assertEqual(report.accepted[0].acceptance_rationale, self.ACCEPTANCE)
+        self.assertEqual(report.accepted[0].vulnerability.tracking_id, WINDOWS_CASE)
+        self.assertEqual(report.document["vulnerabilities"], [])
+        self.assertIsNone(self.attestation_block(report))
+        self.assertEqual(
+            [item.code for item in report.diagnostics if item.code == "accepted_excluded"],
+            ["accepted_excluded"],
+        )
 
 
 class DispositionWithoutEvaluationTests(StoreFixture):
@@ -762,9 +826,107 @@ class DispositionWithoutEvaluationTests(StoreFixture):
         self.evaluate(path)
 
         report = self.assert_paths_agree(WINDOWS_ONLY, path)
+        record = self.sole_vulnerability(report)
+
+        self.assertEqual(record["providerTrackingId"], WINDOWS_CASE)
+        self.assertEqual(record["finalDisposition"], "Partially Mitigated")
+        self.assertEqual(self.attestation_block(report), SOLE_ATTESTATION)
+
+
+class SupersededParserTests(StoreFixture):
+    """Only the newest parser version's stream reaches a report (ADR 0008 amendment).
+
+    Re-ingesting one artifact under a later parser version writes a second stream for
+    the same digest. Rehydrating both would double every finding, and dropping the
+    older one in silence would leave a reader unable to tell that an earlier reading
+    of the same bytes exists in history, so the replay reads the newest and names the
+    rest.
+    """
+
+    def bumped(self, result: IngestResult, parser_version: str) -> IngestResult:
+        """Return the ingest a later parser version of the same adapter would produce.
+
+        The parser version is part of an artifact-bound observation's fingerprint, so
+        every identifier moves with it; the canonical reader refuses a stored
+        observation whose recorded identifier is not the one its fields derive.
+        """
+
+        artifact = result.artifact
+        self.assertIsNotNone(artifact)
+        assert artifact is not None
+        observations = []
+        for observation in result.observations:
+            moved = replace(observation, parser_version=parser_version)
+            observations.append(replace(moved, observation_id=moved.derived_observation_id))
+        return replace(
+            result,
+            artifact=replace(artifact, parser_version=parser_version),
+            observations=tuple(observations),
+        )
+
+    def ingest_both_versions(self) -> tuple[IngestResult, IngestResult]:
+        """Record the windows fixture under parser version 1, then under version 2."""
+
+        first = ingest_stig_artifact(WINDOWS_ONLY[0], ingested_at=INGESTED_AT)
+        record_ingest(self.repository, first, metadata=self.metadata, ingested_at=INGESTED_AT)
+        second = self.bumped(first, "2")
+        record_ingest(self.repository, second, metadata=self.metadata, ingested_at=INGESTED_AT)
+        self.correlate()
+        self.attest()
+        return first, second
+
+    def test_the_report_reads_the_newest_stream_and_names_the_older_one(self) -> None:
+        first, second = self.ingest_both_versions()
+
+        report = self.replay()
+        extension = report.document["x-complyroll"]
+        superseded = [item for item in report.diagnostics if item.code == "artifact_superseded"]
+
+        self.assertEqual(len(extension["artifacts"]), 1)
+        self.assertEqual(extension["artifacts"][0]["name"], "windows-host.ckl")
+        self.assertEqual(extension["artifacts"][0]["parserVersion"], "2")
+        self.assertEqual(extension["parserVersions"], {"complyroll.ckl": "2"})
+
+        self.assertEqual(len(superseded), 1)
+        self.assertEqual(superseded[0].level.value, "info")
+        self.assertIn("windows-host.ckl", superseded[0].message)
+        self.assertIn("complyroll.ckl 1", superseded[0].message)
+        self.assertIn("complyroll.ckl 2", superseded[0].message)
+        self.assertIn(superseded[0].to_dict(), extension["diagnostics"])
+        self.assertIn("artifact_superseded", report.to_markdown())
+        self.assertEqual(len(first.observations), len(second.observations))
+
+    def test_only_the_newest_observation_ids_are_reported(self) -> None:
+        first, second = self.ingest_both_versions()
+
+        report = self.replay()
+        reported = {
+            observation_id
+            for item in report.document["vulnerabilities"]
+            for observation_id in item["x-complyroll"]["observationIds"]
+        }
+        version_one = {item.observation_id for item in first.observations}
+        version_two = {item.observation_id for item in second.observations}
+
+        self.assertEqual(len(report.document["vulnerabilities"]), 1)
+        self.assertTrue(reported)
+        self.assertEqual(reported & version_one, set())
+        self.assertLessEqual(reported, version_two)
+
+    def test_one_parser_version_raises_no_supersession_diagnostic(self) -> None:
+        self.ingest(WINDOWS_ONLY)
+        self.correlate()
+        self.attest()
+
+        report = self.replay()
 
         self.assertEqual(
-            report.document["vulnerabilities"][0]["finalDisposition"], "Partially Mitigated"
+            [item.code for item in report.diagnostics if item.code == "artifact_superseded"],
+            [],
+        )
+        self.assertEqual(len(report.document["x-complyroll"]["artifacts"]), 1)
+        self.assertEqual(
+            report.document["x-complyroll"]["artifacts"][0]["parserVersion"], "1"
         )
 
 

@@ -182,6 +182,10 @@ class CompiledDeadline:
     satisfied: bool
 
     def to_dict(self) -> dict[str, Any]:
+        # `satisfied` is the Markdown twin's Satisfied column. Publishing the clock
+        # without it left a machine reader unable to tell a met deadline from a missed
+        # one while a human reader of the same report could (ADR 0007 amendment, the
+        # two renderings carry the same audit content).
         return {
             "ruleId": self.rule_id,
             "ruleName": self.rule_name,
@@ -189,6 +193,7 @@ class CompiledDeadline:
             "anchor": self.anchor,
             "startAt": _iso(self.start_at),
             "dueAt": _iso(self.due_at),
+            "satisfied": self.satisfied,
             "timeframe": {"amount": self.timeframe_amount, "unit": self.timeframe_unit},
         }
 
@@ -1372,11 +1377,7 @@ def _write_detail(write: Callable[[str], None], item: CompiledVulnerability) -> 
         f"- **Detected at:** {_iso(item.detected_at)} "
         f"(source: {_cell(item.detected_at_source)})"
     )
-    if item.untimestamped_observation_ids:
-        write(
-            "- **Observations without a source timestamp:** "
-            + ", ".join(_cell(value) for value in item.untimestamped_observation_ids)
-        )
+    _write_observation_ids(write, item)
     resources = ", ".join(
         f"{_cell(resource.resource_type)} {_cell(resource.resource_id)}"
         for resource in item.resources
@@ -1450,6 +1451,32 @@ def _write_detail(write: Callable[[str], None], item: CompiledVulnerability) -> 
             + " |"
         )
     write("")
+
+
+def _write_observation_ids(write: Callable[[str], None], item: CompiledVulnerability) -> None:
+    """Name every observation grouped into one vulnerability, marking the untimed ones.
+
+    The JSON extension carries `observationIds` and `untimestampedObservationIds`
+    separately. Listing only the second here dropped, from the human rendering of a
+    partly timestamped group, the very observation the detection time came from. The
+    whole group is named in both branches; the label differs because a group where
+    nothing carried a time is one statement rather than a list of exceptions.
+    """
+
+    untimestamped = frozenset(item.untimestamped_observation_ids)
+    if untimestamped and untimestamped.issuperset(item.observation_ids):
+        write(
+            "- **Observations without a source timestamp:** "
+            + ", ".join(_cell(value) for value in item.observation_ids)
+        )
+        return
+    write(
+        "- **Observations:** "
+        + ", ".join(
+            f"{_cell(value)} (no source timestamp)" if value in untimestamped else _cell(value)
+            for value in item.observation_ids
+        )
+    )
 
 
 def _flag(value: bool) -> str:

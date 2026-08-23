@@ -37,7 +37,7 @@ from .vdt import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - imported for annotations only
-    from complyroll.history import ArtifactRecord, CaseState
+    from complyroll.history import ArtifactHistory, ArtifactRecord, CaseState
 
 
 def compile_vdt_report_from_history(
@@ -57,13 +57,17 @@ def compile_vdt_report_from_history(
     # Imported here because `complyroll.history` reads the report layer's evaluation
     # shapes, so a module-level import would close a cycle whenever history is the
     # first of the two packages a caller imports.
-    from complyroll.history import artifact_records, fold_all_cases, rehydrate_observations
+    from complyroll.history import artifact_history, fold_all_cases, rehydrate_observations
 
-    records = artifact_records(repository)
-    artifacts = tuple(_compiled_artifact(record) for record in records)
+    history = artifact_history(repository)
+    artifacts = tuple(_compiled_artifact(record) for record in history.current)
     observations = rehydrate_observations(repository)
     cases = fold_all_cases(repository)
-    diagnostics = _ingest_diagnostics(records) + _stale_cases(cases, observations)
+    diagnostics = (
+        _ingest_diagnostics(history.current)
+        + _superseded_artifacts(history)
+        + _stale_cases(cases, observations)
+    )
     return compile_records(
         artifacts=artifacts,
         observations=observations,
@@ -113,6 +117,40 @@ def _ingest_diagnostics(records: Sequence[ArtifactRecord]) -> tuple[ReportDiagno
                 diagnostics.append(entry)
     if errors:
         raise ReportCompileError(errors)
+    return tuple(diagnostics)
+
+
+def _superseded_artifacts(history: ArtifactHistory) -> tuple[ReportDiagnostic, ...]:
+    """Name every artifact stream a newer parser version replaced.
+
+    One artifact digest read by two parser versions is two streams (ADR 0002), and the
+    fold rehydrates only the newest, because reading both would report every finding
+    twice under two sets of observation identifiers. Dropping the older reading in
+    silence would leave the page unable to say that history holds an earlier reading of
+    the same bytes, so each one is named here with the version that replaced it.
+    """
+
+    current = {record.sha256: record for record in history.current}
+    diagnostics: list[ReportDiagnostic] = []
+    for record in history.superseded:
+        newest = current.get(record.sha256)
+        if newest is None:  # pragma: no cover - a stream is superseded only by a newer one
+            raise AssertionError(
+                f"superseded stream {record.stream_id!r} has no current stream to name"
+            )
+        diagnostics.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.INFO,
+                code="artifact_superseded",
+                message=(
+                    f"{record.name} was recorded by {record.parser_name} "
+                    f"{record.parser_version} and again by {newest.parser_name} "
+                    f"{newest.parser_version}; this report reads the newest stream, so the "
+                    "older reading is in history but not in it"
+                ),
+                location=record.stream_id or record.name,
+            )
+        )
     return tuple(diagnostics)
 
 

@@ -2,6 +2,7 @@
 
 from .fold import (
     ARTIFACT_INGESTED,
+    AUDIT_FAULT_CODES,
     CASE_CREATED,
     CASE_DISPOSITION_RECORDED,
     CASE_EVALUATED,
@@ -10,6 +11,7 @@ from .fold import (
     CASE_PAIN_REDUCED,
     DETECTION_ATTESTED,
     OBSERVATION_RECORDED,
+    ArtifactHistory,
     ArtifactRecord,
     AttestationRecord,
     CaseNotFoundError,
@@ -18,9 +20,12 @@ from .fold import (
     EvaluationRecord,
     HistoryEntry,
     HistoryError,
+    HistoryFault,
     ObservationLink,
     PainReductionRecord,
+    artifact_history,
     artifact_records,
+    audit_history,
     case_history,
     fold_all_cases,
     fold_case,
@@ -28,6 +33,7 @@ from .fold import (
     history_entries,
     rehydrate_observations,
     summarize,
+    superseded_artifact_records,
 )
 from .writers import (
     CLERICAL_FIELDS,
@@ -45,6 +51,7 @@ from .writers import (
 
 __all__ = [
     "ARTIFACT_INGESTED",
+    "AUDIT_FAULT_CODES",
     "CASE_CREATED",
     "CASE_DISPOSITION_RECORDED",
     "CASE_EVALUATED",
@@ -54,6 +61,7 @@ __all__ = [
     "CLERICAL_FIELDS",
     "DETECTION_ATTESTED",
     "OBSERVATION_RECORDED",
+    "ArtifactHistory",
     "ArtifactRecord",
     "AttestationOutcome",
     "AttestationRecord",
@@ -66,12 +74,15 @@ __all__ = [
     "EvaluationRecord",
     "HistoryEntry",
     "HistoryError",
+    "HistoryFault",
     "IngestOutcome",
     "ObservationLink",
     "PainReductionRecord",
     "apply_evaluations",
+    "artifact_history",
     "artifact_records",
     "attest_detection",
+    "audit_history",
     "case_history",
     "content_digest",
     "correlate_cases",
@@ -82,4 +93,5 @@ __all__ = [
     "record_ingest",
     "rehydrate_observations",
     "summarize",
+    "superseded_artifact_records",
 ]

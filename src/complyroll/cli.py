@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
@@ -23,6 +24,7 @@ from .history import (
     HistoryError,
     apply_evaluations,
     attest_detection,
+    audit_history,
     case_history,
     correlate_cases,
     fold_all_cases,
@@ -104,7 +106,9 @@ def build_parser() -> argparse.ArgumentParser:
             "the event store. Recording the same artifact twice appends nothing."
         ),
     )
-    ingest.add_argument("artifacts", nargs="+", metavar="ARTIFACT", help="CKLB, CKL, or XCCDF file")
+    ingest.add_argument(
+        "artifacts", nargs="+", metavar="ARTIFACT", help="CKLB, CKL, XCCDF, or ARF file"
+    )
     _add_database_option(ingest, "event store to append to, created when it does not exist")
     ingest.add_argument(
         "--as-of",
@@ -190,7 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
             "official-format JSON; it is not a FedRAMP determination."
         ),
     )
-    vdt.add_argument("artifacts", nargs="*", metavar="ARTIFACT", help="CKLB, CKL, or XCCDF file")
+    vdt.add_argument(
+        "artifacts", nargs="*", metavar="ARTIFACT", help="CKLB, CKL, XCCDF, or ARF file"
+    )
     vdt.add_argument(
         "--db",
         metavar="PATH",
@@ -336,14 +342,17 @@ def _run_ingest(args: argparse.Namespace) -> int:
         return _fail(stderr, "invalid_input", str(exc))
     except ValueError as exc:
         return _fail(stderr, "invalid_option", str(exc))
+    dangling = _refuse_dangling_store_link(stderr, database)
+    if dangling is not None:
+        return dangling
 
-    existed = database.exists()
+    recorded: list[str] = []
 
-    def ingest() -> int:
-        # Every artifact is parsed before the store is opened, so a run that fails on
-        # any of them records nothing and leaves no database file behind: opening a
-        # SQLite path creates the file, and a failed first run would otherwise leave an
-        # empty store where the operator had none.
+    def ingest(target: Path) -> int:
+        # Every artifact is parsed before the store is opened, so a run that fails on any
+        # of them records nothing at all: opening a SQLite path is what creates the file,
+        # and an existing store must not gain one artifact's history from a run the next
+        # artifact stopped.
         parsed: list[tuple[Path, IngestResult]] = []
         for path in artifacts:
             result = ingest_stig_artifact(path, ingested_at=ingested_at)
@@ -354,35 +363,110 @@ def _run_ingest(args: argparse.Namespace) -> int:
                 return 1
             parsed.append((path, result))
 
-        with _open_repository(database) as repository:
+        # One transaction around every artifact of the run. Each `record_ingest` joins it
+        # rather than opening its own, so a failure on any artifact leaves the store
+        # exactly as it was and the empty summary below is the truth: nothing became
+        # durable (ADR 0008, second amendment).
+        with _open_repository(target) as repository, repository.transaction():
             for path, result in parsed:
                 outcome = record_ingest(
                     repository, result, metadata=metadata, ingested_at=ingested_at
                 )
                 if outcome.already_recorded:
-                    print(f"{path.name}: already_recorded")
+                    recorded.append(f"{path.name}: already_recorded")
                 else:
-                    print(f"{path.name}: recorded {outcome.observation_count} observation(s)")
+                    recorded.append(
+                        f"{path.name}: recorded {outcome.observation_count} observation(s)"
+                    )
         return 0
 
-    code = _persisted_run(stderr, ingest)
-    if code != 0 and not existed:
-        _discard_created_store(database)
-    return code
+    # A store that is already there is opened in place; concurrent writers contend on the
+    # store's own transactions. A path with nothing behind it is built elsewhere and
+    # published, because only a build that finished should ever appear at that path.
+    code = (
+        _persisted_run(stderr, lambda: ingest(database))
+        if database.exists()
+        else _build_and_publish_store(stderr, database, ingest)
+    )
+    if code != 0:
+        return code
+    # Reported only once the store is published, so no run ever claims to have recorded
+    # observations it then discarded.
+    for line in recorded:
+        print(line)
+    return 0
 
 
-def _discard_created_store(database: Path) -> None:
-    """Remove the store a failed run created, so a failed ingest leaves nothing.
+def _build_and_publish_store(
+    stderr: TextIO,
+    database: Path,
+    build: Callable[[Path], int],
+) -> int:
+    """Build a new store beside its destination and publish it once the run succeeded.
 
-    Parsing every artifact first stops a damaged one from ever reaching the store, but
-    a payload the contract refuses is only refused once the store is open, and opening
-    a SQLite path is what creates the file. A path that held no file when the command
-    started holds nothing but this run's litter now, and the operator asked for an
-    ingestion, not for an empty database (ADR 0008 amendment). A store that already
-    existed is never touched.
+    An ingest into a path with no file behind it used to open that path directly and
+    unlink it again when the run failed. Between the existence check and the failure a
+    concurrent ingest can create and populate a real store at exactly that path, and the
+    failing run would delete it. So a new store is built at a temporary path in the
+    destination's own directory and published with `os.link`, which refuses to overwrite:
+    a store that appeared meanwhile is reported, never clobbered (ADR 0008, second
+    amendment). Nothing but the temporary file is ever removed.
+
+    The temporary is closed before it is linked, so SQLite has removed its `-wal` and
+    `-shm` sidecars and the published file is the whole store.
     """
 
-    for path in (database, Path(f"{database}-wal"), Path(f"{database}-shm")):
+    try:
+        temporary = _reserve_store_path(database)
+    except OSError as exc:
+        location = getattr(exc, "filename", None)
+        return _fail(stderr, "store_unavailable", str(exc), location=location)
+
+    def publish() -> int:
+        code = build(temporary)
+        if code != 0:
+            return code
+        try:
+            os.link(temporary, database)
+        except FileExistsError:
+            return _fail(
+                stderr,
+                "store_conflict",
+                f"a store appeared at {str(database)!r} while this run was building "
+                "one; repeat the run against it",
+            )
+        return 0
+
+    try:
+        return _persisted_run(stderr, publish)
+    finally:
+        _discard_store_path(temporary)
+
+
+def _reserve_store_path(database: Path) -> Path:
+    """Reserve a unique path beside the destination for the store being built.
+
+    The file is created empty and exclusively, which is what makes the name this run's
+    alone. SQLite reads a zero-length file as a new database, so the reservation costs
+    nothing beyond the name.
+    """
+
+    handle, name = tempfile.mkstemp(
+        dir=database.parent, prefix=f".{database.name}.", suffix=".tmp"
+    )
+    os.close(handle)
+    return Path(name)
+
+
+def _discard_store_path(temporary: Path) -> None:
+    """Remove the store this run built at a temporary path, and its sidecars.
+
+    Only this run's own temporary is removed. The destination is never unlinked, whether
+    it held a store when the run started or one appeared while the run was building:
+    a failed ingest must leave the operator exactly what they had.
+    """
+
+    for path in (temporary, Path(f"{temporary}-wal"), Path(f"{temporary}-shm")):
         with suppress(OSError):
             path.unlink(missing_ok=True)
 
@@ -459,6 +543,13 @@ def _run_cases_attest(args: argparse.Namespace) -> int:
             print(
                 f"warning: attestation_not_applicable: {tracking_id} carries a source timestamp",
                 file=stderr,
+            )
+        if args.all_missing:
+            # A sweep chooses its own cases, so the count it chose is the one fact the
+            # operator cannot read off the command line.
+            print(
+                f"selected {len(tracking_ids)} case(s) with no source timestamp on "
+                "any observation"
             )
         print(
             f"attested {len(outcome.attested)} case(s), "
@@ -566,17 +657,19 @@ def _run_store_verify(args: argparse.Namespace) -> int:
                     file=stderr,
                 )
                 return 1
-            breaches = _payload_contract_breaches(store)
+            # The store's walk proves the bytes are intact: nothing rewritten, no
+            # sequence missing, every digest still matching. Intact is not the same as
+            # meaningful, so an intact log is audited once more against the contracts,
+            # stream kinds, artifact counts, and metadata rules that give its events
+            # meaning (ADR 0008, second amendment).
+            faults = audit_history(EventRepository(store))
 
-        if breaches:
-            for sequence, message in breaches:
-                print(
-                    f"error: payload_contract_invalid: sequence {sequence}: {message}",
-                    file=stderr,
-                )
+        if faults:
+            for domain_fault in faults:
+                print(f"error: {domain_fault.render()}", file=stderr)
             print(
-                f"faults: {len(breaches)} payload(s) do not satisfy their published "
-                f"contract in {report.checked_events} verified event(s)",
+                f"faults: {len(faults)} domain fault(s) in "
+                f"{report.checked_events} verified event(s)",
                 file=stderr,
             )
             return 1
@@ -584,30 +677,6 @@ def _run_store_verify(args: argparse.Namespace) -> int:
         return 0
 
     return _persisted_run(stderr, verify)
-
-
-def _payload_contract_breaches(store: SQLiteEventStore) -> tuple[tuple[int, str], ...]:
-    """Return every stored payload that does not satisfy its published contract.
-
-    The store's own walk proves the log is intact: nothing was rewritten, no sequence
-    is missing, every digest still matches. Intact is not the same as readable. A
-    payload appended around `EventRepository`, or one a since-tightened contract would
-    now refuse, is a faithfully stored event the replay reader will not read, and a
-    verify that printed "ok" over it would leave the operator to discover that from a
-    failing `report vdt`. So a clean log is read once more through the contracts that
-    give its events meaning (ADR 0008 Decision 1).
-    """
-
-    repository = EventRepository(store)
-    breaches: list[tuple[int, str]] = []
-    for record in repository.read_all():
-        try:
-            repository.validate_payload(
-                record.event_type, record.payload, event_version=record.event_version
-            )
-        except EventContractError as exc:
-            breaches.append((record.sequence, str(exc)))
-    return tuple(breaches)
 
 
 def _run_report_vdt(args: argparse.Namespace) -> int:
@@ -625,6 +694,20 @@ def _run_report_vdt(args: argparse.Namespace) -> int:
         missing = _refuse_missing_store(stderr, database)
         if missing is not None:
             return missing
+
+    # Both destination refusals are decided from the paths alone, so they run here rather
+    # than at publication time: a run that was never going to be allowed to write its
+    # outputs should not parse an artifact or open a store before it says so.
+    linked = _symlink_destination((output, markdown))
+    if linked is not None:
+        return _fail(
+            stderr,
+            "output_is_symlink",
+            "the output destination is a symbolic link; publishing replaces a destination "
+            "and restores it from a copy of its bytes, which would keep the content and "
+            "lose the link",
+            location=str(linked),
+        )
 
     try:
         _refuse_input_overwrite(
@@ -707,8 +790,12 @@ def _publish(
     if markdown is not None:
         targets.append((markdown, report.to_markdown()))
 
+    # A symbolic-link destination is refused in `_run_report_vdt`, before anything is
+    # parsed or opened, because the paths are all that decision needs.
     try:
         _write_all_or_nothing(targets)
+    except OutputRollbackError as exc:
+        return _fail(stderr, "output_rollback_failed", _rollback_message(exc))
     except OSError as exc:
         location = getattr(exc, "filename", None)
         return _fail(stderr, "output_write_failed", str(exc), location=location)
@@ -813,6 +900,36 @@ def _refuse_missing_store(stream: TextIO, database: Path) -> int | None:
         "store_missing",
         f"no event store at {str(database)!r}; only ingest creates one",
     )
+
+
+def _refuse_dangling_store_link(stream: TextIO, database: Path) -> int | None:
+    """Refuse an `ingest --db` path that is a symbolic link with nothing behind it.
+
+    `Path.exists` follows links, so a dangling one reads as a path with no store, and the
+    run builds a store beside it and then fails to publish: `os.link` refuses a name the
+    link already occupies, and the operator is told a store appeared meanwhile, which is
+    not what happened. A link pointing at a real store is not refused; that store is
+    opened in place, through the link, as any other existing store is.
+    """
+
+    if not database.is_symlink() or database.exists():
+        return None
+    return _fail(
+        stream,
+        "store_unavailable",
+        f"the store path is a symbolic link to {_link_target(database)!r}, which does not "
+        "exist; point the link at a store, or name the store itself",
+        location=str(database),
+    )
+
+
+def _link_target(link: Path) -> str:
+    """Return what one symbolic link points at, or a placeholder when it cannot be read."""
+
+    try:
+        return os.readlink(link)
+    except OSError:
+        return "an unreadable path"
 
 
 def _metadata(args: argparse.Namespace) -> EventMetadata:
@@ -940,13 +1057,120 @@ def _refuse_input_overwrite(
         written[resolved] = target
 
 
+class OutputRollbackError(Exception):
+    """A failed publication could not be undone, so the destinations are left mixed.
+
+    Carries the failure that stopped the publication and every destination still holding
+    this run's content, each with the keeper that holds what it held before (or None when
+    this run created the destination and could not remove it again) and the error the
+    rollback itself raised for that destination. Those keepers are the only remaining copy
+    of the previous reports, so they stay on disk (ADR 0007 amendment).
+    """
+
+    def __init__(
+        self,
+        cause: OSError,
+        stranded: Sequence[tuple[Path, Path | None, OSError]],
+    ) -> None:
+        self.cause = cause
+        self.stranded: tuple[tuple[Path, Path | None, OSError], ...] = tuple(stranded)
+        super().__init__(str(cause))
+
+
+def _rollback_message(failure: OutputRollbackError) -> str:
+    """Word the one line an operator reads when the outputs could not be put back.
+
+    Each destination carries the error that stopped its own restore. A permission problem
+    and a full filesystem call for different remedies, and the original write failure is
+    not necessarily the reason the rollback failed too, so naming only the first would
+    send the operator after the wrong one.
+    """
+
+    stranded = "; ".join(
+        (
+            f"{destination} holds this run's content and what it held before is kept at "
+            f"{keeper} (restore failed: {error})"
+            if keeper is not None
+            else f"{destination} holds this run's content, which this run created and "
+            f"could not remove again (removal failed: {error})"
+        )
+        for destination, keeper, error in failure.stranded
+    )
+    return (
+        f"{failure.cause}, and putting the outputs back failed as well: {stranded}. "
+        "Restore each destination by hand from the file kept beside it."
+    )
+
+
+def _symlink_destination(destinations: Sequence[Path | None]) -> Path | None:
+    """Return the first destination that is a symbolic link, or None when none is.
+
+    Publishing replaces a destination and restores it from a copy of its bytes, which
+    would follow the link on the way in and replace the link itself on the way back: the
+    content would survive and the link would not. `Path.is_symlink` does not follow the
+    link, so a dangling one is refused too (ADR 0007 amendment).
+
+    The check runs on the paths alone, so `report vdt` can make it before it parses an
+    artifact or opens a store: refusing a destination the run was never going to be
+    allowed to write should not cost the operator a compile first.
+    """
+
+    for destination in destinations:
+        if destination is not None and destination.is_symlink():
+            return destination
+    return None
+
+
 def _write_all_or_nothing(targets: Sequence[tuple[Path, str]]) -> None:
     """Write every output, or none of them.
 
-    Each destination is staged in a temporary file beside it and fsynced. Only after
-    every staged write succeeds are the destinations replaced, so a failed Markdown
-    write leaves no JSON behind and a failed JSON write leaves no Markdown.
+    Each destination is staged in a temporary file beside it and fsynced, and every
+    destination that already exists is preserved beside itself, before any destination
+    is replaced. Two renames cannot be one atomic step, so the rule is made good by
+    rollback: a replace that fails restores every destination this run had already
+    replaced, removes the ones this run created, and leaves no temporary behind. A
+    failed Markdown write therefore leaves the previous JSON exactly as it was, and a
+    failed JSON write leaves the previous Markdown (ADR 0007 amendment).
+
+    A rollback can fail too. When it does, every destination it could not put back keeps
+    the copy of its previous content beside it and `OutputRollbackError` names both, so a
+    mixed pair of outputs is reported and recoverable rather than silent and lost.
+
+    What two renames still cannot promise is power-failure atomicity across two paths;
+    a crash between them leaves one destination updated, which the next run overwrites.
     """
+
+    staged = _stage(targets)
+    preserved: list[Path | None] = []
+    try:
+        for _, destination in staged:
+            preserved.append(_preserve(destination))
+    except OSError:
+        _remove_preserved(preserved)
+        _discard(staged)
+        raise
+
+    published = 0
+    try:
+        for temporary, destination in staged:
+            os.replace(temporary, destination)
+            published += 1
+    except OSError as exc:
+        stranded = _roll_back(staged[:published], preserved[:published])
+        _discard(staged)
+        # Every keeper but the ones still holding a destination's previous content: those
+        # are what the operator recovers from, so removing them is what the message below
+        # would be apologising for.
+        kept = {keeper for _, keeper, _ in stranded if keeper is not None}
+        _remove_preserved([keeper for keeper in preserved if keeper not in kept])
+        if stranded:
+            raise OutputRollbackError(exc, stranded) from exc
+        raise
+    _remove_preserved(preserved)
+
+
+def _stage(targets: Sequence[tuple[Path, str]]) -> tuple[tuple[Path, Path], ...]:
+    """Write every output to a fsynced temporary file beside its own destination."""
 
     staged: list[tuple[Path, Path]] = []
     try:
@@ -966,18 +1190,72 @@ def _write_all_or_nothing(targets: Sequence[tuple[Path, str]]) -> None:
     except OSError:
         _discard(staged)
         raise
+    return tuple(staged)
 
+
+def _preserve(destination: Path) -> Path | None:
+    """Copy one existing destination beside itself, or return None when it has none.
+
+    The copy is what a failed publication is restored from. Bytes are copied rather than
+    hard linked so the rollback still works on a filesystem that has no links, and a
+    report is bounded by `MAX_REPORT_BYTES`, so the copy is cheap.
+    """
+
+    if not destination.exists():
+        return None
+    handle, name = tempfile.mkstemp(
+        dir=destination.parent, prefix=f".{destination.name}.", suffix=".keep"
+    )
+    os.close(handle)
+    keeper = Path(name)
     try:
-        for temporary, destination in staged:
-            os.replace(temporary, destination)
+        shutil.copyfile(destination, keeper)
     except OSError:
-        _discard(staged)
+        keeper.unlink(missing_ok=True)
         raise
+    return keeper
+
+
+def _roll_back(
+    published: Sequence[tuple[Path, Path]],
+    preserved: Sequence[Path | None],
+) -> tuple[tuple[Path, Path | None, OSError], ...]:
+    """Put back every destination this run had already replaced.
+
+    A destination that existed before the run is restored from its preserved copy; one
+    that did not is removed, since this run is the only thing that created it. Whatever
+    could not be put back is returned, each destination with the keeper that still holds
+    its previous content and with the error that stopped its own restore, so the caller
+    can keep that keeper and name all three in its error. Suppressing a failed restore and
+    then deleting the keeper left the operator with new JSON beside old Markdown, no copy
+    of either previous file, and not a word about it (ADR 0007 amendment).
+    """
+
+    stranded: list[tuple[Path, Path | None, OSError]] = []
+    for (_, destination), keeper in zip(published, preserved, strict=True):
+        try:
+            if keeper is None:
+                destination.unlink(missing_ok=True)
+            else:
+                os.replace(keeper, destination)
+        except OSError as exc:
+            stranded.append((destination, keeper, exc))
+    return tuple(stranded)
+
+
+def _remove_preserved(preserved: Sequence[Path | None]) -> None:
+    """Remove every preserved copy still on disk, restored or not."""
+
+    for keeper in preserved:
+        if keeper is not None:
+            with suppress(OSError):
+                keeper.unlink(missing_ok=True)
 
 
 def _discard(staged: Sequence[tuple[Path, Path]]) -> None:
     for temporary, _ in staged:
-        temporary.unlink(missing_ok=True)
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
 
 
 def _write_diagnostics(stream: TextIO, diagnostics: Sequence[ReportDiagnostic]) -> None:

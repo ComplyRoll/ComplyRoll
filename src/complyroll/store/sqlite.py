@@ -12,7 +12,8 @@ import math
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -261,6 +262,7 @@ class SQLiteEventStore:
         self.database = str(database)
         self.busy_timeout_ms = busy_timeout_ms
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._transaction_depth = 0
         try:
             connection = sqlite3.connect(self.database, isolation_level=None)
         except sqlite3.Error as exc:
@@ -304,6 +306,7 @@ class SQLiteEventStore:
         store.database = str(database)
         store.busy_timeout_ms = busy_timeout_ms
         store._clock = lambda: datetime.now(UTC)
+        store._transaction_depth = 0
         store._connection = None
         try:
             connection = sqlite3.connect(_read_only_uri(path), uri=True, isolation_level=None)
@@ -433,6 +436,41 @@ class SQLiteEventStore:
         with _sqlite_errors("could not read event history"):
             return self._current_stream_version(connection, stream_id)
 
+    @contextmanager
+    def transaction(self) -> Iterator[Self]:
+        """Hold one write transaction open across several store calls.
+
+        ``BEGIN IMMEDIATE`` is taken once on entry, so a second writer contends here rather
+        than half way through the work, and every ``append`` or projection update made inside
+        the block joins this transaction instead of opening its own. They commit together
+        when the block ends normally and none of them survives an exception, which is what
+        keeps a check made at the top of the block true at the bottom. Reads inside the block
+        run on the same connection, so they see the writes the block has already made.
+
+        Failures are mapped exactly as they are for a single append: contention becomes
+        ``EventStoreBusyError``, and a rollback that itself fails closes the connection and
+        leaves the store reporting itself closed rather than trusted.
+
+        Nesting is refused. A second ``transaction()`` on the same store raises
+        ``EventStoreError`` instead of opening an inner scope whose commit would not be one.
+        """
+
+        if self._transaction_depth:
+            raise EventStoreError("the store is already inside a transaction")
+        connection = self._require_open()
+        with _write_transaction(connection, on_unrecoverable=self._abandon_connection):
+            self._transaction_depth += 1
+            try:
+                yield self
+            finally:
+                self._transaction_depth -= 1
+
+    @property
+    def in_transaction(self) -> bool:
+        """Return True while a `transaction()` block is open on this store."""
+
+        return self._transaction_depth > 0
+
     def append(
         self,
         stream_id: str,
@@ -440,7 +478,11 @@ class SQLiteEventStore:
         *,
         expected_version: int,
     ) -> tuple[EventRecord, ...]:
-        """Atomically append events if the stream is at ``expected_version``."""
+        """Atomically append events if the stream is at ``expected_version``.
+
+        Inside a `transaction()` block the append joins that transaction, so the records it
+        returns are durable only once the block commits.
+        """
 
         _require_name(stream_id, "stream_id")
         _require_nonnegative_integer(expected_version, "expected_version")
@@ -840,7 +882,11 @@ class SQLiteEventStore:
         return ProjectionCheckpoint(name=name, last_sequence=0, updated_at=None)
 
     def _transaction(self, connection: sqlite3.Connection) -> _write_transaction:
-        return _write_transaction(connection, on_unrecoverable=self._abandon_connection)
+        return _write_transaction(
+            connection,
+            on_unrecoverable=self._abandon_connection,
+            joined=self._transaction_depth > 0,
+        )
 
     def _abandon_connection(self) -> None:
         """Close and forget a connection whose transaction state is no longer trustworthy."""
@@ -1127,6 +1173,13 @@ class _write_transaction:
     If the rollback itself fails, the connection can no longer be trusted: it is closed
     through ``on_unrecoverable`` and the error says so, rather than leaving an open
     transaction behind a successful-looking store object.
+
+    ``joined`` marks the enclosing transaction a caller already opened through
+    `SQLiteEventStore.transaction`. A joined context issues no statement of its own: it
+    requires the enclosing transaction to be open, then leaves committing and rolling back
+    to the block that opened it, so several appends land or fail as one. Without that flag
+    an already-open transaction is still refused, because the only other way to reach one
+    is a leak.
     """
 
     def __init__(
@@ -1134,11 +1187,19 @@ class _write_transaction:
         connection: sqlite3.Connection,
         *,
         on_unrecoverable: Callable[[], None] | None = None,
+        joined: bool = False,
     ) -> None:
         self.connection = connection
+        self.joined = joined
         self._on_unrecoverable = on_unrecoverable
 
     def __enter__(self) -> None:
+        if self.joined:
+            if not self.connection.in_transaction:
+                raise EventStoreError(
+                    "expected an enclosing write transaction, but none is open"
+                )
+            return
         if self.connection.in_transaction:
             raise EventStoreError("connection is already inside a transaction")
         try:
@@ -1155,6 +1216,8 @@ class _write_transaction:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        if self.joined:
+            return
         if exc_value is not None:
             rollback_error = self._rollback()
             if rollback_error is not None:

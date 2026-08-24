@@ -1,4 +1,4 @@
-# ComplyRoll
+![ComplyRoll: FedRAMP 20x VDR evidence compiler](https://raw.githubusercontent.com/ComplyRoll/ComplyRoll/main/assets/complyroll-banner.png)
 
 **A local-first evidence compiler for FedRAMP® 20x Vulnerability Detection and Response (VDR).**
 

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="ComplyRoll">
+  <defs>
+    <linearGradient id="g-clock-ledger" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#111C31"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="0" fill="url(#g-clock-ledger)"/>
+  
+
+  <g>
+    <path d="M 277.78 89.42 A 168 168 0 1 1 96.45 308.61" fill="none" stroke="#E9EDF2" stroke-width="36" stroke-linecap="round" opacity="1"/>
+    <path d="M 88.29 265.82 A 168 168 0 0 1 234.22 89.42" fill="none" stroke="#E8B14C" stroke-width="36" stroke-linecap="round" opacity="1"/>
+    <rect x="168" y="196" width="176" height="34" rx="10" fill="#E9EDF2"/>
+    <rect x="168" y="248" width="120" height="34" rx="10" fill="#E8B14C"/>
+    <rect x="168" y="300" width="176" height="34" rx="10" fill="#E9EDF2" opacity="0.55"/>
+  </g>
+</svg>

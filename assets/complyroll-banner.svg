@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" role="img" aria-label="ComplyRoll — FedRAMP 20x evidence compiler">
+  <defs>
+    <linearGradient id="bg-clock-ledger" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#111C31"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="320" fill="url(#bg-clock-ledger)"/>
+  <rect x="0" y="316" width="1200" height="4" fill="#E8B14C" opacity="0.55"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="318.5" fill="none" stroke="#E8B14C" stroke-width="1.5" opacity="0.26"/>
+  <g transform="translate(66 112) scale(0.35156)">
+    
+  <g>
+    <path d="M 277.78 89.42 A 168 168 0 1 1 96.45 308.61" fill="none" stroke="#E9EDF2" stroke-width="36" stroke-linecap="round" opacity="1"/>
+    <path d="M 88.29 265.82 A 168 168 0 0 1 234.22 89.42" fill="none" stroke="#E8B14C" stroke-width="36" stroke-linecap="round" opacity="1"/>
+    <rect x="168" y="196" width="176" height="34" rx="10" fill="#E9EDF2"/>
+    <rect x="168" y="248" width="120" height="34" rx="10" fill="#E8B14C"/>
+    <rect x="168" y="300" width="176" height="34" rx="10" fill="#E9EDF2" opacity="0.55"/>
+  </g>
+  </g>
+  <text x="300" y="168" font-family="JetBrainsMono Nerd Font, JetBrains Mono, DejaVu Sans Mono, monospace" font-size="62" font-weight="800" letter-spacing="15" fill="#E9EDF2">COMPLYROLL</text>
+  <text x="302" y="206" font-family="JetBrainsMono Nerd Font, JetBrains Mono, DejaVu Sans Mono, monospace" font-size="15" font-weight="500" letter-spacing="4.4" fill="#E8B14C" opacity="0.9">FEDRAMP® 20x VDR EVIDENCE COMPILER</text>
+  <rect x="300" y="229" width="836" height="2.5" rx="1.25" fill="#E8B14C" opacity="0.4"/>
+  <g>
+    <rect x="300.0" y="233.0" width="12" height="63.1" rx="3" fill="#E9EDF2" opacity="1.00"/>
+    <rect x="332.2" y="233.0" width="12" height="58.4" rx="3" fill="#E9EDF2" opacity="0.98"/>
+    <rect x="364.3" y="233.0" width="12" height="65.9" rx="3" fill="#E9EDF2" opacity="0.96"/>
+    <rect x="396.5" y="233.0" width="12" height="60.2" rx="3" fill="#E9EDF2" opacity="0.95"/>
+    <rect x="428.6" y="233.0" width="12" height="51.6" rx="3" fill="#E9EDF2" opacity="0.93"/>
+    <rect x="460.8" y="233.0" width="12" height="47.5" rx="3" fill="#E9EDF2" opacity="0.91"/>
+    <rect x="492.9" y="233.0" width="12" height="47.9" rx="3" fill="#E9EDF2" opacity="0.89"/>
+    <rect x="525.1" y="233.0" width="12" height="49.3" rx="3" fill="#E9EDF2" opacity="0.87"/>
+    <rect x="557.2" y="233.0" width="12" height="48.9" rx="3" fill="#E9EDF2" opacity="0.86"/>
+    <rect x="589.4" y="233.0" width="12" height="40.3" rx="3" fill="#E9EDF2" opacity="0.84"/>
+    <rect x="621.5" y="233.0" width="12" height="45.0" rx="3" fill="#E9EDF2" opacity="0.82"/>
+    <rect x="653.7" y="233.0" width="12" height="43.3" rx="3" fill="#E9EDF2" opacity="0.80"/>
+    <rect x="685.8" y="233.0" width="12" height="31.9" rx="3" fill="#E9EDF2" opacity="0.78"/>
+    <rect x="718.0" y="233.0" width="12" height="29.8" rx="3" fill="#E9EDF2" opacity="0.77"/>
+    <rect x="750.2" y="233.0" width="12" height="30.0" rx="3" fill="#E9EDF2" opacity="0.75"/>
+    <rect x="782.3" y="233.0" width="12" height="26.5" rx="3" fill="#E9EDF2" opacity="0.73"/>
+    <rect x="814.5" y="233.0" width="12" height="20.6" rx="3" fill="#E9EDF2" opacity="0.71"/>
+    <rect x="846.6" y="233.0" width="12" height="19.0" rx="3" fill="#E9EDF2" opacity="0.69"/>
+    <rect x="878.8" y="233.0" width="12" height="18.7" rx="3" fill="#E8B14C" opacity="1.00"/>
+    <rect x="910.9" y="233.0" width="12" height="13.0" rx="3" fill="#E8B14C" opacity="1.00"/>
+    <rect x="943.1" y="233.0" width="12" height="19.1" rx="3" fill="#E8B14C" opacity="1.00"/>
+    <rect x="975.2" y="233.0" width="12" height="22.7" rx="3" fill="#E8B14C" opacity="1.00"/>
+    <rect x="1007.4" y="233.0" width="12" height="11.7" rx="3" fill="#E8B14C" opacity="1.00"/>
+    <rect x="1039.5" y="233.0" width="12" height="8.0" rx="3" fill="#E2603C" opacity="1.00"/>
+    <rect x="1071.7" y="233.0" width="12" height="9.8" rx="3" fill="#E2603C" opacity="1.00"/>
+    <rect x="1103.8" y="233.0" width="12" height="8.9" rx="3" fill="#E2603C" opacity="1.00"/>
+  </g>
+</svg>

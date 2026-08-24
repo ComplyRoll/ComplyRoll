@@ -50,6 +50,12 @@ PREFER_REVISION = "5"
 CCI_PATTERN = re.compile(r"CCI-\d{6}")
 CONTROL_PATTERN = re.compile(r"\b([A-Z]{2})-(\d+)")
 
+# ARF wraps the XCCDF TestResult in an asset-report-collection envelope, so both roots reach the
+# XCCDF adapter. `.arf` is the suffix OpenSCAP's ARF output is commonly given and holds the same
+# XML, so it dispatches by root element exactly like `.xml` rather than being refused unread.
+XCCDF_ROOT_ELEMENTS = frozenset({"Benchmark", "TestResult", "asset-report-collection"})
+XML_SUFFIXES = frozenset({".xml", ".arf"})
+
 STATUS_ALIASES = {
     "open": ObservationDisposition.OPEN,
     "not_a_finding": ObservationDisposition.PASS,
@@ -469,7 +475,7 @@ class XccdfAdapter:
         if not isinstance(root, ET.Element):
             raise AdapterParseError("XCCDF adapter requires an XML document")
         root_name = localname(root.tag)
-        if root_name not in {"Benchmark", "TestResult", "asset-report-collection"}:
+        if root_name not in XCCDF_ROOT_ELEMENTS:
             raise AdapterParseError(f"XML root '{root_name}' is not XCCDF or ARF")
 
         diagnostics: list[IngestDiagnostic] = []
@@ -664,9 +670,9 @@ def ingest_stig_artifact(
                 ingested_at=now,
             )
             document = ParsedDocument("xml", parse_xml_bounded(content, limits))
-        elif suffix == ".xml":
+        elif suffix in XML_SUFFIXES:
             root = parse_xml_bounded(content, limits)
-            if localname(root.tag) in {"Benchmark", "TestResult", "asset-report-collection"}:
+            if localname(root.tag) in XCCDF_ROOT_ELEMENTS:
                 adapter = XccdfAdapter()
             else:
                 adapter = CklAdapter()

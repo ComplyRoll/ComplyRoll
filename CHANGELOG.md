@@ -2,6 +2,50 @@
 
 All notable project changes will be documented here.
 
+## Unreleased
+
+### Fixed
+
+- A compiled Vulnerability Detail Report is now byte-identical across any argument order, on the
+  stateless path and the persisted path alike. Four things echoed the order the operator named
+  files in: the artifact manifest, the ingest diagnostics and the unresolved-observation
+  diagnostics, the members of a vulnerability that spans several files, and the election of the
+  surviving reading when two files carry identical bytes under different names. The last two
+  reached the report's content rather than only the order of a list, since a group's `title` and
+  `description` take the first non-empty value found while walking its members. Each list is now
+  ordered by its own content: artifacts by `(name, sha256)`, diagnostics by
+  `(code, location, message, level)`, and group members by
+  `(resource_type, resource_id, source_artifact_name, observation_id)`. Verified by a randomized
+  permutation audit over a deliberately hostile artifact set, across the stateless path, the
+  persisted path, and the two compared against each other. The goldens moved by permutation only.
+  The event log is deliberately not order-independent: two stores built by ingesting the same
+  files in opposite orders differ in bytes and in sequence, both verify clean, and both rebuild
+  the identical report.
+- `.arf`, the suffix OpenSCAP gives its ARF output, was refused unread while the CLI help text on
+  the same argument promised ARF support. It now dispatches by root element exactly as `.xml`
+  does, so a valid ARF is accepted under either suffix and a misnamed CKL still reaches the CKL
+  adapter. Observation identity hashes the artifact digest and not its name, so anyone who worked
+  around this by renaming a file will not get duplicate cases when they stop.
+
+### Added
+
+- An ARF fixture and adapter tests. ARF was advertised in the README, the help text, and the
+  adapter docstring with no fixture and no parse-level test behind it. The fixture nests its
+  `TestResult` five levels down behind a sibling OVAL report, splits the asset identity between
+  the ARF assets block and the XCCDF target, and carries an unevaluated rule in an embedded
+  benchmark, so a document-scoped identity or identifier sweep fails the tests rather than
+  passing them quietly.
+
+### Changed
+
+- Repositioned the one-line description. "Evidence automation for continuous authorization" used
+  Rev5 and continuous-monitoring vocabulary for a tool that implements the 2026 Vulnerability
+  Detection and Response and Vulnerability Evaluation and Reporting rules. The package, the
+  repository, and the project page now all read "Compiles STIG and SCAP output into schema-valid
+  FedRAMP 20x vulnerability reports, with every response clock read from FedRAMP's published rules
+  dataset." The PyPI summary is baked in at build time, so it carries the old line until the next
+  release.
+
 ## 0.3.0a0 - 2026-08-23
 
 ### Added

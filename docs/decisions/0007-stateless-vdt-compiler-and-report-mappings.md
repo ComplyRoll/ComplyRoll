@@ -277,6 +277,41 @@ instant and satisfied state, and artifact with its parser version, and a parity 
 compiled records to prove it. Two things are deliberately abbreviated in Markdown only: artifact
 digests are shown truncated, and byte sizes are omitted.
 
+## Amendment 2026-08-23: determinism is order-independent
+
+Decision 1 said a stateless compiler is reproducible by construction. That was true of the
+computation and false of the serialization, and the gap was found by an outside reader testing
+the claim rather than reading it. Running the same artifacts in a different argument order
+produced a different file.
+
+Four constructs carried argument order into the output. The artifact manifest and the ingest
+diagnostics were built by walking the caller's list. The unresolved-observation diagnostics
+followed an insertion-ordered list. The members of a vulnerability that spans several files were
+stored in arrival order, which mattered more than a list's order looks: a group's `title` and
+`description` take the first non-empty value found while walking its members, so argument order
+could change the reported text. And when two files carried identical bytes under different names,
+the surviving reading was elected by arrival, so the manifest named whichever file the operator
+listed first.
+
+Each list is now ordered by its own content, and the key is chosen so a reader can predict it:
+artifacts by `(name, sha256)`, diagnostics by `(code, location, message, level)`, group members by
+`(resource_type, resource_id, source_artifact_name, observation_id)`, and duplicate readings elect
+the lowest-named file while the diagnostic says which reading the report contains. Sorting happens
+in `compile_records`, the single core both the stateless and persisted paths run through, which is
+what keeps the two byte-equal.
+
+Two boundaries belong in any statement of the property, because both are places a reader could
+take it further than it goes.
+
+The claim is about the compiled report, not about the event log. Two stores built by ingesting the
+same files in opposite orders differ in bytes and in global sequence. Both verify clean and both
+rebuild the identical report. That is correct for an append-only log, which records what happened
+when, and ADR 0008's guarantees are unaffected.
+
+The claim is about the same set of files, not the same findings. The manifest names files, so
+identical scan content saved under two names is a different input set and produces a different
+report. That is intended: the report states what it read.
+
 ## Consequences
 
 - `complyroll report vdt` and `complyroll validate` become the first user-facing commands, and

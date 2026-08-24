@@ -373,6 +373,14 @@
   "x-complyroll": {
     "artifacts": [
       {
+        "name": "openscap-results.xml",
+        "observationCount": 3,
+        "parser": "complyroll.xccdf",
+        "parserVersion": "1",
+        "sha256": "3f5deac4a3d94f8d1437367860ef5ea8c28eafde599500b98dfdc70415229ca3",
+        "sizeBytes": 885
+      },
+      {
         "name": "ubuntu-host.cklb",
         "observationCount": 6,
         "parser": "complyroll.cklb",
@@ -387,14 +395,6 @@
         "parserVersion": "1",
         "sha256": "e5dfc628039ce508d5175da55b5cefd017b4dd3174b4f2488609b097024cf963",
         "sizeBytes": 1240
-      },
-      {
-        "name": "openscap-results.xml",
-        "observationCount": 3,
-        "parser": "complyroll.xccdf",
-        "parserVersion": "1",
-        "sha256": "3f5deac4a3d94f8d1437367860ef5ea8c28eafde599500b98dfdc70415229ca3",
-        "sizeBytes": 885
       }
     ],
     "calendarTimezone": "UTC",
@@ -415,6 +415,12 @@
       {
         "code": "source_timestamp_missing",
         "level": "warning",
+        "location": "openscap-results.xml",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
         "location": "ubuntu-host.cklb",
         "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
       },
@@ -422,12 +428,6 @@
         "code": "source_timestamp_missing",
         "level": "warning",
         "location": "windows-host.ckl",
-        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
-      },
-      {
-        "code": "source_timestamp_missing",
-        "level": "warning",
-        "location": "openscap-results.xml",
         "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
       }
     ],

@@ -19,7 +19,12 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from complyroll import __version__
-from complyroll.adapters import DiagnosticLevel, ingest_stig_artifact
+from complyroll.adapters import (
+    ArtifactProvenance,
+    DiagnosticLevel,
+    IngestResult,
+    ingest_stig_artifact,
+)
 from complyroll.correlation import (
     VulnerabilityGroup,
     correlate_observations,
@@ -449,9 +454,16 @@ def compile_records(
     Both the stateless path and the event-sourced rebuild call this, so neither can
     drift from the other by construction (ADR 0008 Decision 5). Callers own how the
     artifacts, observations, ingest diagnostics, and evaluations were obtained;
-    everything downstream of them happens here. `ingest_diagnostics` are the notes the
-    caller raised while assembling those inputs, and they lead the compiled diagnostics
-    list in the order they were given.
+    everything downstream of them happens here.
+
+    The order a caller supplies its inputs in is not a fact about the package, so
+    nothing it decides may reach the document. The stateless path receives artifacts
+    and their ingest diagnostics in command-line order and the persisted path in
+    ingest order, and both used to be published as given, which meant the same
+    artifacts named in a different order compiled to different bytes. Both lists are
+    put in a total order here, in the one place both paths run through, so the two
+    paths cannot drift apart from each other or from their own earlier runs. Ordering
+    them in either caller instead would fix one path and leave the other.
     """
 
     if not isinstance(options, ReportOptions):
@@ -459,9 +471,12 @@ def compile_records(
     if not isinstance(attestation, DetectionAttestation):
         raise TypeError("attestation must be a DetectionAttestation")
 
-    diagnostics: list[ReportDiagnostic] = list(ingest_diagnostics)
+    diagnostics: list[ReportDiagnostic] = sorted(ingest_diagnostics, key=_diagnostic_order)
     correlation = correlate_observations(observations)
-    for observation in correlation.unresolved:
+    # Excluded observations are kept in the order they were read, so this block echoed
+    # the caller's artifact order too. Only this list is ordered here; the diagnostics
+    # raised below it follow the groups, which correlation already orders by group key.
+    for observation in sorted(correlation.unresolved, key=_unresolved_order):
         diagnostics.append(
             ReportDiagnostic(
                 level=DiagnosticLevel.WARNING,
@@ -536,7 +551,7 @@ def compile_records(
 
     metadata = ReportMetadata(
         options=options,
-        artifacts=tuple(artifacts),
+        artifacts=tuple(sorted(artifacts, key=_artifact_order)),
         rules_provenance=policy.provenance,
         schema_provenance=schema_provenance,
         generator_version=__version__,
@@ -573,6 +588,54 @@ def compile_records(
     )
 
 
+def _artifact_order(artifact: CompiledArtifact) -> tuple[str, str]:
+    """Return the total order the artifact manifest is published in.
+
+    `name` leads because it is already in every artifact record, so two runs have to
+    agree on it for their documents to be byte-equal at all, and because the Markdown
+    Inputs table is what a human scans by file name. `sha256` breaks the tie: two
+    artifacts may carry the same name from different directories, and a report must
+    not depend on which one the operator happened to name first.
+    """
+
+    return (artifact.name, artifact.sha256)
+
+
+def _diagnostic_order(diagnostic: ReportDiagnostic) -> tuple[str, str, str, str]:
+    """Return the total order ingest diagnostics are published in.
+
+    Ingest diagnostics have no narrative order to preserve: each one is an independent
+    note about one artifact, and the sequence they arrived in only records which file
+    the caller read first. Code leads so a reader sees one kind of problem together,
+    then location, then the message and level that distinguish two notes sharing both.
+    """
+
+    return (
+        diagnostic.code,
+        diagnostic.location or "",
+        diagnostic.message,
+        diagnostic.level.value,
+    )
+
+
+def _unresolved_order(observation: Observation) -> tuple[str, str, str, str, str]:
+    """Return the total order unresolved observations are reported in.
+
+    The fields are the ones the diagnostic renders (its location, then the record,
+    resource, and disposition its message names), so the published order is the order
+    a reader would sort the printed lines into. `observation_id` is last and is a
+    content fingerprint, so the order is total even where every rendered field agrees.
+    """
+
+    return (
+        observation.source_artifact_name or observation.context_key,
+        observation.source_record_id,
+        observation.resource.resource_id,
+        observation.disposition.value,
+        observation.observation_id,
+    )
+
+
 def _ingest_all(
     artifact_paths: Sequence[Path],
     options: ReportOptions,
@@ -590,9 +653,7 @@ def _ingest_all(
         )
 
     errors: list[ReportDiagnostic] = []
-    artifacts: list[CompiledArtifact] = []
-    observations: list[Observation] = []
-    seen_digests: set[str] = set()
+    by_digest: dict[str, list[IngestResult]] = {}
 
     for raw_path in artifact_paths:
         path = Path(raw_path)
@@ -612,35 +673,90 @@ def _ingest_all(
                 diagnostics.append(entry)
         if result.errors or result.artifact is None:
             continue
-        if result.artifact.digest_sha256 in seen_digests:
+        by_digest.setdefault(result.artifact.digest_sha256, []).append(result)
+
+    if errors:
+        raise ReportCompileError(sorted(errors, key=_diagnostic_order))
+
+    artifacts: list[CompiledArtifact] = []
+    observations: list[Observation] = []
+    # By elected name, which is the order the manifest is published in. Nothing
+    # downstream reads the observation list in order (correlation orders each group's
+    # members and sorts what it excludes), so this loop decides no output on its own;
+    # walking it in the published order keeps that true of what a reader sees here too.
+    elected = sorted(
+        (_elect_reading(group) for group in by_digest.values()),
+        key=lambda item: (item[0].artifact.name, item[0].artifact.digest_sha256),
+    )
+    for read, skipped in elected:
+        for duplicate in skipped:
             diagnostics.append(
                 ReportDiagnostic(
                     level=DiagnosticLevel.WARNING,
                     code="duplicate_artifact",
                     message=(
-                        "identical artifact bytes were supplied more than once and the "
-                        "repeat was skipped"
+                        "identical artifact bytes were supplied more than once; this "
+                        f"report reads them as {read.artifact.name}"
                     ),
-                    location=result.artifact.name,
+                    location=duplicate.name,
                 )
             )
-            continue
-        seen_digests.add(result.artifact.digest_sha256)
         artifacts.append(
             CompiledArtifact(
-                name=result.artifact.name,
-                sha256=result.artifact.digest_sha256,
-                parser=result.artifact.parser_name,
-                parser_version=result.artifact.parser_version,
-                size_bytes=result.artifact.size_bytes,
-                observation_count=len(result.observations),
+                name=read.artifact.name,
+                sha256=read.artifact.digest_sha256,
+                parser=read.artifact.parser_name,
+                parser_version=read.artifact.parser_version,
+                size_bytes=read.artifact.size_bytes,
+                observation_count=len(read.observations),
             )
         )
-        observations.extend(result.observations)
+        observations.extend(read.observations)
 
-    if errors:
-        raise ReportCompileError(errors)
     return artifacts, observations
+
+
+@dataclass(frozen=True, slots=True)
+class _ElectedReading:
+    """The one reading of a set of identical artifact bytes that the report carries."""
+
+    artifact: ArtifactProvenance
+    observations: tuple[Observation, ...]
+
+
+def _elect_reading(
+    candidates: Sequence[IngestResult],
+) -> tuple[_ElectedReading, tuple[ArtifactProvenance, ...]]:
+    """Choose which of several readings of one artifact's bytes the report carries.
+
+    The same bytes may be supplied twice under different file names, and only one
+    reading can be in the report: the observations of the second would restate every
+    finding of the first under the same fingerprints. Keeping whichever arrived first
+    made the manifest name, and the name every observation carries, depend on the
+    order the operator listed the files in. Electing the lowest name instead makes the
+    choice a property of the file set. Two candidates that share a name also share
+    their bytes, so every field either could contribute is identical and which one is
+    elected is not observable.
+    """
+
+    readings = sorted(
+        (
+            _ElectedReading(_require_artifact(item), item.observations)
+            for item in candidates
+        ),
+        key=lambda item: item.artifact.name,
+    )
+    read, *rest = readings
+    return read, tuple(item.artifact for item in rest)
+
+
+def _require_artifact(result: IngestResult) -> ArtifactProvenance:
+    """Return one candidate's artifact, which `_ingest_all` has already checked for."""
+
+    artifact = result.artifact
+    if artifact is None:  # pragma: no cover - candidates are filtered before election
+        raise AssertionError("a candidate reading must carry an artifact")
+    return artifact
 
 
 def _match_evaluations(

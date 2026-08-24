@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
+from itertools import permutations
 from pathlib import Path
 
 from complyroll.adapters import ingest_stig_artifact
@@ -60,6 +62,8 @@ def _observation(
 
 class GroupingTests(unittest.TestCase):
     def test_one_rule_on_many_hosts_is_one_group_with_many_resources(self) -> None:
+        """Grouping keeps every observation and reports each affected host once."""
+
         observations = (
             _observation(source_record_id="V-1", resource_id="host-b"),
             _observation(source_record_id="V-1", resource_id="host-a"),
@@ -71,9 +75,77 @@ class GroupingTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(groups[0].observations), 3)
         self.assertEqual(
-            tuple(resource.resource_id for resource in groups[0].resources),
-            ("host-b", "host-a"),
+            {resource.resource_id for resource in groups[0].resources},
+            {"host-a", "host-b"},
         )
+
+    def test_group_members_are_ordered_by_resource_not_by_input_order(self) -> None:
+        """One benchmark across many hosts arrives from many files, in any order.
+
+        The order those files were read in is not a fact about the vulnerability, so
+        it must not decide which host the report lists first, nor which observation
+        identifier leads. This assertion used to read `("host-b", "host-a")`, which
+        stated the order the observations happened to be constructed in rather than
+        any property of the grouping.
+        """
+
+        first = _observation(source_record_id="V-1", resource_id="host-a")
+        second = _observation(source_record_id="V-1", resource_id="host-b")
+        third = _observation(source_record_id="V-1", resource_id="host-c")
+
+        for order in permutations((first, second, third)):
+            with self.subTest(order=[item.resource.resource_id for item in order]):
+                groups = group_open_observations(order)
+
+                self.assertEqual(len(groups), 1)
+                self.assertEqual(
+                    tuple(resource.resource_id for resource in groups[0].resources),
+                    ("host-a", "host-b", "host-c"),
+                )
+                self.assertEqual(
+                    groups[0].observation_ids,
+                    ("obs-V-1-host-a", "obs-V-1-host-b", "obs-V-1-host-c"),
+                )
+
+    def test_two_readings_of_one_host_sort_by_artifact_name(self) -> None:
+        """Two scans of one host are two members, ordered by the file they came from."""
+
+        from_zulu = replace(
+            _observation(source_record_id="V-1", resource_id="host-a"),
+            observation_id="obs-zulu",
+            source_artifact_name="zulu.cklb",
+            source_artifact_digest="b" * 64,
+        )
+        from_alpha = replace(
+            _observation(source_record_id="V-1", resource_id="host-a"),
+            observation_id="obs-alpha",
+            source_artifact_name="alpha.cklb",
+        )
+
+        groups = group_open_observations((from_zulu, from_alpha))
+
+        self.assertEqual(groups[0].observation_ids, ("obs-alpha", "obs-zulu"))
+
+    def test_a_group_reports_one_title_whatever_order_it_is_built_in(self) -> None:
+        """`title` takes the first non-empty member, so order chose the reported text.
+
+        This is the part of the defect that changed what the report said rather than
+        only the order it said it in.
+        """
+
+        untitled = replace(
+            _observation(source_record_id="V-1", resource_id="host-a", title="Ignored"),
+            title="",
+        )
+        titled = _observation(
+            source_record_id="V-1", resource_id="host-b", title="The rule title"
+        )
+
+        forward = group_open_observations((untitled, titled))
+        backward = group_open_observations((titled, untitled))
+
+        self.assertEqual(forward[0].title, backward[0].title)
+        self.assertEqual(forward[0].title, "The rule title")
 
     def test_grouping_is_keyed_by_source_type_record_and_context(self) -> None:
         observations = (

@@ -46,7 +46,12 @@ class VulnerabilityGroup:
 
     @property
     def observation_ids(self) -> tuple[str, ...]:
-        """Return every supporting observation identifier in source order."""
+        """Return every supporting observation identifier, in member order.
+
+        Members are ordered by `_member_order`, not by the order their files were
+        read, so this list is a property of the group rather than of the command that
+        built it.
+        """
 
         return tuple(observation.observation_id for observation in self.observations)
 
@@ -142,11 +147,40 @@ def group_open_observations(
     return correlate_observations(observations).groups
 
 
+def _member_order(observation: Observation) -> tuple[str, str, str, str]:
+    """Return the total order a group's observations are held in.
+
+    Grouping is by rule, not by host, so one benchmark scanned across many hosts is one
+    group whose members arrive from as many files. The order they arrived in is the
+    order the caller named those files, which is not a fact about the vulnerability,
+    and it used to reach the report: `resources`, `observation_ids`, and
+    `untimestamped_observation_ids` are all built by walking members once, and `title`
+    and `description` take the first non-empty value they find, so argument order could
+    change the reported text and not just the order of a list.
+
+    The resource leads because it is what both renderings show first and what a reader
+    scans the affected-resources list by, and its type precedes its identifier because
+    that is the order the Markdown prints them in. The artifact name then keeps two
+    readings of one host together and in a stable order. `observation_id` is last and
+    is a content fingerprint, so the order is total. Two members can share a
+    fingerprint only when one file states the same result twice, and the sort is
+    stable, so those keep the order the file stated them in.
+    """
+
+    return (
+        observation.resource.resource_type,
+        observation.resource.resource_id,
+        observation.source_artifact_name,
+        observation.observation_id,
+    )
+
+
 def _build_group(
     key: tuple[str, str, str],
     members: list[Observation],
 ) -> VulnerabilityGroup:
     source_type, source_record_id, context_key = key
+    members = sorted(members, key=_member_order)
     resources: list[ResourceRef] = []
     seen_resources: set[tuple[str, str]] = set()
     identifiers: set[str] = set()

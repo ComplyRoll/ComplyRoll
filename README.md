@@ -31,8 +31,12 @@ provider can publish and an independent assessor can recompute.
 | `complyroll.store.SQLiteEventStore` | Append-only event log with optimistic concurrency, payload digests, schema and tail-integrity verification, and projection checkpoints. Domain events are written only through `complyroll.events.EventRepository`, which validates every payload against a published contract (ADR 0008) |
 
 The report compiler is stateless by design (ADR 0007): the same artifacts, evaluations, options,
-and `--as-of` instant produce the same bytes, which is the property an independent assessor is
-asked to test. The persisted path (ADR 0008) records the same inputs as typed events and rebuilds
+and `--as-of` instant produce the same bytes, in any argument order, which is the property an
+independent assessor is asked to test. Argument order is not a fact about the system under
+assessment, so nothing derived from it reaches the report: the artifact manifest, the diagnostics,
+and the members of a vulnerability that spans several files are all ordered by their own content.
+The claim is about the compiled report and about the same set of files. The event log is
+deliberately not order-independent, because an append-only log records what happened when. The persisted path (ADR 0008) records the same inputs as typed events and rebuilds
 this same report from the log, so changing an evaluation creates history instead of overwriting
 it. Accepted-vulnerability and historical-activity reports are the next slice. See
 [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).

@@ -162,15 +162,15 @@ The operator attested a detection time of 2026-08-01T00:00:00Z for 6 vulnerabili
 
 | Artifact | SHA-256 | Parser | Observations |
 |---|---|---|---:|
+| openscap-results.xml | 3f5deac4a3d9 | complyroll.xccdf 1 | 3 |
 | ubuntu-host.cklb | 97d123900424 | complyroll.cklb 1 | 6 |
 | windows-host.ckl | e5dfc628039c | complyroll.ckl 1 | 2 |
-| openscap-results.xml | 3f5deac4a3d9 | complyroll.xccdf 1 | 3 |
 
 ## Diagnostics
 
+- **warning** source_timestamp_missing: source artifact does not declare an observation timestamp; observed_at is unknown [openscap-results.xml]
 - **warning** source_timestamp_missing: source artifact does not declare an observation timestamp; observed_at is unknown [ubuntu-host.cklb]
 - **warning** source_timestamp_missing: source artifact does not declare an observation timestamp; observed_at is unknown [windows-host.ckl]
-- **warning** source_timestamp_missing: source artifact does not declare an observation timestamp; observed_at is unknown [openscap-results.xml]
 
 ---
 

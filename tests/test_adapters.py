@@ -23,6 +23,14 @@ FIXTURES = Path(__file__).parent / "fixtures"
 FIRST_INGEST = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)
 SECOND_INGEST = datetime(2026, 8, 19, 20, 0, tzinfo=UTC)
 
+ARF_FIXTURE = FIXTURES / "openscap-arf.xml"
+ARF_TEST_RESULT_ID = "xccdf_org.open-scap_testresult_xccdf_mil.synthetic.content_profile_stig"
+# Identities the ARF fixture plants outside the TestResult so a root-scoped read is visible: the
+# asset block's FQDN, and a CCI on a benchmark rule that sits in report-requests and was never
+# evaluated. Neither may reach an observation.
+ARF_ASSET_FQDN = "lab-rhel-03.synthetic.test"
+ARF_UNEVALUATED_CCI = "CCI-002418"
+
 
 class StigAdapterTests(unittest.TestCase):
     def test_cklb_ingest_records_provenance(self) -> None:
@@ -166,6 +174,200 @@ class StigAdapterTests(unittest.TestCase):
         self.assertEqual(result.errors[0].code, "unsupported_artifact")
 
 
+class ArfAdapterTests(unittest.TestCase):
+    """ARF is an advertised input, and its envelope is not a bare XCCDF file.
+
+    The TestResult is nested inside arf:reports rather than being at the root, the collection
+    root carries no id, and the asset identity in arf:assets is a different string from the
+    xccdf:target the scan recorded. These tests pin which of those the adapter reads.
+    """
+
+    def test_arf_envelope_ingests_under_the_xccdf_parser_identity(self) -> None:
+        result = ingest_stig_artifact(ARF_FIXTURE, ingested_at=FIRST_INGEST)
+
+        self.assertTrue(result.successful)
+        self.assertEqual(len(result.observations), 4)
+        self.assertIsNotNone(result.artifact)
+        assert result.artifact is not None
+        self.assertEqual(result.artifact.parser_name, "complyroll.xccdf")
+        self.assertEqual(result.artifact.parser_version, XCCDF_PARSER_VERSION)
+        self.assertEqual(result.artifact.media_type, "application/xml")
+        self.assertEqual(
+            {(item.parser_name, item.parser_version) for item in result.observations},
+            {("complyroll.xccdf", XCCDF_PARSER_VERSION)},
+        )
+        self.assertEqual({item.source_type for item in result.observations}, {"xccdf"})
+
+    def test_arf_rule_results_are_read_from_the_nested_test_result(self) -> None:
+        result = ingest_stig_artifact(ARF_FIXTURE, ingested_at=FIRST_INGEST)
+
+        self.assertEqual(
+            [item.source_record_id for item in result.observations],
+            [
+                "sshd_disable_root_login",
+                "package_aide_installed",
+                "banner_etc_issue",
+                "audit_privileged_commands",
+            ],
+        )
+        self.assertEqual(
+            [item.disposition for item in result.observations],
+            [
+                ObservationDisposition.OPEN,
+                ObservationDisposition.PASS,
+                ObservationDisposition.NOT_APPLICABLE,
+                ObservationDisposition.NOT_REVIEWED,
+            ],
+        )
+        self.assertEqual(
+            [item.source_severity.value for item in result.observations],
+            ["high", "medium", "medium", "low"],
+        )
+
+    def test_arf_resource_identity_is_the_test_result_target(self) -> None:
+        raw = ARF_FIXTURE.read_text(encoding="utf-8")
+        self.assertIn(ARF_ASSET_FQDN, raw)
+
+        result = ingest_stig_artifact(ARF_FIXTURE, ingested_at=FIRST_INGEST)
+
+        self.assertEqual(
+            {item.resource.resource_id for item in result.observations}, {"lab-rhel-03"}
+        )
+        self.assertNotIn(
+            ARF_ASSET_FQDN, {item.resource.resource_id for item in result.observations}
+        )
+        self.assertNotIn(
+            ARF_FIXTURE.stem, {item.resource.resource_id for item in result.observations}
+        )
+        self.assertNotIn("resource_identity_fallback", {item.code for item in result.warnings})
+
+    def test_arf_identifiers_come_only_from_the_evaluated_rule_results(self) -> None:
+        raw = ARF_FIXTURE.read_text(encoding="utf-8")
+        self.assertIn(ARF_UNEVALUATED_CCI, raw)
+        self.assertIn("CCE-90211-3", raw)
+
+        result = ingest_stig_artifact(ARF_FIXTURE, ingested_at=FIRST_INGEST)
+
+        self.assertEqual(
+            [item.source_identifiers for item in result.observations],
+            [("CCI-000770",), ("CCI-001744",), ("CCI-000048",), ()],
+        )
+        declared = {cci for item in result.observations for cci in item.source_identifiers}
+        self.assertNotIn(ARF_UNEVALUATED_CCI, declared)
+
+    def test_arf_timestamps_are_read_from_the_test_result_end_time(self) -> None:
+        result = ingest_stig_artifact(ARF_FIXTURE, ingested_at=FIRST_INGEST)
+
+        self.assertEqual(
+            {item.observed_at for item in result.observations},
+            {datetime(2026, 8, 1, 16, 12, tzinfo=UTC)},
+        )
+        self.assertNotIn("source_timestamp_missing", {item.code for item in result.warnings})
+
+    def test_arf_context_key_omits_the_collection_envelope(self) -> None:
+        arf = ingest_stig_artifact(ARF_FIXTURE, ingested_at=FIRST_INGEST)
+        bare = ingest_stig_artifact(FIXTURES / "openscap-results.xml", ingested_at=FIRST_INGEST)
+
+        self.assertEqual({item.context_key for item in arf.observations}, {ARF_TEST_RESULT_ID})
+        self.assertEqual(
+            {item.context_key for item in bare.observations},
+            {"test|xccdf_org.open-scap_testresult_default"},
+        )
+
+    def test_arf_digest_and_identities_survive_a_second_ingest(self) -> None:
+        expected_digest = hashlib.sha256(ARF_FIXTURE.read_bytes()).hexdigest()
+        first = ingest_stig_artifact(ARF_FIXTURE, ingested_at=FIRST_INGEST)
+        second = ingest_stig_artifact(ARF_FIXTURE, ingested_at=SECOND_INGEST)
+
+        assert first.artifact is not None
+        assert second.artifact is not None
+        self.assertEqual(first.artifact.digest_sha256, expected_digest)
+        self.assertEqual(second.artifact.digest_sha256, expected_digest)
+        self.assertEqual(
+            {item.source_artifact_digest for item in first.observations}, {expected_digest}
+        )
+        self.assertNotEqual(first.observations[0].ingested_at, second.observations[0].ingested_at)
+        self.assertEqual(
+            [item.observation_id for item in first.observations],
+            [item.observation_id for item in second.observations],
+        )
+
+    def test_arf_suffix_is_accepted_and_does_not_change_observation_identity(self) -> None:
+        reference = ingest_stig_artifact(ARF_FIXTURE, ingested_at=FIRST_INGEST)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.arf"
+            path.write_bytes(ARF_FIXTURE.read_bytes())
+            result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+        self.assertTrue(result.successful)
+        assert result.artifact is not None
+        self.assertEqual(result.artifact.parser_name, "complyroll.xccdf")
+        self.assertEqual(len(result.observations), 4)
+        # The suffix routes the read; only the bytes carry identity, so renaming the same
+        # artifact to the extension OpenSCAP emits cannot re-mint its observations.
+        self.assertEqual(
+            [item.observation_id for item in result.observations],
+            [item.observation_id for item in reference.observations],
+        )
+
+    def test_arf_suffix_still_dispatches_by_root_element(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-checklist.arf"
+            path.write_bytes((FIXTURES / "windows-host.ckl").read_bytes())
+            result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+        self.assertTrue(result.successful)
+        assert result.artifact is not None
+        self.assertEqual(result.artifact.parser_name, "complyroll.ckl")
+        self.assertEqual(len(result.observations), 2)
+
+    def test_malformed_arf_is_attributed_to_the_pre_dispatch_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "truncated.arf"
+            path.write_text("<arf:asset-report-collection", encoding="utf-8")
+            result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+        self.assertFalse(result.successful)
+        assert result.artifact is not None
+        self.assertEqual(result.artifact.parser_name, "complyroll.xml-auto")
+        self.assertEqual(result.errors[0].code, "artifact_parse_failed")
+
+    def test_asset_report_collection_without_a_test_result_is_a_failed_ingest(self) -> None:
+        """An envelope carrying no XCCDF results must be a diagnosed failure, not a crash.
+
+        Reaching the assertions at all proves no bare KeyError or AttributeError escaped, and
+        `successful` being false proves an empty parse is not reported as a clean ingest.
+        """
+
+        payload = """<?xml version="1.0" encoding="UTF-8"?>
+        <arf:asset-report-collection
+            xmlns:arf="http://scap.nist.gov/schema/asset-reporting-format/1.1"
+            xmlns:ai="http://scap.nist.gov/schema/asset-identification/1.1">
+          <arf:assets>
+            <arf:asset id="asset0">
+              <ai:computing-device><ai:fqdn>lab-rhel-04.synthetic.test</ai:fqdn></ai:computing-device>
+            </arf:asset>
+          </arf:assets>
+          <arf:reports>
+            <arf:report id="oval0">
+              <arf:content>
+                <oval_results xmlns="http://oval.mitre.org/XMLSchema/oval-results-5"/>
+              </arf:content>
+            </arf:report>
+          </arf:reports>
+        </arf:asset-report-collection>"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results-only-oval.arf"
+            path.write_text(payload, encoding="utf-8")
+            result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+        self.assertFalse(result.successful)
+        self.assertFalse(result.observations)
+        self.assertIsNotNone(result.artifact)
+        self.assertEqual([item.code for item in result.errors], ["no_observations"])
+        self.assertIn("rule-result", result.errors[0].message)
+
+
 class ParserVersionIndependenceTests(unittest.TestCase):
     """Each adapter owns its identity input, so one bump cannot re-mint the others."""
 
@@ -188,6 +390,7 @@ class ParserVersionIndependenceTests(unittest.TestCase):
         self.assertEqual(
             self._versions(FIXTURES / "openscap-results.xml"), {XCCDF_PARSER_VERSION}
         )
+        self.assertEqual(self._versions(ARF_FIXTURE), {XCCDF_PARSER_VERSION})
 
     def test_bumping_one_adapter_leaves_the_others_untouched(self) -> None:
         ckl_before = ingest_stig_artifact(

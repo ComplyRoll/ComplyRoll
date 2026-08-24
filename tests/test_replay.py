@@ -14,9 +14,18 @@ import unittest
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
+from itertools import permutations
 from pathlib import Path
 
-from test_reports import ARTIFACTS, EXAMPLES, FIXTURES, GOLDEN, find_vulnerability, options
+from test_reports import (
+    ARTIFACTS,
+    EXAMPLES,
+    FIXTURES,
+    GOLDEN,
+    find_vulnerability,
+    options,
+    shared_benchmark_xccdf,
+)
 
 from complyroll.adapters import IngestResult, ingest_stig_artifact
 from complyroll.events import (
@@ -298,6 +307,116 @@ class ReconciliationTests(StoreFixture):
             "2026-08-01T00:00:00Z",
         )
         self.assertEqual(report.to_json(), self.replay().to_json())
+
+
+class IngestOrderReconciliationTests(StoreFixture):
+    """The two paths agree even when neither one saw the artifacts in the same order.
+
+    A persisted report lists artifacts in the order they were ingested and a stateless
+    report in the order they were named on the command line. While both echoed their
+    own input order, `assert_paths_agree` only held because every test drove both
+    sides in one order, so the byte-identity claim was really a claim about the test
+    setup. Ingesting in the opposite order from the stateless compile is what makes it
+    a claim about the compiler.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ingest(tuple(reversed(ARTIFACTS)))
+        self.correlate()
+        self.attest()
+        self.evaluate()
+
+    def test_history_ingested_in_reverse_still_replays_the_golden_json(self) -> None:
+        expected = (GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8")
+
+        self.assertEqual(self.replay().to_json(), expected)
+
+    def test_history_ingested_in_reverse_still_replays_the_golden_markdown(self) -> None:
+        expected = (GOLDEN / "vdt-fixtures.md").read_text(encoding="utf-8")
+
+        self.assertEqual(self.replay().to_markdown(), expected)
+
+    def test_the_two_paths_agree_across_opposite_input_orders(self) -> None:
+        self.assert_paths_agree(ARTIFACTS, EXAMPLES / "evaluations.json")
+
+    def test_the_replayed_manifest_is_sorted_not_ingest_ordered(self) -> None:
+        artifacts = self.replay().document["x-complyroll"]["artifacts"]
+
+        self.assertEqual(
+            [item["name"] for item in artifacts],
+            ["openscap-results.xml", "ubuntu-host.cklb", "windows-host.ckl"],
+        )
+
+
+class SharedGroupIngestOrderTests(StoreFixture):
+    """A vulnerability drawn from several hosts replays the same however it was logged.
+
+    One benchmark scanned across a fleet is one case whose linked observations come
+    from every host's file. Ingest order decided the order those links were written
+    and the order the rebuilt group held its members, so it reached `resources` and
+    `observationIds` in the replayed report.
+    """
+
+    hosts = ("host-charlie", "host-alpha", "host-bravo")
+
+    def fleet(self, order: Sequence[str], into: Path) -> tuple[Path, ...]:
+        """Write one XCCDF per host, all sharing a benchmark id, in the given order."""
+
+        paths: list[Path] = []
+        for host in order:
+            path = into / f"{host}.xml"
+            path.write_text(shared_benchmark_xccdf(host), encoding="utf-8")
+            paths.append(path)
+        return tuple(paths)
+
+    def replay_fleet(self, order: Sequence[str]) -> CompiledVdtReport:
+        """Ingest a fleet into its own fresh store, then rebuild the report from it."""
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        workspace = Path(directory.name)
+        store = SQLiteEventStore(workspace / "history.db")
+        self.addCleanup(store.close)
+        repository = EventRepository(store)
+
+        for path in self.fleet(order, workspace):
+            record_ingest(
+                repository,
+                ingest_stig_artifact(path, ingested_at=INGESTED_AT),
+                metadata=self.metadata,
+                ingested_at=INGESTED_AT,
+            )
+        correlate_cases(repository, metadata=self.metadata, now=INGESTED_AT)
+        attest_detection(
+            repository,
+            tuple(case.tracking_id for case in fold_all_cases(repository)),
+            detected_at=ATTESTED_AT,
+            rationale=RATIONALE,
+            metadata=self.metadata,
+            now=INGESTED_AT,
+        )
+        return compile_vdt_report_from_history(repository, options=options())
+
+    def test_a_fleet_replays_the_same_bytes_whatever_order_it_was_ingested(self) -> None:
+        expected = self.replay_fleet(self.hosts)
+
+        for order in permutations(self.hosts):
+            with self.subTest(order=list(order)):
+                report = self.replay_fleet(order)
+
+                self.assertEqual(report.to_json(), expected.to_json())
+                self.assertEqual(report.to_markdown(), expected.to_markdown())
+
+    def test_the_two_paths_agree_on_a_fleet_ingested_in_reverse(self) -> None:
+        replayed = self.replay_fleet(tuple(reversed(self.hosts)))
+        stateless = compile_vdt_report(
+            list(self.fleet(self.hosts, self.workspace)),
+            options=options(),
+        )
+
+        self.assertEqual(replayed.to_json(), stateless.to_json())
+        self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
 
 
 class ReplayedHistoryTests(StoreFixture):

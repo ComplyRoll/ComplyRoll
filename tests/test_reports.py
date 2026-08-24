@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from itertools import permutations
 from pathlib import Path
 
 from complyroll import __version__
@@ -114,6 +115,40 @@ def compile_fixtures(
         list(artifacts),
         options=options(**option_overrides),  # type: ignore[arg-type]
         evaluations=evaluations,
+    )
+
+
+def distinct_xccdf(label: str) -> str:
+    """Return the XCCDF fixture rewritten to share no vulnerability with its twins.
+
+    Grouping is by `(source_type, source_record_id, context_key)` and the XCCDF context
+    key is built from the benchmark id, so moving the benchmark id as well as the host
+    keeps each copy's findings in their own groups. A test about the artifact manifest
+    or the diagnostics list then observes those lists alone, rather than also observing
+    how a shared group orders its members. `shared_benchmark_xccdf` is the counterpart
+    for tests whose subject is that shared group.
+    """
+
+    return (
+        (FIXTURES / "openscap-results.xml")
+        .read_text(encoding="utf-8")
+        .replace('id="test"', f'id="{label}"')
+        .replace("lab-ubuntu-02", f"host-{label}")
+    )
+
+
+def shared_benchmark_xccdf(host: str) -> str:
+    """Return the XCCDF fixture retargeted to one host, keeping the benchmark id.
+
+    One benchmark scanned across a fleet is the ordinary case, and it produces one
+    vulnerability per rule whose members come from every host's file. Only the target
+    moves here, so two of these correlate into shared groups.
+    """
+
+    return (
+        (FIXTURES / "openscap-results.xml")
+        .read_text(encoding="utf-8")
+        .replace("lab-ubuntu-02", host)
     )
 
 
@@ -336,7 +371,7 @@ class GoldenReportTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["name"] for item in extension["artifacts"]],
-            [path.name for path in ARTIFACTS],
+            sorted(path.name for path in ARTIFACTS),
         )
         self.assertIn("not a FedRAMP", extension["disclaimer"])
 
@@ -1178,9 +1213,18 @@ class RenderingParityTests(unittest.TestCase):
         self.assertTrue(extension["diagnostics"])
 
     def test_every_artifact_reports_its_observation_count(self) -> None:
+        """Counts are listed in manifest order, which is by name, not by argument."""
+
         artifacts = self.report.document["x-complyroll"]["artifacts"]
 
-        self.assertEqual([item["observationCount"] for item in artifacts], [6, 2, 3])
+        self.assertEqual(
+            [(item["name"], item["observationCount"]) for item in artifacts],
+            [
+                ("openscap-results.xml", 3),
+                ("ubuntu-host.cklb", 6),
+                ("windows-host.ckl", 2),
+            ],
+        )
         self.assertEqual(
             sum(item["observationCount"] for item in artifacts),
             sum(item.observation_count for item in self.report.metadata.artifacts),
@@ -1425,6 +1469,306 @@ class RepeatedPainReductionTests(unittest.TestCase):
         )
 
         self.assertEqual(len(evaluations.entries[0].pain_reduction_events), 2)
+
+
+class ArgumentOrderTests(unittest.TestCase):
+    """The same artifacts in any order compile to the same bytes.
+
+    The public claim is that the same facts produce the same bytes, and the assessor
+    case is a cold recompute over a provider's artifacts. An assessor has no way to
+    know the order the provider named its files in, so any part of the report that
+    echoes argument order is a defect rather than a fact about the package.
+    """
+
+    def test_reversing_the_artifact_arguments_produces_the_same_json(self) -> None:
+        evaluations = load_evaluations(EXAMPLES / "evaluations.json")
+
+        forward = compile_fixtures(artifacts=ARTIFACTS, evaluations=evaluations)
+        reversed_run = compile_fixtures(
+            artifacts=tuple(reversed(ARTIFACTS)), evaluations=evaluations
+        )
+
+        self.assertEqual(reversed_run.to_json(), forward.to_json())
+
+    def test_reversing_the_artifact_arguments_produces_the_same_markdown(self) -> None:
+        evaluations = load_evaluations(EXAMPLES / "evaluations.json")
+
+        forward = compile_fixtures(artifacts=ARTIFACTS, evaluations=evaluations)
+        reversed_run = compile_fixtures(
+            artifacts=tuple(reversed(ARTIFACTS)), evaluations=evaluations
+        )
+
+        self.assertEqual(reversed_run.to_markdown(), forward.to_markdown())
+
+    def test_every_argument_permutation_produces_the_same_bytes(self) -> None:
+        """Reversal alone would pass a compiler that merely reverses its manifest."""
+
+        evaluations = load_evaluations(EXAMPLES / "evaluations.json")
+        expected = compile_fixtures(artifacts=ARTIFACTS, evaluations=evaluations)
+
+        for order in permutations(ARTIFACTS):
+            with self.subTest(order=[path.name for path in order]):
+                report = compile_fixtures(artifacts=order, evaluations=evaluations)
+
+                self.assertEqual(report.to_json(), expected.to_json())
+                self.assertEqual(report.to_markdown(), expected.to_markdown())
+
+    def test_the_artifact_manifest_is_sorted_by_name_then_digest(self) -> None:
+        report = compile_fixtures(artifacts=tuple(reversed(ARTIFACTS)))
+        artifacts = report.document["x-complyroll"]["artifacts"]
+
+        keys = [(item["name"], item["sha256"]) for item in artifacts]
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(
+            [item["name"] for item in artifacts],
+            ["openscap-results.xml", "ubuntu-host.cklb", "windows-host.ckl"],
+        )
+
+    def test_the_manifest_breaks_a_name_tie_on_the_digest(self) -> None:
+        """Two artifacts may share a name, so name alone is not a total order."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "one" / "scan.xml"
+            second = root / "two" / "scan.xml"
+            first.parent.mkdir()
+            second.parent.mkdir()
+            first.write_text(distinct_xccdf("alpha"), encoding="utf-8")
+            second.write_text(distinct_xccdf("bravo"), encoding="utf-8")
+
+            forward = compile_fixtures(artifacts=(first, second))
+            backward = compile_fixtures(artifacts=(second, first))
+
+        artifacts = forward.document["x-complyroll"]["artifacts"]
+        self.assertEqual([item["name"] for item in artifacts], ["scan.xml", "scan.xml"])
+        digests = [item["sha256"] for item in artifacts]
+        self.assertEqual(digests, sorted(digests))
+        self.assertEqual(backward.to_json(), forward.to_json())
+
+    def test_the_markdown_inputs_table_follows_the_sorted_manifest(self) -> None:
+        report = compile_fixtures(artifacts=tuple(reversed(ARTIFACTS)))
+
+        rows = markdown_table_rows(
+            markdown_section(report.to_markdown(), "Inputs"), 4, "Artifact"
+        )
+        self.assertEqual(
+            list(rows),
+            ["openscap-results.xml", "ubuntu-host.cklb", "windows-host.ckl"],
+        )
+
+    def test_ingest_diagnostics_are_sorted_independently_of_argument_order(self) -> None:
+        """Every fixture raises one `source_timestamp_missing`, so order is visible."""
+
+        forward = compile_fixtures(artifacts=ARTIFACTS)
+        backward = compile_fixtures(artifacts=tuple(reversed(ARTIFACTS)))
+
+        expected = [
+            ("source_timestamp_missing", "openscap-results.xml"),
+            ("source_timestamp_missing", "ubuntu-host.cklb"),
+            ("source_timestamp_missing", "windows-host.ckl"),
+        ]
+        for report in (forward, backward):
+            observed = [
+                (item.code, item.location)
+                for item in report.diagnostics
+                if item.code == "source_timestamp_missing"
+            ]
+            self.assertEqual(observed, expected)
+
+    def test_unresolved_observation_diagnostics_do_not_follow_argument_order(self) -> None:
+        """A diagnostic raised inside the compile must not echo argv either."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "aaa-scan.xml"
+            second = root / "zzz-scan.xml"
+            first.write_text(
+                distinct_xccdf("alpha").replace(
+                    "<result>pass</result>", "<result>error</result>", 1
+                ),
+                encoding="utf-8",
+            )
+            second.write_text(
+                distinct_xccdf("bravo").replace(
+                    "<result>pass</result>", "<result>unknown</result>", 1
+                ),
+                encoding="utf-8",
+            )
+
+            forward = compile_fixtures(artifacts=(first, second))
+            backward = compile_fixtures(artifacts=(second, first))
+
+        def unresolved(report: CompiledVdtReport) -> list[tuple[str | None, str]]:
+            return [
+                (item.location, item.message)
+                for item in report.diagnostics
+                if item.code == "unresolved_observation"
+            ]
+
+        self.assertEqual(len(unresolved(forward)), 2)
+        self.assertEqual(unresolved(backward), unresolved(forward))
+        self.assertEqual(backward.to_json(), forward.to_json())
+
+    def test_a_repeated_artifact_still_sorts_with_the_rest(self) -> None:
+        """The duplicate warning is an ingest diagnostic, so it sorts with them."""
+
+        artifacts = (FIXTURES / "windows-host.ckl", *ARTIFACTS)
+
+        forward = compile_fixtures(artifacts=artifacts)
+        backward = compile_fixtures(artifacts=tuple(reversed(artifacts)))
+
+        self.assertEqual(backward.to_json(), forward.to_json())
+        codes = [item.code for item in forward.diagnostics]
+        self.assertEqual(codes, sorted(codes))
+
+
+class SharedGroupOrderTests(unittest.TestCase):
+    """One benchmark across a fleet is one vulnerability drawn from many files.
+
+    This is the ordinary deployment, not an edge case, and it is the case where
+    argument order used to reach the vulnerability records themselves rather than only
+    the manifest: `resources`, `observationIds`, and the reported title are all built
+    by walking a group's members.
+    """
+
+    hosts = ("host-charlie", "host-alpha", "host-bravo")
+
+    def compile_hosts(self, order: Sequence[str]) -> CompiledVdtReport:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = []
+            for host in order:
+                path = root / f"{host}.xml"
+                path.write_text(shared_benchmark_xccdf(host), encoding="utf-8")
+                paths.append(path)
+            return compile_fixtures(artifacts=tuple(paths))
+
+    def test_the_fixture_really_does_produce_a_group_spanning_every_file(self) -> None:
+        """Guard the premise: without shared groups the rest proves nothing."""
+
+        report = self.compile_hosts(self.hosts)
+
+        self.assertTrue(report.vulnerabilities)
+        spanning = [item for item in report.vulnerabilities if len(item.resources) > 1]
+        self.assertTrue(spanning, "no vulnerability spans more than one host")
+        self.assertEqual(len(spanning[0].observation_ids), len(self.hosts))
+
+    def test_a_group_spanning_files_compiles_to_the_same_bytes_in_any_order(self) -> None:
+        expected = self.compile_hosts(self.hosts)
+
+        for order in permutations(self.hosts):
+            with self.subTest(order=list(order)):
+                report = self.compile_hosts(order)
+
+                self.assertEqual(report.to_json(), expected.to_json())
+                self.assertEqual(report.to_markdown(), expected.to_markdown())
+
+    def test_the_affected_resources_are_listed_in_a_stable_order(self) -> None:
+        """The list a reader scans must not be in the order files were named."""
+
+        for order in permutations(self.hosts):
+            with self.subTest(order=list(order)):
+                report = self.compile_hosts(order)
+                spanning = next(
+                    item for item in report.vulnerabilities if len(item.resources) > 1
+                )
+
+                self.assertEqual(
+                    [resource.resource_id for resource in spanning.resources],
+                    sorted(self.hosts),
+                )
+
+    def test_two_files_sharing_a_name_and_a_group_still_order_totally(self) -> None:
+        """Same file name, different bytes, one shared group: only the fingerprint separates them.
+
+        This is the case the last element of the member sort key exists for. The
+        resource and the artifact name both tie, so without the fingerprint the two
+        members would keep whatever order they were read in.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "one" / "scan.xml"
+            second = root / "two" / "scan.xml"
+            first.parent.mkdir()
+            second.parent.mkdir()
+            # One host, two readings, same file name, different bytes.
+            first.write_text(shared_benchmark_xccdf("host-shared"), encoding="utf-8")
+            second.write_text(
+                shared_benchmark_xccdf("host-shared").replace(
+                    "<result>pass</result>", "<result>fail</result>", 1
+                ),
+                encoding="utf-8",
+            )
+
+            forward = compile_fixtures(artifacts=(first, second))
+            backward = compile_fixtures(artifacts=(second, first))
+
+        self.assertEqual(backward.to_json(), forward.to_json())
+        self.assertEqual(backward.to_markdown(), forward.to_markdown())
+        spanning = [item for item in forward.vulnerabilities if len(item.observation_ids) > 1]
+        self.assertTrue(spanning, "the two readings must share at least one group")
+
+
+class DuplicateBytesOrderTests(unittest.TestCase):
+    """Identical bytes under two names must not let argument order pick the survivor.
+
+    Only one reading of a set of identical bytes can be in a report. While the first
+    one supplied won, the manifest named whichever file the operator happened to list
+    first, so the same set of files in a different order produced a different report.
+    """
+
+    def compile_named(self, order: Sequence[str]) -> CompiledVdtReport:
+        source = (FIXTURES / "openscap-results.xml").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = []
+            for name in order:
+                path = root / name
+                path.write_text(source, encoding="utf-8")
+                paths.append(path)
+            return compile_fixtures(artifacts=tuple(paths))
+
+    def test_the_elected_reading_does_not_depend_on_argument_order(self) -> None:
+        forward = self.compile_named(("aaa-copy.xml", "zzz-copy.xml"))
+        backward = self.compile_named(("zzz-copy.xml", "aaa-copy.xml"))
+
+        self.assertEqual(backward.to_json(), forward.to_json())
+        self.assertEqual(backward.to_markdown(), forward.to_markdown())
+
+    def test_the_manifest_names_the_lowest_named_copy(self) -> None:
+        report = self.compile_named(("zzz-copy.xml", "aaa-copy.xml"))
+        artifacts = report.document["x-complyroll"]["artifacts"]
+
+        self.assertEqual([item["name"] for item in artifacts], ["aaa-copy.xml"])
+
+    def test_the_duplicate_diagnostic_names_the_copy_that_was_read(self) -> None:
+        """A reader must be able to tell which file the report was built from."""
+
+        report = self.compile_named(("zzz-copy.xml", "aaa-copy.xml"))
+
+        duplicates = [
+            item for item in report.diagnostics if item.code == "duplicate_artifact"
+        ]
+        self.assertEqual(len(duplicates), 1)
+        self.assertEqual(duplicates[0].location, "zzz-copy.xml")
+        self.assertIn("reads them as aaa-copy.xml", duplicates[0].message)
+
+    def test_three_identical_copies_leave_one_reading_and_two_notes(self) -> None:
+        forward = self.compile_named(("b.xml", "a.xml", "c.xml"))
+        backward = self.compile_named(("c.xml", "b.xml", "a.xml"))
+
+        self.assertEqual(backward.to_json(), forward.to_json())
+        artifacts = forward.document["x-complyroll"]["artifacts"]
+        self.assertEqual([item["name"] for item in artifacts], ["a.xml"])
+        self.assertEqual(
+            sorted(
+                item.location
+                for item in forward.diagnostics
+                if item.code == "duplicate_artifact"
+            ),
+            ["b.xml", "c.xml"],
+        )
 
 
 if __name__ == "__main__":

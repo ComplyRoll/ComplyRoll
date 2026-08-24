@@ -25,10 +25,19 @@ an authoritative structured value is available. KEV due dates likewise require t
 CISA catalog input, and `VDR-TFR-KEV` applies "even if the vulnerability has been fully
 mitigated", so a KEV clock stops on remediation, not on mitigation.
 
+Whether that omission is deliberate is an open question with FedRAMP, raised on 2026-08-24 as
+[FedRAMP/community discussion 164](https://github.com/FedRAMP/community/discussions/164). It asks
+about `VDR-TFR-NMV` and four other flat rules that state a numeric cadence in prose while carrying
+no `timeframe_type` or `timeframe_num`, against 17 flat rules that carry the pair at the top level.
+If FedRAMP answers that the omission is intended, this paragraph becomes a citation to a documented
+decision rather than a note about an unexplained gap.
+
 Known cross-pin inconsistency: Common Definitions cites `VER-RPT-PAE` for its `painReductionEvent`
 definition, but no rule with that identifier exists in the pinned dataset and no bundled report
 schema references the definition. "Each completed PAIN reduction" therefore has no official slot
-yet and must ship as a provider extension.
+yet and must ship as a provider extension. This is tracked upstream as
+[FedRAMP/schemas issue 16](https://github.com/FedRAMP/schemas/issues/16), where the cross-pin check
+above and the proposal to re-point the definition at `VER-RPT-VDT` are recorded.
 
 ## Current program context
 

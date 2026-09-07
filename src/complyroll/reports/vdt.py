@@ -6,6 +6,13 @@ artifacts, evaluations, package configuration, and `--as-of` instant produce the
 same bytes on every run. It fails closed: an artifact that does not ingest, a
 vulnerability with no detection time, or an evaluation that matches nothing
 stops the run with diagnostics and no output.
+
+The work splits in two (ADR 0010). `compile_record_set` turns normalized inputs
+into the period-agnostic record set every report reads from, and `project_vdt`
+selects and renders the Vulnerability Detail Report out of it. The other report
+modules in this package project their own documents from the same record set and
+share the helpers below, so one vulnerability is compiled once however many
+reports describe it.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from complyroll import __version__
@@ -418,6 +425,25 @@ class CompiledVdtReport:
         return _render_markdown(self)
 
 
+class CompiledReport(Protocol):
+    """What every compiled report exposes, whichever official format it projects.
+
+    The members are read-only properties rather than attributes so that the frozen
+    report dataclasses satisfy the protocol structurally; a caller that only writes
+    a report out needs nothing more than these four.
+    """
+
+    @property
+    def document(self) -> dict[str, Any]: ...
+
+    @property
+    def diagnostics(self) -> tuple[ReportDiagnostic, ...]: ...
+
+    def to_json(self, indent: int = 2) -> str: ...
+
+    def to_markdown(self) -> str: ...
+
+
 def compile_vdt_report(
     artifact_paths: Sequence[Path],
     *,
@@ -425,6 +451,24 @@ def compile_vdt_report(
     evaluations: EvaluationSet | None = None,
 ) -> CompiledVdtReport:
     """Compile one Vulnerability Detail Report from artifacts and explicit inputs."""
+
+    return project_vdt(
+        compile_record_set_from_artifacts(artifact_paths, options=options, evaluations=evaluations)
+    )
+
+
+def compile_record_set_from_artifacts(
+    artifact_paths: Sequence[Path],
+    *,
+    options: ReportOptions,
+    evaluations: EvaluationSet | None = None,
+) -> CompiledRecordSet:
+    """Ingest artifacts, match evaluations, and compile the record set they describe.
+
+    This is the stateless path's front half. Every report the package projects from
+    the same artifacts starts here, so ingest happens once per run rather than once
+    per report.
+    """
 
     if not isinstance(options, ReportOptions):
         raise TypeError("options must be a ReportOptions")
@@ -435,7 +479,7 @@ def compile_vdt_report(
     artifacts, observations = _ingest_all(artifact_paths, options, ingest_diagnostics)
     groups = group_open_observations(observations)
     matches = _match_evaluations(groups, evaluations)
-    return compile_records(
+    return compile_record_set(
         artifacts=artifacts,
         observations=observations,
         ingest_diagnostics=ingest_diagnostics,
@@ -443,6 +487,26 @@ def compile_vdt_report(
         attestation=DetectionAttestation(default=options.detected_at_attestation),
         options=options,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledRecordSet:
+    """Every compiled vulnerability plus the shared provenance, before any report selects.
+
+    The set knows nothing about report periods or which official format will read it.
+    Each projection applies its own selection to `records` and appends its own
+    diagnostics after the ones held here, so the diagnostics on the set are exactly
+    the ones the compile itself raised: ingest diagnostics in their total order, then
+    unresolved observations, then partial detection times in group order.
+    """
+
+    records: tuple[CompiledVulnerability, ...]
+    artifacts: tuple[CompiledArtifact, ...]
+    diagnostics: tuple[ReportDiagnostic, ...]
+    rules_provenance: PolicyProvenance
+    parser_versions: tuple[tuple[str, str], ...]
+    generator_version: str
+    options: ReportOptions
 
 
 def compile_records(
@@ -469,6 +533,36 @@ def compile_records(
     put in a total order here, in the one place both paths run through, so the two
     paths cannot drift apart from each other or from their own earlier runs. Ordering
     them in either caller instead would fix one path and leave the other.
+    """
+
+    return project_vdt(
+        compile_record_set(
+            artifacts=artifacts,
+            observations=observations,
+            ingest_diagnostics=ingest_diagnostics,
+            evaluations_by_tracking_id=evaluations_by_tracking_id,
+            attestation=attestation,
+            options=options,
+        )
+    )
+
+
+def compile_record_set(
+    *,
+    artifacts: Sequence[CompiledArtifact],
+    observations: Sequence[Observation],
+    ingest_diagnostics: Sequence[ReportDiagnostic],
+    evaluations_by_tracking_id: Mapping[str, EvaluationInput],
+    attestation: DetectionAttestation,
+    options: ReportOptions,
+) -> CompiledRecordSet:
+    """Compile the period-agnostic record set from already-normalized inputs.
+
+    This is where the ordering guarantees `compile_records` documents are made: the
+    artifact manifest and the ingest diagnostics are put in their total order here,
+    on the one path both the stateless compile and the event-sourced rebuild share.
+    Every report projection reads the set this returns, so a record is compiled once
+    and selected many times.
     """
 
     if not isinstance(options, ReportOptions):
@@ -498,7 +592,6 @@ def compile_records(
     groups = correlation.groups
     snapshot = load_bundled_rule_source_snapshot()
     policy = select_policy(snapshot, options.profile)
-    schema_provenance = _schema_provenance()
 
     compiled: list[CompiledVulnerability] = []
     missing_detection: list[str] = []
@@ -549,40 +642,49 @@ def compile_records(
         )
 
     _require_unique_tracking_ids(compiled)
-    records, accepted, excluded = _select_for_period(compiled, options, diagnostics)
+    return CompiledRecordSet(
+        records=tuple(compiled),
+        artifacts=tuple(sorted(artifacts, key=_artifact_order)),
+        diagnostics=tuple(diagnostics),
+        rules_provenance=policy.provenance,
+        parser_versions=_parser_versions(observations),
+        generator_version=__version__,
+        options=options,
+    )
+
+
+def project_vdt(record_set: CompiledRecordSet) -> CompiledVdtReport:
+    """Project the Vulnerability Detail Report out of one compiled record set.
+
+    The report period decides what is reported: accepted records are set aside for
+    the VER-RPT-AVI report, and disposed records with no recorded activity in the
+    period are left out, each with an INFO diagnostic appended after the set's own.
+    """
+
+    if not isinstance(record_set, CompiledRecordSet):
+        raise TypeError("record_set must be a CompiledRecordSet")
+
+    options = record_set.options
+    period = (options.period_from, options.period_to)
+    diagnostics = list(record_set.diagnostics)
+    records, accepted, excluded = _select_for_period(record_set.records, period, diagnostics)
     attested = tuple(
         sorted(item.tracking_id for item in records if item.detected_at_source == "attestation")
     )
 
     metadata = ReportMetadata(
         options=options,
-        artifacts=tuple(sorted(artifacts, key=_artifact_order)),
-        rules_provenance=policy.provenance,
-        schema_provenance=schema_provenance,
-        generator_version=__version__,
-        parser_versions=_parser_versions(observations),
+        artifacts=record_set.artifacts,
+        rules_provenance=record_set.rules_provenance,
+        schema_provenance=_schema_provenance(ReportSchema.VULNERABILITY_DETAIL),
+        generator_version=record_set.generator_version,
+        parser_versions=record_set.parser_versions,
         attestation_applied_to=attested,
         excluded_by_period=excluded,
         attestation_detected_at=_attested_instant(records),
     )
     document = _build_document(tuple(records), metadata, tuple(diagnostics))
-    validation = validate_bundled_report(ReportSchema.VULNERABILITY_DETAIL, document)
-    if not validation.is_valid:
-        raise ReportCompileError(
-            tuple(
-                ReportDiagnostic(
-                    level=DiagnosticLevel.ERROR,
-                    code="schema_invalid",
-                    message=(
-                        "the compiled report failed official schema validation, which is a "
-                        f"ComplyRoll defect: {issue.validator}: {issue.message}"
-                    ),
-                    location=issue.instance_pointer or "<root>",
-                )
-                for issue in validation.issues
-            )
-        )
-
+    validation = _validate_document(ReportSchema.VULNERABILITY_DETAIL, document)
     return CompiledVdtReport(
         document=document,
         vulnerabilities=tuple(records),
@@ -927,7 +1029,7 @@ def _require_unique_tracking_ids(records: Sequence[CompiledVulnerability]) -> No
 
 def _select_for_period(
     records: Sequence[CompiledVulnerability],
-    options: ReportOptions,
+    period: tuple[datetime, datetime],
     diagnostics: list[ReportDiagnostic],
 ) -> tuple[list[CompiledVulnerability], list[AcceptedVulnerability], int]:
     """Split compiled records into reported, accepted, and excluded by period.
@@ -962,7 +1064,7 @@ def _select_for_period(
                 )
             )
             continue
-        reason = _period_exclusion_reason(record, options)
+        reason = _period_exclusion_reason(record, period)
         if reason is not None:
             excluded += 1
             diagnostics.append(
@@ -978,14 +1080,36 @@ def _select_for_period(
     return reported, accepted, excluded
 
 
+def _accepted(record: CompiledVulnerability) -> AcceptedVulnerability:
+    """Pair an accepted record with the rationale its evaluation recorded.
+
+    Only the reports that publish accepted vulnerabilities call this, and only after
+    they have checked that every accepted record carries a rationale, so a missing one
+    here is a programming error rather than an input error.
+    """
+
+    evaluation = record.evaluation
+    rationale = evaluation.acceptance_rationale if evaluation is not None else None
+    if rationale is None:  # pragma: no cover - callers guard before reaching here
+        raise AssertionError(f"{record.tracking_id} is accepted with no acceptance rationale")
+    return AcceptedVulnerability(vulnerability=record, acceptance_rationale=rationale)
+
+
 def _period_exclusion_reason(
     record: CompiledVulnerability,
-    options: ReportOptions,
+    period: tuple[datetime, datetime],
+    *,
+    state: str | None = None,
 ) -> str | None:
-    """Return why a record falls outside the report period, or None if it belongs."""
+    """Return why a record falls outside the report period, or None if it belongs.
 
-    period_from = options.period_from
-    period_to = options.period_to
+    `state` is how the message names the record's standing when it had no activity in
+    the period. The Vulnerability Detail Report leaves it unset and the message reads
+    the record's disposition; a report that only selects accepted records passes the
+    standing that applies to all of them.
+    """
+
+    period_from, period_to = period
     if record.detected_at > period_to:
         return (
             f"was detected {_iso(record.detected_at)}, after the period ended "
@@ -995,8 +1119,10 @@ def _period_exclusion_reason(
         return None
     if any(period_from <= instant <= period_to for instant in record.activity_instants):
         return None
+    if state is None:
+        state = f"has disposition {record.final_disposition!r}"
     return (
-        f"has disposition {record.final_disposition!r} and no recorded activity between "
+        f"{state} and no recorded activity between "
         f"{_iso(period_from)} and {_iso(period_to)}"
     )
 
@@ -1236,9 +1362,11 @@ def _parser_versions(observations: Sequence[Observation]) -> tuple[tuple[str, st
     return tuple(sorted(pairs))
 
 
-def _schema_provenance() -> SchemaProvenance:
+def _schema_provenance(report_schema: ReportSchema) -> SchemaProvenance:
+    """Describe the bundled schema one report is validated against and published with."""
+
     bundle = load_bundled_schema_bundle()
-    document = bundle.document(ReportSchema.VULNERABILITY_DETAIL.value)
+    document = bundle.document(report_schema.value)
     return SchemaProvenance(
         repository=bundle.manifest.repository,
         commit=bundle.manifest.commit,
@@ -1248,13 +1376,83 @@ def _schema_provenance() -> SchemaProvenance:
     )
 
 
+def _validate_document(
+    report_schema: ReportSchema,
+    document: dict[str, Any],
+) -> SchemaValidationResult:
+    """Validate one compiled document against its bundled schema, or stop the run.
+
+    A document that fails here was built by ComplyRoll from inputs that already
+    passed their own checks, so the failure is a defect in the compiler and the run
+    ends with the validator's own findings rather than an invalid report on disk.
+    """
+
+    validation = validate_bundled_report(report_schema, document)
+    if not validation.is_valid:
+        raise ReportCompileError(
+            tuple(
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="schema_invalid",
+                    message=(
+                        "the compiled report failed official schema validation, which is a "
+                        f"ComplyRoll defect: {issue.validator}: {issue.message}"
+                    ),
+                    location=issue.instance_pointer or "<root>",
+                )
+                for issue in validation.issues
+            )
+        )
+    return validation
+
+
+def _common_extension(
+    records: Sequence[CompiledVulnerability],
+    metadata: ReportMetadata,
+    diagnostics: Sequence[ReportDiagnostic],
+) -> dict[str, Any]:
+    """Build the `x-complyroll` block every report shares.
+
+    Each projection adds its own counters on top. The keys are sorted when the JSON is
+    written, so where a projection inserts them does not reach the bytes.
+    """
+
+    options = metadata.options
+    return {
+        "generator": {"name": GENERATOR_NAME, "version": metadata.generator_version},
+        "generatedAt": _iso(options.as_of),
+        "calendarTimezone": options.calendar_timezone,
+        "certificationClass": options.certification_class.value,
+        "rulesSource": {
+            "repository": metadata.rules_provenance.repository,
+            "commit": metadata.rules_provenance.commit,
+            "datasetVersion": metadata.rules_provenance.dataset_version,
+            "datasetLastUpdated": metadata.rules_provenance.dataset_last_updated,
+            "sha256": metadata.rules_provenance.dataset_sha256,
+        },
+        "schemaSource": {
+            "repository": metadata.schema_provenance.repository,
+            "commit": metadata.schema_provenance.commit,
+            "schemaId": metadata.schema_provenance.schema_id,
+            "schemaVersion": metadata.schema_provenance.schema_version,
+            "sha256": metadata.schema_provenance.schema_sha256,
+        },
+        "parserVersions": dict(metadata.parser_versions),
+        "artifacts": [artifact.to_dict() for artifact in metadata.artifacts],
+        "detectionTimeAttestation": _attestation_block(records, metadata),
+        "diagnostics": [diagnostic.to_dict() for diagnostic in diagnostics],
+        "disclaimer": DISCLAIMER,
+    }
+
+
 def _build_document(
     records: Sequence[CompiledVulnerability],
     metadata: ReportMetadata,
     diagnostics: Sequence[ReportDiagnostic],
 ) -> dict[str, Any]:
     options = metadata.options
-    attestation = _attestation_block(records, metadata)
+    extension = _common_extension(records, metadata, diagnostics)
+    extension["excludedByPeriod"] = metadata.excluded_by_period
     return {
         "certificationPackageOverviewUri": options.package_uri,
         "reportPeriod": {
@@ -1262,32 +1460,7 @@ def _build_document(
             "to": _iso(options.period_to),
         },
         "vulnerabilities": [record.to_official_dict() for record in records],
-        EXTENSION_KEY: {
-            "generator": {"name": GENERATOR_NAME, "version": metadata.generator_version},
-            "generatedAt": _iso(options.as_of),
-            "calendarTimezone": options.calendar_timezone,
-            "certificationClass": options.certification_class.value,
-            "rulesSource": {
-                "repository": metadata.rules_provenance.repository,
-                "commit": metadata.rules_provenance.commit,
-                "datasetVersion": metadata.rules_provenance.dataset_version,
-                "datasetLastUpdated": metadata.rules_provenance.dataset_last_updated,
-                "sha256": metadata.rules_provenance.dataset_sha256,
-            },
-            "schemaSource": {
-                "repository": metadata.schema_provenance.repository,
-                "commit": metadata.schema_provenance.commit,
-                "schemaId": metadata.schema_provenance.schema_id,
-                "schemaVersion": metadata.schema_provenance.schema_version,
-                "sha256": metadata.schema_provenance.schema_sha256,
-            },
-            "parserVersions": dict(metadata.parser_versions),
-            "artifacts": [artifact.to_dict() for artifact in metadata.artifacts],
-            "detectionTimeAttestation": attestation,
-            "excludedByPeriod": metadata.excluded_by_period,
-            "diagnostics": [diagnostic.to_dict() for diagnostic in diagnostics],
-            "disclaimer": DISCLAIMER,
-        },
+        EXTENSION_KEY: extension,
     }
 
 
@@ -1331,20 +1504,67 @@ def _attestation_block(
 
 def _render_markdown(report: CompiledVdtReport) -> str:
     metadata = report.metadata
-    options = metadata.options
     records = report.vulnerabilities
     lines: list[str] = []
     write = lines.append
 
-    write("# Vulnerability Detail Report")
+    _write_header(write, metadata.options, title="Vulnerability Detail Report", period=True)
+    _write_provenance(write, metadata)
+
+    write("## Summary")
+    write("")
+    write("| Measure | Count |")
+    write("|---|---:|")
+    write(f"| Vulnerabilities reported | {len(records)} |")
+    write(f"| Evaluated | {sum(1 for item in records if item.is_evaluated)} |")
+    write(f"| Not yet evaluated | {sum(1 for item in records if not item.is_evaluated)} |")
+    write(f"| Overdue | {sum(1 for item in records if item.is_overdue)} |")
+    write(f"| Accepted, reported under VER-RPT-AVI | {len(report.accepted)} |")
+    write(f"| Excluded by report period | {metadata.excluded_by_period} |")
+    for rating in PainRating:
+        count = sum(1 for item in records if item.current_rating is rating)
+        write(f"| Current PAIN {rating.name} | {count} |")
+    write("")
+
+    _write_vulnerability_table(
+        write,
+        records,
+        heading="Vulnerabilities",
+        empty_message="No open vulnerabilities were reported for this period.",
+        details_heading="Vulnerability details",
+    )
+    _write_attestation_section(write, records, metadata)
+    _write_inputs(write, metadata)
+    _write_diagnostics_section(write, report.diagnostics)
+    _write_footer(write)
+    return "\n".join(lines) + "\n"
+
+
+def _write_header(
+    write: Callable[[str], None],
+    options: ReportOptions,
+    *,
+    title: str,
+    period: bool,
+) -> None:
+    """Open a Markdown twin with its title and the run's identifying inputs.
+
+    `period` is False for the report that has no period, so the line is left out
+    rather than printed empty.
+    """
+
+    write(f"# {title}")
     write("")
     write(f"- **Certification package:** {_cell(options.package_uri)}")
-    write(f"- **Report period:** {_iso(options.period_from)} to {_iso(options.period_to)}")
+    if period:
+        write(f"- **Report period:** {_iso(options.period_from)} to {_iso(options.period_to)}")
     write(f"- **Certification class:** {options.certification_class.value}")
     write(f"- **Generated at:** {_iso(options.as_of)}")
     write(f"- **Calendar timezone:** {_cell(options.calendar_timezone)}")
     write("")
 
+
+def _write_provenance(write: Callable[[str], None], metadata: ReportMetadata) -> None:
     write("## Provenance")
     write("")
     write("| Source | Reference | Digest |")
@@ -1364,65 +1584,81 @@ def _render_markdown(report: CompiledVdtReport) -> str:
     write(f"| Generator | {GENERATOR_NAME} {_cell(metadata.generator_version)} | n/a |")
     write("")
 
-    write("## Summary")
-    write("")
-    write("| Measure | Count |")
-    write("|---|---:|")
-    write(f"| Vulnerabilities reported | {len(records)} |")
-    write(f"| Evaluated | {sum(1 for item in records if item.is_evaluated)} |")
-    write(f"| Not yet evaluated | {sum(1 for item in records if not item.is_evaluated)} |")
-    write(f"| Overdue | {sum(1 for item in records if item.is_overdue)} |")
-    write(f"| Accepted, reported under VER-RPT-AVI | {len(report.accepted)} |")
-    write(f"| Excluded by report period | {metadata.excluded_by_period} |")
-    for rating in PainRating:
-        count = sum(1 for item in records if item.current_rating is rating)
-        write(f"| Current PAIN {rating.name} | {count} |")
-    write("")
 
-    write("## Vulnerabilities")
+def _vulnerability_row(item: CompiledVulnerability) -> str:
+    """Render one record as a row of the shared vulnerability table."""
+
+    evaluation = item.evaluation
+    next_due = item.next_due
+    return (
+        "| "
+        + " | ".join(
+            (
+                _cell(item.tracking_id),
+                _cell(item.source_record_id),
+                str(len(item.resources)),
+                _iso(item.detected_at),
+                _iso(evaluation.completed_at) if evaluation else "n/a",
+                _flag(evaluation.is_internet_reachable) if evaluation else "n/a",
+                _flag(evaluation.is_likely_exploitable) if evaluation else "n/a",
+                item.current_rating.name if item.current_rating else "n/a",
+                (
+                    f"{_iso(next_due.due_at)} ({_cell(next_due.rule_id)})"
+                    if next_due
+                    else "n/a"
+                ),
+                _flag(item.is_overdue),
+                _cell(_disposition_label(item)),
+            )
+        )
+        + " |"
+    )
+
+
+def _write_vulnerability_table(
+    write: Callable[[str], None],
+    records: Sequence[CompiledVulnerability],
+    *,
+    heading: str,
+    empty_message: str,
+    details_heading: str,
+    rationales: Mapping[str, str] | None = None,
+) -> None:
+    """Write one table of records followed by their detail sections.
+
+    An empty table is one sentence under the heading and no details heading at all.
+    `rationales` maps tracking identifiers to acceptance rationales for the tables
+    that publish accepted records; the detail section prints the rationale when the
+    record has one.
+    """
+
+    write(f"## {heading}")
     write("")
     if not records:
-        write("No open vulnerabilities were reported for this period.")
+        write(empty_message)
         write("")
-    else:
-        write(
-            "| Tracking ID | Source record | Resources | Detected | Evaluation completed "
-            "| IRV | LEV | PAIN | Next due | Overdue | Disposition |"
-        )
-        write("|---|---|---:|---|---|---|---|---|---|---|---|")
-        for item in records:
-            evaluation = item.evaluation
-            next_due = item.next_due
-            write(
-                "| "
-                + " | ".join(
-                    (
-                        _cell(item.tracking_id),
-                        _cell(item.source_record_id),
-                        str(len(item.resources)),
-                        _iso(item.detected_at),
-                        _iso(evaluation.completed_at) if evaluation else "n/a",
-                        _flag(evaluation.is_internet_reachable) if evaluation else "n/a",
-                        _flag(evaluation.is_likely_exploitable) if evaluation else "n/a",
-                        item.current_rating.name if item.current_rating else "n/a",
-                        (
-                            f"{_iso(next_due.due_at)} ({_cell(next_due.rule_id)})"
-                            if next_due
-                            else "n/a"
-                        ),
-                        _flag(item.is_overdue),
-                        _cell(item.final_disposition) if item.final_disposition else "active",
-                    )
-                )
-                + " |"
-            )
-        write("")
+        return
+    write(
+        "| Tracking ID | Source record | Resources | Detected | Evaluation completed "
+        "| IRV | LEV | PAIN | Next due | Overdue | Disposition |"
+    )
+    write("|---|---|---:|---|---|---|---|---|---|---|---|")
+    for item in records:
+        write(_vulnerability_row(item))
+    write("")
 
-        write("## Vulnerability details")
-        write("")
-        for item in records:
-            _write_detail(write, item)
+    write(f"## {details_heading}")
+    write("")
+    for item in records:
+        rationale = None if rationales is None else rationales.get(item.tracking_id)
+        _write_detail(write, item, acceptance_rationale=rationale)
 
+
+def _write_attestation_section(
+    write: Callable[[str], None],
+    records: Sequence[CompiledVulnerability],
+    metadata: ReportMetadata,
+) -> None:
     write("## Detection time attestation")
     write("")
     attested = metadata.attestation_applied_to
@@ -1451,6 +1687,8 @@ def _render_markdown(report: CompiledVdtReport) -> str:
         )
     write("")
 
+
+def _write_inputs(write: Callable[[str], None], metadata: ReportMetadata) -> None:
     write("## Inputs")
     write("")
     write("| Artifact | SHA-256 | Parser | Observations |")
@@ -1463,12 +1701,17 @@ def _render_markdown(report: CompiledVdtReport) -> str:
         )
     write("")
 
+
+def _write_diagnostics_section(
+    write: Callable[[str], None],
+    diagnostics: Sequence[ReportDiagnostic],
+) -> None:
     write("## Diagnostics")
     write("")
-    if not report.diagnostics:
+    if not diagnostics:
         write("No diagnostics were raised.")
     else:
-        for diagnostic in report.diagnostics:
+        for diagnostic in diagnostics:
             location = f" [{_cell(diagnostic.location)}]" if diagnostic.location else ""
             write(
                 f"- **{diagnostic.level.value}** {_cell(diagnostic.code)}: "
@@ -1476,17 +1719,40 @@ def _render_markdown(report: CompiledVdtReport) -> str:
             )
     write("")
 
+
+def _write_footer(write: Callable[[str], None]) -> None:
     write("---")
     write("")
     write(DISCLAIMER)
-    return "\n".join(lines) + "\n"
 
 
-def _write_detail(write: Callable[[str], None], item: CompiledVulnerability) -> None:
+def _disposition_label(item: CompiledVulnerability) -> str:
+    """Name the record's standing the way the Markdown twins print it.
+
+    A record with a final disposition prints that disposition. An accepted record has
+    none, since acceptance is not a final disposition in the official enumeration, so
+    it prints as accepted; everything else is active.
+    """
+
+    if item.final_disposition:
+        return item.final_disposition
+    if item.status is CaseStatus.ACCEPTED:
+        return "accepted"
+    return "active"
+
+
+def _write_detail(
+    write: Callable[[str], None],
+    item: CompiledVulnerability,
+    *,
+    acceptance_rationale: str | None = None,
+) -> None:
     """Render one vulnerability's full audit detail into the Markdown twin.
 
     The JSON extension and this section carry the same material, so neither
-    rendering omits what the other holds (ADR 0007 amendment).
+    rendering omits what the other holds (ADR 0007 amendment). The acceptance
+    rationale is printed only when the caller passes one, since only the reports
+    that publish accepted records carry it.
     """
 
     evaluation = item.evaluation
@@ -1546,8 +1812,10 @@ def _write_detail(write: Callable[[str], None], item: CompiledVulnerability) -> 
         else:
             write("- **Completed PAIN reductions:** none recorded")
 
-    disposition = _cell(item.final_disposition) if item.final_disposition else "active"
+    disposition = _cell(_disposition_label(item))
     write(f"- **Disposition:** {disposition}; **remediated:** {_flag(item.remediated)}")
+    if acceptance_rationale is not None:
+        write(f"- **Acceptance rationale:** {_cell(acceptance_rationale)}")
     if item.is_overdue:
         write(f"- **Overdue:** {_cell(item.overdue_explanation)}")
     else:
@@ -1646,6 +1914,8 @@ __all__ = [
     "AcceptedVulnerability",
     "CompiledArtifact",
     "CompiledDeadline",
+    "CompiledRecordSet",
+    "CompiledReport",
     "CompiledVdtReport",
     "CompiledVulnerability",
     "DetectionAttestation",
@@ -1654,6 +1924,9 @@ __all__ = [
     "ReportInputError",
     "ReportMetadata",
     "ReportOptions",
+    "compile_record_set",
+    "compile_record_set_from_artifacts",
     "compile_records",
     "compile_vdt_report",
+    "project_vdt",
 ]

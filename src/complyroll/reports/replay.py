@@ -1,4 +1,4 @@
-"""Rebuild the Vulnerability Detail Report from persisted history (ADR 0008 Decision 5).
+"""Rebuild report record sets from persisted history (ADR 0008 Decision 5).
 
 Artifacts, observations, and ingest diagnostics are read back from `artifact.ingested`
 and `observation.recorded` events in recorded order; each case stream is folded into its
@@ -28,12 +28,14 @@ from complyroll.models import Observation
 from .evaluations import EvaluationInput, EvaluationMatch
 from .vdt import (
     CompiledArtifact,
+    CompiledRecordSet,
     CompiledVdtReport,
     DetectionAttestation,
     ReportCompileError,
     ReportDiagnostic,
     ReportOptions,
-    compile_records,
+    compile_record_set,
+    project_vdt,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - imported for annotations only
@@ -46,6 +48,20 @@ def compile_vdt_report_from_history(
     options: ReportOptions,
 ) -> CompiledVdtReport:
     """Compile one Vulnerability Detail Report from stored history.
+
+    See `compile_record_set_from_history` for what is read back and for why
+    `options.detected_at_attestation` is ignored on this path.
+    """
+
+    return project_vdt(compile_record_set_from_history(repository, options=options))
+
+
+def compile_record_set_from_history(
+    repository: EventRepository,
+    *,
+    options: ReportOptions,
+) -> CompiledRecordSet:
+    """Compile the record set every report projects from, out of stored history.
 
     `options.detected_at_attestation` is ignored on this path. Attestations are facts
     the log already holds, one `detection.attested` event per case, so a command-line
@@ -68,7 +84,7 @@ def compile_vdt_report_from_history(
         + _superseded_artifacts(history)
         + _stale_cases(cases, observations)
     )
-    return compile_records(
+    return compile_record_set(
         artifacts=artifacts,
         observations=observations,
         ingest_diagnostics=diagnostics,
@@ -264,4 +280,4 @@ def _evaluations(cases: Sequence[CaseState]) -> dict[str, EvaluationInput]:
     return evaluations
 
 
-__all__ = ["compile_vdt_report_from_history"]
+__all__ = ["compile_record_set_from_history", "compile_vdt_report_from_history"]

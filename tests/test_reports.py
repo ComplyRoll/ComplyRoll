@@ -24,10 +24,13 @@ from complyroll.reports import (
     ReportCompileError,
     ReportInputError,
     ReportOptions,
+    compile_record_set,
+    compile_record_set_from_artifacts,
     compile_records,
     compile_vdt_report,
     load_evaluations,
     parse_evaluations,
+    project_vdt,
 )
 
 MIXED_TIMESTAMP_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
@@ -1299,6 +1302,102 @@ class TimestampAndBoundsTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ReportInputError, "maximum is"):
                 load_evaluations(path)
+
+
+class RecordSetTests(unittest.TestCase):
+    """The Vulnerability Detail Report is one projection of the shared record set."""
+
+    ACCEPTED_RATIONALE = "Accepted under change record CR-102 pending the template refresh."
+
+    def test_the_stateless_report_is_the_projection_of_its_record_set(self) -> None:
+        evaluations = load_evaluations(EXAMPLES / "evaluations.json")
+        report = compile_vdt_report(list(ARTIFACTS), options=options(), evaluations=evaluations)
+        record_set = compile_record_set_from_artifacts(
+            list(ARTIFACTS), options=options(), evaluations=evaluations
+        )
+        projected = project_vdt(record_set)
+
+        self.assertEqual(projected.to_json(), report.to_json())
+        self.assertEqual(projected.to_markdown(), report.to_markdown())
+
+    def test_compile_records_is_the_projection_of_compile_record_set(self) -> None:
+        results = [ingest_stig_artifact(path, ingested_at=AS_OF) for path in ARTIFACTS]
+        inputs: dict[str, object] = {
+            "artifacts": tuple(compiled_artifact(result) for result in results),
+            "observations": tuple(
+                observation for result in results for observation in result.observations
+            ),
+            "ingest_diagnostics": (),
+            "evaluations_by_tracking_id": {},
+            "attestation": DetectionAttestation(default=DETECTED_AT),
+            "options": options(),
+        }
+        report = compile_records(**inputs)  # type: ignore[arg-type]
+        projected = project_vdt(compile_record_set(**inputs))  # type: ignore[arg-type]
+
+        self.assertEqual(projected.to_json(), report.to_json())
+        self.assertEqual(projected.to_markdown(), report.to_markdown())
+
+    def test_the_record_set_holds_every_record_including_accepted(self) -> None:
+        evaluations = evaluations_from(
+            disposition="accepted", acceptanceRationale=self.ACCEPTED_RATIONALE
+        )
+        record_set = compile_record_set_from_artifacts(
+            list(ARTIFACTS), options=options(), evaluations=evaluations
+        )
+        report = project_vdt(record_set)
+        accepted = [item for item in record_set.records if item.status is CaseStatus.ACCEPTED]
+        reported = [item.tracking_id for item in report.vulnerabilities]
+        every_id = [item.tracking_id for item in record_set.records]
+
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(
+            len(record_set.records),
+            len(report.vulnerabilities) + len(report.accepted) + report.metadata.excluded_by_period,
+        )
+        self.assertEqual(
+            [item.vulnerability.tracking_id for item in report.accepted],
+            [item.tracking_id for item in accepted],
+        )
+        # The projection keeps the set's order; it only leaves records out.
+        self.assertEqual([value for value in every_id if value in set(reported)], reported)
+
+    def test_selection_diagnostics_belong_to_the_projection_not_the_record_set(self) -> None:
+        evaluations = evaluations_from(
+            disposition="accepted", acceptanceRationale=self.ACCEPTED_RATIONALE
+        )
+        record_set = compile_record_set_from_artifacts(
+            list(ARTIFACTS), options=options(), evaluations=evaluations
+        )
+        report = project_vdt(record_set)
+        selection = {"accepted_excluded", "excluded_by_period"}
+
+        self.assertFalse({item.code for item in record_set.diagnostics} & selection)
+        self.assertEqual(
+            [item.code for item in report.diagnostics if item.code in selection],
+            ["accepted_excluded"],
+        )
+        # The set's own diagnostics come first and unchanged; the projection appends.
+        self.assertEqual(report.diagnostics[: len(record_set.diagnostics)], record_set.diagnostics)
+
+    def test_the_record_set_carries_the_provenance_every_projection_publishes(self) -> None:
+        record_set = compile_record_set_from_artifacts(list(ARTIFACTS), options=options())
+        report = project_vdt(record_set)
+        extension = report.document["x-complyroll"]
+
+        self.assertEqual(record_set.generator_version, __version__)
+        self.assertEqual(extension["generator"]["version"], record_set.generator_version)
+        self.assertEqual(extension["parserVersions"], dict(record_set.parser_versions))
+        self.assertEqual(
+            [artifact["name"] for artifact in extension["artifacts"]],
+            [artifact.name for artifact in record_set.artifacts],
+        )
+        self.assertEqual(extension["rulesSource"]["commit"], record_set.rules_provenance.commit)
+        self.assertIs(report.metadata.options, record_set.options)
+
+    def test_project_vdt_refuses_anything_but_a_record_set(self) -> None:
+        with self.assertRaisesRegex(TypeError, "CompiledRecordSet"):
+            project_vdt(compile_fixtures())  # type: ignore[arg-type]
 
 
 class ReportOptionsTests(unittest.TestCase):

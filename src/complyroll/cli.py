@@ -10,6 +10,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
@@ -32,11 +33,15 @@ from .history import (
 )
 from .policy import CertificationClass
 from .reports import (
-    CompiledVdtReport,
+    CompiledReport,
     ReportCompileError,
     ReportDiagnostic,
     ReportInputError,
     ReportOptions,
+    compile_avi_report,
+    compile_avi_report_from_history,
+    compile_historical_report,
+    compile_historical_report_from_history,
     compile_vdt_report,
     compile_vdt_report_from_history,
     load_evaluations,
@@ -87,6 +92,69 @@ CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
     ("PAIN", False),
     ("DISPOSITION", False),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ReportCommand:
+    """One `report` subcommand: its name, help text, and the two compilers behind it.
+
+    `period` says whether the report is selected by a report period, so whether the
+    command takes `--from` and `--to`. `stateless` compiles from artifacts and explicit
+    inputs; `persisted` compiles from an open event store. The one runner reads nothing
+    else about a report, which is what keeps the three commands byte-for-byte alike in
+    how they refuse inputs and publish outputs.
+    """
+
+    name: str
+    period: bool
+    help: str
+    description: str
+    stateless: Callable[..., CompiledReport]
+    persisted: Callable[..., CompiledReport]
+
+
+_REPORT_COMMANDS: tuple[_ReportCommand, ...] = (
+    _ReportCommand(
+        name="vdt",
+        period=True,
+        help="compile a Vulnerability Detail Report (VER-RPT-VDT)",
+        description=(
+            "Compile a Vulnerability Detail Report from source artifacts and explicit "
+            "operator inputs, or from persisted history with --db. Output is "
+            "official-format JSON; it is not a FedRAMP determination."
+        ),
+        stateless=compile_vdt_report,
+        persisted=compile_vdt_report_from_history,
+    ),
+    _ReportCommand(
+        name="avi",
+        period=True,
+        help="compile an Accepted Vulnerability Information report (VER-RPT-AVI)",
+        description=(
+            "Compile an Accepted Vulnerability Information report: every accepted "
+            "vulnerability with recorded activity in the report period, each with its "
+            "acceptance rationale, from source artifacts and explicit operator inputs, or "
+            "from persisted history with --db. Output is official-format JSON; it is not "
+            "a FedRAMP determination."
+        ),
+        stateless=compile_avi_report,
+        persisted=compile_avi_report_from_history,
+    ),
+    _ReportCommand(
+        name="historical",
+        period=False,
+        help="compile a Historical VER Activity snapshot (VER-TFR-MRH)",
+        description=(
+            "Compile a Historical VER Activity snapshot as of --as-of: every active "
+            "vulnerability and every accepted vulnerability, with no report period, from "
+            "source artifacts and explicit operator inputs, or from persisted history "
+            "with --db. Output is official-format JSON; it is not a FedRAMP determination."
+        ),
+        stateless=compile_historical_report,
+        persisted=compile_historical_report_from_history,
+    ),
+)
+_REPORT_COMMAND_BY_NAME = {item.name: item for item in _REPORT_COMMANDS}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -185,73 +253,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = subparsers.add_parser("report", help="compile an official-format report")
     report_commands = report.add_subparsers(dest="report_command", required=True)
-    vdt = report_commands.add_parser(
-        "vdt",
-        help="compile a Vulnerability Detail Report (VER-RPT-VDT)",
-        description=(
-            "Compile a Vulnerability Detail Report from source artifacts and explicit "
-            "operator inputs, or from persisted history with --db. Output is "
-            "official-format JSON; it is not a FedRAMP determination."
-        ),
-    )
-    vdt.add_argument(
-        "artifacts", nargs="*", metavar="ARTIFACT", help="CKLB, CKL, XCCDF, or ARF file"
-    )
-    vdt.add_argument(
-        "--db",
-        metavar="PATH",
-        help="compile from this event store instead of from artifacts",
-    )
-    vdt.add_argument(
-        "--class",
-        dest="certification_class",
-        required=True,
-        choices=[item.value for item in CertificationClass],
-        help="certification class whose rules select the deadlines",
-    )
-    vdt.add_argument(
-        "--package-uri",
-        required=True,
-        metavar="URI",
-        help="absolute http or https URI of the Certification Package Overview",
-    )
-    vdt.add_argument(
-        "--from",
-        dest="period_from",
-        required=True,
-        metavar="RFC3339",
-        help="start of the report period",
-    )
-    vdt.add_argument(
-        "--to",
-        dest="period_to",
-        required=True,
-        metavar="RFC3339",
-        help="end of the report period",
-    )
-    vdt.add_argument(
-        "--evaluations",
-        metavar="FILE",
-        help="JSON file of completed contextual evaluations",
-    )
-    vdt.add_argument(
-        "--detected-at",
-        metavar="RFC3339",
-        help="attested detection time for vulnerabilities whose sources declare none",
-    )
-    vdt.add_argument(
-        "--as-of",
-        metavar="RFC3339",
-        help="instant the overdue flags are calculated against (default: now, UTC)",
-    )
-    vdt.add_argument(
-        "--calendar-tz",
-        default="UTC",
-        metavar="NAME",
-        help="IANA calendar used for month and year arithmetic (default: UTC)",
-    )
-    vdt.add_argument("-o", "--output", metavar="FILE", help="write JSON here instead of stdout")
-    vdt.add_argument("--markdown", metavar="FILE", help="also write the human-readable twin")
+    for command in _REPORT_COMMANDS:
+        _add_report_arguments(
+            report_commands.add_parser(
+                command.name, help=command.help, description=command.description
+            ),
+            period=command.period,
+        )
 
     store = subparsers.add_parser("store", help="inspect the event store")
     store_commands = store.add_subparsers(dest="store_command", required=True)
@@ -297,6 +305,77 @@ def _add_actor_option(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> None:
+    """Add the arguments every `report` subcommand shares, in one order.
+
+    `--from` and `--to` are defined only for a report selected by a period; a snapshot
+    command rejects them as unrecognized. The namespace still carries both names, set
+    to None, so the one runner reads the same attributes whichever command produced it.
+    """
+
+    parser.add_argument(
+        "artifacts", nargs="*", metavar="ARTIFACT", help="CKLB, CKL, XCCDF, or ARF file"
+    )
+    parser.add_argument(
+        "--db",
+        metavar="PATH",
+        help="compile from this event store instead of from artifacts",
+    )
+    parser.add_argument(
+        "--class",
+        dest="certification_class",
+        required=True,
+        choices=[item.value for item in CertificationClass],
+        help="certification class whose rules select the deadlines",
+    )
+    parser.add_argument(
+        "--package-uri",
+        required=True,
+        metavar="URI",
+        help="absolute http or https URI of the Certification Package Overview",
+    )
+    if period:
+        parser.add_argument(
+            "--from",
+            dest="period_from",
+            required=True,
+            metavar="RFC3339",
+            help="start of the report period",
+        )
+        parser.add_argument(
+            "--to",
+            dest="period_to",
+            required=True,
+            metavar="RFC3339",
+            help="end of the report period",
+        )
+    else:
+        parser.set_defaults(period_from=None, period_to=None)
+    parser.add_argument(
+        "--evaluations",
+        metavar="FILE",
+        help="JSON file of completed contextual evaluations",
+    )
+    parser.add_argument(
+        "--detected-at",
+        metavar="RFC3339",
+        help="attested detection time for vulnerabilities whose sources declare none",
+    )
+    parser.add_argument(
+        "--as-of",
+        metavar="RFC3339",
+        help="instant the overdue flags are calculated against (default: now, UTC)",
+    )
+    parser.add_argument(
+        "--calendar-tz",
+        default="UTC",
+        metavar="NAME",
+        help="IANA calendar used for month and year arithmetic (default: UTC)",
+    )
+    parser.add_argument("-o", "--output", metavar="FILE", help="write JSON here instead of stdout")
+    parser.add_argument("--markdown", metavar="FILE", help="also write the human-readable twin")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -316,9 +395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_cases(args)
 
     if args.command == "report":
-        if args.report_command == "vdt":
-            return _run_report_vdt(args)
-        raise AssertionError(f"unhandled report command: {args.report_command}")
+        return _run_report(args, _REPORT_COMMAND_BY_NAME[args.report_command])
 
     if args.command == "store":
         if args.store_command == "verify":
@@ -679,7 +756,7 @@ def _run_store_verify(args: argparse.Namespace) -> int:
     return _persisted_run(stderr, verify)
 
 
-def _run_report_vdt(args: argparse.Namespace) -> int:
+def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     stderr = sys.stderr
     database = Path(args.db) if args.db else None
     artifacts = [Path(item) for item in args.artifacts]
@@ -687,7 +764,7 @@ def _run_report_vdt(args: argparse.Namespace) -> int:
     markdown = Path(args.markdown) if args.markdown else None
     evaluations_path = Path(args.evaluations) if args.evaluations else None
 
-    conflict = _report_source_conflict(args)
+    conflict = _report_source_conflict(args, command.name)
     if conflict is not None:
         return _fail(stderr, "invalid_option", conflict)
     if database is not None:
@@ -720,8 +797,8 @@ def _run_report_vdt(args: argparse.Namespace) -> int:
         options = ReportOptions(
             certification_class=CertificationClass(args.certification_class),
             package_uri=args.package_uri,
-            period_from=parse_rfc3339(args.period_from, "--from"),
-            period_to=parse_rfc3339(args.period_to, "--to"),
+            period_from=parse_rfc3339(args.period_from, "--from") if command.period else None,
+            period_to=parse_rfc3339(args.period_to, "--to") if command.period else None,
             as_of=_instant(args.as_of, "--as-of"),
             calendar_timezone=args.calendar_tz,
             detected_at_attestation=(
@@ -734,11 +811,11 @@ def _run_report_vdt(args: argparse.Namespace) -> int:
     except (TypeError, ValueError) as exc:
         return _fail(stderr, "invalid_option", str(exc))
 
-    def compile_report() -> CompiledVdtReport:
+    def compile_report() -> CompiledReport:
         if database is None:
-            return compile_vdt_report(artifacts, options=options, evaluations=evaluations)
+            return command.stateless(artifacts, options=options, evaluations=evaluations)
         with _open_repository(database) as repository:
-            return compile_vdt_report_from_history(repository, options=options)
+            return command.persisted(repository, options=options)
 
     return _persisted_run(
         stderr,
@@ -746,12 +823,13 @@ def _run_report_vdt(args: argparse.Namespace) -> int:
     )
 
 
-def _report_source_conflict(args: argparse.Namespace) -> str | None:
-    """Return why a `report vdt` run names the wrong sources, or None when it is fine.
+def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str | None:
+    """Return why a `report` run names the wrong sources, or None when it is fine.
 
     A store already holds its artifacts, its evaluations, and the detection times an
     operator attested, so naming any of them alongside `--db` asks one run to honour two
-    sources of truth. Naming neither leaves nothing to compile.
+    sources of truth. Naming neither leaves nothing to compile. The message names the
+    command the operator ran, so a refusal reads back as their own invocation.
     """
 
     named = [
@@ -764,15 +842,15 @@ def _report_source_conflict(args: argparse.Namespace) -> str | None:
         if present
     ]
     if args.db is not None and named:
-        return f"report vdt takes either --db or {', '.join(named)}, never both"
+        return f"report {command_name} takes either --db or {', '.join(named)}, never both"
     if args.db is None and not args.artifacts:
-        return "report vdt needs at least one artifact, or --db"
+        return f"report {command_name} needs at least one artifact, or --db"
     return None
 
 
 def _publish(
     stderr: TextIO,
-    report: CompiledVdtReport,
+    report: CompiledReport,
     *,
     output: Path | None,
     markdown: Path | None,
@@ -790,7 +868,7 @@ def _publish(
     if markdown is not None:
         targets.append((markdown, report.to_markdown()))
 
-    # A symbolic-link destination is refused in `_run_report_vdt`, before anything is
+    # A symbolic-link destination is refused in `_run_report`, before anything is
     # parsed or opened, because the paths are all that decision needs.
     try:
         _write_all_or_nothing(targets)
@@ -1110,9 +1188,9 @@ def _symlink_destination(destinations: Sequence[Path | None]) -> Path | None:
     content would survive and the link would not. `Path.is_symlink` does not follow the
     link, so a dangling one is refused too (ADR 0007 amendment).
 
-    The check runs on the paths alone, so `report vdt` can make it before it parses an
-    artifact or opens a store: refusing a destination the run was never going to be
-    allowed to write should not cost the operator a compile first.
+    The check runs on the paths alone, so a `report` command can make it before it
+    parses an artifact or opens a store: refusing a destination the run was never going
+    to be allowed to write should not cost the operator a compile first.
     """
 
     for destination in destinations:

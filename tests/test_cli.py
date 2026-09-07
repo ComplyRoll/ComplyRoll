@@ -52,6 +52,53 @@ REPORT_ARGUMENTS = (
     str(EXAMPLES / "evaluations.json"),
 )
 
+#: The example evaluations with one more entry, which accepts the banner finding.
+ACCEPTED_EVALUATIONS = EXAMPLES / "evaluations-accepted.json"
+#: The `report avi` twin of `REPORT_ARGUMENTS`: the same fixtures, period, and instants,
+#: read with the evaluations file that carries an acceptance to report.
+AVI_ARGUMENTS = (
+    "report",
+    "avi",
+    str(FIXTURES / "ubuntu-host.cklb"),
+    str(FIXTURES / "windows-host.ckl"),
+    str(FIXTURES / "openscap-results.xml"),
+    "--class",
+    "C",
+    "--package-uri",
+    "https://example.test/cpo",
+    "--from",
+    "2026-08-01T00:00:00Z",
+    "--to",
+    "2026-08-31T23:59:59Z",
+    "--as-of",
+    "2026-08-21T12:00:00Z",
+    "--detected-at",
+    "2026-08-01T00:00:00Z",
+    "--evaluations",
+    str(ACCEPTED_EVALUATIONS),
+)
+#: The `report historical` twin: a snapshot as of `--as-of`, so it takes no period.
+HISTORICAL_ARGUMENTS = (
+    "report",
+    "historical",
+    str(FIXTURES / "ubuntu-host.cklb"),
+    str(FIXTURES / "windows-host.ckl"),
+    str(FIXTURES / "openscap-results.xml"),
+    "--class",
+    "C",
+    "--package-uri",
+    "https://example.test/cpo",
+    "--as-of",
+    "2026-08-21T12:00:00Z",
+    "--detected-at",
+    "2026-08-01T00:00:00Z",
+    "--evaluations",
+    str(ACCEPTED_EVALUATIONS),
+)
+#: The case `evaluations-accepted.json` accepts: in the AVI report and the historical
+#: snapshot, and out of the Vulnerability Detail Report.
+ACCEPTED_CASE = "case-04efea8c137ae82f"
+
 #: What a destination held before a run that fails part way through publishing it. The
 #: rollback has to put exactly this back.
 PREVIOUS_REPORT = '{"note": "the report a previous run published"}\n'
@@ -125,6 +172,18 @@ def help_text(argv: Sequence[str]) -> str:
     with redirect_stdout(out), suppress(SystemExit):
         main([*argv, "--help"])
     return " ".join(out.getvalue().split())
+
+
+def unwrapped_help_text(argv: Sequence[str]) -> str:
+    """Return `--help` output rendered wide enough that no identifier is split.
+
+    Argparse breaks a long line at hyphens as well as at spaces, so in a narrow
+    listing a rule id such as VER-TFR-MRH can come out on two lines, which `help_text`
+    folds back into "VER-TFR- MRH". A wide terminal keeps every identifier whole.
+    """
+
+    with patch.dict(os.environ, {"COLUMNS": "200"}):
+        return help_text(argv)
 
 
 class CliTests(unittest.TestCase):
@@ -669,6 +728,222 @@ class ReportVdtCommandTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 2)
 
 
+class ReportAviCommandTests(unittest.TestCase):
+    """`report avi` publishes the accepted records with activity in the period."""
+
+    def test_report_writes_the_golden_json_and_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            markdown_path = Path(directory) / "report.md"
+
+            code, out, err = run(
+                [*AVI_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+            )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(out, "")
+            self.assertIn("warning: source_timestamp_missing", err)
+            self.assertEqual(
+                json_path.read_text(encoding="utf-8"),
+                (GOLDEN / "avi-fixtures.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                markdown_path.read_text(encoding="utf-8"),
+                (GOLDEN / "avi-fixtures.md").read_text(encoding="utf-8"),
+            )
+
+    def test_report_without_output_writes_json_to_stdout(self) -> None:
+        code, out, _ = run(list(AVI_ARGUMENTS))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out, (GOLDEN / "avi-fixtures.json").read_text(encoding="utf-8"))
+        document = json.loads(out)
+        self.assertEqual(
+            [
+                item["vulnerabilityDetail"]["providerTrackingId"]
+                for item in document["acceptedVulnerabilities"]
+            ],
+            [ACCEPTED_CASE],
+        )
+        self.assertEqual(document["x-complyroll"]["excludedByPeriod"], 0)
+        self.assertEqual(document["x-complyroll"]["activeNotReported"], 5)
+
+    def test_the_accepted_case_is_in_this_report_and_out_of_the_detail_report(self) -> None:
+        # One evaluations file drives both reports, so the case has exactly one home:
+        # the detail report names it only in the diagnostic that sends the reader here.
+        _, avi, _ = run(list(AVI_ARGUMENTS))
+        _, vdt, err = run([*REPORT_ARGUMENTS[:-1], str(ACCEPTED_EVALUATIONS)])
+
+        accepted = json.loads(avi)["acceptedVulnerabilities"]
+        detail = json.loads(vdt)
+        self.assertEqual(
+            [item["vulnerabilityDetail"]["providerTrackingId"] for item in accepted],
+            [ACCEPTED_CASE],
+        )
+        self.assertNotIn(
+            ACCEPTED_CASE, [item["providerTrackingId"] for item in detail["vulnerabilities"]]
+        )
+        self.assertEqual(len(detail["vulnerabilities"]), 5)
+        self.assertIn(f"info: accepted_excluded: {ACCEPTED_CASE}", err)
+
+    def test_the_report_validates_against_the_accepted_vulnerability_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            self.assertEqual(run([*AVI_ARGUMENTS, "-o", str(json_path)])[0], 0)
+
+            code, out, err = run(["validate", str(json_path), "--schema", "accepted-vulnerability"])
+
+            self.assertEqual(code, 0)
+            self.assertEqual(err, "")
+            self.assertTrue(out.startswith("valid: https://fedramp.gov/schemas/"))
+
+    def test_a_period_opening_after_the_acceptance_leaves_the_case_out_with_a_reason(
+        self,
+    ) -> None:
+        # The acceptance was completed at 2026-08-06T09:00:00Z and nothing else happened
+        # to the case, so a period that opens the next day has no activity to report.
+        argv = list(AVI_ARGUMENTS)
+        argv[argv.index("--from") + 1] = "2026-08-07T00:00:00Z"
+
+        code, out, err = run(argv)
+
+        self.assertEqual(code, 0)
+        document = json.loads(out)
+        self.assertEqual(document["acceptedVulnerabilities"], [])
+        self.assertEqual(document["x-complyroll"]["excludedByPeriod"], 1)
+        [diagnostic] = [
+            item
+            for item in document["x-complyroll"]["diagnostics"]
+            if item["code"] == "excluded_by_period"
+        ]
+        self.assertIn(ACCEPTED_CASE, diagnostic["message"])
+        self.assertIn("is accepted", diagnostic["message"])
+        self.assertNotIn("None", diagnostic["message"])
+        self.assertIn(f"info: excluded_by_period: {diagnostic['message']}", err)
+
+    def test_help_names_the_rule_the_period_and_the_disclaimer(self) -> None:
+        listing = unwrapped_help_text(["report"])
+        text = help_text(["report", "avi"])
+
+        self.assertIn("Accepted Vulnerability Information report (VER-RPT-AVI)", listing)
+        self.assertIn("every accepted vulnerability with recorded activity", text)
+        self.assertIn("--from RFC3339", text)
+        self.assertIn("--to RFC3339", text)
+        self.assertIn("it is not a FedRAMP determination", text)
+
+    def test_report_refuses_to_overwrite_the_evaluations_file(self) -> None:
+        code, _, err = run([*AVI_ARGUMENTS, "-o", str(ACCEPTED_EVALUATIONS)])
+
+        self.assertEqual(code, 1)
+        self.assertIn("refusing to overwrite the input file", err)
+
+    def test_a_destination_that_is_a_symlink_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            target = workspace / "target.json"
+            target.write_text(PREVIOUS_REPORT, encoding="utf-8")
+            link = workspace / "report.json"
+            link.symlink_to(target)
+
+            code, out, err = run([*AVI_ARGUMENTS, "-o", str(link)])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_is_symlink", err)
+            self.assertIn(f"[{link}]", err)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(target.read_text(encoding="utf-8"), PREVIOUS_REPORT)
+
+
+class ReportHistoricalCommandTests(unittest.TestCase):
+    """`report historical` publishes the whole population as of one instant."""
+
+    def test_report_writes_the_golden_json_and_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            markdown_path = Path(directory) / "report.md"
+
+            code, out, err = run(
+                [*HISTORICAL_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+            )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(out, "")
+            self.assertIn("warning: source_timestamp_missing", err)
+            self.assertEqual(
+                json_path.read_text(encoding="utf-8"),
+                (GOLDEN / "historical-fixtures.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                markdown_path.read_text(encoding="utf-8"),
+                (GOLDEN / "historical-fixtures.md").read_text(encoding="utf-8"),
+            )
+
+    def test_report_without_output_writes_json_to_stdout(self) -> None:
+        code, out, _ = run(list(HISTORICAL_ARGUMENTS))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out, (GOLDEN / "historical-fixtures.json").read_text(encoding="utf-8"))
+        document = json.loads(out)
+        self.assertEqual(document["generatedAt"], "2026-08-21T12:00:00Z")
+        self.assertNotIn("reportPeriod", document)
+        self.assertEqual(len(document["activeVulnerabilities"]), 5)
+        self.assertEqual(
+            [
+                item["vulnerabilityDetail"]["providerTrackingId"]
+                for item in document["acceptedVulnerabilities"]
+            ],
+            [ACCEPTED_CASE],
+        )
+
+    def test_the_report_validates_against_the_historical_activity_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            self.assertEqual(run([*HISTORICAL_ARGUMENTS, "-o", str(json_path)])[0], 0)
+
+            code, out, err = run(["validate", str(json_path), "--schema", "historical-activity"])
+
+            self.assertEqual(code, 0)
+            self.assertEqual(err, "")
+            self.assertTrue(out.startswith("valid: https://fedramp.gov/schemas/"))
+
+    def test_help_names_the_rule_and_omits_the_report_period(self) -> None:
+        listing = unwrapped_help_text(["report"])
+        text = help_text(["report", "historical"])
+
+        self.assertIn("Historical VER Activity snapshot (VER-TFR-MRH)", listing)
+        self.assertIn("as of --as-of", text)
+        self.assertIn("with no report period", text)
+        self.assertIn("it is not a FedRAMP determination", text)
+        self.assertNotIn("--from", text)
+        self.assertNotIn("--to", text)
+
+    def test_a_report_period_is_rejected_as_unrecognized(self) -> None:
+        # The snapshot has no period, so the two options are not defined on it at all:
+        # argparse refuses them the way it refuses any option a command never had.
+        err = io.StringIO()
+        with (
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            main(
+                [
+                    *HISTORICAL_ARGUMENTS,
+                    "--from",
+                    "2026-08-01T00:00:00Z",
+                    "--to",
+                    "2026-08-31T23:59:59Z",
+                ]
+            )
+
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn(
+            "unrecognized arguments: --from 2026-08-01T00:00:00Z --to 2026-08-31T23:59:59Z",
+            err.getvalue(),
+        )
+
+
 class ValidateCommandTests(unittest.TestCase):
     def test_a_valid_report_prints_the_schema_provenance(self) -> None:
         code, out, err = run(
@@ -955,38 +1230,39 @@ class PersistedStoreTestCase(unittest.TestCase):
             ]
         )
 
-    def populate(self) -> None:
+    def populate(self, evaluations: Path | None = None) -> None:
         """Run the four writing commands in the order the documentation gives them."""
 
         self.ingest_fixtures()
         self.correlate()
         self.attest_missing()
-        self.evaluate()
+        self.evaluate(evaluations)
 
     def report(
         self,
+        kind: str = "vdt",
         *,
         output: Path | None = None,
         markdown: Path | None = None,
     ) -> tuple[str, str]:
-        """Compile the persisted report with the golden options."""
+        """Compile one persisted report with the golden options.
+
+        `historical` is a snapshot as of `--as-of`, so its command takes no period.
+        """
 
         argv = [
             "report",
-            "vdt",
+            kind,
             "--db",
             str(self.database),
             "--class",
             "C",
             "--package-uri",
             "https://example.test/cpo",
-            "--from",
-            "2026-08-01T00:00:00Z",
-            "--to",
-            "2026-08-31T23:59:59Z",
-            "--as-of",
-            INGESTED_AT,
         ]
+        if kind != "historical":
+            argv += ["--from", "2026-08-01T00:00:00Z", "--to", "2026-08-31T23:59:59Z"]
+        argv += ["--as-of", INGESTED_AT]
         if output is not None:
             argv += ["-o", str(output)]
         if markdown is not None:
@@ -1109,6 +1385,80 @@ class PersistedSequenceTests(PersistedStoreTestCase):
         self.assertEqual(out, "")
         self.assertIn("refusing to overwrite the input file", err)
         self.assertEqual(self.database.read_bytes(), before)
+
+
+class PersistedAcceptedSequenceTests(PersistedStoreTestCase):
+    """The documented sequence with `evaluations-accepted.json` rebuilds the new goldens.
+
+    The store is the one `PersistedSequenceTests` builds, up to the evaluation step; the
+    accepted evaluations file adds one acceptance, and the three reports read it back
+    exactly as the stateless path reads the file.
+    """
+
+    def test_the_documented_sequence_reproduces_the_accepted_goldens(self) -> None:
+        self.ingest_fixtures()
+        self.correlate()
+        self.attest_missing()
+
+        out, _ = self.evaluate(ACCEPTED_EVALUATIONS)
+
+        self.assertEqual(
+            out.splitlines(),
+            [
+                "evaluations: 3 appended, 0 skipped",
+                "pain reductions: 1 appended, 0 skipped",
+                "dispositions: 2 appended, 0 skipped",
+                "identifications: 0 appended, 0 skipped",
+            ],
+        )
+
+        listing, _ = self.succeeds(["cases", "list", "--db", str(self.database)])
+
+        [row] = [line for line in listing.splitlines() if line.startswith(ACCEPTED_CASE)]
+        self.assertEqual(
+            row.split(),
+            [ACCEPTED_CASE, "-", "banner_etc_issue", "1", "1", "2", "accepted"],
+        )
+
+        for kind in ("avi", "historical"):
+            with self.subTest(report=kind):
+                json_path = self.workspace / f"{kind}.json"
+                markdown_path = self.workspace / f"{kind}.md"
+
+                _, err = self.report(kind, output=json_path, markdown=markdown_path)
+
+                self.assertIn("warning: source_timestamp_missing", err)
+                self.assertEqual(
+                    json_path.read_text(encoding="utf-8"),
+                    (GOLDEN / f"{kind}-fixtures.json").read_text(encoding="utf-8"),
+                )
+                self.assertEqual(
+                    markdown_path.read_text(encoding="utf-8"),
+                    (GOLDEN / f"{kind}-fixtures.md").read_text(encoding="utf-8"),
+                )
+
+    def test_persisted_avi_and_historical_reports_go_to_stdout(self) -> None:
+        self.populate(ACCEPTED_EVALUATIONS)
+
+        for kind in ("avi", "historical"):
+            with self.subTest(report=kind):
+                out, _ = self.report(kind)
+
+                self.assertEqual(
+                    out, (GOLDEN / f"{kind}-fixtures.json").read_text(encoding="utf-8")
+                )
+
+    def test_the_detail_report_from_the_same_store_leaves_the_accepted_case_out(self) -> None:
+        self.populate(ACCEPTED_EVALUATIONS)
+
+        out, err = self.report()
+
+        document = json.loads(out)
+        self.assertNotIn(
+            ACCEPTED_CASE, [item["providerTrackingId"] for item in document["vulnerabilities"]]
+        )
+        self.assertEqual(len(document["vulnerabilities"]), 5)
+        self.assertIn(f"info: accepted_excluded: {ACCEPTED_CASE}", err)
 
 
 class PersistedIngestTests(PersistedStoreTestCase):
@@ -2076,74 +2426,59 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
 
 class ReportSourceConflictTests(unittest.TestCase):
-    """`report vdt` takes a store or stateless inputs, never both and never neither."""
+    """Every `report` command takes a store or stateless inputs, never both, never neither.
 
-    BASE = (
-        "--class",
-        "C",
-        "--package-uri",
-        "https://example.test/cpo",
-        "--from",
-        "2026-08-01T00:00:00Z",
-        "--to",
-        "2026-08-31T23:59:59Z",
+    The three commands share one runner, so each refusal is checked on all of them, and
+    the message has to name the command the operator ran rather than `vdt` every time.
+    """
+
+    OPTIONS = ("--class", "C", "--package-uri", "https://example.test/cpo")
+    PERIOD = ("--from", "2026-08-01T00:00:00Z", "--to", "2026-08-31T23:59:59Z")
+    #: Each command with the options it requires; `historical` takes no period.
+    COMMANDS = (
+        ("vdt", OPTIONS + PERIOD),
+        ("avi", OPTIONS + PERIOD),
+        ("historical", OPTIONS),
     )
 
-    def refuses(self, argv: Sequence[str], *named: str) -> None:
-        code, out, err = run(argv)
+    def refuses(self, command: str, argv: Sequence[str], message: str) -> None:
+        code, out, err = run(["report", command, *argv])
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assertIn("error: invalid_option", err)
-        for name in named:
-            self.assertIn(name, err)
+        self.assertIn(f"error: invalid_option: report {command} {message}", err)
 
     def test_a_store_and_artifacts_together_are_refused(self) -> None:
-        self.refuses(
-            [
-                "report",
-                "vdt",
-                str(FIXTURES / "windows-host.ckl"),
-                "--db",
-                "history.db",
-                *self.BASE,
-            ],
-            "--db",
-            "artifacts",
-        )
+        for command, base in self.COMMANDS:
+            with self.subTest(command=command):
+                self.refuses(
+                    command,
+                    [str(FIXTURES / "windows-host.ckl"), "--db", "history.db", *base],
+                    "takes either --db or artifacts, never both",
+                )
 
     def test_a_store_and_an_evaluations_file_together_are_refused(self) -> None:
-        self.refuses(
-            [
-                "report",
-                "vdt",
-                "--db",
-                "history.db",
-                "--evaluations",
-                str(EXAMPLES / "evaluations.json"),
-                *self.BASE,
-            ],
-            "--db",
-            "--evaluations",
-        )
+        for command, base in self.COMMANDS:
+            with self.subTest(command=command):
+                self.refuses(
+                    command,
+                    ["--db", "history.db", "--evaluations", str(ACCEPTED_EVALUATIONS), *base],
+                    "takes either --db or --evaluations, never both",
+                )
 
     def test_a_store_and_a_detection_time_together_are_refused(self) -> None:
-        self.refuses(
-            [
-                "report",
-                "vdt",
-                "--db",
-                "history.db",
-                "--detected-at",
-                "2026-08-01T00:00:00Z",
-                *self.BASE,
-            ],
-            "--db",
-            "--detected-at",
-        )
+        for command, base in self.COMMANDS:
+            with self.subTest(command=command):
+                self.refuses(
+                    command,
+                    ["--db", "history.db", "--detected-at", "2026-08-01T00:00:00Z", *base],
+                    "takes either --db or --detected-at, never both",
+                )
 
     def test_neither_a_store_nor_an_artifact_is_refused(self) -> None:
-        self.refuses(["report", "vdt", *self.BASE], "artifact", "--db")
+        for command, base in self.COMMANDS:
+            with self.subTest(command=command):
+                self.refuses(command, base, "needs at least one artifact, or --db")
 
 
 class PersistedNotApplicableTests(PersistedStoreTestCase):
@@ -2266,12 +2601,26 @@ class HelpTextTests(unittest.TestCase):
     def test_both_artifact_arguments_name_every_accepted_format(self) -> None:
         # ARF has been ingested since Phase 0 and the help text never said so, so an
         # operator holding one had no way to know the command would read it.
-        for argv in (["ingest"], ["report", "vdt"]):
+        for argv in (
+            ["ingest"],
+            ["report", "vdt"],
+            ["report", "avi"],
+            ["report", "historical"],
+        ):
             with self.subTest(command=" ".join(argv)):
                 text = help_text(argv)
 
                 self.assertIn("ARF", text)
                 self.assertIn("CKLB, CKL, XCCDF, or ARF file", text)
+
+    def test_the_report_listing_names_every_command_with_its_rule(self) -> None:
+        text = unwrapped_help_text(["report"])
+
+        self.assertIn("vdt compile a Vulnerability Detail Report (VER-RPT-VDT)", text)
+        self.assertIn(
+            "avi compile an Accepted Vulnerability Information report (VER-RPT-AVI)", text
+        )
+        self.assertIn("historical compile a Historical VER Activity snapshot (VER-TFR-MRH)", text)
 
     def test_store_verify_names_the_sidecar_files_a_walk_can_leave(self) -> None:
         text = help_text(["store", "verify"])
@@ -2347,6 +2696,30 @@ class MissingStoreTests(unittest.TestCase):
                     "2026-08-01T00:00:00Z",
                     "--to",
                     "2026-08-31T23:59:59Z",
+                ],
+                [
+                    "report",
+                    "avi",
+                    "--db",
+                    str(database),
+                    "--class",
+                    "C",
+                    "--package-uri",
+                    "https://example.test/cpo",
+                    "--from",
+                    "2026-08-01T00:00:00Z",
+                    "--to",
+                    "2026-08-31T23:59:59Z",
+                ],
+                [
+                    "report",
+                    "historical",
+                    "--db",
+                    str(database),
+                    "--class",
+                    "C",
+                    "--package-uri",
+                    "https://example.test/cpo",
                 ],
             )
 

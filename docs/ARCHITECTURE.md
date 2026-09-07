@@ -98,13 +98,20 @@ invent KEV deadlines, or calculate business days without an explicit calendar.
 ### Report projections
 
 Reports are disposable projections over durable events and normalized records. Human-readable
-and machine-readable reports are rendered from the same projection to prevent drift.
+and machine-readable reports are rendered from the same projection to prevent drift. The record
+compiler builds one period-agnostic record set from either entry path, and three projections
+read it: the detail report, the accepted-vulnerability report, and the historical snapshot
+(ADR 0010). Period selection happens in a projection, never in the set, so a diagnostic raised
+at ingest or rebuild sits at the same position in every report.
 
-Initial projections:
+Shipped projections:
 
 - Vulnerability Detail Report
 - Accepted Vulnerability Information
 - Historical VER Activity
+
+Next projections:
+
 - Operational deadline view
 - Human-readable monthly activity report
 
@@ -170,20 +177,24 @@ src/complyroll/
   reports/        # the record compiler, the stateless and replayed report paths, the evaluations file
   schemas/        # verified offline schema registry and report validation results
   store/          # SQLite event history, migrations, integrity, and projection checkpoints
-  cli.py          # ComplyRoll project CLI (ingest, cases, report vdt, store verify, validate, version, plan)
+  cli.py          # ComplyRoll project CLI (ingest, cases, report vdt|avi|historical, store verify, validate, version, plan)
   models.py       # framework-independent domain records
 ```
 
-The report compiler has two entry paths that share one record compiler (ADR 0007, ADR 0008).
+The report compiler has two entry paths that share one record compiler (ADR 0007, ADR 0008,
+ADR 0010).
 The stateless path is a pure function of artifacts, an evaluations file, and explicit package
 options. The persisted path reads `observation.recorded` payloads back into observations, folds
 each case stream into its current state (attestation, every evaluation in order, reductions,
 disposition, identifier override), and hands the result to the same compiler, so the rebuilt
 report is byte-identical to the stateless one for the same inputs; that equality is the
-slice's acceptance test and stays a regression test. Event payloads are validated against the
-contracts in `events/` on every append; the store itself stays a generic envelope log. The fold
-runs in memory at Phase 1 volumes; projection tables and checkpoints remain available for when
-that stops being enough. The domain model remains independent from all of it.
+slice's acceptance test and stays a regression test. ADR 0010 splits that compiler into a
+period-agnostic record set and three projections, so the same equality holds for the
+accepted-vulnerability and historical reports, each golden-tested on both paths. Event payloads
+are validated against the contracts in `events/` on every append; the store itself stays a
+generic envelope log. The fold runs in memory at Phase 1 volumes; projection tables and
+checkpoints remain available for when that stops being enough. The domain model remains
+independent from all of it.
 
 ## Failure semantics
 

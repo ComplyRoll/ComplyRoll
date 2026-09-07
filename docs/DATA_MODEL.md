@@ -72,9 +72,14 @@ narrative rule.
 ## Core entities
 
 Implemented in `complyroll.models` today: `ResourceRef`, `EvidenceArtifact`, `Observation`,
-`Evaluation`, and `VulnerabilityCase`. `InformationResource`, `ResponseAction`,
-`AcceptedVulnerability`, `ValidationDefinition`, and `ValidationRun` below are planned Phase 1
-and Phase 3 entities; their tables describe intent, not shipped code.
+`Evaluation`, and `VulnerabilityCase`. `models.Evaluation` and `models.VulnerabilityCase` are
+exported but unused by production code: the report compiler reads evaluations through
+`complyroll.reports.evaluations` and case state through the fold in `complyroll.history`, and
+reconciling or retiring the two classes is Phase 2 cleanup. `AcceptedVulnerability` predates
+ADR 0010 in `complyroll.reports`; ADR 0010 made the accepted-vulnerability and historical
+reports publish it, as described below. `InformationResource`,
+`ResponseAction`, `ValidationDefinition`, and `ValidationRun` remain planned entities; their
+tables describe intent, not shipped code.
 
 ### InformationResource (planned)
 
@@ -109,7 +114,8 @@ and Phase 3 entities; their tables describe intent, not shipped code.
 ComplyRoll records that absence and emits a diagnostic; it does not treat file modification or
 ingestion time as equivalent evidence. The official Vulnerability Detail schema requires a
 detection time, so a case built from such an observation needs an explicit, attributable
-detection-time attestation before it can be reported (decision pending in ADR 0007).
+detection-time attestation before it can be reported (ADR 0007 Decision 2: `--detected-at` on
+the stateless path, `cases attest-detection` on the persisted path).
 
 System observations carry no artifact name or digest; they require `observed_at` (the detection
 window) and a non-blank `context_key` naming the producing validation or job. Their identity is
@@ -172,11 +178,22 @@ includes planned time, completed time, target PAIN, actual result, owner, and ev
 Mitigation and remediation are not interchangeable. A fully mitigated weakness can still exist
 until remediated.
 
-### AcceptedVulnerability (planned)
+### AcceptedVulnerability
 
 Acceptance is a case state with an explicit rationale and continued monitoring. It is not a
 silent age-based closure. ComplyRoll can flag the 192-day categorization requirement but cannot
 make the acceptance decision.
+
+Implemented in `complyroll.reports`, and published by the accepted-vulnerability and historical
+reports since ADR 0010. An evaluation with `disposition: "accepted"`
+and a non-blank `acceptanceRationale` marks the case accepted, whether it arrives in an
+evaluations file or as a `case.disposition_recorded` event. The detail report sets each
+accepted record aside on `report.accepted` as `AcceptedVulnerability(record, rationale)` and
+publishes neither. The accepted-vulnerability and historical reports publish each as an
+`acceptedVulnerabilityInfo` item and refuse to compile, with the ERROR diagnostic
+`acceptance_rationale_missing`, when an accepted record's evaluation carries no rationale. The
+acceptance instant is the evaluation's `completedAt`; the store's `recordedAt` never reaches a
+report.
 
 ### ValidationDefinition and ValidationRun (planned)
 

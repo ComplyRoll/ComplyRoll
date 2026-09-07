@@ -1,6 +1,6 @@
 # ComplyRoll build plan
 
-Status date: **2026-08-20**
+Status date: **2026-09-05**
 
 ## Outcome
 
@@ -82,7 +82,7 @@ Target: 1–2 weeks
 
 Target: 3–4 weeks
 
-**Status: In progress — started 2026-08-20**
+**Status: Complete, 2026-09-05** (started 2026-08-20; closed by ADR 0010 with the accepted-vulnerability and historical-activity reports)
 
 ### Current progress
 
@@ -96,8 +96,9 @@ Target: 3–4 weeks
   last-updated value, and SHA-256 before policy selection.
 - Provider-facing 20x Class B and Class C VDR/VER rules are selected from official type, path,
   class, affected-party, and class-variant structures.
-- Evaluation, PAIN response, reporting recurrence, and acceptance-threshold calculations carry the
-  exact rule ID and dataset provenance; golden tests cover both classes.
+- Evaluation, PAIN response, and acceptance-threshold calculations carry the exact rule ID and
+  dataset provenance; golden tests cover both classes. Reporting recurrence is not calculated
+  (see the exceptions under Deliverables).
 - Official Common Definitions and the three initial VER report schemas are pinned to one immutable
   `FedRAMP/schemas` commit, digest verified, resolved offline, and checked as Draft 2020-12 schemas.
 - Report validation returns deterministic, actionable JSON Pointers and complete schema
@@ -119,6 +120,15 @@ Target: 3–4 weeks
 - Markdown or HTML reports generated from the same projection records.
 - JSON Schema validation with offline schema caching and digest verification.
 
+Shipped as listed, with five exceptions carried into Phase 2 as a scope change rather than
+closed as done: information resource records and response action records (the
+`InformationResource` and `ResponseAction` entities in `docs/DATA_MODEL.md` are still planned),
+the KEV clock (part of Phase 2's CISA KEV enrichment), the reporting recurrence clocks (the
+compiler emits no clock for `VER-TFR-MHR` or `VER-TFR-MRH`; ADR 0007 Decision 6 and ADR 0010
+Decision 5 record that the cadence is the operator's), and HTML output (each report ships a
+Markdown twin only). Rating changes ship as the PAIN reduction events on each vulnerability
+detail rather than as a record of their own.
+
 ### CLI
 
 Implemented:
@@ -137,6 +147,16 @@ complyroll cases list --db <store>
 complyroll cases history <tracking-id> --db <store>
 complyroll report vdt --db <store> --class C --package-uri <uri> --from <time> --to <time>
     [--as-of <time>] [--calendar-tz <name>] [-o <report.json>] [--markdown <report.md>]
+complyroll report avi <artifact...> --class C --package-uri <uri> --from <time> --to <time>
+    [--evaluations <file>] [--detected-at <time>] [--as-of <time>] [--calendar-tz <name>]
+    [-o <report.json>] [--markdown <report.md>]
+complyroll report avi --db <store> --class C --package-uri <uri> --from <time> --to <time>
+    [--as-of <time>] [--calendar-tz <name>] [-o <report.json>] [--markdown <report.md>]
+complyroll report historical <artifact...> --class C --package-uri <uri>
+    [--evaluations <file>] [--detected-at <time>] [--as-of <time>] [--calendar-tz <name>]
+    [-o <report.json>] [--markdown <report.md>]
+complyroll report historical --db <store> --class C --package-uri <uri>
+    [--as-of <time>] [--calendar-tz <name>] [-o <report.json>] [--markdown <report.md>]
 complyroll store verify --db <store>
 ```
 
@@ -146,14 +166,13 @@ Proposed:
 complyroll rules sync --ref <commit-or-tag>
 complyroll observations list --db <store>
 complyroll deadlines --db <store>
-complyroll report avi --class C --from <time> --to <time>
-complyroll report historical --class C
 ```
 
 ### Exit criteria
 
 - A CKLB/XCCDF assessment becomes a schema-valid VER report without spreadsheet manipulation.
-  **Met 2026-08-21 for the stateless path** (`complyroll report vdt`, golden-tested).
+  **Met 2026-08-21 for the stateless path and 2026-08-22 for the persisted path**
+  (`complyroll report vdt` from files and from `--db`, golden-tested).
 - Every due date can identify the rule version and inputs used in its calculation. **Met** (every
   deadline in the report carries rule id, force, anchor, inputs, and the dataset commit and digest).
 - Changing an evaluation creates history rather than overwriting the prior evaluation. **Met
@@ -180,6 +199,9 @@ Target: 3–4 weeks
 - CI-friendly exit criteria and a reference GitHub Actions workflow.
 - System-generated observations for failed imports, stale coverage, missing resources, or broken
   response workflows.
+- Carried from Phase 1 as a scope change: information resource and response action records, the
+  KEV clock (with the KEV enrichment above), the reporting recurrence clocks, and HTML report
+  output.
 
 ### Exit criteria
 
@@ -259,4 +281,7 @@ Target: after the local engine is stable
    `ingest`, `cases correlate|attest-detection|evaluate|list|history`, `report vdt --db`,
    `store verify`; the reconciliation is a test against the stateless goldens).
 7. Accepted-vulnerability (`VER-RPT-AVI`) and historical-activity (`VER-TFR-MRH`) reports from the
-   same record compiler.
+   same record compiler. **Complete, 2026-09-05** (ADR 0010: one period-agnostic record set with
+   three projections, `report avi` and `report historical` on both paths, four goldens, and the
+   rebuilt reports reconciled against the stateless ones byte for byte). Phase 1 is closed; the
+   Phase 2 deliverables above start with the SARIF adapter.

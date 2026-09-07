@@ -1,5 +1,6 @@
 """Report compilers that turn source observations into official-format projections."""
 
+from .avi import CompiledAviReport, compile_avi_report, project_avi
 from .evaluations import (
     CLOSED_DISPOSITIONS,
     MAX_EVALUATIONS_BYTES,
@@ -13,7 +14,13 @@ from .evaluations import (
     parse_evaluations,
     parse_rfc3339,
 )
-from .replay import compile_record_set_from_history, compile_vdt_report_from_history
+from .historical import CompiledHistoricalReport, compile_historical_report, project_historical
+from .replay import (
+    compile_avi_report_from_history,
+    compile_historical_report_from_history,
+    compile_record_set_from_history,
+    compile_vdt_report_from_history,
+)
 from .vdt import (
     ACTIVE_STATUSES,
     DISCLAIMER,
@@ -47,7 +54,9 @@ __all__ = [
     "MAX_EVALUATIONS_BYTES",
     "AcceptedVulnerability",
     "CompiledArtifact",
+    "CompiledAviReport",
     "CompiledDeadline",
+    "CompiledHistoricalReport",
     "CompiledRecordSet",
     "CompiledReport",
     "CompiledVdtReport",
@@ -63,6 +72,10 @@ __all__ = [
     "ReportInputError",
     "ReportMetadata",
     "ReportOptions",
+    "compile_avi_report",
+    "compile_avi_report_from_history",
+    "compile_historical_report",
+    "compile_historical_report_from_history",
     "compile_record_set",
     "compile_record_set_from_artifacts",
     "compile_record_set_from_history",
@@ -72,5 +85,7 @@ __all__ = [
     "load_evaluations",
     "parse_evaluations",
     "parse_rfc3339",
+    "project_avi",
+    "project_historical",
     "project_vdt",
 ]

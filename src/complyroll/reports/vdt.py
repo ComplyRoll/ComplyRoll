@@ -118,15 +118,22 @@ class ReportCompileError(Exception):
         super().__init__(f"report compilation failed: {summary}{suffix}")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ReportOptions:
-    """Explicit package configuration for one compile run (Decision 5)."""
+    """Explicit package configuration for one compile run (Decision 5).
+
+    The report period is optional because not every report has one (ADR 0010). The
+    Vulnerability Detail Report and the Accepted Vulnerability Information report
+    select by period and refuse to compile without it; the historical activity report
+    is a snapshot at `as_of` and never reads it. One bound without the other is a
+    mistake rather than a half-open period, so it is refused here.
+    """
 
     certification_class: CertificationClass
     package_uri: str
-    period_from: datetime
-    period_to: datetime
     as_of: datetime
+    period_from: datetime | None = None
+    period_to: datetime | None = None
     calendar_timezone: str = "UTC"
     detected_at_attestation: datetime | None = None
 
@@ -134,14 +141,14 @@ class ReportOptions:
         if not isinstance(self.certification_class, CertificationClass):
             raise TypeError("certification_class must be a CertificationClass")
         _require_absolute_http_uri(self.package_uri)
-        for value, name in (
-            (self.period_from, "period_from"),
-            (self.period_to, "period_to"),
-            (self.as_of, "as_of"),
-        ):
-            _require_aware(value, name)
-        if self.period_from > self.period_to:
-            raise ValueError("period_from must not be after period_to")
+        _require_aware(self.as_of, "as_of")
+        if (self.period_from is None) != (self.period_to is None):
+            raise ValueError("period_from and period_to must be given together")
+        if self.period_from is not None and self.period_to is not None:
+            _require_aware(self.period_from, "period_from")
+            _require_aware(self.period_to, "period_to")
+            if self.period_from > self.period_to:
+                raise ValueError("period_from must not be after period_to")
         if self.detected_at_attestation is not None:
             _require_aware(self.detected_at_attestation, "detected_at_attestation")
         # Constructing the profile validates the calendar timezone at the boundary.
@@ -149,6 +156,25 @@ class ReportOptions:
             self.certification_class,
             calendar_timezone=self.calendar_timezone,
         )
+
+    @property
+    def has_period(self) -> bool:
+        """Return whether these options carry a report period."""
+
+        return self.period_from is not None and self.period_to is not None
+
+    @property
+    def period(self) -> tuple[datetime, datetime]:
+        """Return the report period as `(from, to)`, both inclusive.
+
+        Raises `ValueError` when the options carry no period. Report projections
+        that need one call `_report_period` instead, which turns the same condition
+        into a compile diagnostic.
+        """
+
+        if self.period_from is None or self.period_to is None:
+            raise ValueError("these options carry no report period")
+        return (self.period_from, self.period_to)
 
     @property
     def profile(self) -> CertificationProfile:
@@ -665,7 +691,7 @@ def project_vdt(record_set: CompiledRecordSet) -> CompiledVdtReport:
         raise TypeError("record_set must be a CompiledRecordSet")
 
     options = record_set.options
-    period = (options.period_from, options.period_to)
+    period = _report_period(options, "the Vulnerability Detail Report")
     diagnostics = list(record_set.diagnostics)
     records, accepted, excluded = _select_for_period(record_set.records, period, diagnostics)
     attested = tuple(
@@ -1027,6 +1053,69 @@ def _require_unique_tracking_ids(records: Sequence[CompiledVulnerability]) -> No
         raise ReportCompileError(collisions)
 
 
+def _report_period(options: ReportOptions, report_name: str) -> tuple[datetime, datetime]:
+    """Return the period a report selects by, or stop the run when there is none.
+
+    A periodless `ReportOptions` is legitimate input for the historical activity
+    report, so the options do not refuse it. A report that selects by period turns
+    the absence into a compile diagnostic here, named after the report that needs
+    it, rather than an attribute error deep inside selection.
+    """
+
+    if options.has_period:
+        return options.period
+    raise ReportCompileError(
+        (
+            ReportDiagnostic(
+                level=DiagnosticLevel.ERROR,
+                code="report_period_missing",
+                message=(
+                    f"{report_name} selects records by report period, so period_from "
+                    "and period_to are required"
+                ),
+            ),
+        )
+    )
+
+
+def _require_acceptance_rationales(records: Sequence[CompiledVulnerability]) -> None:
+    """Stop the run when an accepted record carries no acceptance rationale.
+
+    The official `acceptedVulnerabilityInfo` item requires `acceptanceRationale`, and
+    an empty string would satisfy the schema while saying nothing. Only the reports
+    that publish accepted records call this (ADR 0010 Decision 4); the Vulnerability
+    Detail Report sets accepted records aside and does not need the rationale. Every
+    offending record is named in one error, in record order, so an operator fixes
+    the file once.
+    """
+
+    errors = [
+        ReportDiagnostic(
+            level=DiagnosticLevel.ERROR,
+            code="acceptance_rationale_missing",
+            message=(
+                f"{record.tracking_id} is accepted but its evaluation records no "
+                "acceptance rationale, which the accepted vulnerability report requires"
+            ),
+            location=record.source_record_id,
+        )
+        for record in records
+        if record.status is CaseStatus.ACCEPTED and not _acceptance_rationale(record)
+    ]
+    if errors:
+        raise ReportCompileError(errors)
+
+
+def _acceptance_rationale(record: CompiledVulnerability) -> str | None:
+    """Return the record's acceptance rationale, or None when missing or blank."""
+
+    evaluation = record.evaluation
+    rationale = evaluation.acceptance_rationale if evaluation is not None else None
+    if rationale is None or not rationale.strip():
+        return None
+    return rationale
+
+
 def _select_for_period(
     records: Sequence[CompiledVulnerability],
     period: tuple[datetime, datetime],
@@ -1088,8 +1177,7 @@ def _accepted(record: CompiledVulnerability) -> AcceptedVulnerability:
     here is a programming error rather than an input error.
     """
 
-    evaluation = record.evaluation
-    rationale = evaluation.acceptance_rationale if evaluation is not None else None
+    rationale = _acceptance_rationale(record)
     if rationale is None:  # pragma: no cover - callers guard before reaching here
         raise AssertionError(f"{record.tracking_id} is accepted with no acceptance rationale")
     return AcceptedVulnerability(vulnerability=record, acceptance_rationale=rationale)
@@ -1455,13 +1543,17 @@ def _build_document(
     extension["excludedByPeriod"] = metadata.excluded_by_period
     return {
         "certificationPackageOverviewUri": options.package_uri,
-        "reportPeriod": {
-            "from": _iso(options.period_from),
-            "to": _iso(options.period_to),
-        },
+        "reportPeriod": _report_period_block(options),
         "vulnerabilities": [record.to_official_dict() for record in records],
         EXTENSION_KEY: extension,
     }
+
+
+def _report_period_block(options: ReportOptions) -> dict[str, str]:
+    """Build the official `reportPeriod` object from options that carry a period."""
+
+    period_from, period_to = options.period
+    return {"from": _iso(period_from), "to": _iso(period_to)}
 
 
 def _attestation_block(
@@ -1557,7 +1649,8 @@ def _write_header(
     write("")
     write(f"- **Certification package:** {_cell(options.package_uri)}")
     if period:
-        write(f"- **Report period:** {_iso(options.period_from)} to {_iso(options.period_to)}")
+        period_from, period_to = options.period
+        write(f"- **Report period:** {_iso(period_from)} to {_iso(period_to)}")
     write(f"- **Certification class:** {options.certification_class.value}")
     write(f"- **Generated at:** {_iso(options.as_of)}")
     write(f"- **Calendar timezone:** {_cell(options.calendar_timezone)}")

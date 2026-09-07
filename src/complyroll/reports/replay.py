@@ -25,7 +25,9 @@ from complyroll.correlation import group_open_observations
 from complyroll.events import EventRepository
 from complyroll.models import Observation
 
+from .avi import CompiledAviReport, project_avi
 from .evaluations import EvaluationInput, EvaluationMatch
+from .historical import CompiledHistoricalReport, project_historical
 from .vdt import (
     CompiledArtifact,
     CompiledRecordSet,
@@ -54,6 +56,34 @@ def compile_vdt_report_from_history(
     """
 
     return project_vdt(compile_record_set_from_history(repository, options=options))
+
+
+def compile_avi_report_from_history(
+    repository: EventRepository,
+    *,
+    options: ReportOptions,
+) -> CompiledAviReport:
+    """Compile one Accepted Vulnerability Information report from stored history.
+
+    See `compile_record_set_from_history` for what is read back and for why
+    `options.detected_at_attestation` is ignored on this path.
+    """
+
+    return project_avi(compile_record_set_from_history(repository, options=options))
+
+
+def compile_historical_report_from_history(
+    repository: EventRepository,
+    *,
+    options: ReportOptions,
+) -> CompiledHistoricalReport:
+    """Compile one Historical VER Activity snapshot from stored history.
+
+    See `compile_record_set_from_history` for what is read back and for why
+    `options.detected_at_attestation` is ignored on this path.
+    """
+
+    return project_historical(compile_record_set_from_history(repository, options=options))
 
 
 def compile_record_set_from_history(
@@ -280,4 +310,9 @@ def _evaluations(cases: Sequence[CaseState]) -> dict[str, EvaluationInput]:
     return evaluations
 
 
-__all__ = ["compile_record_set_from_history", "compile_vdt_report_from_history"]
+__all__ = [
+    "compile_avi_report_from_history",
+    "compile_historical_report_from_history",
+    "compile_record_set_from_history",
+    "compile_vdt_report_from_history",
+]

@@ -5,12 +5,14 @@ import re
 import tempfile
 import unittest
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import permutations
 from pathlib import Path
+from typing import Literal, overload
 
 from complyroll import __version__
-from complyroll.adapters import IngestResult, ingest_stig_artifact
+from complyroll.adapters import DiagnosticLevel, IngestResult, ingest_stig_artifact
 from complyroll.correlation import group_open_observations
 from complyroll.models import CaseStatus
 from complyroll.policy import CertificationClass
@@ -18,20 +20,29 @@ from complyroll.reports import (
     FINAL_DISPOSITIONS,
     MAX_EVALUATIONS_BYTES,
     CompiledArtifact,
+    CompiledAviReport,
+    CompiledHistoricalReport,
+    CompiledRecordSet,
+    CompiledReport,
     CompiledVdtReport,
     DetectionAttestation,
     EvaluationSet,
     ReportCompileError,
     ReportInputError,
     ReportOptions,
+    compile_avi_report,
+    compile_historical_report,
     compile_record_set,
     compile_record_set_from_artifacts,
     compile_records,
     compile_vdt_report,
     load_evaluations,
     parse_evaluations,
+    project_avi,
+    project_historical,
     project_vdt,
 )
+from complyroll.schemas import ReportSchema, validate_bundled_report
 
 MIXED_TIMESTAMP_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
 <Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="mixed">
@@ -67,6 +78,21 @@ DETECTED_AT = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 PERIOD_FROM = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 PERIOD_TO = datetime(2026, 8, 31, 23, 59, 59, tzinfo=UTC)
 PACKAGE_URI = "https://example.test/cpo"
+ACCEPTED_EVALUATIONS = EXAMPLES / "evaluations-accepted.json"
+#: The one accepted record `examples/evaluations-accepted.json` adds to the fixtures.
+BANNER_CASE = "case-04efea8c137ae82f"
+BANNER_RATIONALE = (
+    "Accepted under change record CR-102 pending the banner template refresh in Q4."
+)
+#: Overrides that turn the default `evaluation_json` entry into an acceptance.
+ACCEPTANCE = {
+    "disposition": "accepted",
+    "acceptanceRationale": "Accepted under change record CR-102 pending the template refresh.",
+}
+
+BANNER_MATCH = {"sourceRecordId": "banner_etc_issue", "sourceType": "xccdf"}
+ReportKind = Literal["vdt", "avi", "historical"]
+REPORT_KINDS: tuple[ReportKind, ...] = ("vdt", "avi", "historical")
 
 
 def options(
@@ -75,8 +101,8 @@ def options(
     detected_at: datetime | None = DETECTED_AT,
     certification_class: CertificationClass = CertificationClass.C,
     calendar_timezone: str = "UTC",
-    period_from: datetime = PERIOD_FROM,
-    period_to: datetime = PERIOD_TO,
+    period_from: datetime | None = PERIOD_FROM,
+    period_to: datetime | None = PERIOD_TO,
 ) -> ReportOptions:
     return ReportOptions(
         certification_class=certification_class,
@@ -108,17 +134,79 @@ def evaluations_from(**overrides: object) -> EvaluationSet:
     return parse_evaluations(evaluation_json(**overrides).encode("utf-8"))
 
 
+def evaluations_for(*entries: dict[str, object]) -> EvaluationSet:
+    """Parse several evaluation entries at once, each built on the default entry."""
+
+    parsed = [json.loads(evaluation_json(**entry))["evaluations"][0] for entry in entries]
+    return parse_evaluations(json.dumps({"evaluations": parsed}).encode("utf-8"))
+
+
+@overload
 def compile_fixtures(
     *,
     artifacts: Sequence[Path] = ARTIFACTS,
     evaluations: EvaluationSet | None = None,
+    kind: Literal["vdt"] = "vdt",
     **option_overrides: object,
-) -> CompiledVdtReport:
-    return compile_vdt_report(
-        list(artifacts),
-        options=options(**option_overrides),  # type: ignore[arg-type]
-        evaluations=evaluations,
-    )
+) -> CompiledVdtReport: ...
+
+
+@overload
+def compile_fixtures(
+    *,
+    artifacts: Sequence[Path] = ARTIFACTS,
+    evaluations: EvaluationSet | None = None,
+    kind: Literal["avi"],
+    **option_overrides: object,
+) -> CompiledAviReport: ...
+
+
+@overload
+def compile_fixtures(
+    *,
+    artifacts: Sequence[Path] = ARTIFACTS,
+    evaluations: EvaluationSet | None = None,
+    kind: Literal["historical"],
+    **option_overrides: object,
+) -> CompiledHistoricalReport: ...
+
+
+@overload
+def compile_fixtures(
+    *,
+    artifacts: Sequence[Path] = ARTIFACTS,
+    evaluations: EvaluationSet | None = None,
+    kind: ReportKind,
+    **option_overrides: object,
+) -> CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport: ...
+
+
+def compile_fixtures(
+    *,
+    artifacts: Sequence[Path] = ARTIFACTS,
+    evaluations: EvaluationSet | None = None,
+    kind: ReportKind = "vdt",
+    **option_overrides: object,
+) -> CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport:
+    """Compile one report of the given kind from the fixtures with the test options."""
+
+    report_options = options(**option_overrides)  # type: ignore[arg-type]
+    if kind == "avi":
+        return compile_avi_report(list(artifacts), options=report_options, evaluations=evaluations)
+    if kind == "historical":
+        return compile_historical_report(
+            list(artifacts), options=report_options, evaluations=evaluations
+        )
+    return compile_vdt_report(list(artifacts), options=report_options, evaluations=evaluations)
+
+
+def summary_counts(markdown: str) -> dict[str, int]:
+    """Read every `| label | count |` row of a Markdown twin's Summary table."""
+
+    return {
+        label: int(count)
+        for label, count in re.findall(r"^\| ([A-Za-z0-9 ,\-]+) \| (\d+) \|$", markdown, re.M)
+    }
 
 
 def distinct_xccdf(label: str) -> str:
@@ -180,11 +268,41 @@ def compiled_artifact(result: IngestResult) -> CompiledArtifact:
     )
 
 
-def find_vulnerability(report: CompiledVdtReport, source_record_id: str) -> dict[str, object]:
-    for item in report.document["vulnerabilities"]:
+def find_vulnerability(
+    report: CompiledReport,
+    source_record_id: str,
+    *,
+    key: str = "vulnerabilities",
+) -> dict[str, object]:
+    """Return one official `vulnerabilityDetail` object from the document array `key`."""
+
+    for item in report.document[key]:
         if str(item["vulnerabilityDescription"]).startswith(source_record_id):
             return item
-    raise AssertionError(f"no vulnerability for {source_record_id}")
+    raise AssertionError(f"no vulnerability for {source_record_id} under {key}")
+
+
+def find_accepted(report: CompiledReport, source_record_id: str) -> dict[str, object]:
+    """Return one `acceptedVulnerabilityInfo` item of an AVI or historical document."""
+
+    for item in report.document["acceptedVulnerabilities"]:
+        detail = item["vulnerabilityDetail"]
+        if str(detail["vulnerabilityDescription"]).startswith(source_record_id):
+            return item
+    raise AssertionError(f"no accepted vulnerability for {source_record_id}")
+
+
+def official_records(report: CompiledReport, key: str) -> list[dict[str, object]]:
+    """Return the `vulnerabilityDetail` objects under one document array.
+
+    `vulnerabilities` and `activeVulnerabilities` hold the objects directly;
+    `acceptedVulnerabilities` wraps each one in an `acceptedVulnerabilityInfo` item.
+    """
+
+    return [
+        item["vulnerabilityDetail"] if "vulnerabilityDetail" in item else item
+        for item in report.document[key]
+    ]
 
 
 def markdown_section(markdown: str, heading: str) -> str:
@@ -196,29 +314,33 @@ def markdown_section(markdown: str, heading: str) -> str:
     return parts[1].split("\n## ", 1)[0]
 
 
-def markdown_detail_sections(markdown: str) -> tuple[tuple[str, str], ...]:
+def markdown_detail_sections(
+    markdown: str,
+    heading: str = "Vulnerability details",
+) -> tuple[tuple[str, str], ...]:
     """Return each vulnerability detail section as (heading, body), in report order.
 
     The renderer walks the compiled records once for the summary table and once for
     the detail sections, so section `i` is vulnerability `i`. Pairing by position
     rather than by heading text keeps this reader independent of how a tracking
-    identifier is escaped into a heading.
+    identifier is escaped into a heading. `heading` names the details section to
+    read, since the AVI and historical twins title theirs differently.
     """
 
-    body = markdown_section(markdown, "Vulnerability details")
+    body = markdown_section(markdown, heading)
     sections: list[tuple[str, str]] = []
-    heading: str | None = None
+    current: str | None = None
     lines: list[str] = []
     for line in body.splitlines():
         if line.startswith("### "):
-            if heading is not None:
-                sections.append((heading, "\n".join(lines)))
-            heading = line[4:]
+            if current is not None:
+                sections.append((current, "\n".join(lines)))
+            current = line[4:]
             lines = []
             continue
         lines.append(line)
-    if heading is not None:
-        sections.append((heading, "\n".join(lines)))
+    if current is not None:
+        sections.append((current, "\n".join(lines)))
     return tuple(sections)
 
 
@@ -236,9 +358,19 @@ def markdown_table_rows(section: str, width: int, header: str) -> dict[str, tupl
     return rows
 
 
+VDT_DETAIL_SECTIONS = (("Vulnerability details", "vulnerabilities"),)
+AVI_DETAIL_SECTIONS = (("Accepted vulnerability details", "acceptedVulnerabilities"),)
+HISTORICAL_DETAIL_SECTIONS = (
+    ("Active vulnerability details", "activeVulnerabilities"),
+    ("Accepted vulnerability details", "acceptedVulnerabilities"),
+)
+
+
 def assert_markdown_carries_the_json(
     test: unittest.TestCase,
-    report: CompiledVdtReport,
+    report: CompiledReport,
+    *,
+    sections: Sequence[tuple[str, str]] = VDT_DETAIL_SECTIONS,
 ) -> None:
     """Assert the Markdown twin states every audit fact the JSON document carries.
 
@@ -247,33 +379,37 @@ def assert_markdown_carries_the_json(
     observations grouped into it, each computed deadline with its due instant and
     whether it is satisfied, and every source artifact with the parser version that
     read it (ADR 0007 amendment, the two renderings carry the same audit content).
+    `sections` pairs each Markdown details heading with the document array it renders.
     """
 
     markdown = report.to_markdown()
-    vulnerabilities = report.document["vulnerabilities"]
-    sections = markdown_detail_sections(markdown)
-    test.assertEqual(len(sections), len(vulnerabilities))
+    for details_heading, key in sections:
+        vulnerabilities = official_records(report, key)
+        detail_sections = markdown_detail_sections(markdown, details_heading)
+        test.assertEqual(len(detail_sections), len(vulnerabilities), details_heading)
 
-    for (heading, body), vulnerability in zip(sections, vulnerabilities, strict=True):
-        extension = vulnerability["x-complyroll"]
-        for observation_id in extension["observationIds"]:
-            test.assertIn(observation_id, body, f"{heading} omits {observation_id}")
-        for observation_id in extension["untimestampedObservationIds"]:
-            test.assertIn(observation_id, body, f"{heading} omits {observation_id}")
+        for (heading, body), vulnerability in zip(detail_sections, vulnerabilities, strict=True):
+            extension = vulnerability["x-complyroll"]
+            for observation_id in extension["observationIds"]:
+                test.assertIn(observation_id, body, f"{heading} omits {observation_id}")
+            for observation_id in extension["untimestampedObservationIds"]:
+                test.assertIn(observation_id, body, f"{heading} omits {observation_id}")
 
-        rows = markdown_table_rows(body, 7, "Rule")
-        deadlines = extension["deadlines"]
-        test.assertEqual(len(rows), len(deadlines), f"{heading} deadline rows")
-        for deadline in deadlines:
-            row = rows.get(deadline["ruleId"])
-            test.assertIsNotNone(row, f"{heading} omits deadline {deadline['ruleId']}")
-            assert row is not None
-            test.assertEqual(row[5], deadline["dueAt"], f"{heading} {deadline['ruleId']} due")
-            test.assertEqual(
-                row[6],
-                "yes" if deadline["satisfied"] else "no",
-                f"{heading} {deadline['ruleId']} satisfied",
-            )
+            rows = markdown_table_rows(body, 7, "Rule")
+            deadlines = extension["deadlines"]
+            test.assertEqual(len(rows), len(deadlines), f"{heading} deadline rows")
+            for deadline in deadlines:
+                row = rows.get(deadline["ruleId"])
+                test.assertIsNotNone(row, f"{heading} omits deadline {deadline['ruleId']}")
+                assert row is not None
+                test.assertEqual(
+                    row[5], deadline["dueAt"], f"{heading} {deadline['ruleId']} due"
+                )
+                test.assertEqual(
+                    row[6],
+                    "yes" if deadline["satisfied"] else "no",
+                    f"{heading} {deadline['ruleId']} satisfied",
+                )
 
     inputs = markdown_table_rows(markdown_section(markdown, "Inputs"), 4, "Artifact")
     artifacts = report.document["x-complyroll"]["artifacts"]
@@ -333,10 +469,7 @@ class GoldenReportTests(unittest.TestCase):
     def test_markdown_totals_reconcile_with_the_json(self) -> None:
         markdown = self.report.to_markdown()
         vulnerabilities = self.report.document["vulnerabilities"]
-        summary = {
-            label: int(count)
-            for label, count in re.findall(r"^\| ([A-Za-z0-9 ,\-]+) \| (\d+) \|$", markdown, re.M)
-        }
+        summary = summary_counts(markdown)
 
         rows = [
             line
@@ -351,6 +484,9 @@ class GoldenReportTests(unittest.TestCase):
         self.assertEqual(summary["Evaluated"], evaluated)
         self.assertEqual(summary["Not yet evaluated"], len(vulnerabilities) - evaluated)
         self.assertEqual(summary["Overdue"], overdue)
+        self.assertEqual(
+            summary["Accepted, reported under VER-RPT-AVI"], len(self.report.accepted)
+        )
         self.assertEqual(
             summary["Excluded by report period"],
             self.report.document["x-complyroll"]["excludedByPeriod"],
@@ -388,6 +524,294 @@ class GoldenReportTests(unittest.TestCase):
             [{"resourceId": "lab-win-01", "resourceType": "host"}],
         )
         self.assertEqual(extension["sourceIdentifiers"], ["CCI-000366"])
+
+
+class GoldenAviReportTests(unittest.TestCase):
+    """The AVI golden pins the Accepted Vulnerability Information projection's bytes.
+
+    It is compiled from the same three fixtures as the VDT golden under
+    `examples/evaluations-accepted.json`, which accepts the OpenSCAP banner rule, so
+    exactly one record is accepted and the other five stay active.
+    """
+
+    ACTIVE_SOURCE_RECORDS = ("V-253260", "V-260469", "V-260470", "V-260474", "no_cci_mapping")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.evaluations = load_evaluations(ACCEPTED_EVALUATIONS)
+        cls.report = compile_avi_report(
+            list(ARTIFACTS), options=options(), evaluations=cls.evaluations
+        )
+
+    def test_json_matches_the_golden_byte_for_byte(self) -> None:
+        expected = (GOLDEN / "avi-fixtures.json").read_text(encoding="utf-8")
+
+        self.assertEqual(self.report.to_json(), expected)
+
+    def test_markdown_matches_the_golden_byte_for_byte(self) -> None:
+        expected = (GOLDEN / "avi-fixtures.md").read_text(encoding="utf-8")
+
+        self.assertEqual(self.report.to_markdown(), expected)
+
+    def test_compiling_twice_produces_identical_bytes(self) -> None:
+        again = compile_avi_report(
+            list(ARTIFACTS), options=options(), evaluations=load_evaluations(ACCEPTED_EVALUATIONS)
+        )
+
+        self.assertEqual(again.to_json(), self.report.to_json())
+        self.assertEqual(again.to_markdown(), self.report.to_markdown())
+
+    def test_compiled_document_satisfies_the_accepted_vulnerability_schema(self) -> None:
+        schema_id = self.report.metadata.schema_provenance.schema_id
+
+        self.assertTrue(self.report.validation.is_valid)
+        self.assertEqual(self.report.validation.issues, ())
+        self.assertTrue(
+            schema_id.endswith("fedramp-accepted-vulnerability-info-schema-2026-06-24.json")
+        )
+        self.assertEqual(
+            self.report.document["x-complyroll"]["schemaSource"]["schemaId"], schema_id
+        )
+        self.assertTrue(
+            validate_bundled_report(
+                ReportSchema.ACCEPTED_VULNERABILITY, self.report.document
+            ).is_valid
+        )
+
+    def test_the_report_holds_the_banner_acceptance_and_counts_the_rest(self) -> None:
+        document = self.report.document
+        accepted = document["acceptedVulnerabilities"]
+        extension = document["x-complyroll"]
+
+        self.assertEqual(
+            [item["vulnerabilityDetail"]["providerTrackingId"] for item in accepted],
+            [BANNER_CASE],
+        )
+        self.assertEqual(
+            accepted[0]["vulnerabilityDetail"]["x-complyroll"]["resources"],
+            [{"resourceId": "lab-ubuntu-02", "resourceType": "host"}],
+        )
+        self.assertEqual(accepted[0]["acceptanceRationale"], BANNER_RATIONALE)
+        self.assertNotIn("finalDisposition", accepted[0]["vulnerabilityDetail"])
+        self.assertEqual(extension["excludedByPeriod"], 0)
+        self.assertEqual(extension["activeNotReported"], 5)
+        self.assertEqual(self.report.active_not_reported, 5)
+        self.assertEqual(
+            [item.vulnerability.tracking_id for item in self.report.accepted], [BANNER_CASE]
+        )
+        self.assertEqual(
+            document["reportPeriod"],
+            {"from": "2026-08-01T00:00:00Z", "to": "2026-08-31T23:59:59Z"},
+        )
+
+    def test_the_accepted_item_carries_only_the_two_official_members(self) -> None:
+        item = find_accepted(self.report, "banner_etc_issue")
+
+        self.assertEqual(set(item), {"vulnerabilityDetail", "acceptanceRationale"})
+        self.assertIn("x-complyroll", item["vulnerabilityDetail"])
+
+    def test_markdown_totals_reconcile_with_the_json(self) -> None:
+        markdown = self.report.to_markdown()
+        document = self.report.document
+        accepted = official_records(self.report, "acceptedVulnerabilities")
+        summary = summary_counts(markdown)
+        table = markdown_table_rows(
+            markdown_section(markdown, "Accepted vulnerabilities"), 11, "Tracking ID"
+        )
+
+        self.assertEqual(summary["Accepted vulnerabilities reported"], len(accepted))
+        self.assertEqual(len(table), len(accepted))
+        self.assertEqual(
+            summary["Excluded by report period"], document["x-complyroll"]["excludedByPeriod"]
+        )
+        self.assertEqual(
+            summary["Active, not reported here"], document["x-complyroll"]["activeNotReported"]
+        )
+        self.assertEqual(
+            summary["Overdue"],
+            sum(1 for item in accepted if item["overdueStatus"]["isOverdue"]),
+        )
+        for rating in range(1, 6):
+            expected = sum(1 for item in accepted if item.get("currentRating") == rating)
+            self.assertEqual(summary[f"Current PAIN N{rating}"], expected)
+        self.assertIn("- **Report period:** 2026-08-01T00:00:00Z to 2026-08-31T23:59:59Z", markdown)
+
+    def test_the_rationale_line_states_the_json_rationale(self) -> None:
+        sections = markdown_detail_sections(
+            self.report.to_markdown(), "Accepted vulnerability details"
+        )
+        rationale = find_accepted(self.report, "banner_etc_issue")["acceptanceRationale"]
+
+        self.assertEqual(len(sections), 1)
+        self.assertIn(f"- **Acceptance rationale:** {rationale}", sections[0][1])
+        self.assertIn("- **Disposition:** accepted;", sections[0][1])
+
+    def test_markdown_carries_the_json(self) -> None:
+        assert_markdown_carries_the_json(self, self.report, sections=AVI_DETAIL_SECTIONS)
+
+    def test_attestation_covers_only_the_reported_record(self) -> None:
+        attestation = self.report.document["x-complyroll"]["detectionTimeAttestation"]
+
+        self.assertEqual(
+            attestation,
+            {"detectedAt": "2026-08-01T00:00:00Z", "appliedTo": [BANNER_CASE], "count": 1},
+        )
+        self.assertIn(
+            "attested a detection time of 2026-08-01T00:00:00Z for 1 vulnerability record(s)",
+            self.report.to_markdown(),
+        )
+
+    def test_the_active_records_raise_no_diagnostic(self) -> None:
+        record_set = compile_record_set_from_artifacts(
+            list(ARTIFACTS), options=options(), evaluations=self.evaluations
+        )
+
+        self.assertEqual(self.report.diagnostics, record_set.diagnostics)
+        self.assertEqual(
+            [item.code for item in self.report.diagnostics], ["source_timestamp_missing"] * 3
+        )
+        for source_record_id in self.ACTIVE_SOURCE_RECORDS:
+            with self.subTest(source_record_id=source_record_id):
+                self.assertFalse(
+                    [item for item in self.report.diagnostics if item.location == source_record_id]
+                )
+
+
+class GoldenHistoricalReportTests(unittest.TestCase):
+    """The historical golden pins the periodless snapshot of the whole population."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.evaluations = load_evaluations(ACCEPTED_EVALUATIONS)
+        cls.report = compile_historical_report(
+            list(ARTIFACTS),
+            options=options(period_from=None, period_to=None),
+            evaluations=cls.evaluations,
+        )
+
+    def test_json_matches_the_golden_byte_for_byte(self) -> None:
+        expected = (GOLDEN / "historical-fixtures.json").read_text(encoding="utf-8")
+
+        self.assertEqual(self.report.to_json(), expected)
+
+    def test_markdown_matches_the_golden_byte_for_byte(self) -> None:
+        expected = (GOLDEN / "historical-fixtures.md").read_text(encoding="utf-8")
+
+        self.assertEqual(self.report.to_markdown(), expected)
+
+    def test_compiling_twice_produces_identical_bytes(self) -> None:
+        again = compile_historical_report(
+            list(ARTIFACTS),
+            options=options(period_from=None, period_to=None),
+            evaluations=load_evaluations(ACCEPTED_EVALUATIONS),
+        )
+
+        self.assertEqual(again.to_json(), self.report.to_json())
+        self.assertEqual(again.to_markdown(), self.report.to_markdown())
+
+    def test_compiled_document_satisfies_the_historical_activity_schema(self) -> None:
+        schema_id = self.report.metadata.schema_provenance.schema_id
+
+        self.assertTrue(self.report.validation.is_valid)
+        self.assertEqual(self.report.validation.issues, ())
+        self.assertTrue(
+            schema_id.endswith("fedramp-historical-ver-activity-schema-2026-06-24.json")
+        )
+        self.assertEqual(
+            self.report.document["x-complyroll"]["schemaSource"]["schemaId"], schema_id
+        )
+        self.assertTrue(
+            validate_bundled_report(ReportSchema.HISTORICAL_ACTIVITY, self.report.document).is_valid
+        )
+
+    def test_the_snapshot_holds_the_whole_population_in_record_order(self) -> None:
+        document = self.report.document
+        vdt = json.loads((GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8"))
+        vdt_order = [item["providerTrackingId"] for item in vdt["vulnerabilities"]]
+
+        self.assertEqual(
+            [item["providerTrackingId"] for item in document["activeVulnerabilities"]],
+            [value for value in vdt_order if value != BANNER_CASE],
+        )
+        self.assertEqual(
+            [
+                item["vulnerabilityDetail"]["providerTrackingId"]
+                for item in document["acceptedVulnerabilities"]
+            ],
+            [BANNER_CASE],
+        )
+        self.assertEqual(document["generatedAt"], "2026-08-21T12:00:00Z")
+        self.assertNotIn("reportPeriod", document)
+        self.assertNotIn("excludedByPeriod", document["x-complyroll"])
+        self.assertNotIn("activeNotReported", document["x-complyroll"])
+        self.assertEqual(self.report.metadata.excluded_by_period, 0)
+
+    def test_markdown_totals_reconcile_with_the_json(self) -> None:
+        markdown = self.report.to_markdown()
+        active = official_records(self.report, "activeVulnerabilities")
+        accepted = official_records(self.report, "acceptedVulnerabilities")
+        summary = summary_counts(markdown)
+        evaluated = sum(1 for item in active if "evaluationCompletedAt" in item)
+
+        self.assertEqual(summary["Active vulnerabilities"], len(active))
+        self.assertEqual(summary["Accepted vulnerabilities"], len(accepted))
+        self.assertEqual(summary["Evaluated"], evaluated)
+        self.assertEqual(summary["Not yet evaluated"], len(active) - evaluated)
+        self.assertEqual(
+            summary["Overdue"], sum(1 for item in active if item["overdueStatus"]["isOverdue"])
+        )
+        for rating in range(1, 6):
+            expected = sum(1 for item in active if item.get("currentRating") == rating)
+            self.assertEqual(summary[f"Current PAIN N{rating}"], expected)
+        active_table = markdown_table_rows(
+            markdown_section(markdown, "Active vulnerabilities"), 11, "Tracking ID"
+        )
+        accepted_table = markdown_table_rows(
+            markdown_section(markdown, "Accepted vulnerabilities"), 11, "Tracking ID"
+        )
+        self.assertEqual(len(active_table), len(active))
+        self.assertEqual(len(accepted_table), len(accepted))
+        self.assertNotIn("Report period", markdown)
+        self.assertIn("- **Generated at:** 2026-08-21T12:00:00Z", markdown)
+
+    def test_the_rationale_line_states_the_json_rationale(self) -> None:
+        sections = markdown_detail_sections(
+            self.report.to_markdown(), "Accepted vulnerability details"
+        )
+        rationale = find_accepted(self.report, "banner_etc_issue")["acceptanceRationale"]
+
+        self.assertEqual(len(sections), 1)
+        self.assertIn(f"- **Acceptance rationale:** {rationale}", sections[0][1])
+        active_sections = markdown_detail_sections(
+            self.report.to_markdown(), "Active vulnerability details"
+        )
+        self.assertEqual(len(active_sections), 5)
+        self.assertFalse(any("Acceptance rationale" in body for _, body in active_sections))
+
+    def test_markdown_carries_the_json(self) -> None:
+        assert_markdown_carries_the_json(self, self.report, sections=HISTORICAL_DETAIL_SECTIONS)
+
+    def test_attestation_covers_every_record(self) -> None:
+        attestation = self.report.document["x-complyroll"]["detectionTimeAttestation"]
+        every_id = sorted(
+            [item.tracking_id for item in self.report.active]
+            + [item.vulnerability.tracking_id for item in self.report.accepted]
+        )
+
+        self.assertEqual(attestation["detectedAt"], "2026-08-01T00:00:00Z")
+        self.assertEqual(attestation["appliedTo"], every_id)
+        self.assertEqual(attestation["count"], 6)
+        self.assertIn("for 6 vulnerability record(s)", self.report.to_markdown())
+
+    def test_no_selection_diagnostics_are_appended(self) -> None:
+        record_set = compile_record_set_from_artifacts(
+            list(ARTIFACTS), options=options(), evaluations=self.evaluations
+        )
+
+        self.assertEqual(self.report.diagnostics, record_set.diagnostics)
+        self.assertEqual(
+            [item.code for item in self.report.diagnostics], ["source_timestamp_missing"] * 3
+        )
 
 
 class DetectionTimeTests(unittest.TestCase):
@@ -836,7 +1260,14 @@ class ReportPeriodSelectionTests(unittest.TestCase):
         self.assertFalse(any(text.startswith("V-260470") for text in descriptions))
         self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 1)
         excluded = [item for item in report.diagnostics if item.code == "excluded_by_period"]
-        self.assertIn("no recorded activity between", excluded[0].message)
+        self.assertEqual(len(excluded), 1)
+        # The detail report leaves the helper's `state` unset, so its message names the
+        # disposition; ADR 0010 moves that wording behind a parameter and must not change it.
+        self.assertIn(
+            "has disposition 'Fully Mitigated' and no recorded activity between",
+            excluded[0].message,
+        )
+        self.assertNotIn("None", excluded[0].message)
 
     def test_a_disposed_vulnerability_with_activity_inside_the_period_is_included(self) -> None:
         report = compile_fixtures(
@@ -898,6 +1329,198 @@ class ReportPeriodSelectionTests(unittest.TestCase):
         )
 
         self.assertIsNone(report.document["x-complyroll"]["detectionTimeAttestation"])
+
+
+class AviPeriodSelectionTests(unittest.TestCase):
+    """The AVI applies the detail report's period predicate to accepted records.
+
+    The default evaluation entry matches V-260470, detected 2026-08-01 under the test
+    attestation and evaluated 2026-08-04, so a period over August holds both instants
+    and one over September holds neither unless a later reduction lands in it.
+    """
+
+    SEPTEMBER = {
+        "period_from": datetime(2026, 9, 1, tzinfo=UTC),
+        "period_to": datetime(2026, 9, 30, 23, 59, 59, tzinfo=UTC),
+        "as_of": datetime(2026, 10, 1, tzinfo=UTC),
+    }
+    JULY = {
+        "period_from": datetime(2026, 7, 1, tzinfo=UTC),
+        "period_to": datetime(2026, 7, 31, 23, 59, 59, tzinfo=UTC),
+    }
+
+    def test_an_accepted_record_with_activity_in_the_period_is_reported(self) -> None:
+        report = compile_fixtures(kind="avi", evaluations=evaluations_from(**ACCEPTANCE))
+        extension = report.document["x-complyroll"]
+
+        self.assertEqual(
+            [item.vulnerability.source_record_id for item in report.accepted], ["V-260470"]
+        )
+        self.assertEqual(extension["excludedByPeriod"], 0)
+        self.assertEqual(extension["activeNotReported"], 5)
+        self.assertEqual(find_accepted(report, "V-260470")["acceptanceRationale"], str(
+            ACCEPTANCE["acceptanceRationale"]
+        ))
+
+    def test_an_accepted_record_with_no_activity_in_the_period_is_excluded(self) -> None:
+        report = compile_fixtures(
+            kind="avi", evaluations=evaluations_from(**ACCEPTANCE), **self.SEPTEMBER
+        )
+        excluded = [item for item in report.diagnostics if item.code == "excluded_by_period"]
+
+        self.assertEqual(report.document["acceptedVulnerabilities"], [])
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 1)
+        self.assertEqual(report.document["x-complyroll"]["activeNotReported"], 5)
+        self.assertEqual(len(excluded), 1)
+        self.assertIn("is accepted and no recorded activity between", excluded[0].message)
+        self.assertNotIn("None", excluded[0].message)
+        self.assertTrue(excluded[0].message.startswith("case-"))
+        self.assertEqual(excluded[0].location, "V-260470")
+        self.assertIn(
+            "No accepted vulnerabilities had recorded activity in this period.",
+            report.to_markdown(),
+        )
+
+    def test_an_accepted_record_detected_after_the_period_is_excluded(self) -> None:
+        report = compile_fixtures(
+            kind="avi", evaluations=evaluations_from(**ACCEPTANCE), **self.JULY
+        )
+        excluded = [item for item in report.diagnostics if item.code == "excluded_by_period"]
+
+        self.assertEqual(report.document["acceptedVulnerabilities"], [])
+        self.assertEqual(len(excluded), 1)
+        self.assertIn("after the period ended 2026-07-31T23:59:59Z", excluded[0].message)
+
+    def test_a_pain_reduction_inside_the_period_keeps_an_accepted_record(self) -> None:
+        report = compile_fixtures(
+            kind="avi",
+            evaluations=evaluations_from(
+                painReductionEvents=[{"reducedAt": "2026-09-10T00:00:00Z", "rating": 2}],
+                **ACCEPTANCE,
+            ),
+            **self.SEPTEMBER,
+        )
+
+        self.assertEqual(len(report.document["acceptedVulnerabilities"]), 1)
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 0)
+
+    def test_a_projected_reduction_inside_the_period_keeps_an_accepted_record(self) -> None:
+        report = compile_fixtures(
+            kind="avi",
+            evaluations=evaluations_from(
+                projectedNextReduction={
+                    "estimatedAt": "2026-09-20T00:00:00Z",
+                    "targetRating": 2,
+                },
+                **ACCEPTANCE,
+            ),
+            **self.SEPTEMBER,
+        )
+
+        self.assertEqual(len(report.document["acceptedVulnerabilities"]), 1)
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 0)
+
+    def test_the_activity_instants_are_exactly_the_four_the_module_names(self) -> None:
+        report = compile_fixtures(
+            kind="avi",
+            evaluations=evaluations_from(
+                painReductionEvents=[{"reducedAt": "2026-09-10T00:00:00Z", "rating": 2}],
+                projectedNextReduction={
+                    "estimatedAt": "2026-09-20T00:00:00Z",
+                    "targetRating": 1,
+                },
+                **ACCEPTANCE,
+            ),
+            **self.SEPTEMBER,
+        )
+
+        self.assertEqual(
+            report.accepted[0].vulnerability.activity_instants,
+            (
+                DETECTED_AT,
+                datetime(2026, 8, 4, 12, 0, tzinfo=UTC),
+                datetime(2026, 9, 10, tzinfo=UTC),
+                datetime(2026, 9, 20, tzinfo=UTC),
+            ),
+        )
+
+
+class HistoricalSelectionTests(unittest.TestCase):
+    """The historical snapshot publishes every record and selects nothing."""
+
+    def test_a_closed_record_stays_in_the_active_array_with_its_disposition(self) -> None:
+        report = compile_fixtures(
+            kind="historical",
+            evaluations=evaluations_from(disposition="closed", closedDisposition="fully_mitigated"),
+        )
+        closed = find_vulnerability(report, "V-260470", key="activeVulnerabilities")
+
+        self.assertEqual(len(report.document["activeVulnerabilities"]), 6)
+        self.assertEqual(report.document["acceptedVulnerabilities"], [])
+        self.assertEqual(closed["finalDisposition"], "Fully Mitigated")
+
+    def test_an_accepted_record_moves_to_the_accepted_array(self) -> None:
+        report = compile_fixtures(kind="historical", evaluations=evaluations_from(**ACCEPTANCE))
+        item = find_accepted(report, "V-260470")
+
+        self.assertEqual(len(report.document["activeVulnerabilities"]), 5)
+        self.assertEqual(len(report.document["acceptedVulnerabilities"]), 1)
+        self.assertEqual(item["acceptanceRationale"], ACCEPTANCE["acceptanceRationale"])
+        self.assertFalse(
+            any(
+                str(entry["vulnerabilityDescription"]).startswith("V-260470")
+                for entry in report.document["activeVulnerabilities"]
+            )
+        )
+
+    def test_a_far_as_of_drops_nothing(self) -> None:
+        report = compile_fixtures(
+            kind="historical",
+            evaluations=evaluations_from(**ACCEPTANCE),
+            as_of=datetime(2027, 6, 1, tzinfo=UTC),
+        )
+
+        self.assertEqual(
+            len(report.document["activeVulnerabilities"])
+            + len(report.document["acceptedVulnerabilities"]),
+            6,
+        )
+        self.assertEqual(report.document["generatedAt"], "2027-06-01T00:00:00Z")
+
+    def test_as_of_decides_the_overdue_status_of_every_record(self) -> None:
+        early = compile_fixtures(
+            kind="historical",
+            as_of=datetime(2026, 8, 3, tzinfo=UTC),
+            period_from=None,
+            period_to=None,
+        )
+        late = compile_fixtures(kind="historical", period_from=None, period_to=None)
+
+        self.assertFalse(
+            find_vulnerability(early, "V-260469", key="activeVulnerabilities")["overdueStatus"][
+                "isOverdue"
+            ]
+        )
+        self.assertTrue(
+            find_vulnerability(late, "V-260469", key="activeVulnerabilities")["overdueStatus"][
+                "isOverdue"
+            ]
+        )
+
+    def test_a_period_on_the_options_changes_nothing(self) -> None:
+        with_period = compile_fixtures(
+            kind="historical", evaluations=evaluations_from(**ACCEPTANCE)
+        )
+        without_period = compile_fixtures(
+            kind="historical",
+            evaluations=evaluations_from(**ACCEPTANCE),
+            period_from=None,
+            period_to=None,
+        )
+
+        self.assertEqual(without_period.to_json(), with_period.to_json())
+        self.assertEqual(without_period.to_markdown(), with_period.to_markdown())
+        self.assertNotIn("Report period", with_period.to_markdown())
 
 
 class TrackingIdUniquenessTests(unittest.TestCase):
@@ -1123,6 +1746,94 @@ class ClosedAsAcceptedTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ReportInputError, "only valid when the case accepts risk"):
             parse_evaluations(payload.encode("utf-8"))
+
+
+class AcceptanceRationaleGuardTests(unittest.TestCase):
+    """The AVI and historical items require a rationale the parser cannot omit.
+
+    `parse_evaluations` refuses an acceptance without a rationale, so the only way to
+    reach the projections with one missing is a record set built elsewhere. The tests
+    rewrite the parsed record's evaluation to stand in for that source.
+    """
+
+    def accepted_record_set(self, evaluations: EvaluationSet | None = None) -> CompiledRecordSet:
+        return compile_record_set_from_artifacts(
+            list(ARTIFACTS),
+            options=options(),
+            evaluations=evaluations or evaluations_from(**ACCEPTANCE),
+        )
+
+    def without_rationale(
+        self, record_set: CompiledRecordSet, rationale: str | None
+    ) -> CompiledRecordSet:
+        records = []
+        for record in record_set.records:
+            evaluation = record.evaluation
+            if record.status is not CaseStatus.ACCEPTED or evaluation is None:
+                records.append(record)
+                continue
+            records.append(
+                replace(record, evaluation=replace(evaluation, acceptance_rationale=rationale))
+            )
+        return replace(record_set, records=tuple(records))
+
+    def test_the_avi_refuses_an_accepted_record_with_a_blank_rationale(self) -> None:
+        record_set = self.without_rationale(self.accepted_record_set(), "   ")
+
+        with self.assertRaises(ReportCompileError) as caught:
+            project_avi(record_set)
+
+        diagnostics = caught.exception.diagnostics
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(diagnostics[0].code, "acceptance_rationale_missing")
+        self.assertEqual(diagnostics[0].level, DiagnosticLevel.ERROR)
+        self.assertTrue(diagnostics[0].message.startswith("case-"))
+        self.assertIn(
+            "is accepted but its evaluation records no acceptance", diagnostics[0].message
+        )
+        self.assertEqual(diagnostics[0].location, "V-260470")
+
+    def test_the_historical_snapshot_refuses_an_accepted_record_with_no_rationale(self) -> None:
+        record_set = self.without_rationale(self.accepted_record_set(), None)
+
+        with self.assertRaises(ReportCompileError) as caught:
+            project_historical(record_set)
+
+        diagnostics = caught.exception.diagnostics
+        self.assertEqual([item.code for item in diagnostics], ["acceptance_rationale_missing"])
+        self.assertEqual(diagnostics[0].location, "V-260470")
+
+    def test_every_missing_rationale_is_named_in_record_order(self) -> None:
+        record_set = self.without_rationale(
+            self.accepted_record_set(
+                evaluations_for(dict(ACCEPTANCE), {"match": BANNER_MATCH, **ACCEPTANCE})
+            ),
+            "",
+        )
+        accepted = [
+            item.source_record_id
+            for item in record_set.records
+            if item.status is CaseStatus.ACCEPTED
+        ]
+
+        self.assertEqual(len(accepted), 2)
+        for project in (project_avi, project_historical):
+            with self.subTest(projection=project.__name__):
+                with self.assertRaises(ReportCompileError) as caught:
+                    project(record_set)
+
+                self.assertEqual(
+                    [item.location for item in caught.exception.diagnostics], accepted
+                )
+
+    def test_the_detail_report_still_compiles_without_a_rationale(self) -> None:
+        record_set = self.without_rationale(self.accepted_record_set(), None)
+
+        report = project_vdt(record_set)
+
+        self.assertEqual(len(report.accepted), 1)
+        self.assertEqual(report.accepted[0].acceptance_rationale, "")
+        self.assertIn("accepted_excluded", [item.code for item in report.diagnostics])
 
 
 class RenderingParityTests(unittest.TestCase):
@@ -1399,6 +2110,88 @@ class RecordSetTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "CompiledRecordSet"):
             project_vdt(compile_fixtures())  # type: ignore[arg-type]
 
+    def test_the_example_acceptance_file_accepts_the_banner_record_only(self) -> None:
+        record_set = compile_record_set_from_artifacts(
+            list(ARTIFACTS), options=options(), evaluations=load_evaluations(ACCEPTED_EVALUATIONS)
+        )
+        accepted = [
+            item.tracking_id for item in record_set.records if item.status is CaseStatus.ACCEPTED
+        ]
+
+        self.assertEqual(len(record_set.records), 6)
+        self.assertEqual(accepted, [BANNER_CASE])
+        self.assertFalse(
+            {item.code for item in record_set.diagnostics}
+            & {"accepted_excluded", "excluded_by_period"}
+        )
+
+
+class AcceptedRecordSharingTests(unittest.TestCase):
+    """One record set, three projections, and one accepted record they all agree on."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.record_set = compile_record_set_from_artifacts(
+            list(ARTIFACTS),
+            options=options(),
+            evaluations=load_evaluations(ACCEPTED_EVALUATIONS),
+        )
+        cls.vdt = project_vdt(cls.record_set)
+        cls.avi = project_avi(cls.record_set)
+        cls.historical = project_historical(cls.record_set)
+
+    def test_each_projection_partitions_the_population(self) -> None:
+        self.assertEqual((len(self.vdt.vulnerabilities), len(self.vdt.accepted)), (5, 1))
+        self.assertEqual((len(self.avi.accepted), self.avi.active_not_reported), (1, 5))
+        self.assertEqual((len(self.historical.active), len(self.historical.accepted)), (5, 1))
+
+    def test_no_record_is_in_both_the_detail_report_and_the_avi(self) -> None:
+        reported = {item.tracking_id for item in self.vdt.vulnerabilities}
+        accepted = {item.vulnerability.tracking_id for item in self.avi.accepted}
+
+        self.assertEqual(accepted, {BANNER_CASE})
+        self.assertFalse(reported & accepted)
+
+    def test_the_detail_report_summary_counts_the_record_it_set_aside(self) -> None:
+        # The golden detail report accepts nothing, so its reconciliation test only ever
+        # sees this row at zero; this is the one place the row is pinned at one.
+        summary = summary_counts(self.vdt.to_markdown())
+
+        self.assertEqual(summary["Accepted, reported under VER-RPT-AVI"], 1)
+        self.assertEqual(summary["Vulnerabilities reported"], 5)
+        self.assertEqual(summary["Excluded by report period"], 0)
+
+    def test_every_projection_reconciles_to_the_record_count(self) -> None:
+        total = len(self.record_set.records)
+
+        self.assertEqual(
+            len(self.vdt.vulnerabilities)
+            + len(self.vdt.accepted)
+            + self.vdt.metadata.excluded_by_period,
+            total,
+        )
+        self.assertEqual(
+            len(self.avi.accepted)
+            + self.avi.active_not_reported
+            + self.avi.metadata.excluded_by_period,
+            total,
+        )
+        self.assertEqual(len(self.historical.active) + len(self.historical.accepted), total)
+
+    def test_the_accepted_item_is_the_same_bytes_in_the_avi_and_the_snapshot(self) -> None:
+        avi_item = find_accepted(self.avi, "banner_etc_issue")
+        historical_item = find_accepted(self.historical, "banner_etc_issue")
+
+        self.assertEqual(
+            json.dumps(historical_item, sort_keys=True), json.dumps(avi_item, sort_keys=True)
+        )
+
+    def test_the_active_records_are_the_same_in_the_detail_report_and_the_snapshot(self) -> None:
+        self.assertEqual(
+            self.historical.document["activeVulnerabilities"],
+            self.vdt.document["vulnerabilities"],
+        )
+
 
 class ReportOptionsTests(unittest.TestCase):
     def test_package_uri_must_be_absolute_http(self) -> None:
@@ -1444,6 +2237,50 @@ class ReportOptionsTests(unittest.TestCase):
         self.assertEqual(
             report.document["x-complyroll"]["calendarTimezone"], "America/Phoenix"
         )
+
+    def test_the_period_may_be_omitted_together(self) -> None:
+        periodless = options(period_from=None, period_to=None)
+
+        self.assertFalse(periodless.has_period)
+        with self.assertRaisesRegex(ValueError, "no report period"):
+            _ = periodless.period
+
+    def test_one_period_bound_alone_is_refused(self) -> None:
+        for bounds in ({"period_from": None}, {"period_to": None}):
+            with self.subTest(bounds=bounds):
+                with self.assertRaisesRegex(ValueError, "must be given together"):
+                    options(**bounds)
+
+    def test_has_period_and_period_agree(self) -> None:
+        with_period = options()
+
+        self.assertTrue(with_period.has_period)
+        self.assertEqual(with_period.period, (PERIOD_FROM, PERIOD_TO))
+
+    def test_period_bounds_must_be_timezone_aware(self) -> None:
+        with self.assertRaisesRegex(ValueError, "period_from must include a timezone"):
+            options(period_from=datetime(2026, 8, 1), period_to=PERIOD_TO)
+        with self.assertRaisesRegex(ValueError, "period_to must include a timezone"):
+            options(period_from=PERIOD_FROM, period_to=datetime(2026, 8, 31))
+
+    def test_the_period_reports_refuse_a_periodless_record_set(self) -> None:
+        record_set = compile_record_set_from_artifacts(
+            list(ARTIFACTS), options=options(period_from=None, period_to=None)
+        )
+        expected = {
+            project_vdt: "the Vulnerability Detail Report",
+            project_avi: "the Accepted Vulnerability Information report",
+        }
+
+        for project, report_name in expected.items():
+            with self.subTest(projection=project.__name__):
+                with self.assertRaises(ReportCompileError) as caught:
+                    project(record_set)
+
+                diagnostics = caught.exception.diagnostics
+                self.assertEqual([item.code for item in diagnostics], ["report_period_missing"])
+                self.assertTrue(diagnostics[0].message.startswith(report_name))
+        self.assertEqual(len(project_historical(record_set).active), 6)
 
 
 class PainReductionSlotTests(unittest.TestCase):
@@ -1633,6 +2470,18 @@ class ArgumentOrderTests(unittest.TestCase):
                 self.assertEqual(report.to_json(), expected.to_json())
                 self.assertEqual(report.to_markdown(), expected.to_markdown())
 
+    def test_every_report_kind_is_order_independent_with_an_accepted_record(self) -> None:
+        evaluations = load_evaluations(ACCEPTED_EVALUATIONS)
+
+        for kind in REPORT_KINDS:
+            expected = compile_fixtures(artifacts=ARTIFACTS, evaluations=evaluations, kind=kind)
+            for order in permutations(ARTIFACTS):
+                with self.subTest(kind=kind, order=[path.name for path in order]):
+                    report = compile_fixtures(artifacts=order, evaluations=evaluations, kind=kind)
+
+                    self.assertEqual(report.to_json(), expected.to_json())
+                    self.assertEqual(report.to_markdown(), expected.to_markdown())
+
     def test_the_artifact_manifest_is_sorted_by_name_then_digest(self) -> None:
         report = compile_fixtures(artifacts=tuple(reversed(ARTIFACTS)))
         artifacts = report.document["x-complyroll"]["artifacts"]
@@ -1753,7 +2602,13 @@ class SharedGroupOrderTests(unittest.TestCase):
 
     hosts = ("host-charlie", "host-alpha", "host-bravo")
 
-    def compile_hosts(self, order: Sequence[str]) -> CompiledVdtReport:
+    def compile_hosts(
+        self,
+        order: Sequence[str],
+        *,
+        kind: ReportKind = "vdt",
+        evaluations: EvaluationSet | None = None,
+    ) -> CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths = []
@@ -1761,7 +2616,27 @@ class SharedGroupOrderTests(unittest.TestCase):
                 path = root / f"{host}.xml"
                 path.write_text(shared_benchmark_xccdf(host), encoding="utf-8")
                 paths.append(path)
-            return compile_fixtures(artifacts=tuple(paths))
+            return compile_fixtures(artifacts=tuple(paths), evaluations=evaluations, kind=kind)
+
+    def test_every_report_kind_orders_a_shared_accepted_group_the_same_way(self) -> None:
+        """Accepting the shared banner group puts the group in every projection."""
+
+        evaluations = evaluations_from(match=BANNER_MATCH, **ACCEPTANCE)
+        avi = self.compile_hosts(self.hosts, kind="avi", evaluations=evaluations)
+        self.assertEqual(len(avi.accepted), 1)
+        self.assertEqual(
+            [resource.resource_id for resource in avi.accepted[0].vulnerability.resources],
+            sorted(self.hosts),
+        )
+
+        for kind in REPORT_KINDS:
+            expected = self.compile_hosts(self.hosts, kind=kind, evaluations=evaluations)
+            for order in permutations(self.hosts):
+                with self.subTest(kind=kind, order=list(order)):
+                    report = self.compile_hosts(order, kind=kind, evaluations=evaluations)
+
+                    self.assertEqual(report.to_json(), expected.to_json())
+                    self.assertEqual(report.to_markdown(), expected.to_markdown())
 
     def test_the_fixture_really_does_produce_a_group_spanning_every_file(self) -> None:
         """Guard the premise: without shared groups the rest proves nothing."""
@@ -1838,7 +2713,13 @@ class DuplicateBytesOrderTests(unittest.TestCase):
     first, so the same set of files in a different order produced a different report.
     """
 
-    def compile_named(self, order: Sequence[str]) -> CompiledVdtReport:
+    def compile_named(
+        self,
+        order: Sequence[str],
+        *,
+        kind: ReportKind = "vdt",
+        evaluations: EvaluationSet | None = None,
+    ) -> CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport:
         source = (FIXTURES / "openscap-results.xml").read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1847,7 +2728,22 @@ class DuplicateBytesOrderTests(unittest.TestCase):
                 path = root / name
                 path.write_text(source, encoding="utf-8")
                 paths.append(path)
-            return compile_fixtures(artifacts=tuple(paths))
+            return compile_fixtures(artifacts=tuple(paths), evaluations=evaluations, kind=kind)
+
+    def test_every_report_kind_elects_the_same_reading_in_any_order(self) -> None:
+        names = ("b.xml", "a.xml", "c.xml")
+        evaluations = evaluations_from(match=BANNER_MATCH, **ACCEPTANCE)
+        avi = self.compile_named(names, kind="avi", evaluations=evaluations)
+        self.assertEqual(len(avi.accepted), 1)
+
+        for kind in REPORT_KINDS:
+            expected = self.compile_named(names, kind=kind, evaluations=evaluations)
+            for order in permutations(names):
+                with self.subTest(kind=kind, order=list(order)):
+                    report = self.compile_named(order, kind=kind, evaluations=evaluations)
+
+                    self.assertEqual(report.to_json(), expected.to_json())
+                    self.assertEqual(report.to_markdown(), expected.to_markdown())
 
     def test_the_elected_reading_does_not_depend_on_argument_order(self) -> None:
         forward = self.compile_named(("aaa-copy.xml", "zzz-copy.xml"))

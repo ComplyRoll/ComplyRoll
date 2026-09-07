@@ -27,6 +27,10 @@ from complyroll.schemas import (
 
 TEST_ROOT = Path(__file__).parent
 GOLDEN = TEST_ROOT / "golden" / "ver-schema-examples.json"
+COMPILED_GOLDENS = {
+    ReportSchema.ACCEPTED_VULNERABILITY: TEST_ROOT / "golden" / "avi-fixtures.json",
+    ReportSchema.HISTORICAL_ACTIVITY: TEST_ROOT / "golden" / "historical-fixtures.json",
+}
 SCHEMA_COMMIT = "5156719aa7d0def16cf66f6197db9d6c0024e0e7"
 
 
@@ -259,6 +263,69 @@ class ReportValidationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ReportDocumentError, "duplicate JSON object key"):
             validate_bundled_report_bytes(ReportSchema.VULNERABILITY_DETAIL, content)
+
+
+class CompiledGoldenValidationTests(unittest.TestCase):
+    """The compiler's own AVI and historical goldens satisfy the official schemas.
+
+    `ver-schema-examples.json` holds hand-written examples; these two goldens are what
+    ComplyRoll emits, so validating them here ties the projections to the schemas
+    without going through the report compiler.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.bundle = load_bundled_schema_bundle()
+        cls.goldens = {
+            report_schema: json.loads(path.read_text(encoding="utf-8"))
+            for report_schema, path in COMPILED_GOLDENS.items()
+        }
+
+    def test_the_compiled_goldens_are_valid_against_their_own_schemas(self) -> None:
+        for report_schema, instance in self.goldens.items():
+            with self.subTest(schema=report_schema.value):
+                result = validate_report(self.bundle, report_schema, instance)
+
+                self.assertTrue(result.is_valid)
+                self.assertEqual(result.issues, ())
+                self.assertEqual(
+                    instance["x-complyroll"]["schemaSource"]["sha256"],
+                    result.provenance.schema_sha256,
+                )
+
+    def test_the_avi_golden_is_not_a_vulnerability_detail_report(self) -> None:
+        instance = self.goldens[ReportSchema.ACCEPTED_VULNERABILITY]
+
+        result = validate_report(self.bundle, ReportSchema.VULNERABILITY_DETAIL, instance)
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual({issue.validator for issue in result.issues}, {"required"})
+        self.assertTrue(any("vulnerabilities" in issue.message for issue in result.issues))
+
+    def test_an_accepted_item_without_a_rationale_is_refused(self) -> None:
+        instance = copy.deepcopy(self.goldens[ReportSchema.ACCEPTED_VULNERABILITY])
+        del instance["acceptedVulnerabilities"][0]["acceptanceRationale"]
+
+        result = validate_report(self.bundle, ReportSchema.ACCEPTED_VULNERABILITY, instance)
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(
+            [(issue.validator, issue.instance_pointer) for issue in result.issues],
+            [("required", "/acceptedVulnerabilities/0")],
+        )
+
+    def test_a_snapshot_without_generated_at_is_refused(self) -> None:
+        instance = copy.deepcopy(self.goldens[ReportSchema.HISTORICAL_ACTIVITY])
+        del instance["generatedAt"]
+
+        result = validate_report(self.bundle, ReportSchema.HISTORICAL_ACTIVITY, instance)
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(
+            [(issue.validator, issue.instance_pointer) for issue in result.issues],
+            [("required", "")],
+        )
+        self.assertIn("generatedAt", result.issues[0].message)
 
 
 if __name__ == "__main__":

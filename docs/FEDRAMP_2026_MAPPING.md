@@ -1,6 +1,6 @@
 # FedRAMP 2026 mapping
 
-Status date: **2026-09-04**
+Status date: **2026-09-05**
 
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
@@ -118,8 +118,8 @@ from the pinned canonical dataset.
 | Non-drift-prone resource detection | 1 month, SHOULD | Inventory coverage clock |
 | Non-machine verification/validation | 3 months, MUST | Review schedule |
 | Complete evaluation | 5 days from detection, SHOULD | Evaluation due date |
-| Human-readable activity report | Monthly, MUST | Report projection |
-| Historical JSON activity | Every 14 days, SHOULD | Snapshot/API projection |
+| Human-readable activity report | Monthly, MUST | Not mapped; the Markdown twins are renderings of the JSON reports, not this report (ADR 0010) |
+| Historical JSON activity | Every 14 days, SHOULD | `report historical` compiles the whole-population snapshot as of a given instant; the cadence is the operator's |
 | Accepted-vulnerability categorization | 192 days from evaluation, MUST | Escalation; never automatic acceptance |
 
 ### Current Class C PAIN response targets
@@ -211,3 +211,13 @@ can publish them with authorization, logging, redaction, and availability contro
 - Do not use mitigation and remediation interchangeably. Common Definitions `0.3.0` gives
   remediation its own `finalDisposition` value, `Remediated`, distinct from `Fully Mitigated`.
 - Do not embed superseded pilot drafts when stable 2026 rules exist.
+- Do not treat the acceptance instant as anything but the evaluation's `completedAt`. The
+  accepted-vulnerability report selects by activity instants, so an acceptance recorded in a
+  later period than the one its evaluation completed in, with no other activity since, is not
+  placed in the later period's report (ADR 0010).
+- Do not read the historical report as a window. `report historical` is a snapshot of the whole
+  known population as of one instant, with `finalDisposition` distinguishing disposed records
+  from open ones, and the retrieval cadence of `VER-TFR-MRH` (once a month for Class B, every
+  14 days for Class C, both SHOULD) is the operator's to schedule.
+- Do not call a Markdown twin the monthly human-readable report. The twins are renderings of the
+  JSON reports under `CDS-CSO-CBF`; `VER-TFR-MHR` is not mapped.

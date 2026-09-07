@@ -35,6 +35,25 @@ All notable project changes will be documented here.
   the ARF assets block and the XCCDF target, and carries an unevaluated rule in an embedded
   benchmark, so a document-scoped identity or identifier sweep fails the tests rather than
   passing them quietly.
+- The Accepted Vulnerability Information report and the Historical VER Activity report
+  (ADR 0010). The record compiler now builds one period-agnostic `CompiledRecordSet` from
+  either path, and three projections read it: `project_vdt`, `project_avi`, and
+  `project_historical`. `complyroll report avi` and `complyroll report historical` compile
+  each report from scanner artifacts and an evaluations file or, with `--db`, from a store;
+  the historical command takes no `--from` or `--to`, and each writes the JSON document and an
+  optional Markdown twin. The accepted-vulnerability report selects accepted records by their
+  activity instants in the period, counts the rest in `excludedByPeriod` and the active
+  records in `activeNotReported`, and takes the acceptance instant from the evaluation's
+  `completedAt`. The historical report is a periodless snapshot of every record as of
+  `--as-of`, split on acceptance, with `finalDisposition` distinguishing a disposed record from
+  an open one. `examples/evaluations-accepted.json` adds one accepted entry to the shipped
+  evaluations file, and four goldens, `tests/golden/avi-fixtures.{json,md}` and
+  `tests/golden/historical-fixtures.{json,md}`, pin the bytes. Verified by schema validation
+  against the bundled `0.1.1` documents, by the goldens on both the stateless and the rebuilt
+  path, by agreement between the two paths across reversed ingest order and every ingest
+  permutation of a shared fleet case, and by a test that records the same evaluations in two
+  stores eleven days apart and proves the report bytes are identical, so the store's
+  `recordedAt` never reaches a report.
 
 ### Changed
 
@@ -64,6 +83,17 @@ All notable project changes will be documented here.
   one. A consumer that read the extension key must read the official key instead and treat it as
   optional; the extension no longer carries an empty list for cases with no reductions. This is
   a breaking change to the pre-1.0 extension.
+- `ReportOptions` is keyword-only and its period is optional (ADR 0010). `period_from` and
+  `period_to` default to `None`, must be given together, and keep the ordering check;
+  `has_period` and the `period` property replace direct reads, and a projection that needs a
+  period and gets none fails with the compile error `report_period_missing` named after the
+  report. Positional construction of `ReportOptions` no longer works. `_period_exclusion_reason`
+  takes a `state` argument so the accepted-vulnerability report's `excluded_by_period`
+  diagnostic reads "is accepted and no recorded activity between" the bounds instead of
+  "has disposition None". `_require_acceptance_rationales` fails the accepted-vulnerability and
+  historical projections with `acceptance_rationale_missing` when an accepted record's
+  evaluation has no rationale; the detail report keeps setting accepted records aside without
+  one. The detail report's bytes are unchanged by this work.
 
 ## 0.3.0a0 - 2026-08-23
 

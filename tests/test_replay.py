@@ -18,10 +18,16 @@ from itertools import permutations
 from pathlib import Path
 
 from test_reports import (
+    ACCEPTED_EVALUATIONS,
     ARTIFACTS,
+    BANNER_CASE,
+    BANNER_RATIONALE,
     EXAMPLES,
     FIXTURES,
     GOLDEN,
+    REPORT_KINDS,
+    ReportKind,
+    find_accepted,
     find_vulnerability,
     options,
     shared_benchmark_xccdf,
@@ -44,13 +50,22 @@ from complyroll.history import (
     record_ingest,
 )
 from complyroll.reports import (
+    CompiledAviReport,
+    CompiledHistoricalReport,
     CompiledVdtReport,
     ReportCompileError,
+    ReportOptions,
+    compile_avi_report,
+    compile_avi_report_from_history,
+    compile_historical_report,
+    compile_historical_report_from_history,
     compile_vdt_report,
     compile_vdt_report_from_history,
     load_evaluations,
 )
 from complyroll.store import SQLiteEventStore
+
+AnyReport = CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport
 
 #: The instant the fixtures were ingested at, matching the golden `--as-of`.
 INGESTED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
@@ -60,6 +75,15 @@ ATTESTED_AT = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
 EARLIER_ATTESTED_AT = datetime(2026, 7, 15, 0, 0, tzinfo=UTC)
 #: A later instant, for re-attesting one case after the rest were attested together.
 LATER_ATTESTED_AT = datetime(2026, 8, 2, 0, 0, tzinfo=UTC)
+#: A recording instant well after every example evaluation completed and after the
+#: golden `--as-of`, so a store recorded then differs from the golden store in nothing
+#: but the `recordedAt` its evaluation and disposition events carry.
+LATER_RECORDED_AT = datetime(2026, 9, 1, 8, 30, tzinfo=UTC)
+#: A report period no fixture activity falls in, for the out-of-period acceptance.
+SEPTEMBER = {
+    "period_from": datetime(2026, 9, 1, 0, 0, tzinfo=UTC),
+    "period_to": datetime(2026, 9, 30, 23, 59, 59, tzinfo=UTC),
+}
 RATIONALE = "The fixtures declare no assessment timestamp; the assessment ran on 1 August."
 #: One fixed run identifier for every acceptance store, so a replay stays reproducible.
 #: The repository requires `run-` followed by a canonical lowercase version-4 UUID.
@@ -100,6 +124,16 @@ def windows_evaluation(**overrides: object) -> dict[str, object]:
     return entry
 
 
+def banner_acceptance() -> dict[str, object]:
+    """Return the example acceptance of `banner_etc_issue`, exactly as the file records it."""
+
+    payload = json.loads(ACCEPTED_EVALUATIONS.read_text(encoding="utf-8"))
+    for entry in payload["evaluations"]:
+        if entry["match"]["sourceRecordId"] == "banner_etc_issue":
+            return dict(entry)
+    raise AssertionError("the example acceptance file no longer accepts banner_etc_issue")
+
+
 def markdown_attestation_groups(markdown: str) -> list[tuple[str, tuple[str, ...]]]:
     """Read the per-case attestation bullets back out of the Markdown twin."""
 
@@ -112,19 +146,98 @@ def markdown_attestation_groups(markdown: str) -> list[tuple[str, tuple[str, ...
     return groups
 
 
+def compile_from_history(
+    repository: EventRepository,
+    *,
+    kind: ReportKind,
+    options: ReportOptions,
+) -> AnyReport:
+    """Rebuild one report of the given kind from a store (ADR 0010, three projections)."""
+
+    if kind == "avi":
+        return compile_avi_report_from_history(repository, options=options)
+    if kind == "historical":
+        return compile_historical_report_from_history(repository, options=options)
+    return compile_vdt_report_from_history(repository, options=options)
+
+
+def compile_stateless(
+    artifacts: Sequence[Path],
+    evaluations: Path | None,
+    *,
+    kind: ReportKind,
+    options: ReportOptions,
+) -> AnyReport:
+    """Compile one report of the given kind from files, the way the command line does."""
+
+    parsed = None if evaluations is None else load_evaluations(evaluations)
+    if kind == "avi":
+        return compile_avi_report(list(artifacts), options=options, evaluations=parsed)
+    if kind == "historical":
+        return compile_historical_report(list(artifacts), options=options, evaluations=parsed)
+    return compile_vdt_report(list(artifacts), options=options, evaluations=parsed)
+
+
+def populate(
+    repository: EventRepository,
+    metadata: EventMetadata,
+    artifacts: Sequence[Path],
+    *,
+    evaluations: Path | None = None,
+    now: datetime = INGESTED_AT,
+) -> None:
+    """Drive the writers over one store in command order: ingest, correlate, attest, evaluate.
+
+    `now` is the instant the correlation, attestation, and evaluation writers record as
+    having acted, so two stores that differ only in it hold the same facts under
+    different `createdAt`, `attestedAt`, and `recordedAt` values.
+    """
+
+    for path in artifacts:
+        record_ingest(
+            repository,
+            ingest_stig_artifact(Path(path), ingested_at=INGESTED_AT),
+            metadata=metadata,
+            ingested_at=INGESTED_AT,
+        )
+    correlate_cases(repository, metadata=metadata, now=now)
+    attest_detection(
+        repository,
+        tuple(case.tracking_id for case in fold_all_cases(repository)),
+        detected_at=ATTESTED_AT,
+        rationale=RATIONALE,
+        metadata=metadata,
+        now=now,
+    )
+    if evaluations is not None:
+        apply_evaluations(repository, load_evaluations(evaluations), metadata=metadata, now=now)
+
+
 class StoreFixture(unittest.TestCase):
     """A temporary store plus the four writers, called exactly as a command would."""
 
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.workspace = Path(directory.name)
+        self.workspace = self.fresh_workspace()
         self.database = self.workspace / "history.db"
         store = SQLiteEventStore(self.database)
         self.addCleanup(store.close)
         self.store = store
         self.repository = EventRepository(store)
         self.metadata = EventMetadata(actor="golden", run_id=RUN_ID)
+
+    def fresh_workspace(self) -> Path:
+        """Return an empty directory that lives as long as this test."""
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name)
+
+    def open_repository(self, workspace: Path) -> EventRepository:
+        """Open a second, empty store in `workspace`, closed when this test ends."""
+
+        store = SQLiteEventStore(workspace / "history.db")
+        self.addCleanup(store.close)
+        return EventRepository(store)
 
     def ingest(self, paths: Sequence[Path] = ARTIFACTS) -> None:
         """Record every artifact in the order the golden report lists them."""
@@ -161,13 +274,15 @@ class StoreFixture(unittest.TestCase):
         )
         return selected
 
-    def evaluate(self, path: Path | None = None) -> None:
+    def evaluate(self, path: Path | None = None, *, now: datetime = INGESTED_AT) -> None:
+        """Apply one evaluations file, recorded at `now`, which no report may print."""
+
         source = EXAMPLES / "evaluations.json" if path is None else path
         apply_evaluations(
             self.repository,
             load_evaluations(source),
             metadata=self.metadata,
-            now=INGESTED_AT,
+            now=now,
         )
 
     def append_orphan_case(self, tracking_id: str = ORPHAN_CASE) -> None:
@@ -211,9 +326,12 @@ class StoreFixture(unittest.TestCase):
 
         return len(self.repository.read_stream(case_stream_id(tracking_id)))
 
-    def replay(self, **option_overrides: object) -> CompiledVdtReport:
-        return compile_vdt_report_from_history(
+    def replay(self, *, kind: ReportKind = "vdt", **option_overrides: object) -> AnyReport:
+        """Rebuild one projection from this test's store with the golden options."""
+
+        return compile_from_history(
             self.repository,
+            kind=kind,
             options=options(**option_overrides),  # type: ignore[arg-type]
         )
 
@@ -221,21 +339,27 @@ class StoreFixture(unittest.TestCase):
         self,
         artifacts: Sequence[Path],
         evaluations: Path,
+        *,
+        kind: ReportKind = "vdt",
         **option_overrides: object,
-    ) -> CompiledVdtReport:
+    ) -> AnyReport:
         """Compile the same inputs the stateless way, for a byte-identity comparison."""
 
-        return compile_vdt_report(
-            list(artifacts),
+        return compile_stateless(
+            artifacts,
+            evaluations,
+            kind=kind,
             options=options(**option_overrides),  # type: ignore[arg-type]
-            evaluations=load_evaluations(evaluations),
         )
 
     def assert_paths_agree(
         self,
         artifacts: Sequence[Path],
         evaluations: Path,
-    ) -> CompiledVdtReport:
+        *,
+        kind: ReportKind = "vdt",
+        **option_overrides: object,
+    ) -> AnyReport:
         """Assert both renderings of both paths match byte for byte, and return one.
 
         Both sides of this comparison run `compile_records`, so it proves the two
@@ -244,19 +368,19 @@ class StoreFixture(unittest.TestCase):
         strings a reader of the report would see.
         """
 
-        replayed = self.replay()
-        stateless = self.stateless(artifacts, evaluations)
+        replayed = self.replay(kind=kind, **option_overrides)
+        stateless = self.stateless(artifacts, evaluations, kind=kind, **option_overrides)
 
         self.assertEqual(replayed.to_json(), stateless.to_json())
         self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
         return replayed
 
-    def attestation_block(self, report: CompiledVdtReport) -> object:
+    def attestation_block(self, report: AnyReport) -> object:
         """Return the report-level detection-time attestation block."""
 
         return report.document["x-complyroll"]["detectionTimeAttestation"]
 
-    def sole_vulnerability(self, report: CompiledVdtReport) -> dict[str, object]:
+    def sole_vulnerability(self, report: AnyReport) -> dict[str, object]:
         """Return the one reported vulnerability, asserting the report holds one."""
 
         vulnerabilities = report.document["vulnerabilities"]
@@ -370,33 +494,29 @@ class SharedGroupIngestOrderTests(StoreFixture):
             paths.append(path)
         return tuple(paths)
 
-    def replay_fleet(self, order: Sequence[str]) -> CompiledVdtReport:
+    def replay_fleet(
+        self,
+        order: Sequence[str],
+        *,
+        kind: ReportKind = "vdt",
+        evaluations: Path | None = None,
+    ) -> AnyReport:
         """Ingest a fleet into its own fresh store, then rebuild the report from it."""
 
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        workspace = Path(directory.name)
-        store = SQLiteEventStore(workspace / "history.db")
-        self.addCleanup(store.close)
-        repository = EventRepository(store)
+        workspace = self.fresh_workspace()
+        repository = self.open_repository(workspace)
+        populate(repository, self.metadata, self.fleet(order, workspace), evaluations=evaluations)
+        return compile_from_history(repository, kind=kind, options=options())
 
-        for path in self.fleet(order, workspace):
-            record_ingest(
-                repository,
-                ingest_stig_artifact(path, ingested_at=INGESTED_AT),
-                metadata=self.metadata,
-                ingested_at=INGESTED_AT,
-            )
-        correlate_cases(repository, metadata=self.metadata, now=INGESTED_AT)
-        attest_detection(
-            repository,
-            tuple(case.tracking_id for case in fold_all_cases(repository)),
-            detected_at=ATTESTED_AT,
-            rationale=RATIONALE,
-            metadata=self.metadata,
-            now=INGESTED_AT,
-        )
-        return compile_vdt_report_from_history(repository, options=options())
+    def accepted_banner(self) -> Path:
+        """Write the example's banner acceptance alone: the one entry a fleet matches.
+
+        The fleet's three files share one benchmark, so `banner_etc_issue` is one case
+        whose resources and observations come from every host, which is exactly the
+        member order that once followed ingest order.
+        """
+
+        return self.write_evaluations([banner_acceptance()], "fleet-acceptance.json")
 
     def test_a_fleet_replays_the_same_bytes_whatever_order_it_was_ingested(self) -> None:
         expected = self.replay_fleet(self.hosts)
@@ -417,6 +537,255 @@ class SharedGroupIngestOrderTests(StoreFixture):
 
         self.assertEqual(replayed.to_json(), stateless.to_json())
         self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
+
+    def test_an_accepted_fleet_case_replays_the_same_avi_whatever_the_order(self) -> None:
+        path = self.accepted_banner()
+        expected = self.replay_fleet(self.hosts, kind="avi", evaluations=path)
+        accepted = find_accepted(expected, "banner_etc_issue")
+        detail = accepted["vulnerabilityDetail"]
+
+        self.assertEqual(accepted["acceptanceRationale"], BANNER_RATIONALE)
+        self.assertEqual(
+            [item["resourceId"] for item in detail["x-complyroll"]["resources"]],
+            ["host-alpha", "host-bravo", "host-charlie"],
+        )
+        self.assertEqual(len(detail["x-complyroll"]["observationIds"]), 3)
+        self.assertIn(
+            "- **Affected resources:** host host-alpha, host host-bravo, host host-charlie",
+            expected.to_markdown(),
+        )
+
+        for order in permutations(self.hosts):
+            with self.subTest(order=list(order)):
+                report = self.replay_fleet(order, kind="avi", evaluations=path)
+
+                self.assertEqual(report.to_json(), expected.to_json())
+                self.assertEqual(report.to_markdown(), expected.to_markdown())
+
+    def test_an_accepted_fleet_case_replays_the_same_snapshot_whatever_the_order(self) -> None:
+        path = self.accepted_banner()
+        expected = self.replay_fleet(self.hosts, kind="historical", evaluations=path)
+        markdown = expected.to_markdown()
+
+        self.assertEqual(
+            find_accepted(expected, "banner_etc_issue")["acceptanceRationale"],
+            BANNER_RATIONALE,
+        )
+        self.assertEqual(len(expected.document["activeVulnerabilities"]), 1)
+        self.assertIn("| Active vulnerabilities | 1 |", markdown)
+        self.assertIn("| Accepted vulnerabilities | 1 |", markdown)
+
+        for order in permutations(self.hosts):
+            with self.subTest(order=list(order)):
+                report = self.replay_fleet(order, kind="historical", evaluations=path)
+
+                self.assertEqual(report.to_json(), expected.to_json())
+                self.assertEqual(report.to_markdown(), expected.to_markdown())
+
+    def test_the_two_paths_agree_on_an_accepted_fleet_for_every_projection(self) -> None:
+        path = self.accepted_banner()
+        artifacts = list(self.fleet(self.hosts, self.workspace))
+
+        for kind in REPORT_KINDS:
+            with self.subTest(kind=kind):
+                replayed = self.replay_fleet(
+                    tuple(reversed(self.hosts)), kind=kind, evaluations=path
+                )
+                stateless = compile_stateless(artifacts, path, kind=kind, options=options())
+
+                self.assertEqual(replayed.to_json(), stateless.to_json())
+                self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
+                if kind == "vdt":
+                    self.assertIn(
+                        "is an accepted vulnerability and belongs in the VER-RPT-AVI report",
+                        replayed.to_markdown(),
+                    )
+                else:
+                    self.assertIn(
+                        f"- **Acceptance rationale:** {BANNER_RATIONALE}",
+                        replayed.to_markdown(),
+                    )
+
+
+class AcceptedProjectionReplayTests(StoreFixture):
+    """ADR 0010: the two accepted-vulnerability projections rebuild from history exactly.
+
+    The store holds the example acceptance file, so one fixture case is accepted and
+    five are active. The Accepted Vulnerability Information report publishes the one
+    and counts the five; the historical snapshot publishes all six with no period.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ingest()
+        self.correlate()
+        self.attest()
+        self.evaluate(ACCEPTED_EVALUATIONS)
+
+    def assert_matches_golden(self, kind: ReportKind, name: str) -> None:
+        report = self.replay(kind=kind)
+
+        self.assertEqual(
+            report.to_json(), (GOLDEN / f"{name}.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            report.to_markdown(), (GOLDEN / f"{name}.md").read_text(encoding="utf-8")
+        )
+
+    def test_the_replayed_avi_matches_the_stateless_golden_byte_for_byte(self) -> None:
+        self.assert_matches_golden("avi", "avi-fixtures")
+
+    def test_the_replayed_snapshot_matches_the_stateless_golden_byte_for_byte(self) -> None:
+        self.assert_matches_golden("historical", "historical-fixtures")
+
+    def test_the_replayed_documents_satisfy_their_official_schemas(self) -> None:
+        for kind in ("avi", "historical"):
+            with self.subTest(kind=kind):
+                report = self.replay(kind=kind)
+
+                self.assertTrue(report.validation.is_valid)
+                self.assertEqual(report.validation.issues, ())
+
+    def test_the_two_paths_agree_on_the_avi(self) -> None:
+        report = self.assert_paths_agree(ARTIFACTS, ACCEPTED_EVALUATIONS, kind="avi")
+        accepted = find_accepted(report, "banner_etc_issue")
+        markdown = report.to_markdown()
+
+        self.assertEqual(accepted["acceptanceRationale"], BANNER_RATIONALE)
+        self.assertEqual(accepted["vulnerabilityDetail"]["providerTrackingId"], BANNER_CASE)
+        self.assertEqual(accepted["vulnerabilityDetail"]["overdueStatus"], {"isOverdue": False})
+        self.assertEqual(len(report.document["acceptedVulnerabilities"]), 1)
+        self.assertEqual(report.document["x-complyroll"]["activeNotReported"], 5)
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 0)
+        self.assertIn("| Active, not reported here | 5 |", markdown)
+        self.assertIn(f"- **Acceptance rationale:** {BANNER_RATIONALE}", markdown)
+
+    def test_the_two_paths_agree_on_the_historical_snapshot(self) -> None:
+        report = self.assert_paths_agree(ARTIFACTS, ACCEPTED_EVALUATIONS, kind="historical")
+        active = report.document["activeVulnerabilities"]
+        markdown = report.to_markdown()
+
+        self.assertEqual(report.document["generatedAt"], "2026-08-21T12:00:00Z")
+        self.assertNotIn("reportPeriod", report.document)
+        self.assertNotIn("reportPeriod", report.document["x-complyroll"])
+        self.assertEqual(len(active), 5)
+        self.assertEqual(
+            find_vulnerability(report, "V-260470", key="activeVulnerabilities")[
+                "finalDisposition"
+            ],
+            "Partially Mitigated",
+        )
+        self.assertEqual(
+            find_accepted(report, "banner_etc_issue")["acceptanceRationale"],
+            BANNER_RATIONALE,
+        )
+        self.assertNotIn("- **Report period:**", markdown)
+        self.assertIn("| Active vulnerabilities | 5 |", markdown)
+        self.assertIn("| Accepted vulnerabilities | 1 |", markdown)
+
+    def test_two_stores_recorded_at_different_instants_print_the_same_bytes(self) -> None:
+        """`recordedAt` is `now` at `cases evaluate` time and must never reach a report.
+
+        The acceptance instant a report may state is the evaluation's `completedAt`
+        (ADR 0010 Decision 2). The store from `setUp` recorded its evaluations at the
+        golden `--as-of`, where a leak would print the very string `generatedAt`
+        prints; this second store recorded them eleven days later, so a leak has
+        nowhere to hide.
+        """
+
+        later = self.open_repository(self.fresh_workspace())
+        populate(
+            later,
+            self.metadata,
+            ARTIFACTS,
+            evaluations=ACCEPTED_EVALUATIONS,
+            now=LATER_RECORDED_AT,
+        )
+        recorded = fold_case(later, BANNER_CASE).disposition
+        golden = fold_case(self.repository, BANNER_CASE).disposition
+
+        self.assertIsNotNone(recorded)
+        self.assertIsNotNone(golden)
+        assert recorded is not None and golden is not None
+        self.assertEqual(recorded.recorded_at, LATER_RECORDED_AT)
+        self.assertEqual(golden.recorded_at, INGESTED_AT)
+
+        for kind in ("avi", "historical"):
+            with self.subTest(kind=kind):
+                report = compile_from_history(later, kind=kind, options=options())
+                expected = self.replay(kind=kind)
+
+                self.assertEqual(report.to_json(), expected.to_json())
+                self.assertEqual(report.to_markdown(), expected.to_markdown())
+                self.assertNotIn(iso_utc(LATER_RECORDED_AT), report.to_json())
+                self.assertNotIn(iso_utc(LATER_RECORDED_AT), report.to_markdown())
+                self.assertEqual(
+                    find_accepted(report, "banner_etc_issue")["vulnerabilityDetail"][
+                        "evaluationCompletedAt"
+                    ],
+                    "2026-08-06T09:00:00Z",
+                )
+
+        # The August period above holds the case's real activity, so a `recordedAt` that
+        # leaked into period membership would change no byte there. September holds the
+        # later store's recording instant and none of the case's activity, so from that
+        # store alone a leak would put the acceptance into September's report.
+        self.assertTrue(SEPTEMBER["period_from"] <= LATER_RECORDED_AT <= SEPTEMBER["period_to"])
+        september = compile_from_history(
+            later,
+            kind="avi",
+            options=options(
+                period_from=SEPTEMBER["period_from"], period_to=SEPTEMBER["period_to"]
+            ),
+        )
+        expected = self.replay(kind="avi", **SEPTEMBER)
+
+        self.assertEqual(september.document["acceptedVulnerabilities"], [])
+        self.assertEqual(september.document["x-complyroll"]["excludedByPeriod"], 1)
+        self.assertEqual(september.to_json(), expected.to_json())
+        self.assertEqual(september.to_markdown(), expected.to_markdown())
+
+    def test_history_ingested_in_reverse_still_replays_both_goldens(self) -> None:
+        reversed_store = self.open_repository(self.fresh_workspace())
+        populate(
+            reversed_store,
+            self.metadata,
+            tuple(reversed(ARTIFACTS)),
+            evaluations=ACCEPTED_EVALUATIONS,
+        )
+
+        for kind, name in (("avi", "avi-fixtures"), ("historical", "historical-fixtures")):
+            with self.subTest(kind=kind):
+                report = compile_from_history(reversed_store, kind=kind, options=options())
+
+                self.assertEqual(
+                    report.to_json(), (GOLDEN / f"{name}.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    report.to_markdown(), (GOLDEN / f"{name}.md").read_text(encoding="utf-8")
+                )
+
+    def test_an_acceptance_outside_the_period_is_excluded_on_both_paths(self) -> None:
+        report = self.assert_paths_agree(
+            ARTIFACTS, ACCEPTED_EVALUATIONS, kind="avi", **SEPTEMBER
+        )
+        excluded = [item for item in report.diagnostics if item.code == "excluded_by_period"]
+        markdown = report.to_markdown()
+
+        self.assertEqual(report.document["acceptedVulnerabilities"], [])
+        self.assertEqual(report.document["x-complyroll"]["excludedByPeriod"], 1)
+        self.assertEqual(report.document["x-complyroll"]["activeNotReported"], 5)
+        self.assertEqual(len(excluded), 1)
+        self.assertEqual(excluded[0].level.value, "info")
+        self.assertEqual(
+            excluded[0].message,
+            f"{BANNER_CASE} is accepted and no recorded activity between "
+            "2026-09-01T00:00:00Z and 2026-09-30T23:59:59Z",
+        )
+        self.assertEqual(excluded[0].location, "banner_etc_issue")
+        self.assertIn(excluded[0].to_dict(), report.document["x-complyroll"]["diagnostics"])
+        self.assertIn("| Excluded by report period | 1 |", markdown)
+        self.assertIn("No accepted vulnerabilities had recorded activity in this period.", markdown)
 
 
 class ReplayedHistoryTests(StoreFixture):
@@ -586,6 +955,39 @@ class StaleCaseTests(StoreFixture):
         report = self.replay()
 
         self.assertEqual([item for item in report.diagnostics if item.code == "stale_case"], [])
+
+    def test_the_stale_case_sits_at_the_same_position_in_every_projection(self) -> None:
+        """The record set carries the diagnostic once; each projection publishes it as is."""
+
+        self.ingest(WINDOWS_ONLY)
+        self.correlate()
+        self.append_orphan_case()
+        self.attest()
+        message = (
+            f"{ORPHAN_CASE} is recorded in history but no open observation group "
+            "matches it, so it is not in this report"
+        )
+        positions: dict[str, int] = {}
+
+        for kind in REPORT_KINDS:
+            with self.subTest(kind=kind):
+                report = self.replay(kind=kind)
+                codes = [item.code for item in report.diagnostics]
+                published = report.document["x-complyroll"]["diagnostics"]
+                index = codes.index("stale_case")
+
+                self.assertEqual(codes.count("stale_case"), 1)
+                self.assertEqual(report.diagnostics[index].level.value, "info")
+                self.assertEqual(report.diagnostics[index].message, message)
+                self.assertEqual(published[index]["code"], "stale_case")
+                self.assertEqual(published[index]["message"], message)
+                self.assertIn(
+                    f"- **info** stale_case: {message} [case/{ORPHAN_CASE}]",
+                    report.to_markdown(),
+                )
+                positions[kind] = index
+
+        self.assertEqual(set(positions.values()), {positions["vdt"]})
 
 
 class OverriddenAttestationTests(StoreFixture):
@@ -831,6 +1233,23 @@ class ReplayedDispositionTests(StoreFixture):
             [],
         )
 
+    def test_closed_as_remediated_rehydrates(self) -> None:
+        """Remediated is its own official disposition (ADR 0007 amendment 2026-09-04)."""
+
+        path = self.evaluated_store(
+            windows_evaluation(disposition="closed", closedDisposition="remediated")
+        )
+
+        report = self.assert_paths_agree(WINDOWS_ONLY, path)
+        record = self.sole_vulnerability(report)
+
+        self.assertEqual(record["providerTrackingId"], WINDOWS_CASE)
+        self.assertEqual(record["finalDisposition"], "Remediated")
+        self.assertTrue(record["x-complyroll"]["remediated"])
+        self.assertEqual(self.attestation_block(report), SOLE_ATTESTATION)
+        self.assertIn("- **Disposition:** Remediated", report.to_markdown())
+        self.assertIn("| Remediated |", report.to_markdown())
+
     def test_closed_as_false_positive_rehydrates(self) -> None:
         path = self.evaluated_store(
             windows_evaluation(disposition="closed", closedDisposition="false_positive")
@@ -884,6 +1303,74 @@ class ReplayedDispositionTests(StoreFixture):
             [item.code for item in report.diagnostics if item.code == "accepted_excluded"],
             ["accepted_excluded"],
         )
+
+    def assert_accepted_on_both_paths(self, path: Path, *, kind: ReportKind) -> None:
+        """Assert the store's one accepted case reaches `acceptedVulnerabilities` intact.
+
+        The rationale comes from the `case.disposition_recorded` event and the detected
+        instant from `detection.attested`, so both are facts the log holds rather than
+        anything a command-line flag supplied at report time.
+        """
+
+        report = self.assert_paths_agree(WINDOWS_ONLY, path, kind=kind)
+        accepted = find_accepted(report, "V-253260")
+        markdown = report.to_markdown()
+
+        self.assertEqual(len(report.document["acceptedVulnerabilities"]), 1)
+        self.assertEqual(accepted["acceptanceRationale"], self.ACCEPTANCE)
+        self.assertEqual(accepted["vulnerabilityDetail"]["providerTrackingId"], WINDOWS_CASE)
+        self.assertEqual(
+            accepted["vulnerabilityDetail"]["detection"]["detectedAt"], "2026-08-01T00:00:00Z"
+        )
+        self.assertEqual(self.attestation_block(report), SOLE_ATTESTATION)
+        self.assertIn(f"### {WINDOWS_CASE}: V-253260", markdown)
+        self.assertIn(f"- **Acceptance rationale:** {self.ACCEPTANCE}", markdown)
+        self.assertIn("- **Disposition:** accepted; **remediated:** no", markdown)
+
+    def test_an_accepted_case_rehydrates_into_the_avi(self) -> None:
+        path = self.evaluated_store(
+            windows_evaluation(disposition="accepted", acceptanceRationale=self.ACCEPTANCE)
+        )
+
+        self.assert_accepted_on_both_paths(path, kind="avi")
+        report = self.replay(kind="avi")
+
+        self.assertEqual(report.document["x-complyroll"]["activeNotReported"], 0)
+        self.assertIn("| Accepted vulnerabilities reported | 1 |", report.to_markdown())
+
+    def test_an_accepted_case_rehydrates_into_the_historical_snapshot(self) -> None:
+        path = self.evaluated_store(
+            windows_evaluation(disposition="accepted", acceptanceRationale=self.ACCEPTANCE)
+        )
+
+        self.assert_accepted_on_both_paths(path, kind="historical")
+        report = self.replay(kind="historical")
+
+        self.assertEqual(report.document["activeVulnerabilities"], [])
+        self.assertIn("No active vulnerabilities are recorded.", report.to_markdown())
+        self.assertIn("| Accepted vulnerabilities | 1 |", report.to_markdown())
+
+    def test_closing_as_accepted_rehydrates_into_the_avi(self) -> None:
+        path = self.evaluated_store(
+            windows_evaluation(
+                disposition="closed",
+                closedDisposition="accepted",
+                acceptanceRationale=self.ACCEPTANCE,
+            )
+        )
+
+        self.assert_accepted_on_both_paths(path, kind="avi")
+
+    def test_closing_as_accepted_rehydrates_into_the_historical_snapshot(self) -> None:
+        path = self.evaluated_store(
+            windows_evaluation(
+                disposition="closed",
+                closedDisposition="accepted",
+                acceptanceRationale=self.ACCEPTANCE,
+            )
+        )
+
+        self.assert_accepted_on_both_paths(path, kind="historical")
 
 
 class DispositionWithoutEvaluationTests(StoreFixture):

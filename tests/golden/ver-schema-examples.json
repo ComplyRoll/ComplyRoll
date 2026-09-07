@@ -21,6 +21,53 @@
         "overdueStatus": {
           "isOverdue": false
         }
+      },
+      {
+        "providerTrackingId": "CASE-SYNTHETIC-003",
+        "detection": {
+          "detectedAt": "2026-08-05T09:00:00Z",
+          "detectionSource": "Synthetic scanner"
+        },
+        "vulnerabilityDescription": "Synthetic remediated example",
+        "potentialAgencyImpact": "Synthetic example with no customer information",
+        "evaluationCompletedAt": "2026-08-06T09:00:00Z",
+        "isInternetReachable": true,
+        "isLikelyExploitable": true,
+        "currentRating": 1,
+        "overdueStatus": {
+          "isOverdue": false
+        },
+        "finalDisposition": "Remediated"
+      },
+      {
+        "providerTrackingId": "CASE-SYNTHETIC-004",
+        "detection": {
+          "detectedAt": "2026-08-07T10:00:00Z",
+          "detectionSource": "Synthetic scanner"
+        },
+        "vulnerabilityDescription": "Synthetic PAIN reduction history example",
+        "potentialAgencyImpact": "Synthetic example with no customer information",
+        "evaluationCompletedAt": "2026-08-08T10:00:00Z",
+        "isInternetReachable": false,
+        "isLikelyExploitable": true,
+        "currentRating": 3,
+        "projectedNextReduction": {
+          "estimatedAt": "2026-08-25T10:00:00Z",
+          "targetRating": 2
+        },
+        "painReductionEvents": [
+          {
+            "reducedAt": "2026-08-12T10:00:00Z",
+            "rating": 4
+          },
+          {
+            "reducedAt": "2026-08-18T10:00:00Z",
+            "rating": 3
+          }
+        ],
+        "overdueStatus": {
+          "isOverdue": false
+        }
       }
     ],
     "complyrollExtension": {

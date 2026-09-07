@@ -1,6 +1,6 @@
 # FedRAMP 2026 mapping
 
-Status date: **2026-08-21**
+Status date: **2026-09-04**
 
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
@@ -11,8 +11,8 @@ schema SHA-256 digests. Phase 1 now bundles and verifies the exact official data
 selecting provider-facing 20x Class B or Class C rules. Runtime deadlines come from the selected
 structured rules rather than the planning tables below or application constants.
 
-The initial report-schema bundle is independently pinned to official `FedRAMP/schemas` commit
-`ae43ae2952c5dd5c56d54d12e8b92c7db1b3710a`. It contains Common Definitions version `0.2.1` and
+The report-schema bundle is independently pinned to official `FedRAMP/schemas` commit
+`5156719aa7d0def16cf66f6197db9d6c0024e0e7`. It contains Common Definitions version `0.3.0` and
 the Vulnerability Detail, Accepted Vulnerability, and Historical VER Activity schemas at version
 `0.1.1`. Each document is digest verified and all cross-document references resolve from the
 offline bundle before validation begins. Digests are of the bytes served by GitHub at that commit;
@@ -32,12 +32,18 @@ no `timeframe_type` or `timeframe_num`, against 17 flat rules that carry the pai
 If FedRAMP answers that the omission is intended, this paragraph becomes a citation to a documented
 decision rather than a note about an unexplained gap.
 
-Known cross-pin inconsistency: Common Definitions cites `VER-RPT-PAE` for its `painReductionEvent`
-definition, but no rule with that identifier exists in the pinned dataset and no bundled report
-schema references the definition. "Each completed PAIN reduction" therefore has no official slot
-yet and must ship as a provider extension. This is tracked upstream as
-[FedRAMP/schemas issue 16](https://github.com/FedRAMP/schemas/issues/16), where the cross-pin check
-above and the proposal to re-point the definition at `VER-RPT-VDT` are recorded.
+Common Definitions `0.2.1` cited `VER-RPT-PAE` for its `painReductionEvent` definition, a rule
+identifier that does not exist in the pinned dataset, and no bundled report schema referenced the
+definition, so "each completed PAIN reduction" had no official slot and shipped as a provider
+extension. ComplyRoll raised this as
+[FedRAMP/schemas issue 16](https://github.com/FedRAMP/schemas/issues/16). FedRAMP resolved it
+upstream on 2026-09-01 in commit
+[5156719a](https://github.com/FedRAMP/schemas/commit/5156719aa7d0def16cf66f6197db9d6c0024e0e7),
+where Common Definitions `0.3.0` re-points the definition at `VER-RPT-VDT`. The same commit
+closed two other upstream issues by adding an optional `painReductionEvents` array to
+`vulnerabilityDetail` (issue 7) and `Remediated` to the `finalDisposition` enumeration
+(issue 3). ComplyRoll adopted that pin on 2026-09-04 (ADR 0009), and completed reductions now
+publish in the official slot.
 
 ## Current program context
 
@@ -202,5 +208,6 @@ can publish them with authorization, logging, redaction, and availability contro
 - Do not say POA&Ms universally disappeared; agencies may use provider vulnerability information
   in their own POA&M processes.
 - Do not use "internet accessible" as a substitute for "internet reachable."
-- Do not use mitigation and remediation interchangeably.
+- Do not use mitigation and remediation interchangeably. Common Definitions `0.3.0` gives
+  remediation its own `finalDisposition` value, `Remediated`, distinct from `Fully Mitigated`.
 - Do not embed superseded pilot drafts when stable 2026 rules exist.

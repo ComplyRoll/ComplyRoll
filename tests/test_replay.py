@@ -791,9 +791,9 @@ class ReplayedPainReductionOrderTests(StoreFixture):
         self.evaluate(restated)
 
         report = self.assert_paths_agree(WINDOWS_ONLY, restated)
-        extension = report.document["vulnerabilities"][0]["x-complyroll"]
+        record = report.document["vulnerabilities"][0]
 
-        self.assertEqual(extension["painReductionEvents"], list(self.CHRONOLOGICAL))
+        self.assertEqual(record["painReductionEvents"], list(self.CHRONOLOGICAL))
         self.assertIn(
             "- **Completed PAIN reductions:** N4 at 2026-08-06T16:00:00Z, "
             "N3 at 2026-08-12T16:00:00Z",

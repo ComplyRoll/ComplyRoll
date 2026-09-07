@@ -627,7 +627,7 @@ class DispositionMappingTests(unittest.TestCase):
             CaseStatus.ACTIVE: None,
             CaseStatus.PARTIALLY_MITIGATED: "Partially Mitigated",
             CaseStatus.FULLY_MITIGATED: "Fully Mitigated",
-            CaseStatus.REMEDIATED: "Fully Mitigated",
+            CaseStatus.REMEDIATED: "Remediated",
             CaseStatus.FALSE_POSITIVE: "False Positive",
         }
         for status, disposition in expected.items():
@@ -1269,7 +1269,7 @@ class TimestampAndBoundsTests(unittest.TestCase):
             vulnerability["projectedNextReduction"]["estimatedAt"], "2026-08-24T07:00:00Z"
         )
         self.assertEqual(
-            vulnerability["x-complyroll"]["painReductionEvents"][0]["reducedAt"],
+            vulnerability["painReductionEvents"][0]["reducedAt"],
             "2026-08-10T16:00:00Z",
         )
 
@@ -1347,6 +1347,35 @@ class ReportOptionsTests(unittest.TestCase):
         )
 
 
+class PainReductionSlotTests(unittest.TestCase):
+    """Completed PAIN reductions publish in the official slot (ADR 0009 Decision 3).
+
+    Common Definitions 0.3.0 gave `vulnerabilityDetail` a `painReductionEvents` array,
+    so the extension no longer carries a copy of the list: one fact, one place.
+    """
+
+    def test_reductions_are_published_on_the_official_record(self) -> None:
+        report = compile_fixtures(
+            evaluations=evaluations_from(
+                painReductionEvents=[{"reducedAt": "2026-08-10T00:00:00Z", "rating": 2}]
+            )
+        )
+        record = find_vulnerability(report, "V-260470")
+
+        self.assertEqual(
+            record["painReductionEvents"],
+            [{"reducedAt": "2026-08-10T00:00:00Z", "rating": 2}],
+        )
+        self.assertNotIn("painReductionEvents", record["x-complyroll"])
+
+    def test_a_record_with_no_reductions_omits_the_key(self) -> None:
+        report = compile_fixtures(evaluations=evaluations_from())
+        record = find_vulnerability(report, "V-260470")
+
+        self.assertNotIn("painReductionEvents", record)
+        self.assertNotIn("painReductionEvents", record["x-complyroll"])
+
+
 class PainReductionOrderTests(unittest.TestCase):
     """Completed PAIN reductions render in one canonical order (ADR 0008 Decision 5).
 
@@ -1368,11 +1397,9 @@ class PainReductionOrderTests(unittest.TestCase):
         report = self.compile_with(self.OUT_OF_ORDER)
 
         record = find_vulnerability(report, "V-260470")
-        extension = record["x-complyroll"]
-        assert isinstance(extension, dict)
 
         self.assertEqual(
-            extension["painReductionEvents"],
+            record["painReductionEvents"],
             [
                 {"reducedAt": "2026-08-06T16:00:00Z", "rating": 4},
                 {"reducedAt": "2026-08-12T16:00:00Z", "rating": 3},
@@ -1397,22 +1424,16 @@ class PainReductionOrderTests(unittest.TestCase):
         )
 
         record = find_vulnerability(report, "V-260470")
-        extension = record["x-complyroll"]
-        assert isinstance(extension, dict)
 
-        self.assertEqual(
-            [item["rating"] for item in extension["painReductionEvents"]], [2, 4]
-        )
+        self.assertEqual([item["rating"] for item in record["painReductionEvents"]], [2, 4])
 
     def test_an_already_ordered_file_is_unchanged(self) -> None:
         ordered = tuple(reversed(self.OUT_OF_ORDER))
 
         report = self.compile_with(ordered)
         record = find_vulnerability(report, "V-260470")
-        extension = record["x-complyroll"]
-        assert isinstance(extension, dict)
 
-        self.assertEqual(extension["painReductionEvents"], list(ordered))
+        self.assertEqual(record["painReductionEvents"], list(ordered))
 
 
 class RepeatedPainReductionTests(unittest.TestCase):

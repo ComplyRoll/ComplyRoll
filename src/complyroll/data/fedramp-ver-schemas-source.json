@@ -1,16 +1,16 @@
 {
   "manifest_version": "1",
   "repository": "https://github.com/FedRAMP/schemas",
-  "commit": "ae43ae2952c5dd5c56d54d12e8b92c7db1b3710a",
-  "retrieved_at": "2026-08-20T23:46:16Z",
+  "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+  "retrieved_at": "2026-09-04T22:52:22Z",
   "schema_draft": "https://json-schema.org/draft/2020-12/schema",
   "schemas": [
     {
       "name": "common-definitions",
       "path": "fedramp-common-definitions-schema-2026-06-24.json",
       "id": "https://fedramp.gov/schemas/fedramp-common-definitions-schema-2026-06-24.json",
-      "version": "0.2.1",
-      "sha256": "13bed0a781e5e75c5cb923fc2b7d9e10330c06e0f21260a738dc8ed4d3349455"
+      "version": "0.3.0",
+      "sha256": "ed810d60584580fb86cda3f846d94504a14e09538122c27c5b5231d41151d6de"
     },
     {
       "name": "vulnerability-detail",

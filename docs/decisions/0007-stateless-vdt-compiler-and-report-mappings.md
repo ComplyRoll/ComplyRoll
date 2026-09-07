@@ -331,3 +331,15 @@ remediation was rejected because the official enumeration is closed. Building th
 layer first was rejected because it delays the exit criterion by weeks for no gain in
 reproducibility. Emitting extension fields at the top level of each vulnerability was rejected
 because a future official field could collide with them.
+
+## Amendment 2026-09-04: remediated is its own official disposition
+
+Common Definitions `0.3.0` (ADR 0009) added `Remediated` to the `finalDisposition` enumeration,
+so the official vocabulary now distinguishes a weakness that no longer exists from one that is
+fully mitigated. The `remediated` row of the Decision 4 table now maps to `Remediated`; every
+other row is unchanged, and a `closed` case still emits the disposition recorded at close, which
+may now be `Remediated`. The `x-complyroll` extension keeps `remediated`, so a consumer that read
+the flag continues to work. The same schema version gave `vulnerabilityDetail` an official
+`painReductionEvents` array, so the Decision 8 extension no longer carries that list and the
+report publishes it on the vulnerability record instead. The sentence under Rejected alternatives
+about inventing a fourth disposition value records the enumeration as it stood on 2026-08-21.

@@ -81,3 +81,14 @@ historical reproduction and would expose validation to mutable content and netwo
 Maintaining a partial in-house JSON Schema evaluator was rejected because incomplete keyword or
 reference behavior could incorrectly certify a report. The deprecated `RefResolver` API was
 rejected because the modern immutable registry provides an explicit offline resource boundary.
+
+## Amendment 2026-09-04: re-pin to Common Definitions 0.3.0
+
+The bundle now pins `FedRAMP/schemas` commit `5156719aa7d0def16cf66f6197db9d6c0024e0e7`, the
+merge of upstream pull request 22 on 2026-09-01. That commit changed only Common Definitions,
+from version `0.2.1` to `0.3.0`, SHA-256
+`ed810d60584580fb86cda3f846d94504a14e09538122c27c5b5231d41151d6de`. The three report schemas are
+byte-identical to the `0.1.1` copies pinned above, so their manifest entries and digests are
+unchanged. The manifest process this record describes was followed as written: the manifest
+records the new commit, retrieval time, version, and digest, and the loader verifies them before
+any schema is used. What changed inside the schema and why ComplyRoll adopted it are in ADR 0009.

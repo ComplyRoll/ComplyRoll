@@ -18,6 +18,12 @@
         "explanation": "VDR-TFR-PVR (SHOULD, Class C): the response target for PAIN N4, internet reachable, likely exploitable ran from the completed evaluation 2026-08-05T16:00:00Z and passed 2026-08-09T16:00:00Z with no disposition recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
         "isOverdue": true
       },
+      "painReductionEvents": [
+        {
+          "rating": 4,
+          "reducedAt": "2026-08-12T16:00:00Z"
+        }
+      ],
       "potentialAgencyImpact": "The Fax Server role exposes a legacy service on a Windows host inside the authorization boundary, and a successful exploit would give an attacker a foothold next to agency workloads.",
       "projectedNextReduction": {
         "estimatedAt": "2026-08-28T16:00:00Z",
@@ -72,12 +78,6 @@
         "observationIds": [
           "obs-6e3d196cb5f895fecc7d879eac03f954de2d99f46fdd0bccc11d8f0e88a66dc4"
         ],
-        "painReductionEvents": [
-          {
-            "rating": 4,
-            "reducedAt": "2026-08-12T16:00:00Z"
-          }
-        ],
         "rationale": "The role is installed and listening on the host. Public exploit code exists for the service version in use and the host answers from the internet-facing segment, so exploitation is likely rather than theoretical.",
         "remediated": false,
         "resources": [
@@ -126,7 +126,6 @@
         "observationIds": [
           "obs-f841f4f0e47c5d8710658d433ee82715d679f7a5cfbd9afb4a4e216688ad3926"
         ],
-        "painReductionEvents": [],
         "rationale": null,
         "remediated": false,
         "resources": [
@@ -207,7 +206,6 @@
         "observationIds": [
           "obs-6cdf3ee1f2fa3cf51ea8aac1cc05c8534ec5e56d8398edd559ef5f226b68a674"
         ],
-        "painReductionEvents": [],
         "rationale": "Inactive accounts are not disabled on the shared Ubuntu host. Session records confirm the host is reachable from the tenant-facing load balancer and that password authentication is accepted, so the weakness is both reachable and usable.",
         "remediated": false,
         "resources": [
@@ -258,7 +256,6 @@
         "observationIds": [
           "obs-dd8f546726ab5b2cb9a096254bd3679185ca8f2cd10045dd7de289ad5553e5d6"
         ],
-        "painReductionEvents": [],
         "rationale": null,
         "remediated": false,
         "resources": [
@@ -305,7 +302,6 @@
         "observationIds": [
           "obs-c1a949d8bba45d81b6badd35b2a1c985370d60f37503e3ddf5c79e07ed45e883"
         ],
-        "painReductionEvents": [],
         "rationale": null,
         "remediated": false,
         "resources": [
@@ -354,7 +350,6 @@
         "observationIds": [
           "obs-9d9083ec3329bc5beea5a41c62fb26a19048cbeba1e2c7dc2c7f1e63a081fb21"
         ],
-        "painReductionEvents": [],
         "rationale": null,
         "remediated": false,
         "resources": [
@@ -451,7 +446,7 @@
       "sha256": "135707003f0aaa5ceb10d7d32c2681e5b1585a4eaf4403d0d135837787e5ae8e"
     },
     "schemaSource": {
-      "commit": "ae43ae2952c5dd5c56d54d12e8b92c7db1b3710a",
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
       "repository": "https://github.com/FedRAMP/schemas",
       "schemaId": "https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json",
       "schemaVersion": "0.1.1",

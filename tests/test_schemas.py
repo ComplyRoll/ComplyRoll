@@ -27,7 +27,7 @@ from complyroll.schemas import (
 
 TEST_ROOT = Path(__file__).parent
 GOLDEN = TEST_ROOT / "golden" / "ver-schema-examples.json"
-SCHEMA_COMMIT = "ae43ae2952c5dd5c56d54d12e8b92c7db1b3710a"
+SCHEMA_COMMIT = "5156719aa7d0def16cf66f6197db9d6c0024e0e7"
 
 
 class SchemaSourceTests(unittest.TestCase):
@@ -43,7 +43,7 @@ class SchemaSourceTests(unittest.TestCase):
         self.assertEqual(
             {entry.name: entry.version for entry in manifest.schemas},
             {
-                COMMON_DEFINITIONS_NAME: "0.2.1",
+                COMMON_DEFINITIONS_NAME: "0.3.0",
                 ReportSchema.VULNERABILITY_DETAIL.value: "0.1.1",
                 ReportSchema.ACCEPTED_VULNERABILITY.value: "0.1.1",
                 ReportSchema.HISTORICAL_ACTIVITY.value: "0.1.1",
@@ -167,6 +167,47 @@ class ReportValidationTests(unittest.TestCase):
                     result.provenance.schema_sha256,
                     self.bundle.document(report_schema.value).content_sha256,
                 )
+
+    def test_the_golden_exercises_the_common_definitions_0_3_0_additions(self) -> None:
+        """The golden must keep covering `Remediated` and `painReductionEvents` (ADR 0009)."""
+
+        vulnerabilities = self.examples[ReportSchema.VULNERABILITY_DETAIL.value][
+            "vulnerabilities"
+        ]
+
+        self.assertIn("Remediated", {item.get("finalDisposition") for item in vulnerabilities})
+        self.assertTrue(any("painReductionEvents" in item for item in vulnerabilities))
+
+    def test_an_unknown_disposition_is_still_refused(self) -> None:
+        instance = copy.deepcopy(self.examples[ReportSchema.VULNERABILITY_DETAIL.value])
+        instance["vulnerabilities"][0]["finalDisposition"] = "Closed"
+
+        result = validate_report(self.bundle, ReportSchema.VULNERABILITY_DETAIL, instance)
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(
+            [(issue.validator, issue.instance_pointer) for issue in result.issues],
+            [("enum", "/vulnerabilities/0/finalDisposition")],
+        )
+
+    def test_a_malformed_reduction_event_is_refused_in_the_official_slot(self) -> None:
+        """Before 0.3.0 the key was an unchecked extra property; now its items are checked."""
+
+        instance = copy.deepcopy(self.examples[ReportSchema.VULNERABILITY_DETAIL.value])
+        index = next(
+            position
+            for position, item in enumerate(instance["vulnerabilities"])
+            if "painReductionEvents" in item
+        )
+        instance["vulnerabilities"][index]["painReductionEvents"][0]["rating"] = 6
+
+        result = validate_report(self.bundle, ReportSchema.VULNERABILITY_DETAIL, instance)
+
+        self.assertFalse(result.is_valid)
+        self.assertEqual(
+            [(issue.validator, issue.instance_pointer) for issue in result.issues],
+            [("enum", f"/vulnerabilities/{index}/painReductionEvents/0/rating")],
+        )
 
     def test_official_schema_allows_provider_extensions(self) -> None:
         result = validate_bundled_report(

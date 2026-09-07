@@ -45,6 +45,25 @@ All notable project changes will be documented here.
   FedRAMP 20x vulnerability reports, with every response clock read from FedRAMP's published rules
   dataset." The PyPI summary is baked in at build time, so it carries the old line until the next
   release.
+- The report-schema bundle now pins `FedRAMP/schemas` commit `5156719a` (ADR 0009), which
+  carries Common Definitions `0.3.0`. FedRAMP merged it on 2026-09-01 as upstream pull request
+  22, closing three issues: `finalDisposition` gains `Remediated` (issue 3),
+  `vulnerabilityDetail` gains an optional `painReductionEvents` array (issue 7), and the
+  `painReductionEvent` definition now cites `VER-RPT-VDT` instead of a rule that does not exist
+  ([issue 16](https://github.com/FedRAMP/schemas/issues/16), which ComplyRoll raised). The
+  three report schemas are byte-identical to the `0.1.1` copies already bundled, and the rules
+  dataset pin is unchanged. Report provenance in the JSON and the Markdown cites the new commit,
+  so the two VDT goldens moved: the commit in both, and in the JSON the relocated key and the
+  empty extension lists that are no longer emitted. The schema-examples golden gained a
+  `Remediated` example and a `painReductionEvents` example, and new tests prove that the
+  `0.3.0` bundle refuses an unknown disposition and a malformed reduction event.
+- A `remediated` case now emits `finalDisposition: "Remediated"` instead of `Fully Mitigated`.
+  Every other disposition mapping is unchanged, and `x-complyroll.remediated` stays.
+- Completed PAIN reductions moved from `x-complyroll.painReductionEvents` to the official
+  `painReductionEvents` slot on the vulnerability record, emitted only when a case has at least
+  one. A consumer that read the extension key must read the official key instead and treat it as
+  optional; the extension no longer carries an empty list for cases with no reductions. This is
+  a breaking change to the pre-1.0 extension.
 
 ## 0.3.0a0 - 2026-08-23
 

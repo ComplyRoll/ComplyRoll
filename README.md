@@ -241,9 +241,11 @@ and digest. Assessors do not configure or operate ComplyRoll on a provider's beh
 - [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md): observation, case, evaluation, and evidence model
 - [`docs/FEDRAMP_2026_MAPPING.md`](docs/FEDRAMP_2026_MAPPING.md): current rule and schema mapping
 - [`docs/SECURITY.md`](docs/SECURITY.md): threat model and evidence-handling requirements
-- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0007
+- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0009
   (0007 fixes the report mappings: attested detection time, disposition table, clock semantics,
-  overdue wording, the `x-complyroll` extension, and the evaluations file)
+  overdue wording, the `x-complyroll` extension, and the evaluations file; 0009 adopts Common
+  Definitions 0.3.0, which gives completed PAIN reductions an official slot and remediation its
+  own disposition)
 - [`examples/`](examples/): the fixture-to-report demo inputs
 - [`AGENTS.md`](AGENTS.md): repository rules and development commands
 

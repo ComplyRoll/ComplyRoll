@@ -59,11 +59,13 @@ DISCLAIMER = (
 EXTENSION_KEY = "x-complyroll"
 GENERATOR_NAME = "complyroll"
 
-#: ADR 0007 Decision 4. `accepted` never appears in a Vulnerability Detail Report.
+#: ADR 0007 Decision 4, amended 2026-09-04 (ADR 0009): Common Definitions 0.3.0 added
+#: `Remediated` to the official enumeration. `accepted` never appears in a Vulnerability
+#: Detail Report.
 FINAL_DISPOSITIONS: dict[CaseStatus, str] = {
     CaseStatus.PARTIALLY_MITIGATED: "Partially Mitigated",
     CaseStatus.FULLY_MITIGATED: "Fully Mitigated",
-    CaseStatus.REMEDIATED: "Fully Mitigated",
+    CaseStatus.REMEDIATED: "Remediated",
     CaseStatus.FALSE_POSITIVE: "False Positive",
 }
 ACTIVE_STATUSES = frozenset(
@@ -326,6 +328,13 @@ class CompiledVulnerability:
                 value["supplementaryRiskInformation"] = (
                     evaluation.supplementary_risk_information
                 )
+            # Official since Common Definitions 0.3.0 (ADR 0009); the extension carried
+            # this list while the report schemas had no slot for it.
+            if evaluation.pain_reduction_events:
+                value["painReductionEvents"] = [
+                    {"reducedAt": _iso(event.reduced_at), "rating": int(event.rating)}
+                    for event in evaluation.pain_reduction_events
+                ]
         if self.final_disposition is not None:
             value["finalDisposition"] = self.final_disposition
         return value
@@ -348,10 +357,6 @@ class CompiledVulnerability:
             "untimestampedObservationIds": list(self.untimestamped_observation_ids),
             "deadlines": [item.to_dict() for item in self.deadlines],
             "remediated": self.remediated,
-            "painReductionEvents": [
-                {"reducedAt": _iso(event.reduced_at), "rating": int(event.rating)}
-                for event in (evaluation.pain_reduction_events if evaluation else ())
-            ],
             "evaluator": evaluation.evaluator if evaluation else None,
             "rationale": evaluation.rationale if evaluation else None,
             "detectedAtSource": self.detected_at_source,

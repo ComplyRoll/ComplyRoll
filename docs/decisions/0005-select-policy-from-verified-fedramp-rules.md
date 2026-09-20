@@ -68,3 +68,29 @@ Hardcoding the published deadline tables was rejected because it would create an
 second policy source. Parsing numbers from human-readable rule statements was rejected because it
 would be brittle and could silently misinterpret future language. Fetching rules during every run
 was rejected because it would break offline reproducibility and historical report regeneration.
+
+## Amendment 2026-09-16: re-pin to rules 2026.09.13.02
+
+The bundle now pins `FedRAMP/rules` commit `58487bda77d76d9ce334304ec2e779ece7cc7d54`, dataset
+version `2026.09.13.02`, last updated 2026-09-13, SHA-256
+`64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8`, and the schema at that
+commit, SHA-256 `eb4710bee0b06d0f8f803302ac2e88b934ef2bc942d0b548738c7304f0cb418f`. The process
+this record describes was followed as written: the manifest records the new commit, retrieval
+time, version, last-updated value, and both digests, and the loader verifies them before any
+rule is selected.
+
+The paragraph above that gives `VDR-TFR-NMV` no calculable direct timeframe records the dataset
+as it stood at `2026.07.14.01`. ComplyRoll raised that gap as FedRAMP/community discussion 164
+and FedRAMP fixed it in `2026.09.13.01` (upstream pull request 28): the rule now carries
+`timeframe_type` `months` and `timeframe_num` `3`, so `SelectedRule.timeframe` and
+`deadline_for_rule` return the three-month clock for Class B and Class C. The report compiler
+computes no per-vulnerability deadline from it, because the rule is a recurrence clock on each
+non-machine-based information resource and ComplyRoll has no such records yet; that clock
+belongs to the coverage and freshness slice of Phase 2. The same upstream change gave the schema
+optional `timeframe_num_min` and `timeframe_num_max` for `CCM-QTR-SAR`, a rule outside the
+selected VDR and VER scope. The loader does not read the range fields, and a selected rule that
+carried `timeframe_type` without `timeframe_num` is still refused. Within the VDR and VER
+documents, the only other change between the two pins is the `terms` array of 41 rules, which
+the selector does not read; `2026.09.13.02` (upstream pull request 29) touched only those arrays
+and the FRD definitions. The selected rule count stays at 36 per class, and every other
+timeframe, force, and PAIN matrix is unchanged, as the policy golden shows.

@@ -1,12 +1,12 @@
 # FedRAMP 2026 mapping
 
-Status date: **2026-09-05**
+Status date: **2026-09-16**
 
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
 
 The current pin is recorded in `src/complyroll/data/fedramp-rules-source.json`: dataset version
-`2026.07.14.01` at commit `58efbf3d898496dd4a3a419eba78e458bbad5cb6`, with separate rules and
+`2026.09.13.02` at commit `58487bda77d76d9ce334304ec2e779ece7cc7d54`, with separate rules and
 schema SHA-256 digests. Phase 1 now bundles and verifies the exact official dataset bytes before
 selecting provider-facing 20x Class B or Class C rules. Runtime deadlines come from the selected
 structured rules rather than the planning tables below or application constants.
@@ -19,18 +19,26 @@ offline bundle before validation begins. Digests are of the bytes served by GitH
 `https://fedramp.gov/schemas/` serves the same documents minified, so byte digests differ there
 while the parsed JSON is identical.
 
-The pinned `VDR-TFR-NMV` rule currently states its three-month expectation in prose without
-structured timeframe fields. ComplyRoll preserves the rule but does not calculate that clock until
-an authoritative structured value is available. KEV due dates likewise require the applicable
-CISA catalog input, and `VDR-TFR-KEV` applies "even if the vulnerability has been fully
+`VDR-TFR-NMV` carries a structured three-month `MUST` timeframe since rules `2026.09.13.01`, and
+the policy layer exposes it through `SelectedRule.timeframe` and `deadline_for_rule`. The reports
+do not turn it into a per-vulnerability deadline: the rule is a recurrence clock on each
+non-machine-based information resource, and ComplyRoll has no information resource records yet,
+so that clock is scheduled with the Phase 2 coverage and freshness work. KEV due dates require the
+applicable CISA catalog input, and `VDR-TFR-KEV` applies "even if the vulnerability has been fully
 mitigated", so a KEV clock stops on remediation, not on mitigation.
 
-Whether that omission is deliberate is an open question with FedRAMP, raised on 2026-08-24 as
-[FedRAMP/community discussion 164](https://github.com/FedRAMP/community/discussions/164). It asks
-about `VDR-TFR-NMV` and four other flat rules that state a numeric cadence in prose while carrying
-no `timeframe_type` or `timeframe_num`, against 17 flat rules that carry the pair at the top level.
-If FedRAMP answers that the omission is intended, this paragraph becomes a citation to a documented
-decision rather than a note about an unexplained gap.
+ComplyRoll raised the missing pair on 2026-08-24 as
+[FedRAMP/community discussion 164](https://github.com/FedRAMP/community/discussions/164):
+`VDR-TFR-NMV` and four other flat rules stated a numeric cadence in prose while carrying no
+`timeframe_type` or `timeframe_num`, against 17 flat rules that carried the pair at the top level.
+FedRAMP answered on 2026-09-13 that the timeframes had been entered mostly by hand and these were
+missed, added the pair to five rules in `2026.09.13.01`
+([FedRAMP/rules pull request 28](https://github.com/FedRAMP/rules/pull/28)): `VDR-TFR-NMV`,
+`CCM-OCR-AVL`, `IVV-CSF-MCA`, `MKT-CAS-RFR`, and `MKT-IIP-DLA`, and gave the schema optional
+`timeframe_num_min` and `timeframe_num_max` for `CCM-QTR-SAR`, the one rule that states a range.
+Only `VDR-TFR-NMV` is inside the VDR and VER scope ComplyRoll selects. The range fields are not
+read by the loader, and a selected rule that carried `timeframe_type` without `timeframe_num`
+would still be refused rather than read as a range.
 
 Common Definitions `0.2.1` cited `VER-RPT-PAE` for its `painReductionEvent` definition, a rule
 identifier that does not exist in the pinned dataset, and no bundled report schema referenced the

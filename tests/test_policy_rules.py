@@ -267,7 +267,21 @@ class ClassAwarePolicyTests(unittest.TestCase):
     def test_rule_without_structured_timeframe_is_not_inferred_from_prose(self) -> None:
         policy = self.policies["C"]
 
-        self.assertIsNone(policy.rule("VDR-TFR-NMV").timeframe)
+        self.assertIsNone(policy.rule("VDR-TFR-KEV").timeframe)
+        self.assertIn("CISA", policy.rule("VDR-TFR-KEV").statement)
+
+    def test_nmv_carries_the_structured_timeframe_added_in_rules_2026_09_13(self) -> None:
+        # NOTE: FedRAMP/rules 2026.09.13.01 (pull request 28) answered discussion 164 by
+        # adding the pair VDR-TFR-NMV had only stated in prose. The clock is exposed here and
+        # is not a per-vulnerability report deadline.
+        for class_name in ("B", "C"):
+            with self.subTest(certification_class=class_name):
+                rule = self.policies[class_name].rule("VDR-TFR-NMV")
+                deadline = self.policies[class_name].deadline_for_rule("VDR-TFR-NMV", START)
+
+                self.assertEqual(rule.timeframe, RuleTimeframe(Decimal(3), TimeframeUnit.MONTHS))
+                self.assertIs(rule.force, RuleForce.MUST)
+                self.assertEqual(deadline.due_at, datetime(2026, 11, 20, 16, 0, tzinfo=UTC))
 
     def test_business_day_deadline_requires_an_explicit_calendar(self) -> None:
         timeframe = RuleTimeframe(Decimal(2), TimeframeUnit.BUSINESS_DAYS)
@@ -284,6 +298,7 @@ class ClassAwarePolicyTests(unittest.TestCase):
     @staticmethod
     def _policy_summary(policy: SelectedPolicy) -> dict[str, object]:
         direct_rule_ids = (
+            "VDR-TFR-NMV",
             "VDR-TFR-MVX",
             "VDR-TFR-PDD",
             "VDR-TFR-PCD",

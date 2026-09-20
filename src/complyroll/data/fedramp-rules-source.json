@@ -1,14 +1,14 @@
 {
   "manifest_version": "1",
   "repository": "https://github.com/FedRAMP/rules",
-  "commit": "58efbf3d898496dd4a3a419eba78e458bbad5cb6",
-  "retrieved_at": "2026-08-19T06:02:36Z",
+  "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+  "retrieved_at": "2026-09-16T07:11:16Z",
   "dataset_path": "fedramp-consolidated-rules.json",
-  "dataset_version": "2026.07.14.01",
-  "dataset_last_updated": "2026-07-14",
-  "dataset_sha256": "135707003f0aaa5ceb10d7d32c2681e5b1585a4eaf4403d0d135837787e5ae8e",
+  "dataset_version": "2026.09.13.02",
+  "dataset_last_updated": "2026-09-13",
+  "dataset_sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8",
   "schema_path": "schemas/fedramp-consolidated-rules.schema.json",
   "schema_id": "https://fedramp.gov/schema/documentation.json",
   "schema_draft": "https://json-schema.org/draft/2020-12/schema",
-  "schema_sha256": "ab0d267979ef7c3dd97cf253326d19725b6e945f3784364a8491091a47bdc147"
+  "schema_sha256": "eb4710bee0b06d0f8f803302ac2e88b934ef2bc942d0b548738c7304f0cb418f"
 }

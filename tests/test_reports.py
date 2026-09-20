@@ -1136,7 +1136,7 @@ class OverdueTests(unittest.TestCase):
         self.assertIn("Class C", status["explanation"])
         self.assertIn("N4", status["explanation"])
         self.assertIn("2026-08-09T16:00:00Z", status["explanation"])
-        self.assertIn("58efbf3d898496dd4a3a419eba78e458bbad5cb6", status["explanation"])
+        self.assertIn("58487bda77d76d9ce334304ec2e779ece7cc7d54", status["explanation"])
 
     def test_an_unevaluated_vulnerability_past_the_window_cites_evu(self) -> None:
         report = compile_fixtures()

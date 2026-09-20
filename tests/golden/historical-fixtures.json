@@ -93,7 +93,7 @@
       "isInternetReachable": true,
       "isLikelyExploitable": true,
       "overdueStatus": {
-        "explanation": "VDR-TFR-PVR (SHOULD, Class C): the response target for PAIN N4, internet reachable, likely exploitable ran from the completed evaluation 2026-08-05T16:00:00Z and passed 2026-08-09T16:00:00Z with no disposition recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "explanation": "VDR-TFR-PVR (SHOULD, Class C): the response target for PAIN N4, internet reachable, likely exploitable ran from the completed evaluation 2026-08-05T16:00:00Z and passed 2026-08-09T16:00:00Z with no disposition recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
         "isOverdue": true
       },
       "painReductionEvents": [
@@ -178,7 +178,7 @@
         "detectionSource": "stig-viewer-3"
       },
       "overdueStatus": {
-        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
         "isOverdue": true
       },
       "providerTrackingId": "case-9bed0d8f88355393",
@@ -308,7 +308,7 @@
         "detectionSource": "stig-viewer-3"
       },
       "overdueStatus": {
-        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
         "isOverdue": true
       },
       "providerTrackingId": "case-621d85d6533ce6e5",
@@ -354,7 +354,7 @@
         "detectionSource": "xccdf"
       },
       "overdueStatus": {
-        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
         "isOverdue": true
       },
       "providerTrackingId": "case-6719b316a5ea510b",
@@ -470,11 +470,11 @@
       "complyroll.xccdf": "1"
     },
     "rulesSource": {
-      "commit": "58efbf3d898496dd4a3a419eba78e458bbad5cb6",
-      "datasetLastUpdated": "2026-07-14",
-      "datasetVersion": "2026.07.14.01",
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
       "repository": "https://github.com/FedRAMP/rules",
-      "sha256": "135707003f0aaa5ceb10d7d32c2681e5b1585a4eaf4403d0d135837787e5ae8e"
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
     },
     "schemaSource": {
       "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",

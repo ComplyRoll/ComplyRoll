@@ -10,7 +10,7 @@
 
 | Source | Reference | Digest |
 |---|---|---|
-| Rules dataset | https://github.com/FedRAMP/rules at 58efbf3d898496dd4a3a419eba78e458bbad5cb6 (version 2026.07.14.01, updated 2026-07-14) | 135707003f0aaa5ceb10d7d32c2681e5b1585a4eaf4403d0d135837787e5ae8e |
+| Rules dataset | https://github.com/FedRAMP/rules at 58487bda77d76d9ce334304ec2e779ece7cc7d54 (version 2026.09.13.02, updated 2026-09-13) | 64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8 |
 | Report schema | https://github.com/FedRAMP/schemas at 5156719aa7d0def16cf66f6197db9d6c0024e0e7 (https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json version 0.1.1) | 5e9499e8cb9d0367c888ce41040175270fc9f007ae4f61d0ced34cca81cfe497 |
 | Generator | complyroll 0.3.0a0 | n/a |
 
@@ -58,7 +58,7 @@
 - **Projected next reduction:** N3 by 2026-08-28T16:00:00Z
 - **Completed PAIN reductions:** N4 at 2026-08-12T16:00:00Z
 - **Disposition:** active; **remediated:** no
-- **Overdue:** VDR-TFR-PVR (SHOULD, Class C): the response target for PAIN N4, internet reachable, likely exploitable ran from the completed evaluation 2026-08-05T16:00:00Z and passed 2026-08-09T16:00:00Z with no disposition recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
+- **Overdue:** VDR-TFR-PVR (SHOULD, Class C): the response target for PAIN N4, internet reachable, likely exploitable ran from the completed evaluation 2026-08-05T16:00:00Z and passed 2026-08-09T16:00:00Z with no disposition recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
 
 | Rule | Name | Force | Anchor | Start | Due | Satisfied |
 |---|---|---|---|---|---|---|
@@ -76,7 +76,7 @@
 - **Source identifiers:** CCI-000048
 - **Evaluation:** not yet completed
 - **Disposition:** active; **remediated:** no
-- **Overdue:** VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
+- **Overdue:** VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
 
 | Rule | Name | Force | Anchor | Start | Due | Satisfied |
 |---|---|---|---|---|---|---|
@@ -116,7 +116,7 @@
 - **Source identifiers:** n/a
 - **Evaluation:** not yet completed
 - **Disposition:** active; **remediated:** no
-- **Overdue:** VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
+- **Overdue:** VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
 
 | Rule | Name | Force | Anchor | Start | Due | Satisfied |
 |---|---|---|---|---|---|---|
@@ -132,7 +132,7 @@
 - **Source identifiers:** CCI-000048
 - **Evaluation:** not yet completed
 - **Disposition:** active; **remediated:** no
-- **Overdue:** VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
+- **Overdue:** VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
 
 | Rule | Name | Force | Anchor | Start | Due | Satisfied |
 |---|---|---|---|---|---|---|
@@ -148,7 +148,7 @@
 - **Source identifiers:** n/a
 - **Evaluation:** not yet completed
 - **Disposition:** active; **remediated:** no
-- **Overdue:** VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58efbf3d898496dd4a3a419eba78e458bbad5cb6. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
+- **Overdue:** VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.
 
 | Rule | Name | Force | Anchor | Start | Due | Satisfied |
 |---|---|---|---|---|---|---|

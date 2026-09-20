@@ -94,6 +94,22 @@ All notable project changes will be documented here.
   historical projections with `acceptance_rationale_missing` when an accepted record's
   evaluation has no rationale; the detail report keeps setting accepted records aside without
   one. The detail report's bytes are unchanged by this work.
+- The rules dataset now pins `FedRAMP/rules` commit `58487bda`, dataset version `2026.09.13.02`
+  (ADR 0005 amendment). It closes
+  [FedRAMP/community discussion 164](https://github.com/FedRAMP/community/discussions/164),
+  which ComplyRoll raised on 2026-08-24 because five rules stated a cadence in prose and carried
+  no `timeframe_type` or `timeframe_num`. FedRAMP answered on 2026-09-13 that the timeframes had
+  been entered mostly by hand, added the pair to those rules in `2026.09.13.01` (upstream pull
+  request 28), and gave the schema optional `timeframe_num_min` and `timeframe_num_max` for the
+  one rule that states a range; `2026.09.13.02` (pull request 29) changed only glossary terms and
+  definitions. In the VDR and VER scope ComplyRoll selects, the only change is `VDR-TFR-NMV`,
+  which now carries a three-month `MUST` timeframe, so `SelectedRule.timeframe` and
+  `deadline_for_rule` return it for both classes. No report deadline is computed from it: the
+  rule is a recurrence clock per non-machine-based information resource, which ComplyRoll does
+  not record yet. Verified by loading and selecting both classes against the new bytes (36 rules
+  each, every other timeframe and PAIN matrix unchanged), by the policy golden, which gained the
+  `VDR-TFR-NMV` entry under both classes, and by the six report goldens, which moved only in the
+  rules provenance block and in the overdue explanations that cite the dataset commit.
 
 ## 0.3.0a0 - 2026-08-23
 

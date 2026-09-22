@@ -47,11 +47,11 @@ ARF_UNEVALUATED_CCI = "CCI-002418"
 SARIF_FIXTURE = FIXTURES / "trivy-image.sarif"
 SARIF_ATTRIBUTION = ("complyroll.sarif", SARIF_PARSER_VERSION, SARIF_MEDIA_TYPE)
 # The CKLB adapter's verdict on a SARIF log reaching it under a bare .json name. Dispatch is
-# by suffix alone (ADR 0011, decision 20), so the bytes are never sniffed toward SARIF.
+# by suffix alone (ADR 0011, decision 1), so the bytes are never sniffed toward SARIF.
 CKLB_SHAPE_MESSAGE = "JSON has no non-empty 'stigs' array"
 
 # Observation ids of every STIG fixture, recorded before the shared helpers moved from
-# stig.py to adapters/common.py (ADR 0011, decision 18). The goldens prove the move changed
+# stig.py to adapters/common.py (ADR 0011, decision 12). The goldens prove the move changed
 # nothing; this table names it.
 BASELINE_OBSERVATION_IDS = {
     "ubuntu-host.cklb": (
@@ -630,7 +630,7 @@ class ParserVersionIndependenceTests(unittest.TestCase):
 
 
 class CommonHelperMoveTests(unittest.TestCase):
-    """The STIG adapters read their shared helpers from adapters/common.py (decision 18)."""
+    """The STIG adapters read their shared helpers from adapters/common.py (decision 12)."""
 
     def test_the_stig_adapters_use_the_shared_helpers(self) -> None:
         self.assertIs(stig.text_of, common.text_of)

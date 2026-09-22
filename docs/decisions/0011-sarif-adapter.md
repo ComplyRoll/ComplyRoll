@@ -113,10 +113,20 @@ The component comes first (spec 3.54.2): `result.rule.toolComponent.index` names
 The descriptor is `component.rules[result.rule.index]`, else
 `component.rules[result.ruleIndex]` (3.52.5 and 3.27.6, so an extension's `ruleIndex` reads
 the extension's own rules, never the driver's); else, with no index at all, the descriptor in
-that component whose `id` equals the string id, when exactly one matches (3.52.3). That last
-step was added during the build: Semgrep and Grype write `ruleId` with no `ruleIndex`, and
-without it their results came out with empty titles, no tags, no CWE identifiers, and Grype at
-MEDIUM instead of HIGH. Identity was never affected by it.
+that component whose `guid` equals `result.rule.guid` (3.52.6); else the descriptor whose `id`
+equals the string id (3.52.3). The guid and id steps count only a lone exact match: a value no
+descriptor carries, or one that two descriptors carry, names nothing, and a guid that names
+nothing falls through to the id. Guids and ids compare with surrounding whitespace trimmed and
+otherwise code point for code point, so a guid in other letter case names nothing. That is the
+adapter's reading, not a spec requirement: 3.5.3 lets a guid's hex digits take either case, and
+a result whose only rule reference is such a guid ends in `rule_id_missing` below rather than in
+a guessed match. There is no prefix matching, because 3.52.4 keeps a hierarchical id out of the
+lookup, so `CA5350/md5` never finds descriptor `CA5350` by its id. Each component's descriptor
+positions by id and by guid are indexed once per run, so the lookup costs the same for every
+result that makes it. The id step was added during the build: Semgrep and Grype write `ruleId`
+with no `ruleIndex`, and without it their results came out with empty titles, no tags, no CWE
+identifiers, and Grype at MEDIUM instead of HIGH. Identity was never affected by it, and a
+result that carries only `rule.guid` takes its identity from the descriptor the guid names.
 
 `source_record_id` is `result.ruleId`, else `result.rule.id`, else the resolved descriptor's
 `id`; the first string wins. Hierarchical ids (`CA2101/1`) are not truncated and composite ids
@@ -135,21 +145,41 @@ findings into one case.
 The description is `result.message.text`, else `descriptor.messageStrings[message.id].text`,
 else the resolved component's `globalMessageStrings[message.id].text` (3.11.7 scopes the
 lookup to the component that defines the rule), else `descriptor.fullDescription.text`, else
-empty. `[label](n)` link syntax is flattened to `label` on the template first; then `{n}`
+empty. `[label](n)` link syntax is flattened to `label` on the template first, in one
+left-to-right pass over the escapes of 3.11.6: inside link text, `\\`, `\[`, and `\]` are
+unescaped in the kept label, a backslash before any other character stays as written because
+producers write Windows paths, and an unescaped `[` abandons the link at that bracket. Only link
+text followed by `](`, one to nine ASCII digits, and `)` is flattened, so a uri link and
+unterminated text stay as written, and nothing outside link text is unescaped. The spec's
+example 1 is printed without the `]` that closes its link text, so as printed it stays as
+written; with that bracket it renders as the spec says, `para[0]\spans[2]`. Then `{n}`
 placeholders are replaced from `message.arguments[n]` in one left-to-right pass with an output
 budget of `MAX_DESCRIPTION_CHARS`, at most `MAX_MESSAGE_ARGUMENTS` (32) arguments read, a
 missing or non-string argument left as the literal placeholder, and `{{` and `}}` unescaped in
-the same pass. `message.markdown` is never read: the spec requires `text` beside it, and
-Markdown must not reach the twin unescaped. The title is `descriptor.shortDescription.text`,
-else `descriptor.name`, else empty.
+the same pass. A placeholder and a link index are ASCII digits only, so another script's digit
+never becomes one. The pass substitutes at most `MAX_MESSAGE_PLACEHOLDERS` (1,024) placeholders,
+whether or not an argument fills them, and reads a run of literal text only as far as the room
+left in the budget, so one expansion costs the budget and never the size of the template. An
+expansion that stops at the placeholder cap, or that leaves template text unread when the budget
+runs out, is marked cut with the `...[truncated]` marker, `description` in `truncated`, and the
+`evidence_truncated` warning, even when stripping or sanitizing brings what was read back under
+the cap: text went unread either way. `message.markdown` is never read: the spec requires `text`
+beside it, and Markdown must not reach the twin unescaped. The title is
+`descriptor.shortDescription.text`, else `descriptor.name`, else empty.
 
 `source_identifiers` come from three fixed anchored regexes (CVE, GHSA, and CWE, the last
 reading both Semgrep's `CWE-78: ...` tag and CodeQL's `external/cwe/cwe-078` form) run over
 the rule identifier, the descriptor's `id` and `name`, its `properties` texts and
 `relationships[].target.id`, the result's `properties` texts, and `result.taxa[].id`, unique
-and sorted. They feed the group's `source_identifiers` and the later KEV enrichment and are
-never identity. Because they read tag prose, a CWE mentioned in a tag attaches to the
-observation.
+and sorted. Every pattern reads ASCII letters and digits only, since a case-blind Unicode letter
+class also matches the dotted and dotless i, the long s, and the Kelvin sign. A CVE sequence
+number is 4 to 19 digits, the bound of the `cveId` pattern in the CVE record format. So a
+lookalike letter or digit, or an overlong number, never becomes an identifier. At most
+`MAX_LIST_ITEMS` (64) identifiers are kept per observation, the first 64 in sorted order, cut
+the same way per result and again per fold; a cut adds `source_identifiers` to `truncated` with
+the `evidence_truncated` warning. They feed the group's `source_identifiers` and the later KEV
+enrichment and are never identity. Because they read tag prose, a CWE mentioned in a tag
+attaches to the observation.
 
 ## Decision 6: every result becomes an observation, and `kind` maps to disposition
 
@@ -174,22 +204,45 @@ comment is exactly what an evaluator must see.
 ## Decision 7: severity is evidence, read from `security-severity` first and the level chain second
 
 The effective level follows spec 3.27.10: `none` when `kind` is present and not `fail`; else
-`result.level`; else, when the result's invocation (`provenance.invocationIndex`, defaulting
-to 0 when the run has exactly one invocation, per 3.48.6) carries a `ruleConfigurationOverrides`
-entry whose descriptor resolves to the result's own component and rule, that override's
+`result.level`; else, when the result's invocation carries a `ruleConfigurationOverrides` entry
+whose descriptor reference resolves to the result's own descriptor, that override's
 `configuration.level`; else the descriptor's `defaultConfiguration.level`; else `warning`.
+
+The invocation is `provenance.invocationIndex` when that is a JSON integer. An absent index, or
+one that is null, a bool, text, or any other non-integer, takes the spec default of 3.48.6: 0
+when the run has exactly one invocation, else none. An explicit negative index is the spec's
+unknown invocation, and neither it nor an index past the end of `invocations` applies an
+override. A result whose descriptor does not resolve takes no override either, whatever index it
+carries. Each invocation's entries are resolved once per run, in list order, skipping any entry
+that is not an object, whose `descriptor` is not an object, or whose `configuration.level` is
+absent or empty (an entry with no level never decides, so a later one can). An entry's
+descriptor reference resolves the way a result's rule reference does in Decision 4, with no
+`ruleIndex` beside it: its component by `toolComponent.index`, else `toolComponent.guid`, else
+the driver, and then its descriptor by `index`, else `guid`, else a lone exact `id`. An entry
+that resolves to no descriptor, an index past the end of the rules included, never applies. An
+entry applies to a result when both resolve to the same descriptor, at the same position in the
+same component. Spec 3.52.4 keeps a reference's `id` out of the lookup, and the id step above
+counts only a lone exact match, so when two descriptors share the id `CA1711`, an entry naming
+`{index: 1, id: CA1711}` sets the level of `rules[1]` alone, and an entry naming only the id
+resolves to neither. When several entries resolve to one descriptor, the first in list order
+wins.
+
 Then `security-severity` is read from the first holder that declares it, the result's
-`properties` before the descriptor's. A value that is a JSON number (bool excluded) or a numeric
-string, finite, greater than 0 and at most 10, sets severity by the GitHub bands: 9.0 and above
-CRITICAL, 7.0 and above HIGH, 4.0 and above MEDIUM, below 4.0 LOW. Exactly `0.0` means unset in
-GitHub's own reading and falls through silently to the level chain (Trivy writes `0.0` for
-UNKNOWN); because the first holder wins, a result-level `0.0` falls through without reading the
-descriptor's value. A value that is present but unusable (negative, above 10, NaN, a bool,
-non-numeric text) is WARNING `security_severity_invalid` and falls through. The level then maps
-`error` HIGH, `warning` MEDIUM, `note` LOW, `none` INFORMATIONAL; an unknown level is WARNING
-`invalid_level` and UNKNOWN. Metadata records `level`, `level_source` (`forced_none`,
-`result`, `invocation_override`, `rule_default`, or `default`), `security_severity` verbatim,
-and `severity_source` (`security-severity` or `level`).
+`properties` before the descriptor's. A value that is a JSON number (bool excluded) or a string
+that, once trimmed, is an ASCII decimal (digits, then optionally a point and more digits),
+finite, greater than 0 and at most 10, sets severity by the GitHub bands: 9.0 and above
+CRITICAL, 7.0 and above HIGH, 4.0 and above MEDIUM, below 4.0 LOW. A JSON integer is
+range-checked as an integer before it is converted, so an integer above about 1.8e308, which the
+loader's integer digit limit admits and a float cannot hold, is invalid rather than an overflow.
+Exactly `0.0` means unset in GitHub's own reading and falls through silently to the level chain
+(Trivy writes `0.0` for UNKNOWN); because the first holder wins, a result-level `0.0` falls
+through without reading the descriptor's value. A value that is present but unusable (negative,
+above 10, NaN, a bool, or any other text, such as `0_9`, `1e1`, `.5`, or another script's
+digits, which `float()` would read) is WARNING `security_severity_invalid` and falls through.
+The level then maps `error` HIGH, `warning` MEDIUM, `note` LOW, `none` INFORMATIONAL; an unknown
+level is WARNING `invalid_level` and UNKNOWN. Metadata records `level`, `level_source`
+(`forced_none`, `result`, `invocation_override`, `rule_default`, or `default`),
+`security_severity` verbatim, and `severity_source` (`security-severity` or `level`).
 
 None of this touches PAIN. `source_severity` is the scanner's opinion recorded as evidence; the
 evaluator sets PAIN, and no report reads scanner severity into a deadline.
@@ -201,8 +254,11 @@ per run, the earliest parsable `invocations[].startTimeUtc`, which is the defaul
 itself gives a missing detection time in 3.48.3, else the earliest `endTimeUtc`; else none,
 with the existing `source_timestamp_missing` warning once per artifact. Earlier is the
 conservative reading for a detection clock: a VDR deadline that starts sooner is never the
-lenient mistake. Never file mtime, never `ingested_at`, never a date parsed out of an automation
-id. A JSON null clock member is absent; a present but unparsable value is WARNING
+lenient mistake. When the earliest instant is written under two offsets, as
+`2026-09-01T00:00:00Z` and `2026-08-31T17:00:00-07:00` are, the one whose canonical text sorts
+first is kept, so no order of results, runs, or invocations changes the observation's
+`observed_at`. Never file mtime, never `ingested_at`, never a date parsed out of an automation
+id. A JSON null clock member is absent; a present value that fails the checks below is WARNING
 `source_timestamp_invalid` and counts as absent.
 
 Parsing goes through the shared `parse_timestamp` (trailing `Z` to `+00:00`,
@@ -216,6 +272,26 @@ have turned that payload into a missing timestamp. So SARIF never produces an `o
 contract refuses, the STIG adapters keep today's behavior, and closing the same divergence for
 CKLB and XCCDF is on the Phase 2 cleanup list.
 
+A second SARIF-local check keeps only an instant whose UTC year is 1970 through 9000
+(`MIN_CLOCK_YEAR` and `MAX_CLOCK_YEAR`). Year 1 with a positive offset overflows the conversion
+to UTC, and year 9999 overflows the deadline arithmetic that later adds a policy timeframe to
+the clock, so a clock outside those years is refused at ingest rather than raising
+`OverflowError` downstream. The kept value keeps its own offset; only the check reads it in UTC.
+The check is SARIF-local like the offset check, so the downstream sites that overflow stay on
+the Phase 2 cleanup list for the other adapters' clocks. The diagnostic's summary names the
+whole rule: "clock value is not an aware timestamp with a whole-minute offset in the years 1970
+to 9000 UTC; ignored".
+
+Spec 3.9 lets hour 24 name the midnight that ends a day, and `fromisoformat` reads hour 24 only
+from Python 3.14, in every spelling it accepts. So the spec's form, `T24:00` or `T24:00:00` with
+an optional all-zero fraction, under any valid offset, is read as 00:00 of the next day on every
+interpreter, and any other hour 24 is `source_timestamp_invalid` on every interpreter, as are
+`9000-12-31T24:00:00Z`, whose next midnight falls in 9001 and fails the year check, and
+`9999-12-31T24:00:00Z`, whose next midnight no `datetime` can hold, so the overflow is caught
+and refused rather than raised. Two forms 3.9 allows are refused on every interpreter as
+deliberate deviations: a leap second (`:60`), which no `datetime` can hold, and a date with no
+time, which is not an aware instant. Neither is a clock the event contract can carry.
+
 ## Decision 9: results that share an identity fold into one bounded observation
 
 Inside one artifact, results that share the fold key (driver name, rule identifier, resource
@@ -226,32 +302,100 @@ uncapped integer) and, in metadata, the regions with their paired location messa
 run indexes, ordered by region tuple and deduplicated, each list cut at `MAX_LIST_ITEMS` (64)
 with the cut member named under `truncated`. The worst disposition wins (OPEN, then UNKNOWN,
 NOT_REVIEWED, NOT_APPLICABLE, PASS), the strongest severity wins, the earliest `observed_at`
-wins, and the title, description, and kept regions come from the candidates with the smallest
-`(startLine, startColumn, endLine, endColumn, message text)` tuples, so the fold is independent
-of result order. INFO `results_collapsed` names each folded result. The dispatcher's
-`duplicate_observation_identity` check stays as a backstop and a test asserts it never fires
-for SARIF.
+wins with Decision 8's tie-break between offsets, and the title and description come from the
+candidate that sorts first by its smallest region's `(startLine, startColumn, endLine,
+endColumn)`, where a missing member or region counts as zero, and then by its description (the
+result's expanded message), with the rest of its content breaking any tie left, so the fold is
+independent of result order. INFO `results_collapsed` names each folded result. The dispatcher's
+`duplicate_observation_identity` check stays as a backstop and a test asserts it never fires for
+SARIF.
 
-The bound is arithmetic, not hope. The metadata vocabulary is fixed, so a producer cannot add a
-key. List-valued members hold at most `MAX_LIST_ITEMS` items of `MAX_LIST_ITEM_CHARS` (256)
-each, uri-valued scalars at most `MAX_URI_CHARS` (2,048), other scalars
-`MAX_METADATA_VALUE_CHARS` (512), the title `MAX_TITLE_CHARS` (512), and the description
-`MAX_DESCRIPTION_CHARS` (4,096), which puts a fully saturated observation near a quarter of a
-megabyte and under one hundred values. The adapter enforces a ceiling anyway: after folding,
-an observation whose canonical JSON exceeds `MAX_OBSERVATION_JSON_BYTES` (512 KiB) raises
-`InputLimitError`, so `report vdt` and `ingest --db` refuse the same input the same way instead
-of diverging at the store's `MAX_EVENT_JSON_BYTES` (1 MiB) and `MAX_EVENT_JSON_VALUES`
-(100,000). Neither the artifact byte bound nor `max_json_nodes` bounds a string's length, which
-is why these caps exist: without them, 2,000 same-identity results with distinct 600-character
-location messages, or one result with 300 producer fingerprint names of 4,096 characters, pass
-every input bound, compile on the stateless path, and fail `ingest --db` inside the store with a
-bare `ValueError`. Both are reproduced in the tests, along with a log that fills every metadata
-key at its cap, and all three fold to observations under the ceiling.
+The bound is arithmetic, not hope, and the arithmetic counts characters. The metadata
+vocabulary is fixed, so a producer cannot add a key. List-valued members hold at most
+`MAX_LIST_ITEMS` items of `MAX_LIST_ITEM_CHARS` (256) each, uri-valued scalars at most
+`MAX_URI_CHARS` (2,048), other scalars `MAX_METADATA_VALUE_CHARS` (512), the title
+`MAX_TITLE_CHARS` (512), the description `MAX_DESCRIPTION_CHARS` (4,096), and
+`source_identifiers` at most 64 entries, so a fully saturated observation is at most 126 JSON
+values. A region line or column above `MAX_REGION_INTEGER` (2**31 - 1) is absent, and a start
+line above it leaves no region at all, so a region's text stays short; a location message is
+cut to leave room for its region prefix, so the joined item stays within `MAX_LIST_ITEM_CHARS`
+with one marker. A character is not a byte, though. Canonical JSON spends one to four bytes on
+each character: four on a four-byte UTF-8 character, and four on an ASCII quote or backslash
+inside a list-valued member, which is escaped once in the list's compact JSON and again in the
+observation's. The log that fills every cap with ASCII letters (`saturated_log` in the tests)
+folds to an observation of 263,694 bytes of canonical JSON, and the same log in four-byte text
+folds to 981,747 bytes.
+
+So the adapter enforces a ceiling, and real input reaches it: after folding, an observation
+whose canonical JSON exceeds `MAX_OBSERVATION_JSON_BYTES` (512 KiB) in UTF-8 raises
+`InputLimitError`, which the dispatcher reports as `artifact_parse_failed`, so `report vdt` and
+`ingest --db` refuse the same input the same way instead of diverging at the store's
+`MAX_EVENT_JSON_BYTES` (1 MiB) and `MAX_EVENT_JSON_VALUES` (100,000). The four-byte saturated
+log fails closed that way on both paths, and a four-byte observation of 507,381 bytes, just
+under the ceiling, records and replays. Neither the artifact byte bound nor `max_json_nodes`
+bounds a string's length, which is why the caps exist: without them, 2,000 same-identity
+results with distinct 600-character location messages, or one result with 300 producer
+fingerprint names of 4,096 characters, pass every input bound, compile on the stateless path,
+and fail `ingest --db` inside the store with a bare `ValueError`. Both are reproduced in the
+tests, along with the ASCII log that fills every metadata key at its cap, and all three fold to
+observations under the ceiling. An artifact's observations are bounded together as well. A fold
+copies each capped list it keeps, so a result that names 256 resources carries its own lists
+into 256 observations and a descriptor's lists reach every observation whose results name it:
+50,000 observations under the ceiling could reach about 26 GB, and an admissible 3 MB log folds
+into about 1.9 GB of canonical JSON. `max_observation_bytes_per_artifact` (256 MiB, eight times
+`max_artifact_bytes`) caps the canonical JSON of every observation one artifact yields, summed
+as each is built, so the artifact fails closed with `InputLimitError` before its observations
+grow much past the budget, on both paths alike. The six fixtures fold to between 0.51 and 1.41
+times their own size. The budget bounds observations, not the candidates they fold from, which
+are all held until the last run is read; the input bounds limit those instead. A candidate is
+one result at one resource and costs the log at least two JSON values, so `max_json_nodes`
+allows about 250,000 of them, and 245,000 results with no location, a 3.7 MB log, hold about 300
+MiB before the first observation is built, or about 550 MiB when each run also carries a full
+tool, automation, and provenance block, since every candidate keeps its own copy of its run's
+metadata. Both grow linearly with the count.
 
 Diagnostics are coalesced per code per artifact, each carrying an occurrence count and the
 first `MAX_DIAGNOSTIC_PATHS` (5) JSON-path locations in its message, because the report copies
-every non-ERROR diagnostic and the `artifact.ingested` event embeds them, so the diagnostics
-payload is bounded by the number of codes and not by the size of the input.
+every non-ERROR diagnostic and the `artifact.ingested` event embeds them. A path can embed a
+producer's object key and a detail quotes a producer's value, so every path and detail is
+sanitized like evidence and cut at `MAX_METADATA_VALUE_CHARS` (512) with the marker, and a
+detail is built from a bounded part of the value: at most the first 513 characters of a string,
+a bounded `reprlib` rendering of an array or object, which reads only its first few members in
+their own order and never sorts an object's keys, and the repr of a number, which the loader's
+integer digit limit already bounds. Each code keeps its first summary and its first detail. One
+code's message is then at most its summary; a 17-character frame plus the digits of its count;
+five paths of 512 characters with their separators and a trailing `, ...`, which is 2,573
+characters; and, for the five codes that carry a detail (`identity_input_invalid`,
+`invalid_level`, `invalid_result_kind`, `rule_reference_conflict`, and
+`security_severity_invalid`), `; first: ` and the detail, 521 more. Twenty codes can reach the
+coalescer and their longest summaries total 1,322 characters, so the diagnostics of one artifact
+come to at most 55,727 characters plus the decimal digits of the twenty counts, and 117 more for
+the two fixed messages (`no_observations` and `source_timestamp_missing`), whatever the size of
+the input. These are characters; the store's UTF-8 spends at most four bytes on each.
+
+The work per result is bounded the same way. A run's shared tool data is read once: the
+component guid map and each component's rule positions are indexed on first use, each
+invocation's overrides are resolved to descriptors on first use, so a result finds its override
+by position and never compares a shared id or guid, and a descriptor's or a component's evidence
+(its title, tags, message templates, identifiers, `security-severity` and the detail a
+diagnostic quotes from it, and default level) is resolved once and shared by every result that
+names it. A shared text is cleaned once, and its cleaning is reported at each result's own path,
+with the same counts and in the same first-seen order that cleaning it again there would give. A
+shared uri, a run artifact's, a uri base's, or a descriptor's `helpUri`, is checked once per
+run, and so is a descriptor's id where it stands as a result's rule identifier. Each use of one
+that is refused is still refused at its own path, and a run artifact's uri with a `..` segment
+or a `//` prefix is still warned about at each location that names it. A shared list, a
+descriptor's tags or `deprecatedIds` or a run's `repoDigests`, is cut once too, where it is
+cleaned, to its `MAX_LIST_ITEMS` + 1 smallest distinct items in sorted order, and so is each of
+a result's own lists and fingerprints (taxa, suppression kinds and statuses, `fingerprints`, and
+`partialFingerprints`), which join one fold for each resource the result names. Each of a fold's
+first 64 items is among the first 64 of the list it came from, and the item past them keeps the
+cut flag, so every fold keeps the items and the cut the whole list would have given it, and
+never sorts more than 65 items of any one of these lists. A location's regions, messages, and
+logical names are left whole, since each joins only the fold of the resource that location
+names. A result's cost is therefore its own bytes read once plus a bounded amount for each fold
+it joins, and never the size of a template or a descriptor it shares with every other result in
+the run, or the size of its own lists once for each resource it names.
 
 ## Decision 10: refuse identity, degrade evidence
 
@@ -266,7 +410,11 @@ messages, tags, help text, metadata values) has Cc other than tab and newline, C
 removed, Zl and Zp mapped to newline, and is truncated at its cap with a trailing
 `...[truncated]` marker; the metadata key `truncated` holds the compact-JSON list of member
 names that were cut, and one coalesced WARNING `evidence_sanitized` and one
-`evidence_truncated` per artifact carry the counts.
+`evidence_truncated` per artifact carry the counts. Whitespace at either edge of a text is
+trimmed before the text is sanitized, CR, VT, FF, U+001C to U+001F, U+0085, U+2028, and U+2029
+included, so such a character at an edge is not counted in `evidence_sanitized`, while the same
+character inside the text is. Every character that matters for security, Cf, Cs, and Cc other
+than whitespace, is counted wherever it sits in the text that is read.
 
 Separately, `parse_json_bounded` now refuses a lone surrogate code point in any JSON string or
 object key during the walk it already does, raising `ValueError` so the dispatcher reports
@@ -274,17 +422,18 @@ object key during the walk it already does, raising `ValueError` so the dispatch
 the store both failed on `.encode("utf-8")`; that was a CKLB bug too, and the check covers
 every JSON adapter.
 
-## Decision 11: two `IngestLimits` fields, exceeded means refused, reaching the adapter through its constructor
+## Decision 11: three `IngestLimits` fields, exceeded means refused, reaching the adapter through its constructor
 
-`max_results_per_run = 50_000` (SARIF only for now) and `max_observations_per_artifact =
-50_000` (a generic name so CKLB can adopt it later) join `IngestLimits`.
-`SarifAdapter.__init__(self, limits: IngestLimits = DEFAULT_LIMITS)` stores them on the
-instance; `name`, `version`, and `media_type` stay class attributes so the attribution block
-reads them as it does for `CklbAdapter`; the dispatch branch constructs `SarifAdapter(limits)`
-from the dispatcher's own `limits` argument, and `SourceAdapter.parse` and the three STIG
-adapters are untouched. Exceeding either field, or `MAX_LOCATIONS_PER_RESULT` on one result, or
-`MAX_OBSERVATION_JSON_BYTES` after folding, raises `InputLimitError`, which the dispatcher
-already reports as `artifact_parse_failed`. `DEFAULT_LIMITS` keeps every existing value.
+`max_results_per_run = 50_000` (SARIF only for now), `max_observations_per_artifact = 50_000` (a
+generic name so CKLB can adopt it later), and `max_observation_bytes_per_artifact` at 256 MiB
+(Decision 9) join `IngestLimits`. `SarifAdapter.__init__(self, limits: IngestLimits =
+DEFAULT_LIMITS)` stores them on the instance; `name`, `version`, and `media_type` stay class
+attributes so the attribution block reads them as it does for `CklbAdapter`; the dispatch branch
+constructs `SarifAdapter(limits)` from the dispatcher's own `limits` argument, and
+`SourceAdapter.parse` and the three STIG adapters are untouched. Exceeding any of the three, or
+`MAX_LOCATIONS_PER_RESULT` on one result, or `MAX_OBSERVATION_JSON_BYTES` after folding, raises
+`InputLimitError`, which the dispatcher already reports as `artifact_parse_failed`.
+`DEFAULT_LIMITS` keeps every existing value.
 
 ## Decision 12: the shared helpers move to `adapters/common.py`
 
@@ -381,13 +530,21 @@ The tracking ids below are the ones `tests/golden/vdt-sarif.md` carries, compile
   `max_json_nodes` is an explicit caller decision and the message says so. Neither that bound
   nor the byte bound limits a string's length, so the per-observation caps and the 512 KiB
   ceiling are the only thing between a 32 MiB artifact and the 1 MiB event cap, and the
-  saturated-caps test is what keeps the arithmetic honest when a cap is raised later.
+  saturated-caps tests, in ASCII and in four-byte text, are what keep the arithmetic honest
+  when a cap is raised later.
+- Because the caps count characters, a log that fills them with multi-byte text, or with the
+  quotes and backslashes a list member escapes twice, can be refused whole at the ceiling where
+  the same log in ASCII letters is accepted: the saturated log passes in ASCII letters and fails
+  in four-byte text. That is the ceiling doing its job, failing the artifact closed with
+  `artifact_parse_failed` on both paths before the store sees it.
 - Outside this slice: the store raises a bare `ValueError` for a payload over its caps and the
   persisted CLI run catches no bare `ValueError`, so an oversized payload from a future adapter
-  would surface as a traceback. The adapter ceiling makes it unreachable for SARIF. The CLI
-  clause joins the Phase 2 cleanup list beside the bare assert in `compat/stigroll.py`, the
-  CKLB and XCCDF timestamp divergence of Decision 8, and a one-line formatter run on a
-  pre-existing expression in `stig.py`.
+  would surface as a traceback. The adapter ceiling is what makes that unreachable for SARIF:
+  no observation over 512 KiB leaves the adapter, whatever the caps allow, and the caps alone
+  allow more, since the four-byte saturated observation is 981,747 bytes, within 7 percent of
+  the 1 MiB event cap. The CLI clause joins the Phase 2 cleanup list beside the bare assert in
+  `compat/stigroll.py`, the CKLB and XCCDF timestamp divergence of Decision 8, and a one-line
+  formatter run on a pre-existing expression in `stig.py`.
 - Six fixtures (Trivy, Grype, Semgrep, CodeQL, Checkov, and a spec-corners log), the two
   goldens `tests/golden/vdt-sarif.json` and `tests/golden/vdt-sarif.md`, and the
   persisted-path, replay, and saturated-caps tests hold the behavior above; the eight existing

@@ -276,6 +276,25 @@ class XmlBoundaryTests(unittest.TestCase):
         self.assertEqual(len(root), 50)
 
 
+# The JSON walk counts values and never keys, and the root is at depth 1.
+class JsonBoundaryTests(unittest.TestCase):
+    def test_depth_limit_boundary(self) -> None:
+        payload = b'{"a":{"b":1}}'
+        parsed = parse_json_bounded(payload, IngestLimits(max_json_depth=3))
+        self.assertEqual(parsed, {"a": {"b": 1}})
+        with self.assertRaises(InputLimitError) as caught:
+            parse_json_bounded(payload, IngestLimits(max_json_depth=2))
+        self.assertIn("JSON nesting exceeds 2 levels", str(caught.exception))
+
+    def test_value_limit_boundary(self) -> None:
+        payload = b'{"a":[1,2]}'
+        parsed = parse_json_bounded(payload, IngestLimits(max_json_nodes=4))
+        self.assertEqual(parsed, {"a": [1, 2]})
+        with self.assertRaises(InputLimitError) as caught:
+            parse_json_bounded(payload, IngestLimits(max_json_nodes=3))
+        self.assertIn("JSON contains more than 3 values", str(caught.exception))
+
+
 class ReadBoundedTests(unittest.TestCase):
     def test_regular_file_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -332,13 +351,19 @@ class ReadBoundedTests(unittest.TestCase):
 
 
 class IngestLimitFieldTests(unittest.TestCase):
-    """Two bounds for the SARIF adapter; the defaults keep every existing value."""
+    """Three bounds for the SARIF adapter; the defaults keep every existing value."""
 
     def test_the_two_new_fields_default_to_fifty_thousand(self) -> None:
         limits = IngestLimits()
 
         self.assertEqual(limits.max_results_per_run, 50_000)
         self.assertEqual(limits.max_observations_per_artifact, 50_000)
+
+    def test_the_observation_byte_budget_defaults_to_eight_artifact_bounds(self) -> None:
+        limits = IngestLimits()
+
+        self.assertEqual(limits.max_observation_bytes_per_artifact, 256 * 1024 * 1024)
+        self.assertEqual(limits.max_observation_bytes_per_artifact, 8 * limits.max_artifact_bytes)
 
     def test_default_limits_carry_the_new_fields_and_keep_every_existing_value(self) -> None:
         self.assertEqual(DEFAULT_LIMITS, IngestLimits())
@@ -349,15 +374,20 @@ class IngestLimitFieldTests(unittest.TestCase):
         self.assertEqual(DEFAULT_LIMITS.max_xml_elements, 500_000)
         self.assertEqual(DEFAULT_LIMITS.max_results_per_run, 50_000)
         self.assertEqual(DEFAULT_LIMITS.max_observations_per_artifact, 50_000)
+        self.assertEqual(DEFAULT_LIMITS.max_observation_bytes_per_artifact, 256 * 1024 * 1024)
 
     def test_each_new_field_can_be_lowered_on_its_own(self) -> None:
         results = IngestLimits(max_results_per_run=3)
         observations = IngestLimits(max_observations_per_artifact=2)
+        observation_bytes = IngestLimits(max_observation_bytes_per_artifact=1_000)
 
         self.assertEqual(results.max_results_per_run, 3)
         self.assertEqual(results.max_observations_per_artifact, 50_000)
         self.assertEqual(observations.max_observations_per_artifact, 2)
         self.assertEqual(observations.max_results_per_run, 50_000)
+        self.assertEqual(observation_bytes.max_observation_bytes_per_artifact, 1_000)
+        self.assertEqual(observation_bytes.max_observations_per_artifact, 50_000)
+        self.assertEqual(observation_bytes.max_results_per_run, 50_000)
 
 
 class SarifIngestLimitTests(unittest.TestCase):
@@ -391,6 +421,10 @@ class SarifIngestLimitTests(unittest.TestCase):
             (
                 IngestLimits(max_observations_per_artifact=2),
                 "artifact yields more than 2 observations",
+            ),
+            (
+                IngestLimits(max_observation_bytes_per_artifact=1_000),
+                "artifact yields more than 1000 bytes of observation JSON",
             ),
         )
         for limits, message in cases:

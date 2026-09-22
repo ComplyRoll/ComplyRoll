@@ -275,7 +275,7 @@ complyroll report vdt \
 ```
 
 Trivy and Semgrep logs declare no scan time, so `--detected-at` is required for them exactly as
-it is for the checklists; a CodeQL log carries invocation clocks and needs no attestation. The
+it is for the checklists; the CodeQL fixture carries invocation clocks and needs no attestation. The
 report gains two vulnerabilities, `case-10f5974d95a33fdf` (CVE-2024-0001, two files in the
 image) and `case-889c19760e425785` (CVE-2024-0002), the inputs table names the parser, and the
 diagnostics record that the five Trivy results folded into three observations:

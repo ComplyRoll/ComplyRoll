@@ -21,6 +21,10 @@ class IngestLimits:
     max_xml_elements: int = 500_000
     max_results_per_run: int = 50_000
     max_observations_per_artifact: int = 50_000
+    # The canonical JSON of every observation one artifact yields, summed. Folding copies a
+    # result's capped lists into each observation it joins, so the per-observation ceiling
+    # alone would let an admissible artifact build gigabytes of observations.
+    max_observation_bytes_per_artifact: int = 256 * 1024 * 1024
 
 
 DEFAULT_LIMITS = IngestLimits()

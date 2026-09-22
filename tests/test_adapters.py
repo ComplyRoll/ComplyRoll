@@ -5,9 +5,16 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
-from complyroll.adapters import ingest_stig_artifact, load_cci_control_map
+from complyroll.adapters import (
+    ArtifactProvenance,
+    common,
+    ingest_stig_artifact,
+    load_cci_control_map,
+    stig,
+)
 from complyroll.adapters.stig import (
     CCI_PARSER_VERSION,
     CKL_PARSER_VERSION,
@@ -17,7 +24,7 @@ from complyroll.adapters.stig import (
     CklbAdapter,
     XccdfAdapter,
 )
-from complyroll.models import ObservationDisposition
+from complyroll.models import ObservationDisposition, SourceSeverity
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FIRST_INGEST = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)
@@ -30,6 +37,59 @@ ARF_TEST_RESULT_ID = "xccdf_org.open-scap_testresult_xccdf_mil.synthetic.content
 # evaluated. Neither may reach an observation.
 ARF_ASSET_FQDN = "lab-rhel-03.synthetic.test"
 ARF_UNEVALUATED_CCI = "CCI-002418"
+
+# Observation ids of every STIG fixture, recorded before the shared helpers moved from
+# stig.py to adapters/common.py (ADR 0011, decision 18). The goldens prove the move changed
+# nothing; this table names it.
+BASELINE_OBSERVATION_IDS = {
+    "ubuntu-host.cklb": (
+        "obs-f841f4f0e47c5d8710658d433ee82715d679f7a5cfbd9afb4a4e216688ad3926",
+        "obs-6cdf3ee1f2fa3cf51ea8aac1cc05c8534ec5e56d8398edd559ef5f226b68a674",
+        "obs-1577127e3e0aaa0b19f428f196a0d90407c3cb1be1864738f30fd1b64470d7f9",
+        "obs-49da1ef09ba9877e9ad9885dbcba70198a805e64f64c4578e0e1b77bba33a4b1",
+        "obs-7876b3a041cd260c9987490da7e6d6dd370be17ac84dddc3c7a748ca0e4e98c0",
+        "obs-dd8f546726ab5b2cb9a096254bd3679185ca8f2cd10045dd7de289ad5553e5d6",
+    ),
+    "windows-host.ckl": (
+        "obs-6e3d196cb5f895fecc7d879eac03f954de2d99f46fdd0bccc11d8f0e88a66dc4",
+        "obs-57e96b5e68e7278977ebf3eaed197fb61c24c7cea52fffb6e4b96ead1a08c660",
+    ),
+    "openscap-results.xml": (
+        "obs-c1a949d8bba45d81b6badd35b2a1c985370d60f37503e3ddf5c79e07ed45e883",
+        "obs-12dec8db9923fa7e3ffd7ac81ee7b5db79b14ffa798fa54cd71520af681d097c",
+        "obs-9d9083ec3329bc5beea5a41c62fb26a19048cbeba1e2c7dc2c7f1e63a081fb21",
+    ),
+    "openscap-arf.xml": (
+        "obs-e5ffbbd34cb4eadda6c3598f81e37547a5d8c376cb06fb5da20468a64ef2c7fe",
+        "obs-4cda4500eaae09c458a2a9ddcaaaab5e28dff7a68242ebe88158e2f0079254cc",
+        "obs-2b646b2a92c575e1a2969a3829a0782b4ef63880bc9379e1353166b1653b2a52",
+        "obs-0eb1fba3936a5aead6c964be06697e134ce6a414bcde9187a81c3c856c4b6709",
+    ),
+}
+
+SYNTHETIC_ARTIFACT = ArtifactProvenance.from_bytes(
+    path=Path("synthetic.cklb"),
+    content=b'{"stigs":[]}',
+    media_type="application/json",
+    parser_name="complyroll.cklb",
+    parser_version=CKLB_PARSER_VERSION,
+    ingested_at=FIRST_INGEST,
+)
+SYNTHETIC_FIELDS: dict[str, Any] = {
+    "artifact": SYNTHETIC_ARTIFACT,
+    "source_type": "cklb",
+    "source_tool": "Synthetic STIG",
+    "source_record_id": "V-1",
+    "resource_id": "lab-synthetic",
+    "observed_at": None,
+    "ingested_at": FIRST_INGEST,
+    "disposition": ObservationDisposition.OPEN,
+    "severity": SourceSeverity.MEDIUM,
+    "title": "Synthetic title",
+    "description": "Synthetic description",
+    "identifiers": ("CCI-000366",),
+    "context_key": "synthetic",
+}
 
 
 class StigAdapterTests(unittest.TestCase):
@@ -428,6 +488,43 @@ class ParserVersionIndependenceTests(unittest.TestCase):
         self.assertTrue(mapping_result.successful)
         assert mapping_result.artifact is not None
         self.assertEqual(mapping_result.artifact.parser_version, CCI_PARSER_VERSION)
+
+
+class CommonHelperMoveTests(unittest.TestCase):
+    """The STIG adapters read their shared helpers from adapters/common.py (decision 18)."""
+
+    def test_the_stig_adapters_use_the_shared_helpers(self) -> None:
+        self.assertIs(stig.text_of, common.text_of)
+        self.assertIs(stig.unique, common.unique)
+        self.assertIs(stig.parse_timestamp, common.parse_timestamp)
+        self.assertIs(stig.make_observation, common.make_observation)
+        self.assertIs(stig.missing_time_diagnostic, common.missing_time_diagnostic)
+
+    def test_every_stig_fixture_keeps_its_observation_ids_after_the_helper_move(self) -> None:
+        for name, expected in BASELINE_OBSERVATION_IDS.items():
+            with self.subTest(fixture=name):
+                result = ingest_stig_artifact(FIXTURES / name, ingested_at=FIRST_INGEST)
+
+                self.assertTrue(result.successful, result.errors)
+                self.assertEqual(
+                    tuple(item.observation_id for item in result.observations), expected
+                )
+                self.assertTrue(
+                    all(item.resource.resource_type == "host" for item in result.observations)
+                )
+
+    def test_make_observation_defaults_the_resource_type_to_host(self) -> None:
+        host = common.make_observation(**SYNTHETIC_FIELDS)
+        file = common.make_observation(**SYNTHETIC_FIELDS, resource_type="file")
+
+        self.assertEqual(host.resource.resource_type, "host")
+        self.assertEqual(host.resource.resource_id, "lab-synthetic")
+        self.assertEqual(host.observation_id, host.derived_observation_id)
+        self.assertEqual(file.resource.resource_type, "file")
+        self.assertEqual(file.observation_id, file.derived_observation_id)
+        # resource_type is one of the nine fingerprint inputs, so it must move the identity.
+        self.assertNotEqual(host.fingerprint, file.fingerprint)
+        self.assertNotEqual(host.observation_id, file.observation_id)
 
 
 if __name__ == "__main__":

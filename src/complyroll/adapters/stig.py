@@ -7,7 +7,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -15,7 +15,6 @@ from types import MappingProxyType
 from complyroll.models import (
     Observation,
     ObservationDisposition,
-    ResourceRef,
     SourceSeverity,
 )
 
@@ -27,6 +26,13 @@ from .base import (
     IngestDiagnostic,
     IngestResult,
     ParsedDocument,
+)
+from .common import (
+    make_observation,
+    missing_time_diagnostic,
+    parse_timestamp,
+    text_of,
+    unique,
 )
 from .safeio import (
     DEFAULT_LIMITS,
@@ -102,78 +108,6 @@ def normalize_severity(raw: object) -> SourceSeverity:
     return SEVERITY_ALIASES.get(str(raw or "").strip().lower(), SourceSeverity.UNKNOWN)
 
 
-def _unique(values: list[str]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(value for value in values if value))
-
-
-def _text(value: object) -> str:
-    return value.strip() if isinstance(value, str) else ""
-
-
-def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = f"{normalized[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    return parsed
-
-
-def _make_observation(
-    *,
-    artifact: ArtifactProvenance,
-    source_type: str,
-    source_tool: str,
-    source_record_id: str,
-    resource_id: str,
-    observed_at: datetime | None,
-    ingested_at: datetime,
-    disposition: ObservationDisposition,
-    severity: SourceSeverity,
-    title: str,
-    description: str,
-    identifiers: tuple[str, ...],
-    context_key: str,
-    metadata: Mapping[str, str] | None = None,
-) -> Observation:
-    observation = Observation(
-        observation_id="pending",
-        source_type=source_type,
-        source_tool=source_tool,
-        parser_name=artifact.parser_name,
-        parser_version=artifact.parser_version,
-        source_record_id=source_record_id,
-        resource=ResourceRef(resource_id=resource_id, resource_type="host"),
-        observed_at=observed_at,
-        ingested_at=ingested_at,
-        disposition=disposition,
-        source_severity=severity,
-        title=title,
-        description=description,
-        source_artifact_digest=artifact.digest_sha256,
-        source_artifact_name=artifact.name,
-        source_identifiers=identifiers,
-        source_metadata=tuple(sorted((metadata or {}).items())),
-        context_key=context_key,
-    )
-    return replace(observation, observation_id=observation.derived_observation_id)
-
-
-def _missing_time_diagnostic(artifact: ArtifactProvenance) -> IngestDiagnostic:
-    return IngestDiagnostic(
-        DiagnosticLevel.WARNING,
-        "source_timestamp_missing",
-        "source artifact does not declare an observation timestamp; observed_at is unknown",
-        artifact.name,
-    )
-
-
 class CklbAdapter:
     name = "complyroll.cklb"
     version = CKLB_PARSER_VERSION
@@ -196,7 +130,7 @@ class CklbAdapter:
         diagnostics: list[IngestDiagnostic] = []
         raw_target = data.get("target_data")
         target: Mapping[str, object] = raw_target if isinstance(raw_target, Mapping) else {}
-        host = _text(target.get("host_name")) or _text(target.get("ip_address"))
+        host = text_of(target.get("host_name")) or text_of(target.get("ip_address"))
         if not host:
             host = Path(artifact.name).stem
             diagnostics.append(
@@ -210,11 +144,11 @@ class CklbAdapter:
 
         observed_at = None
         for timestamp_key in ("completed_at", "scan_time", "scan_date", "updated_at"):
-            observed_at = _parse_timestamp(data.get(timestamp_key))
+            observed_at = parse_timestamp(data.get(timestamp_key))
             if observed_at:
                 break
         if observed_at is None:
-            diagnostics.append(_missing_time_diagnostic(artifact))
+            diagnostics.append(missing_time_diagnostic(artifact))
 
         observations: list[Observation] = []
         for stig_index, stig in enumerate(stigs):
@@ -241,11 +175,11 @@ class CklbAdapter:
                 continue
 
             context_parts = [
-                _text(stig.get("stig_id"))
-                or _text(stig.get("uuid"))
-                or _text(stig.get("stig_name")),
-                _text(stig.get("version")),
-                _text(stig.get("release_info")),
+                text_of(stig.get("stig_id"))
+                or text_of(stig.get("uuid"))
+                or text_of(stig.get("stig_name")),
+                text_of(stig.get("version")),
+                text_of(stig.get("release_info")),
             ]
             context_key = "|".join(part for part in context_parts if part) or "cklb"
 
@@ -262,7 +196,7 @@ class CklbAdapter:
                     )
                     continue
 
-                rule_id = _text(rule.get("group_id")) or _text(rule.get("rule_id")) or "?"
+                rule_id = text_of(rule.get("group_id")) or text_of(rule.get("rule_id")) or "?"
                 if rule_id == "?":
                     diagnostics.append(
                         IngestDiagnostic(
@@ -283,7 +217,7 @@ class CklbAdapter:
                             f"{location}.ccis",
                         )
                     )
-                ccis = _unique(
+                ccis = unique(
                     [
                         value
                         for value in raw_ccis
@@ -293,14 +227,14 @@ class CklbAdapter:
                 metadata = {
                     key: value
                     for key, value in {
-                        "rule_id": _text(rule.get("rule_id")),
-                        "rule_version": _text(rule.get("rule_version")),
-                        "stig_id": _text(stig.get("stig_id")),
+                        "rule_id": text_of(rule.get("rule_id")),
+                        "rule_version": text_of(rule.get("rule_version")),
+                        "stig_id": text_of(stig.get("stig_id")),
                     }.items()
                     if value
                 }
                 observations.append(
-                    _make_observation(
+                    make_observation(
                         artifact=artifact,
                         source_type="cklb",
                         source_tool="stig-viewer-3",
@@ -310,11 +244,11 @@ class CklbAdapter:
                         ingested_at=ingested_at,
                         disposition=normalize_status(rule.get("status")),
                         severity=normalize_severity(rule.get("severity")),
-                        title=_text(rule.get("rule_title")) or _text(rule.get("group_title")),
+                        title=text_of(rule.get("rule_title")) or text_of(rule.get("group_title")),
                         description=(
-                            _text(rule.get("finding_details"))
-                            or _text(rule.get("comments"))
-                            or _text(rule.get("discussion"))
+                            text_of(rule.get("finding_details"))
+                            or text_of(rule.get("comments"))
+                            or text_of(rule.get("discussion"))
                         ),
                         identifiers=ccis,
                         context_key=context_key,
@@ -336,8 +270,8 @@ class CklbAdapter:
 
 def _ckl_context(root: ET.Element) -> str:
     for element in root.iter():
-        if localname(element.tag) in {"STIG_TITLE", "TITLE"} and _text(element.text):
-            return _text(element.text)
+        if localname(element.tag) in {"STIG_TITLE", "TITLE"} and text_of(element.text):
+            return text_of(element.text)
     return "ckl"
 
 
@@ -359,11 +293,11 @@ class CklAdapter:
         if localname(root.tag) not in {"CHECKLIST", "ASSET", "STIGS"}:
             raise AdapterParseError(f"XML root '{localname(root.tag)}' is not a CKL checklist")
 
-        diagnostics: list[IngestDiagnostic] = [_missing_time_diagnostic(artifact)]
+        diagnostics: list[IngestDiagnostic] = [missing_time_diagnostic(artifact)]
         host = ""
         for element in root.iter():
-            if localname(element.tag) == "HOST_NAME" and _text(element.text):
-                host = _text(element.text)
+            if localname(element.tag) == "HOST_NAME" and text_of(element.text):
+                host = text_of(element.text)
                 break
         if not host:
             host = Path(artifact.name).stem
@@ -390,9 +324,9 @@ class CklAdapter:
                     key = value = ""
                     for subelement in child:
                         if localname(subelement.tag) == "VULN_ATTRIBUTE":
-                            key = _text(subelement.text)
+                            key = text_of(subelement.text)
                         elif localname(subelement.tag) == "ATTRIBUTE_DATA":
-                            value = _text(subelement.text)
+                            value = text_of(subelement.text)
                     if key and value:
                         attributes[key].append(value)
 
@@ -406,7 +340,7 @@ class CklAdapter:
                         f"VULN[{vuln_index}]",
                     )
                 )
-            ccis = _unique(
+            ccis = unique(
                 [
                     cci
                     for value in attributes.get("CCI_REF", [])
@@ -422,7 +356,7 @@ class CklAdapter:
                 if value
             }
             observations.append(
-                _make_observation(
+                make_observation(
                     artifact=artifact,
                     source_type="ckl",
                     source_tool="stig-viewer-2",
@@ -454,8 +388,8 @@ class CklAdapter:
 
 def _find_text(root: ET.Element, names: set[str]) -> str:
     for element in root.iter():
-        if localname(element.tag) in names and _text(element.text):
-            return _text(element.text)
+        if localname(element.tag) in names and text_of(element.text):
+            return text_of(element.text)
     return ""
 
 
@@ -501,7 +435,7 @@ class XccdfAdapter:
                         artifact.name,
                     )
                 )
-            observed_at = _parse_timestamp(container.get("end-time")) or _parse_timestamp(
+            observed_at = parse_timestamp(container.get("end-time")) or parse_timestamp(
                 container.get("start-time")
             )
             if observed_at is None:
@@ -521,11 +455,11 @@ class XccdfAdapter:
                         result = child.text or ""
                     elif name == "ident":
                         ccis_list.extend(CCI_PATTERN.findall(child.text or ""))
-                ccis = _unique(ccis_list)
+                ccis = unique(ccis_list)
                 idref = rule_result.get("idref", "?")
                 source_record_id = idref.rpartition("_rule_")[2]
                 observations.append(
-                    _make_observation(
+                    make_observation(
                         artifact=artifact,
                         source_type="xccdf",
                         source_tool="xccdf",
@@ -544,7 +478,7 @@ class XccdfAdapter:
                 )
 
         if timestamp_missing:
-            diagnostics.append(_missing_time_diagnostic(artifact))
+            diagnostics.append(missing_time_diagnostic(artifact))
         if not observations:
             diagnostics.append(
                 IngestDiagnostic(

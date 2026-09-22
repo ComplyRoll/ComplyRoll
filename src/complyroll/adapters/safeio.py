@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import stat
 import xml.etree.ElementTree as ET
 import xml.parsers.expat as expat
@@ -18,9 +19,15 @@ class IngestLimits:
     max_json_nodes: int = 500_000
     max_xml_depth: int = 128
     max_xml_elements: int = 500_000
+    max_results_per_run: int = 50_000
+    max_observations_per_artifact: int = 50_000
 
 
 DEFAULT_LIMITS = IngestLimits()
+
+# json.loads decodes the escape of a lone surrogate, such as "\\ud800", into text that
+# no UTF-8 encoder will accept.
+_LONE_SURROGATE = re.compile("[\\ud800-\\udfff]")
 
 
 class InputLimitError(ValueError):
@@ -67,6 +74,14 @@ def parse_json_bounded(content: bytes, limits: IngestLimits = DEFAULT_LIMITS) ->
             value[key] = item
         return value
 
+    def reject_lone_surrogate(text: str, kind: str) -> None:
+        found = _LONE_SURROGATE.search(text)
+        if found is not None:
+            code_point = ord(found.group())
+            raise ValueError(
+                f"lone surrogate code point is prohibited in JSON {kind}: U+{code_point:04X}"
+            )
+
     try:
         value = json.loads(
             content.decode("utf-8-sig"),
@@ -87,8 +102,14 @@ def parse_json_bounded(content: bytes, limits: IngestLimits = DEFAULT_LIMITS) ->
             raise InputLimitError(f"JSON contains more than {limits.max_json_nodes} values")
         if depth > limits.max_json_depth:
             raise InputLimitError(f"JSON nesting exceeds {limits.max_json_depth} levels")
-        if isinstance(current, dict):
-            stack.extend((item, depth + 1) for item in current.values())
+        # SECURITY: A lone surrogate survives json.loads and then fails every later
+        # .encode("utf-8"), in the report writer and the store alike; refuse it at parse.
+        if isinstance(current, str):
+            reject_lone_surrogate(current, "string")
+        elif isinstance(current, dict):
+            for key, item in current.items():
+                reject_lone_surrogate(key, "object key")
+                stack.append((item, depth + 1))
         elif isinstance(current, list):
             stack.extend((item, depth + 1) for item in current)
     return value

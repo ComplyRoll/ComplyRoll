@@ -1,4 +1,4 @@
-"""Hardened CKLB, CKL, XCCDF, and CCI adapters."""
+"""Hardened CKLB, CKL, XCCDF, and CCI adapters, and the SARIF-aware ingest dispatcher."""
 
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ from .safeio import (
     parse_xml_bounded,
     read_bounded,
 )
+from .sarif import SARIF_MEDIA_TYPE, SARIF_PARSER_VERSION, SarifAdapter
 
 # Each adapter owns its own parser version because the version is an observation identity
 # input (ADR 0002). A shared constant would re-mint every unchanged observation whenever
@@ -561,7 +562,7 @@ def ingest_stig_artifact(
     ingested_at: datetime | None = None,
     limits: IngestLimits = DEFAULT_LIMITS,
 ) -> IngestResult:
-    """Ingest one CKLB, CKL, XCCDF, or ARF artifact without network access."""
+    """Ingest one CKLB, CKL, XCCDF, ARF, or SARIF artifact without network access."""
 
     path = Path(path)
     now = ingested_at or datetime.now(UTC)
@@ -578,11 +579,22 @@ def ingest_stig_artifact(
         )
 
     suffix = path.suffix.lower()
-    adapter: CklbAdapter | CklAdapter | XccdfAdapter
+    adapter: CklbAdapter | CklAdapter | XccdfAdapter | SarifAdapter
     document: ParsedDocument
     artifact: ArtifactProvenance
     try:
-        if suffix in {".cklb", ".json"}:
+        if suffix == ".sarif" or path.name.lower().endswith(".sarif.json"):
+            adapter = SarifAdapter(limits)
+            artifact = _artifact(
+                path,
+                content,
+                adapter_name=adapter.name,
+                adapter_version=adapter.version,
+                media_type=adapter.media_type,
+                ingested_at=now,
+            )
+            document = ParsedDocument("json", parse_json_bounded(content, limits))
+        elif suffix in {".cklb", ".json"}:
             adapter = CklbAdapter()
             artifact = _artifact(
                 path,
@@ -635,7 +647,10 @@ def ingest_stig_artifact(
                 location=path.name,
             )
     except (json.JSONDecodeError, ValueError) as exc:
-        if suffix in {".cklb", ".json"}:
+        if suffix == ".sarif" or path.name.lower().endswith(".sarif.json"):
+            name, version = SarifAdapter.name, SARIF_PARSER_VERSION
+            media_type = SARIF_MEDIA_TYPE
+        elif suffix in {".cklb", ".json"}:
             name, version = CklbAdapter.name, CklbAdapter.version
             media_type = CklbAdapter.media_type
         elif suffix == ".ckl":

@@ -10,6 +10,7 @@ from .base import (
     SourceAdapter,
 )
 from .safeio import DEFAULT_LIMITS, IngestLimits, InputLimitError, UnsafeXmlError
+from .sarif import SARIF_PARSER_VERSION, SarifAdapter
 from .stig import (
     CciControlMap,
     CciMapResult,
@@ -34,6 +35,8 @@ __all__ = [
     "IngestLimits",
     "IngestResult",
     "InputLimitError",
+    "SARIF_PARSER_VERSION",
+    "SarifAdapter",
     "SourceAdapter",
     "UnsafeXmlError",
     "XccdfAdapter",

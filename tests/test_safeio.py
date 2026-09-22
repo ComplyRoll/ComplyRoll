@@ -16,8 +16,10 @@ from complyroll.adapters.safeio import (
     parse_xml_bounded,
     read_bounded,
 )
+from complyroll.adapters.sarif import SARIF_MEDIA_TYPE, SARIF_PARSER_VERSION
 
 NOW = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)
+SARIF_FIXTURE = Path(__file__).parent / "fixtures" / "trivy-image.sarif"
 
 INTERNAL_DTD_DOCUMENT = (
     '<?xml version="1.0"?>\n'
@@ -356,6 +358,55 @@ class IngestLimitFieldTests(unittest.TestCase):
         self.assertEqual(results.max_observations_per_artifact, 50_000)
         self.assertEqual(observations.max_observations_per_artifact, 2)
         self.assertEqual(observations.max_results_per_run, 50_000)
+
+
+class SarifIngestLimitTests(unittest.TestCase):
+    """Every bound the dispatcher is given reaches the SARIF read and the SARIF adapter."""
+
+    def test_an_oversized_sarif_log_is_refused_before_the_read(self) -> None:
+        size = len(SARIF_FIXTURE.read_bytes())
+        result = ingest_stig_artifact(
+            SARIF_FIXTURE, ingested_at=NOW, limits=IngestLimits(max_artifact_bytes=4)
+        )
+
+        self.assertFalse(result.successful)
+        self.assertIsNone(result.artifact)
+        self.assertEqual(result.observations, ())
+        self.assertEqual(
+            [(item.code, item.message, item.location) for item in result.errors],
+            [
+                (
+                    "artifact_read_failed",
+                    f"artifact is {size} bytes; maximum is 4 bytes",
+                    str(SARIF_FIXTURE),
+                )
+            ],
+        )
+
+    def test_each_lowered_bound_is_a_parse_failure_attributed_to_sarif(self) -> None:
+        # trivy-image.sarif is one run of five results that fold into three observations.
+        cases = (
+            (IngestLimits(max_json_nodes=50), "JSON contains more than 50 values"),
+            (IngestLimits(max_results_per_run=4), "runs[0] contains 5 results; maximum is 4"),
+            (
+                IngestLimits(max_observations_per_artifact=2),
+                "artifact yields more than 2 observations",
+            ),
+        )
+        for limits, message in cases:
+            with self.subTest(message=message):
+                result = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=NOW, limits=limits)
+
+                self.assertFalse(result.successful)
+                self.assertEqual(result.observations, ())
+                assert result.artifact is not None
+                self.assertEqual(result.artifact.parser_name, "complyroll.sarif")
+                self.assertEqual(result.artifact.parser_version, SARIF_PARSER_VERSION)
+                self.assertEqual(result.artifact.media_type, SARIF_MEDIA_TYPE)
+                self.assertEqual(
+                    [(item.code, item.message, item.location) for item in result.errors],
+                    [("artifact_parse_failed", message, SARIF_FIXTURE.name)],
+                )
 
 
 class LoneSurrogateTests(unittest.TestCase):

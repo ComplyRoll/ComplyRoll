@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from complyroll.adapters import ingest_stig_artifact, load_cci_control_map
+from complyroll.adapters import SarifAdapter, ingest_stig_artifact, load_cci_control_map
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
 
 SEVERITY_TO_CAT = {
@@ -303,6 +303,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"warning: {path} not found, skipping", file=sys.stderr)
             continue
         result = ingest_stig_artifact(path)
+        if result.artifact is not None and result.artifact.parser_name == SarifAdapter.name:
+            # A SARIF log parses, but its findings are not STIG checklist rows, so it is
+            # named and skipped rather than rolled up as nothing (ADR 0011).
+            print(
+                f"warning: {path.name} is a SARIF log; stigroll rolls up STIG checklists "
+                "only, skipping",
+                file=sys.stderr,
+            )
+            continue
         for diagnostic in result.errors:
             if diagnostic.message == "JSON has no non-empty 'stigs' array":
                 print(

@@ -1,0 +1,406 @@
+{
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "reportPeriod": {
+    "from": "2026-09-01T00:00:00Z",
+    "to": "2026-09-30T23:59:59Z"
+  },
+  "vulnerabilities": [
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T00:00:00Z",
+        "detectionSource": "Trivy"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T00:00:00Z and closed 2026-09-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-10f5974d95a33fdf",
+      "vulnerabilityDescription": "CVE-2024-0001: requests: header leak on cross-origin redirect",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-d45792aec4765dc6ba636cfdad05efb765b64ea6a165967597bbeec48515645b",
+          "obs-25961fc0953d10e352b0ec08de870bbee884908cd0bab7caf25dfe5d25419da5"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "ghcr.io/example/app:1.4.2/app/requirements.txt",
+            "resourceType": "image"
+          },
+          {
+            "resourceId": "ghcr.io/example/app:1.4.2/usr/lib/python3.12/site-packages/requests-2.31.0.dist-info/METADATA",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2024-0001"
+        ],
+        "untimestampedObservationIds": [
+          "obs-d45792aec4765dc6ba636cfdad05efb765b64ea6a165967597bbeec48515645b",
+          "obs-25961fc0953d10e352b0ec08de870bbee884908cd0bab7caf25dfe5d25419da5"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T00:00:00Z",
+        "detectionSource": "Trivy"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T00:00:00Z and closed 2026-09-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-889c19760e425785",
+      "vulnerabilityDescription": "CVE-2024-0002: musl: out-of-bounds read in wcsnrtombs",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-5ea3291a292bb631cab60a71b119462521b8c0f7d3f3b24768d5118e80da6a26"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "ghcr.io/example/app:1.4.2/library/alpine",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2024-0002"
+        ],
+        "untimestampedObservationIds": [
+          "obs-5ea3291a292bb631cab60a71b119462521b8c0f7d3f3b24768d5118e80da6a26"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T02:00:00.123456Z",
+        "detectionSource": "CodeQL"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T02:00:00.123456Z and closed 2026-09-06T02:00:00.123456Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-04716522daa6f550",
+      "vulnerabilityDescription": "js/unused-local-variable: Unused variable, import, function or class",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T02:00:00.123456Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T02:00:00.123456Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+            "resourceType": "file"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T02:00:00.123456Z",
+        "detectionSource": "CodeQL"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T02:00:00.123456Z and closed 2026-09-06T02:00:00.123456Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-d2b9f5abf1fe44ac",
+      "vulnerabilityDescription": "js/xss-through-dom: DOM text reinterpreted as HTML",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T02:00:00.123456Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T02:00:00.123456Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+            "resourceType": "file"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CWE-116",
+          "CWE-79"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T00:00:00Z",
+        "detectionSource": "Semgrep OSS"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T00:00:00Z and closed 2026-09-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-5cfbebe8d4b91c27",
+      "vulnerabilityDescription": "python.lang.security.audit.exec-detected.exec-detected: Semgrep Finding: python.lang.security.audit.exec-detected.exec-detected",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-4d2cecbc01f1d26987474dcc62dfd9181ae535a3801d4497da5df0aa7b750ebf"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "src/app/runner.py",
+            "resourceType": "file"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CWE-95"
+        ],
+        "untimestampedObservationIds": [
+          "obs-4d2cecbc01f1d26987474dcc62dfd9181ae535a3801d4497da5df0aa7b750ebf"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T00:00:00Z",
+        "detectionSource": "Semgrep OSS"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T00:00:00Z and closed 2026-09-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-0e3754ea1c369285",
+      "vulnerabilityDescription": "python.lang.security.audit.subprocess-shell-true.subprocess-shell-true: Semgrep Finding: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-1c709c8cf32997e15f0d08ebae8d1234f40af69b2b30fdcc139ee27093b2d4d1"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "src/app/tasks.py",
+            "resourceType": "file"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CWE-78"
+        ],
+        "untimestampedObservationIds": [
+          "obs-1c709c8cf32997e15f0d08ebae8d1234f40af69b2b30fdcc139ee27093b2d4d1"
+        ]
+      }
+    }
+  ],
+  "x-complyroll": {
+    "artifacts": [
+      {
+        "name": "codeql-repo.sarif",
+        "observationCount": 3,
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "bf5a9a4d1bbb530ac3a7c1759cd40a77c8d8c1a1cda0ab2634b4f46deb8a5bb9",
+        "sizeBytes": 9419
+      },
+      {
+        "name": "semgrep-code.sarif",
+        "observationCount": 2,
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "1a19d26f79756130d65ce7993f83cc98677249f55e15687865949bb90a95c549",
+        "sizeBytes": 7311
+      },
+      {
+        "name": "trivy-image.sarif",
+        "observationCount": 3,
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "5ec28341654c3465d9e1da00330b9b1fa7a14b20cb10f4b0f2fd0da590ea3647",
+        "sizeBytes": 8036
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "detectionTimeAttestation": {
+      "appliedTo": [
+        "case-0e3754ea1c369285",
+        "case-10f5974d95a33fdf",
+        "case-5cfbebe8d4b91c27",
+        "case-889c19760e425785"
+      ],
+      "count": 4,
+      "detectedAt": "2026-09-01T00:00:00Z"
+    },
+    "diagnostics": [
+      {
+        "code": "baseline_state_ignored",
+        "level": "info",
+        "location": "codeql-repo.sarif",
+        "message": "baselineState is recorded as metadata and never changes a disposition (3 occurrences: runs[0].results[0], runs[0].results[1], runs[0].results[2])"
+      },
+      {
+        "code": "results_collapsed",
+        "level": "info",
+        "location": "semgrep-code.sarif",
+        "message": "result folded into an observation that shares its identity (1 occurrence: runs[0].results[1])"
+      },
+      {
+        "code": "results_collapsed",
+        "level": "info",
+        "location": "trivy-image.sarif",
+        "message": "result folded into an observation that shares its identity (2 occurrences: runs[0].results[1], runs[0].results[4])"
+      },
+      {
+        "code": "results_suppressed",
+        "level": "warning",
+        "location": "semgrep-code.sarif",
+        "message": "result carries an accepted suppression; its disposition is unchanged (1 occurrence: runs[0].results[2])"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "semgrep-code.sarif",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "trivy-image.sarif",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "unresolved_observation",
+        "level": "warning",
+        "location": "codeql-repo.sarif",
+        "message": "js/xss-through-dom on https://github.com/example/webapp/src/ui/legacy.js has disposition unknown and was not reported as a vulnerability"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "excludedByPeriod": 0,
+    "generatedAt": "2026-09-15T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.3.0a0"
+    },
+    "parserVersions": {
+      "complyroll.sarif": "1"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "5e9499e8cb9d0367c888ce41040175270fc9f007ae4f61d0ced34cca81cfe497"
+    }
+  }
+}

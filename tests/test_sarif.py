@@ -5,10 +5,6 @@
 # ******************************************************************************
 """Unit tests for the SARIF adapter: fixture mappings, corners, folds, clocks, refusals."""
 
-# NOTE: identity-stability, path-equivalence, saturated-caps, golden, CLI, and schema tests
-# (SarifIdentityStabilityTests, SarifPathEquivalenceTests, reproductions A and B) arrive in
-# step 3 of the SARIF slice; this module holds the step 2 unit classes only.
-
 # *--- Imports ---*
 
 from __future__ import annotations
@@ -16,11 +12,15 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta, timezone
 from itertools import permutations
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+from test_replay import INGESTED_AT, RATIONALE, StoreFixture
+from test_reports import summary_counts
 
 from complyroll.adapters import IngestLimits, ingest_stig_artifact
 from complyroll.adapters import sarif as sarif_module
@@ -41,6 +41,7 @@ from complyroll.adapters.sarif import (
     MAX_LIST_ITEM_CHARS,
     MAX_LIST_ITEMS,
     MAX_LOCATIONS_PER_RESULT,
+    MAX_MESSAGE_ARGUMENTS,
     MAX_METADATA_VALUE_CHARS,
     MAX_OBSERVATION_JSON_BYTES,
     MAX_TITLE_CHARS,
@@ -55,8 +56,28 @@ from complyroll.adapters.sarif import (
     _sanitize,
     _sarif_timestamp,
 )
-from complyroll.correlation import tracking_id_for
+from complyroll.correlation import correlate_observations, tracking_id_for
+from complyroll.history import (
+    HistoryError,
+    attest_detection,
+    audit_history,
+    record_ingest,
+    rehydrate_observations,
+)
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
+from complyroll.policy import CertificationClass
+from complyroll.reports import (
+    CompiledVdtReport,
+    ReportCompileError,
+    ReportOptions,
+    compile_avi_report,
+    compile_avi_report_from_history,
+    compile_historical_report,
+    compile_historical_report_from_history,
+    compile_vdt_report,
+    compile_vdt_report_from_history,
+)
+from complyroll.store import MAX_EVENT_JSON_BYTES, SQLiteEventStore
 
 # *--- Configuration ---*
 
@@ -134,6 +155,101 @@ FIXTURE_IDS = {
     "checkov-iac.sarif": CHECKOV_IDS,
     "sarif-spec-corners.sarif": CORNER_IDS,
 }
+
+# The SARIF goldens: the three tool fixtures compiled with the options below (ADR 0011).
+GOLDEN = Path(__file__).parent / "golden"
+SARIF_ARTIFACTS = (
+    FIXTURES / "trivy-image.sarif",
+    FIXTURES / "semgrep-code.sarif",
+    FIXTURES / "codeql-repo.sarif",
+)
+PACKAGE_URI = "https://example.test/cpo"
+REPORT_PERIOD_FROM = datetime(2026, 9, 1, tzinfo=UTC)
+REPORT_PERIOD_TO = datetime(2026, 9, 30, 23, 59, 59, tzinfo=UTC)
+REPORT_AS_OF = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
+REPORT_DETECTED_AT = datetime(2026, 9, 1, tzinfo=UTC)
+SECOND_INGEST = NOW + timedelta(days=1)
+# Tracking ids in golden order: Trivy, CodeQL, Semgrep, each sorted by source record.
+GOLDEN_TRACKING_IDS = (
+    "case-10f5974d95a33fdf",
+    "case-889c19760e425785",
+    "case-04716522daa6f550",
+    "case-d2b9f5abf1fe44ac",
+    "case-5cfbebe8d4b91c27",
+    "case-0e3754ea1c369285",
+)
+# The four ids the plan works by hand, and the split the detection attestation makes.
+WORKED_TRACKING_IDS = (
+    "case-10f5974d95a33fdf",
+    "case-889c19760e425785",
+    "case-5cfbebe8d4b91c27",
+    "case-d2b9f5abf1fe44ac",
+)
+CLOCKLESS_TRACKING_IDS = (
+    "case-0e3754ea1c369285",
+    "case-10f5974d95a33fdf",
+    "case-5cfbebe8d4b91c27",
+    "case-889c19760e425785",
+)
+CLOCKED_TRACKING_IDS = ("case-04716522daa6f550", "case-d2b9f5abf1fe44ac")
+CORNER_NOLOC_ID = "obs-e9162ca7f3e7b77b0e4042acfa34ee185e5cd9be4d2246263b51d4c420ebfd65"
+# Results a rewording may change without moving a fold's primary: the later member of each
+# Trivy and Semgrep fold. CodeQL folds nothing, so only its order moves.
+REWORDED_RESULTS: dict[str, tuple[int, ...]] = {
+    "trivy-image.sarif": (1, 4),
+    "semgrep-code.sarif": (1,),
+    "codeql-repo.sarif": (),
+}
+
+# The saturated log and the two reproductions (plan, Tests section).
+RUN_CLOCK = {"startTimeUtc": "2026-09-01T00:00:00Z"}
+EXAMPLE_URI = "https://example.test/"
+OVER_SCALAR = MAX_METADATA_VALUE_CHARS + 88
+OVER_ITEM = MAX_LIST_ITEM_CHARS + 44
+OVER_LIST = MAX_LIST_ITEMS + 1
+OVER_MESSAGE = 600
+LONG_NAME_CHARS = 4_096
+REPRODUCTION_A_RESULTS = 2_000
+REPRODUCTION_B_NAMES = 300
+CUT_LISTS = (
+    "fingerprints",
+    "image_digests",
+    "location_messages",
+    "logical_locations",
+    "partial_fingerprints",
+    "regions",
+    "result_kinds",
+    "rule_deprecated_ids",
+    "rule_tags",
+    "run_indexes",
+    "suppression_kinds",
+    "suppression_statuses",
+    "taxa",
+)
+CUT_TEXT_LISTS = (
+    "image_digests",
+    "logical_locations",
+    "rule_deprecated_ids",
+    "rule_tags",
+    "suppression_kinds",
+    "suppression_statuses",
+    "taxa",
+)
+CUT_SCALARS = (
+    "baseline_state",
+    "correlation_guid",
+    "guid",
+    "revision_id",
+    "rule_component",
+    "rule_name",
+    "security_severity",
+    "tool_semantic_version",
+    "tool_version",
+    "uri_base_id",
+)
+SATURATED_TRUNCATED = tuple(
+    sorted(CUT_LISTS + CUT_SCALARS + ("description", "result_kind", "title"))
+)
 
 # *--- Helpers ---*
 
@@ -269,6 +385,247 @@ def offset_hours(observation: Observation) -> float:
     if offset is None:
         raise AssertionError("observed_at is naive")
     return offset.total_seconds() / 3600
+
+
+def report_options(*, detected_at: datetime | None = None) -> ReportOptions:
+    """Return the golden report options; `detected_at` only where a path takes the flag."""
+    return ReportOptions(
+        certification_class=CertificationClass.C,
+        package_uri=PACKAGE_URI,
+        period_from=REPORT_PERIOD_FROM,
+        period_to=REPORT_PERIOD_TO,
+        as_of=REPORT_AS_OF,
+        calendar_timezone="UTC",
+        detected_at_attestation=detected_at,
+    )
+
+
+def compile_sarif_golden() -> CompiledVdtReport:
+    """Compile the SARIF golden the way the documented command line does."""
+    return compile_vdt_report(
+        list(SARIF_ARTIFACTS), options=report_options(detected_at=REPORT_DETECTED_AT)
+    )
+
+
+def fixture_payload(name: str) -> dict[str, Any]:
+    payload: dict[str, Any] = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+    return payload
+
+
+def reordered_and_reworded(name: str, positions: Sequence[int]) -> dict[str, Any]:
+    """Copy a fixture with the named results reworded and every run's results reversed."""
+    payload = fixture_payload(name)
+    for run in payload["runs"]:
+        for position in positions:
+            message = run["results"][position]["message"]
+            message["text"] = f"{message['text']} (reworded copy)"
+        run["results"].reverse()
+    return payload
+
+
+def provenance_of(path: Path) -> ArtifactProvenance:
+    return ArtifactProvenance.from_bytes(
+        path=path,
+        content=path.read_bytes(),
+        media_type=SARIF_MEDIA_TYPE,
+        parser_name="complyroll.sarif",
+        parser_version=SARIF_PARSER_VERSION,
+        ingested_at=NOW,
+    )
+
+
+def identity_of(observation: Observation) -> tuple[str, str, str, str, str]:
+    """Return the fold key, which is what a tracking id and a fingerprint are built from."""
+    return (
+        observation.source_tool,
+        observation.source_record_id,
+        observation.resource.resource_type,
+        observation.resource.resource_id,
+        observation.context_key,
+    )
+
+
+def tracking_id_of(observation: Observation) -> str:
+    return tracking_id_for(
+        observation.source_type, observation.source_record_id, observation.context_key
+    )
+
+
+def evidence_without_run_indexes(observation: Observation) -> dict[str, str]:
+    return {key: value for key, value in metadata(observation).items() if key != "run_indexes"}
+
+
+def location_less(result: IngestResult) -> Observation:
+    """Return the corner observation whose result names no location at all."""
+    matches = [item for item in result.observations if item.source_record_id == "CORNER-NOLOC"]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one CORNER-NOLOC observation, got {len(matches)}")
+    return matches[0]
+
+
+def correlation_json(paths: Sequence[Path]) -> str:
+    """Render a `CorrelationResult` as canonical JSON; the type has no serializer of its own."""
+    observations: list[Observation] = []
+    for path in paths:
+        observations.extend(ingest_stig_artifact(path, ingested_at=NOW).observations)
+    result = correlate_observations(observations)
+    document = {
+        "groups": [
+            {
+                "tracking_id": group.tracking_id,
+                "source_type": group.source_type,
+                "source_record_id": group.source_record_id,
+                "context_key": group.context_key,
+                "observations": [item.to_canonical_dict() for item in group.observations],
+                "resources": [[ref.resource_id, ref.resource_type] for ref in group.resources],
+                "source_identifiers": list(group.source_identifiers),
+                "title": group.title,
+                "description": group.description,
+                "earliest_observed_at": (
+                    None
+                    if group.earliest_observed_at is None
+                    else group.earliest_observed_at.isoformat()
+                ),
+                "detection_sources": list(group.detection_sources),
+                "untimestamped_observation_ids": list(group.untimestamped_observation_ids),
+            }
+            for group in result.groups
+        ],
+        "excluded": [item.to_canonical_dict() for item in result.excluded],
+    }
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+def capped_uri(char: str) -> str:
+    """Return an absolute uri of exactly MAX_URI_CHARS characters."""
+    return EXAMPLE_URI + char * (MAX_URI_CHARS - len(EXAMPLE_URI))
+
+
+def numbered(char: str, index: int, length: int) -> str:
+    """Return distinct text of the given length; the index leads, so it survives any cut."""
+    return f"{index:04d}" + char * (length - 4)
+
+
+def numbered_list(char: str, length: int = OVER_ITEM, count: int = OVER_LIST) -> list[str]:
+    return [numbered(char, index, length) for index in range(count)]
+
+
+def saturated_log() -> dict[str, Any]:
+    """Build a log with every identity input at its cap and every evidence member over its cap.
+
+    Sixty-five runs share one driver, automation category, image, rule, and uri, so every
+    result folds into one observation whose lists are all cut at MAX_LIST_ITEMS and whose
+    scalars are all cut at MAX_METADATA_VALUE_CHARS. Run 0 carries the primary result: the
+    first region, MAX_LOCATIONS_PER_RESULT locations, and every over-cap member. Each other
+    run adds one result with an over-cap kind, so `result_kinds` and `run_indexes` saturate.
+    """
+    driver = "D" * MAX_IDENTITY_CHARS
+    automation = "a" * (MAX_IDENTITY_CHARS - 12) + "/" + "b" * 11
+    image = "i" * MAX_IDENTITY_CHARS
+    uri = "u" * MAX_URI_CHARS
+    rule_id = "R" * MAX_IDENTITY_CHARS
+    base_id = "B" * OVER_SCALAR
+    descriptor = {
+        "id": rule_id,
+        "name": "N" * OVER_SCALAR,
+        "shortDescription": {"text": "T" * (MAX_TITLE_CHARS + 88)},
+        "helpUri": capped_uri("h"),
+        "deprecatedIds": numbered_list("d"),
+        "properties": {"tags": numbered_list("t")},
+    }
+    locations = [
+        {
+            "physicalLocation": {
+                "artifactLocation": {"uri": uri, "uriBaseId": base_id},
+                "region": {"startLine": index + 1, "startColumn": 1},
+            },
+            "message": {"text": numbered("m", index, OVER_ITEM)},
+            "logicalLocations": [{"fullyQualifiedName": numbered("l", index, OVER_ITEM)}],
+        }
+        for index in range(MAX_LOCATIONS_PER_RESULT)
+    ]
+    placeholders = " ".join("{" + str(index) + "}" for index in range(MAX_MESSAGE_ARGUMENTS + 8))
+    primary = {
+        "rule": {"index": 0, "toolComponent": {"index": 0}},
+        "kind": "fail",
+        "level": "error",
+        "message": {
+            "text": "x" * (MAX_DESCRIPTION_CHARS + 904) + " " + placeholders,
+            "arguments": ["g" * 40] * (MAX_MESSAGE_ARGUMENTS + 8),
+        },
+        "locations": locations,
+        "fingerprints": dict(zip(numbered_list("f"), numbered_list("v"), strict=True)),
+        "partialFingerprints": dict(zip(numbered_list("p"), numbered_list("w"), strict=True)),
+        "taxa": [{"id": taxon} for taxon in numbered_list("x")],
+        "suppressions": [
+            {"kind": kind, "status": status}
+            for kind, status in zip(numbered_list("k"), numbered_list("s"), strict=True)
+        ],
+        "guid": "G" * OVER_SCALAR,
+        "correlationGuid": "C" * OVER_SCALAR,
+        "baselineState": "S" * OVER_SCALAR,
+        "properties": {"security-severity": "9" * OVER_SCALAR},
+    }
+    first_run = {
+        "tool": {
+            "driver": {
+                "name": driver,
+                "version": "V" * OVER_SCALAR,
+                "semanticVersion": "M" * OVER_SCALAR,
+                "informationUri": capped_uri("n"),
+            },
+            "extensions": [{"name": "E" * OVER_SCALAR, "rules": [descriptor]}],
+        },
+        "invocations": [RUN_CLOCK],
+        "automationDetails": {"id": automation},
+        "properties": {"imageName": image, "repoDigests": numbered_list("q")},
+        "versionControlProvenance": [
+            {"repositoryUri": capped_uri("r"), "revisionId": "Z" * OVER_SCALAR}
+        ],
+        "originalUriBaseIds": {base_id: {"uri": capped_uri("o")}},
+        "results": [primary],
+    }
+    other_runs = [
+        {
+            "tool": {"driver": {"name": driver}},
+            "invocations": [RUN_CLOCK],
+            "automationDetails": {"id": automation},
+            "properties": {"imageName": image},
+            "results": [
+                {
+                    "ruleId": rule_id,
+                    "kind": numbered("K", index, OVER_SCALAR),
+                    "message": {"text": f"run {index}"},
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {"uri": uri},
+                                "region": {"startLine": 2},
+                            }
+                        }
+                    ],
+                }
+            ],
+        }
+        for index in range(1, OVER_LIST)
+    ]
+    return make_log(first_run, *other_runs)
+
+
+def reproduction_a() -> dict[str, Any]:
+    """Two thousand results of one identity, each with its own 600-character location message."""
+    results = []
+    for index in range(REPRODUCTION_A_RESULTS):
+        result = make_result(line=index + 1, text="same finding")
+        result["locations"][0]["message"] = {"text": numbered("m", index, OVER_MESSAGE)}
+        results.append(result)
+    return make_log(make_run(results, invocations=[RUN_CLOCK]))
+
+
+def reproduction_b() -> dict[str, Any]:
+    """One result carrying three hundred partialFingerprints names of 4,096 characters."""
+    names = {numbered("p", index, LONG_NAME_CHARS): "v" for index in range(REPRODUCTION_B_NAMES)}
+    return make_log(make_run([make_result(partialFingerprints=names)], invocations=[RUN_CLOCK]))
 
 
 # *--- Fixture Invariants ---*
@@ -2473,6 +2830,485 @@ class SarifTrackingIdTests(unittest.TestCase):
             {"case-10f5974d95a33fdf"},
         )
         self.assertNotEqual(trivy[0].observation_id, trivy[1].observation_id)
+
+
+# *--- Goldens ---*
+
+
+class SarifGoldenTests(unittest.TestCase):
+    """The SARIF goldens are the stateless compile of the three tool fixtures, byte for byte.
+
+    `tests/golden/vdt-sarif.json` and `vdt-sarif.md` were generated through the command
+    line with the options `report_options` names; the compiler reproduces them here, and
+    every value they carry traces to a rule in ADR 0011.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.report = compile_sarif_golden()
+        cls.document = cls.report.document
+
+    def test_the_json_golden_is_reproduced_byte_for_byte(self) -> None:
+        self.assertEqual(
+            self.report.to_json().encode("utf-8"), (GOLDEN / "vdt-sarif.json").read_bytes()
+        )
+
+    def test_the_markdown_golden_is_reproduced_byte_for_byte(self) -> None:
+        self.assertEqual(
+            self.report.to_markdown().encode("utf-8"), (GOLDEN / "vdt-sarif.md").read_bytes()
+        )
+
+    def test_compiling_twice_yields_identical_bytes(self) -> None:
+        again = compile_sarif_golden()
+        self.assertEqual(again.to_json(), self.report.to_json())
+        self.assertEqual(again.to_markdown(), self.report.to_markdown())
+
+    def test_the_golden_validates_against_the_official_schema(self) -> None:
+        self.assertTrue(self.report.validation.is_valid)
+        self.assertEqual(self.report.validation.issues, ())
+
+    def test_the_summary_totals_reconcile_with_the_vulnerabilities(self) -> None:
+        counts = summary_counts(self.report.to_markdown())
+        reported = len(self.document["vulnerabilities"])
+        self.assertEqual(reported, len(GOLDEN_TRACKING_IDS))
+        self.assertEqual(counts["Vulnerabilities reported"], reported)
+        self.assertEqual(counts["Evaluated"], 0)
+        self.assertEqual(counts["Not yet evaluated"], reported)
+        self.assertEqual(counts["Overdue"], reported)
+        self.assertEqual(counts["Accepted, reported under VER-RPT-AVI"], 0)
+        self.assertEqual(counts["Excluded by report period"], 0)
+        self.assertEqual(self.document["x-complyroll"]["excludedByPeriod"], 0)
+        attestation = self.document["x-complyroll"]["detectionTimeAttestation"]
+        self.assertEqual(attestation["detectedAt"], "2026-09-01T00:00:00Z")
+        self.assertEqual(attestation["count"], len(attestation["appliedTo"]))
+        self.assertEqual(tuple(attestation["appliedTo"]), CLOCKLESS_TRACKING_IDS)
+
+    def test_exactly_one_unresolved_observation_is_warned_about(self) -> None:
+        unresolved = [
+            item for item in self.report.diagnostics if item.code == "unresolved_observation"
+        ]
+        self.assertEqual(len(unresolved), 1)
+        self.assertEqual(unresolved[0].level.value, "warning")
+        self.assertEqual(unresolved[0].location, "codeql-repo.sarif")
+        self.assertEqual(
+            unresolved[0].message,
+            "js/xss-through-dom on https://github.com/example/webapp/src/ui/legacy.js has "
+            "disposition unknown and was not reported as a vulnerability",
+        )
+        recorded = [
+            item
+            for item in self.document["x-complyroll"]["diagnostics"]
+            if item["code"] == "unresolved_observation"
+        ]
+        self.assertEqual(len(recorded), 1)
+
+    def test_every_worked_tracking_id_is_reported_in_golden_order(self) -> None:
+        reported = [item["providerTrackingId"] for item in self.document["vulnerabilities"]]
+        self.assertEqual(reported, list(GOLDEN_TRACKING_IDS))
+        for tracking_id in WORKED_TRACKING_IDS:
+            with self.subTest(tracking_id=tracking_id):
+                self.assertIn(tracking_id, reported)
+
+    def test_the_golden_attributes_the_sarif_parser_and_its_three_inputs(self) -> None:
+        extension = self.document["x-complyroll"]
+        self.assertEqual(extension["parserVersions"], {"complyroll.sarif": SARIF_PARSER_VERSION})
+        self.assertEqual(
+            [
+                (item["name"], item["parser"], item["observationCount"])
+                for item in extension["artifacts"]
+            ],
+            [
+                ("codeql-repo.sarif", "complyroll.sarif", len(CODEQL_IDS)),
+                ("semgrep-code.sarif", "complyroll.sarif", len(SEMGREP_IDS)),
+                ("trivy-image.sarif", "complyroll.sarif", len(TRIVY_IDS)),
+            ],
+        )
+
+
+# *--- Identity Stability ---*
+
+
+class SarifIdentityStabilityTests(unittest.TestCase):
+    """Identity survives a second ingest, a rename, a reorder, a rewording, and a run swap."""
+
+    def test_identical_bytes_at_a_second_ingest_reproduce_every_id(self) -> None:
+        for name, expected in FIXTURE_IDS.items():
+            with self.subTest(fixture=name):
+                first = ingest_fixture(name).observations
+                second = ingest_stig_artifact(
+                    FIXTURES / name, ingested_at=SECOND_INGEST
+                ).observations
+                self.assertEqual([item.observation_id for item in second], list(expected))
+                self.assertEqual(
+                    [item.fingerprint for item in second], [item.fingerprint for item in first]
+                )
+                self.assertEqual({item.ingested_at for item in second}, {SECOND_INGEST})
+
+    def test_the_location_less_corner_result_keeps_its_id_under_two_filenames(self) -> None:
+        content = (FIXTURES / "sarif-spec-corners.sarif").read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            copies = []
+            for name in ("first-copy.sarif", "second-copy.sarif"):
+                path = Path(directory) / name
+                path.write_bytes(content)
+                copies.append(ingest_stig_artifact(path, ingested_at=SECOND_INGEST))
+        first, second = (location_less(result) for result in copies)
+        self.assertEqual(first.source_artifact_name, "first-copy.sarif")
+        self.assertEqual(second.source_artifact_name, "second-copy.sarif")
+        self.assertEqual(first.observation_id, CORNER_NOLOC_ID)
+        self.assertEqual(second.observation_id, first.observation_id)
+        self.assertEqual(second.fingerprint, first.fingerprint)
+        self.assertEqual(
+            (first.resource.resource_type, first.resource.resource_id), ("scan", "SpecCorners")
+        )
+        # The name is provenance, not identity: every corner id is the pinned one under both.
+        for result in copies:
+            self.assertEqual(
+                [item.observation_id for item in result.observations], list(CORNER_IDS)
+            )
+
+    def test_reordered_and_reworded_copies_keep_identity_and_the_chosen_description(self) -> None:
+        for name, positions in REWORDED_RESULTS.items():
+            with self.subTest(fixture=name):
+                original = ingest_fixture(name).observations
+                with tempfile.TemporaryDirectory() as directory:
+                    copy = Path(directory) / name
+                    copy.write_text(json.dumps(reordered_and_reworded(name, positions)))
+                    rewritten = ingest_stig_artifact(copy, ingested_at=NOW).observations
+                self.assertEqual(
+                    sorted(map(identity_of, rewritten)), sorted(map(identity_of, original))
+                )
+                self.assertEqual(
+                    sorted(map(tracking_id_of, rewritten)), sorted(map(tracking_id_of, original))
+                )
+                self.assertEqual(
+                    {identity_of(item): (item.title, item.description) for item in rewritten},
+                    {identity_of(item): (item.title, item.description) for item in original},
+                )
+                # The bytes changed, so the artifact digest and with it every observation id.
+                self.assertTrue(
+                    {item.observation_id for item in rewritten}.isdisjoint(
+                        item.observation_id for item in original
+                    )
+                )
+
+    def test_reordered_copies_under_the_original_provenance_are_canonically_identical(
+        self,
+    ) -> None:
+        for name, positions in REWORDED_RESULTS.items():
+            with self.subTest(fixture=name):
+                artifact = provenance_of(FIXTURES / name)
+                original = parse_direct(fixture_payload(name), artifact)
+                rewritten = parse_direct(reordered_and_reworded(name, positions), artifact)
+                self.assertEqual(
+                    [item.to_canonical_json() for item in rewritten.observations],
+                    [item.to_canonical_json() for item in original.observations],
+                )
+
+    def test_swapped_runs_keep_tracking_ids(self) -> None:
+        payload = fixture_payload("sarif-spec-corners.sarif")
+        payload["runs"].reverse()
+        original = ingest_fixture("sarif-spec-corners.sarif").observations
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "swapped.sarif"
+            copy.write_text(json.dumps(payload))
+            swapped = ingest_stig_artifact(copy, ingested_at=NOW).observations
+        self.assertEqual(len(swapped), len(CORNER_IDS))
+        self.assertEqual(
+            sorted(map(tracking_id_of, swapped)), sorted(map(tracking_id_of, original))
+        )
+        self.assertEqual(sorted(map(identity_of, swapped)), sorted(map(identity_of, original)))
+        # Only the run index evidence moves with the swap.
+        self.assertEqual(
+            {identity_of(item): evidence_without_run_indexes(item) for item in swapped},
+            {identity_of(item): evidence_without_run_indexes(item) for item in original},
+        )
+        self.assertEqual(
+            sorted(metadata(item)["run_indexes"] for item in swapped),
+            sorted(
+                metadata(item)["run_indexes"].translate({ord("0"): "2", ord("2"): "0"})
+                for item in original
+            ),
+        )
+
+    def test_every_ingest_order_of_the_golden_fixtures_correlates_identically(self) -> None:
+        renderings = {correlation_json(order) for order in permutations(SARIF_ARTIFACTS)}
+        self.assertEqual(len(renderings), 1)
+        document = json.loads(next(iter(renderings)))
+        self.assertEqual(
+            [group["tracking_id"] for group in document["groups"]], list(GOLDEN_TRACKING_IDS)
+        )
+        self.assertEqual([item["observation_id"] for item in document["excluded"]], [CODEQL_IDS[1]])
+
+
+# *--- Path Equivalence ---*
+
+
+class SarifPathEquivalenceTests(StoreFixture):
+    """The persisted path over the three tool fixtures reports the golden bytes (ADR 0010)."""
+
+    def persist(self, order: Sequence[Path] = SARIF_ARTIFACTS) -> None:
+        """Record, correlate, and attest the fixtures the way the four commands would."""
+        self.ingest(order)
+        self.correlate()
+        self.attest(detected_at=REPORT_DETECTED_AT)
+
+    def assert_reports_match(self) -> None:
+        persisted_options = report_options()
+        stateless_options = report_options(detected_at=REPORT_DETECTED_AT)
+        vdt = compile_vdt_report_from_history(self.repository, options=persisted_options)
+        self.assertEqual(vdt.to_json(), (GOLDEN / "vdt-sarif.json").read_text(encoding="utf-8"))
+        self.assertEqual(vdt.to_markdown(), (GOLDEN / "vdt-sarif.md").read_text(encoding="utf-8"))
+        pairs = (
+            (vdt, compile_vdt_report(list(SARIF_ARTIFACTS), options=stateless_options)),
+            (
+                compile_avi_report_from_history(self.repository, options=persisted_options),
+                compile_avi_report(list(SARIF_ARTIFACTS), options=stateless_options),
+            ),
+            (
+                compile_historical_report_from_history(self.repository, options=persisted_options),
+                compile_historical_report(list(SARIF_ARTIFACTS), options=stateless_options),
+            ),
+        )
+        for persisted, stateless in pairs:
+            with self.subTest(report=type(persisted).__name__):
+                self.assertTrue(persisted.validation.is_valid)
+                self.assertEqual(persisted.to_json(), stateless.to_json())
+                self.assertEqual(persisted.to_markdown(), stateless.to_markdown())
+
+    def test_history_reports_match_the_stateless_reports_and_the_goldens(self) -> None:
+        self.persist()
+        self.assert_reports_match()
+
+    def test_reversed_ingest_order_reports_the_same_bytes(self) -> None:
+        self.persist(tuple(reversed(SARIF_ARTIFACTS)))
+        self.assert_reports_match()
+
+    def test_the_attestation_reaches_only_the_cases_without_a_source_clock(self) -> None:
+        self.ingest(SARIF_ARTIFACTS)
+        self.correlate()
+        outcome = attest_detection(
+            self.repository,
+            self.tracking_ids(),
+            detected_at=REPORT_DETECTED_AT,
+            rationale=RATIONALE,
+            metadata=self.metadata,
+            now=INGESTED_AT,
+        )
+        self.assertEqual(outcome.attested, CLOCKLESS_TRACKING_IDS)
+        self.assertEqual(outcome.not_applicable, CLOCKED_TRACKING_IDS)
+        self.assertEqual(outcome.skipped, ())
+
+    def test_store_verify_passes_and_the_audit_finds_no_fault(self) -> None:
+        self.persist()
+        verifier = SQLiteEventStore.open_for_verification(self.database)
+        self.addCleanup(verifier.close)
+        integrity = verifier.verify_history()
+        self.assertTrue(integrity.ok, integrity.render())
+        self.assertEqual(integrity.faults, ())
+        self.assertEqual(integrity.checked_events, 28)
+        self.assertEqual(audit_history(self.repository), ())
+
+    def test_every_recorded_observation_payload_validates_against_the_contract(self) -> None:
+        self.persist()
+        recorded = [
+            record
+            for record in self.repository.read_all()
+            if record.event_type == "observation.recorded"
+        ]
+        self.assertEqual(
+            sorted(record.payload["observation_id"] for record in recorded),
+            sorted(TRIVY_IDS + SEMGREP_IDS + CODEQL_IDS),
+        )
+        for record in recorded:
+            with self.subTest(observation=record.payload["observation_id"]):
+                self.repository.validate_payload(
+                    record.event_type, record.payload, event_version=record.event_version
+                )
+
+
+# *--- Saturated Caps ---*
+
+
+class SarifSaturatedCapsTests(StoreFixture):
+    """Every cap holds at saturation, and what records on `--db` is what the stateless path sees."""
+
+    def write_log(self, name: str, payload: dict[str, Any]) -> Path:
+        path = self.workspace / name
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def record(self, path: Path) -> IngestResult:
+        """Ingest and record one log, the way `complyroll ingest --db` would."""
+        result = ingest_stig_artifact(path, ingested_at=INGESTED_AT)
+        self.assertEqual(result.errors, ())
+        record_ingest(self.repository, result, metadata=self.metadata, ingested_at=INGESTED_AT)
+        return result
+
+    def assert_both_paths_agree(self, path: Path, observation: Observation) -> None:
+        rehydrated = rehydrate_observations(self.repository)
+        self.assertEqual(
+            [item.to_canonical_json() for item in rehydrated], [observation.to_canonical_json()]
+        )
+        stored = [
+            record
+            for record in self.repository.read_all()
+            if record.event_type == "observation.recorded"
+        ]
+        self.assertEqual(len(stored), 1)
+        self.assertLess(len(json.dumps(stored[0].payload).encode("utf-8")), MAX_EVENT_JSON_BYTES)
+        persisted = compile_vdt_report_from_history(self.repository, options=report_options())
+        stateless = compile_vdt_report([path], options=report_options())
+        self.assertTrue(persisted.validation.is_valid)
+        self.assertEqual(len(persisted.document["vulnerabilities"]), 1)
+        self.assertEqual(persisted.to_json(), stateless.to_json())
+        self.assertEqual(persisted.to_markdown(), stateless.to_markdown())
+
+    def assert_refused_on_both_paths(self, path: Path) -> None:
+        with mock.patch.object(sarif_module, "MAX_OBSERVATION_JSON_BYTES", 500):
+            result = ingest_stig_artifact(path, ingested_at=INGESTED_AT)
+            self.assertEqual(result.observations, ())
+            failed = only_diagnostic(result, "artifact_parse_failed")
+            self.assertRegex(
+                failed.message,
+                r"^observation obs-[0-9a-f]{64} is \d+ bytes of canonical JSON; maximum is 500$",
+            )
+            with self.assertRaisesRegex(HistoryError, "only a successful ingest"):
+                record_ingest(
+                    self.repository, result, metadata=self.metadata, ingested_at=INGESTED_AT
+                )
+            with self.assertRaises(ReportCompileError) as caught:
+                compile_vdt_report([path], options=report_options())
+        self.assertEqual(self.repository.read_all(), ())
+        self.assertEqual(
+            [
+                (item.level.value, item.code, item.message, item.location)
+                for item in caught.exception.diagnostics
+            ],
+            [("error", "artifact_parse_failed", failed.message, path.name)],
+        )
+
+    def test_a_log_saturating_every_cap_folds_into_one_bounded_observation(self) -> None:
+        path = self.write_log("saturated.sarif", saturated_log())
+        result = ingest_stig_artifact(path, ingested_at=INGESTED_AT)
+        item = only_observation(result)
+        fields = metadata(item)
+        self.assertEqual(set(fields), set(METADATA_KEYS))
+        self.assertEqual(fields["occurrence_count"], str(OVER_LIST))
+        self.assertEqual(json.loads(fields["truncated"]), list(SATURATED_TRUNCATED))
+        for member in CUT_LISTS:
+            with self.subTest(member=member):
+                self.assertEqual(len(json.loads(fields[member])), MAX_LIST_ITEMS)
+        for member in CUT_TEXT_LISTS:
+            with self.subTest(member=member):
+                for text in json.loads(fields[member]):
+                    self.assertEqual(len(text), MAX_LIST_ITEM_CHARS)
+                    self.assertTrue(text.endswith(TRUNCATION_MARKER))
+        for member in ("fingerprints", "partial_fingerprints"):
+            with self.subTest(member=member):
+                for name, value in json.loads(fields[member]):
+                    self.assertEqual((len(name), len(value)), (MAX_LIST_ITEM_CHARS,) * 2)
+        for member in CUT_SCALARS:
+            with self.subTest(member=member):
+                self.assertEqual(len(fields[member]), MAX_METADATA_VALUE_CHARS)
+                self.assertTrue(fields[member].endswith(TRUNCATION_MARKER))
+        for kind in json.loads(fields["result_kinds"]):
+            self.assertLessEqual(len(kind), MAX_METADATA_VALUE_CHARS)
+        self.assertEqual(json.loads(fields["run_indexes"]), list(range(MAX_LIST_ITEMS)))
+        # Identity inputs sit exactly at their caps and are kept whole, never cut.
+        self.assertEqual(len(item.source_tool), MAX_IDENTITY_CHARS)
+        self.assertEqual(len(item.source_record_id), MAX_IDENTITY_CHARS)
+        self.assertEqual(len(fields["image_name"]), MAX_IDENTITY_CHARS)
+        self.assertEqual(len(fields["automation_id"]), MAX_IDENTITY_CHARS)
+        self.assertEqual(len(item.context_key), MAX_IDENTITY_CHARS + 1 + MAX_IDENTITY_CHARS - 12)
+        self.assertEqual(len(fields["location_uri"]), MAX_URI_CHARS)
+        for member in ("repository_uri", "rule_help_uri", "tool_information_uri", "uri_base"):
+            self.assertEqual(len(fields[member]), MAX_URI_CHARS)
+        self.assertEqual(len(item.title), MAX_TITLE_CHARS)
+        self.assertEqual(len(item.description), MAX_DESCRIPTION_CHARS)
+        self.assertIs(item.disposition, ObservationDisposition.OPEN)
+        self.assertIs(item.source_severity, SourceSeverity.HIGH)
+        self.assertEqual(fields["result_kind"], "fail")
+        self.assertEqual(fields["severity_source"], "level")
+        self.assertEqual(fields["suppressed"], "false")
+        self.assertLess(len(item.to_canonical_json().encode("utf-8")), MAX_OBSERVATION_JSON_BYTES)
+        self.assertLess(MAX_OBSERVATION_JSON_BYTES, MAX_EVENT_JSON_BYTES)
+        self.assertEqual(
+            sorted(set(diagnostic_codes(result))),
+            [
+                "baseline_state_ignored",
+                "evidence_truncated",
+                "invalid_result_kind",
+                "results_collapsed",
+                "security_severity_invalid",
+            ],
+        )
+        self.assertIn(
+            f"({MAX_LIST_ITEMS} occurrences: runs[1].results[0], runs[10].results[0], ",
+            only_diagnostic(result, "results_collapsed").message,
+        )
+
+    def test_the_saturated_observation_records_and_replays_below_the_store_cap(self) -> None:
+        path = self.write_log("saturated.sarif", saturated_log())
+        self.assert_both_paths_agree(path, only_observation(self.record(path)))
+
+    def test_reproduction_a_two_thousand_results_record_with_cut_lists(self) -> None:
+        path = self.write_log("reproduction-a.sarif", reproduction_a())
+        result = self.record(path)
+        item = only_observation(result)
+        fields = metadata(item)
+        self.assertEqual(fields["occurrence_count"], str(REPRODUCTION_A_RESULTS))
+        self.assertEqual(json.loads(fields["truncated"]), ["location_messages", "regions"])
+        regions = json.loads(fields["regions"])
+        self.assertEqual(regions, [str(line) for line in range(1, MAX_LIST_ITEMS + 1)])
+        messages = json.loads(fields["location_messages"])
+        self.assertEqual(len(messages), MAX_LIST_ITEMS)
+        for line, message in zip(regions, messages, strict=True):
+            self.assertTrue(message.startswith(f"{line}: {int(line) - 1:04d}m"))
+            self.assertTrue(message.endswith(TRUNCATION_MARKER))
+            self.assertEqual(len(message), len(line) + 2 + MAX_LIST_ITEM_CHARS)
+        self.assertIn(
+            f"({REPRODUCTION_A_RESULTS - 1} occurrences: runs[0].results[1], ",
+            only_diagnostic(result, "results_collapsed").message,
+        )
+        self.assertIn(
+            f"({REPRODUCTION_A_RESULTS + 2} occurrences: runs[0].results[0].locations[0], ",
+            only_diagnostic(result, "evidence_truncated").message,
+        )
+        self.assert_both_paths_agree(path, item)
+
+    def test_reproduction_b_three_hundred_long_fingerprint_names_record_with_a_cut_list(
+        self,
+    ) -> None:
+        path = self.write_log("reproduction-b.sarif", reproduction_b())
+        result = self.record(path)
+        item = only_observation(result)
+        fields = metadata(item)
+        self.assertEqual(fields["occurrence_count"], "1")
+        self.assertEqual(json.loads(fields["truncated"]), ["partial_fingerprints"])
+        self.assertNotIn("fingerprints", fields)
+        pairs = json.loads(fields["partial_fingerprints"])
+        self.assertEqual(
+            [name[:4] for name, _value in pairs],
+            [f"{index:04d}" for index in range(MAX_LIST_ITEMS)],
+        )
+        for name, value in pairs:
+            self.assertEqual(len(name), MAX_LIST_ITEM_CHARS)
+            self.assertTrue(name.endswith(TRUNCATION_MARKER))
+            self.assertEqual(value, "v")
+        self.assertIn(
+            f"({REPRODUCTION_B_NAMES + 1} occurrences: runs[0].results[0], ",
+            only_diagnostic(result, "evidence_truncated").message,
+        )
+        self.assert_both_paths_agree(path, item)
+
+    def test_a_smaller_cap_refuses_both_reproductions_identically_on_both_paths(self) -> None:
+        for name, builder in (
+            ("reproduction-a.sarif", reproduction_a),
+            ("reproduction-b.sarif", reproduction_b),
+        ):
+            with self.subTest(log=name):
+                self.assert_refused_on_both_paths(self.write_log(name, builder()))
 
 
 # *--- Entry Point ---*

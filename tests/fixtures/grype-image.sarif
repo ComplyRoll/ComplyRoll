@@ -1,0 +1,136 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Grype",
+          "version": "0.79.6",
+          "informationUri": "https://github.com/anchore/grype",
+          "rules": [
+            {
+              "id": "CVE-2024-0003-openssl",
+              "name": "ApkMatcherExactDirectMatch",
+              "shortDescription": {
+                "text": "CVE-2024-0003 high vulnerability for openssl package"
+              },
+              "fullDescription": {
+                "text": "Version 3.1.4-r5 is affected with an available fix in version 3.1.4-r6"
+              },
+              "helpUri": "https://nvd.nist.gov/vuln/detail/CVE-2024-0003",
+              "help": {
+                "text": "Vulnerability CVE-2024-0003\nSeverity: high\nPackage: openssl\nVersion: 3.1.4-r5\nFix Version: 3.1.4-r6\nType: apk\nLocation: lib/apk/db/installed\nData Namespace: alpine:distro:alpine:3.19\nLink: [CVE-2024-0003](https://nvd.nist.gov/vuln/detail/CVE-2024-0003)"
+              },
+              "messageStrings": {
+                "default": {
+                  "text": "A {0} vulnerability in {1} version {2} allows a remote attacker to read process memory; fixed in {3}."
+                }
+              },
+              "properties": {
+                "security-severity": "7.5"
+              }
+            },
+            {
+              "id": "CVE-2024-0004-zlib",
+              "name": "ApkMatcherExactDirectMatch",
+              "shortDescription": {
+                "text": "CVE-2024-0004 medium vulnerability for zlib package"
+              },
+              "fullDescription": {
+                "text": "Version 1.3-r2 is affected with an available fix in version 1.3.1-r0"
+              },
+              "helpUri": "https://nvd.nist.gov/vuln/detail/CVE-2024-0004",
+              "help": {
+                "text": "Vulnerability CVE-2024-0004\nSeverity: medium\nPackage: zlib\nVersion: 1.3-r2\nFix Version: 1.3.1-r0\nType: apk\nLocation: lib/apk/db/installed\nData Namespace: alpine:distro:alpine:3.19\nLink: [CVE-2024-0004](https://nvd.nist.gov/vuln/detail/CVE-2024-0004)"
+              },
+              "messageStrings": {
+                "default": {
+                  "text": "A {0} vulnerability in {1} version {2} allows a remote attacker to read process memory; fixed in {3}."
+                }
+              },
+              "properties": {
+                "security-severity": "5.3"
+              }
+            }
+          ]
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "startTimeUtc": "2026-09-02T10:15:00Z",
+          "endTimeUtc": "2026-09-02T10:16:30Z"
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "CVE-2024-0003-openssl",
+          "message": {
+            "id": "default",
+            "arguments": [
+              "high",
+              "openssl",
+              "3.1.4-r5",
+              "3.1.4-r6"
+            ]
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "lib/apk/db/installed"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "openssl@3.1.4-r5",
+                  "fullyQualifiedName": "lib/apk/db/installed:openssl@3.1.4-r5"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-0004-zlib",
+          "message": {
+            "id": "default",
+            "arguments": [
+              "medium",
+              "zlib",
+              "1.3-r2",
+              "1.3.1-r0"
+            ]
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "lib/apk/db/installed"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "logicalLocations": [
+                {
+                  "name": "zlib@1.3-r2",
+                  "fullyQualifiedName": "lib/apk/db/installed:zlib@1.3-r2"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

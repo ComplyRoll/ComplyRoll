@@ -1,0 +1,224 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "informationUri": "https://github.com/aquasecurity/trivy",
+          "name": "Trivy",
+          "rules": [
+            {
+              "id": "CVE-2024-0001",
+              "name": "LanguageSpecificPackageVulnerability",
+              "shortDescription": {
+                "text": "requests: header leak on cross-origin redirect"
+              },
+              "fullDescription": {
+                "text": "Requests before 2.32.0 forwards the Authorization header to a different origin after a redirect."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/nvd/cve-2024-0001",
+              "help": {
+                "text": "Vulnerability CVE-2024-0001\nSeverity: CRITICAL\nPackage: requests\nFixed Version: 2.32.0\nLink: [CVE-2024-0001](https://avd.aquasec.com/nvd/cve-2024-0001)",
+                "markdown": "**Vulnerability CVE-2024-0001**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|CRITICAL|requests|2.32.0|[CVE-2024-0001](https://avd.aquasec.com/nvd/cve-2024-0001)|\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "9.8",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "CRITICAL"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2024-0002",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "musl: out-of-bounds read in wcsnrtombs"
+              },
+              "fullDescription": {
+                "text": "musl libc before 1.2.5 mishandles a destination buffer length in wcsnrtombs."
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://avd.aquasec.com/nvd/cve-2024-0002",
+              "help": {
+                "text": "Vulnerability CVE-2024-0002\nSeverity: MEDIUM\nPackage: musl\nFixed Version: 1.2.5-r0\nLink: [CVE-2024-0002](https://avd.aquasec.com/nvd/cve-2024-0002)",
+                "markdown": "**Vulnerability CVE-2024-0002**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|MEDIUM|musl|1.2.5-r0|[CVE-2024-0002](https://avd.aquasec.com/nvd/cve-2024-0002)|\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5.5",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            }
+          ],
+          "version": "0.55.2"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2024-0001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Package: requests\nInstalled Version: 2.31.0\nVulnerability CVE-2024-0001\nSeverity: CRITICAL\nFixed Version: 2.32.0\nLink: [CVE-2024-0001](https://avd.aquasec.com/nvd/cve-2024-0001)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "app/requirements.txt",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "app/requirements.txt: requests@2.31.0"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-0001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Package: requests\nInstalled Version: 2.31.0\nVulnerability CVE-2024-0001\nSeverity: CRITICAL\nFixed Version: 2.32.0\nLink: [CVE-2024-0001](https://avd.aquasec.com/nvd/cve-2024-0001)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "app/requirements.txt",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "app/requirements.txt: requests@2.31.0 (pinned by app/constraints.txt)"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-0001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Package: requests\nInstalled Version: 2.31.0\nVulnerability CVE-2024-0001\nSeverity: CRITICAL\nFixed Version: 2.32.0\nLink: [CVE-2024-0001](https://avd.aquasec.com/nvd/cve-2024-0001)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "usr/lib/python3.12/site-packages/requests-2.31.0.dist-info/METADATA",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "usr/lib/python3.12/site-packages/requests-2.31.0.dist-info/METADATA: requests@2.31.0"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-0002",
+          "ruleIndex": 1,
+          "level": "warning",
+          "message": {
+            "text": "Package: musl\nInstalled Version: 1.2.4-r2\nVulnerability CVE-2024-0002\nSeverity: MEDIUM\nFixed Version: 1.2.5-r0\nLink: [CVE-2024-0002](https://avd.aquasec.com/nvd/cve-2024-0002)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "library/alpine",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "library/alpine: musl@1.2.4-r2"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-0002",
+          "ruleIndex": 1,
+          "level": "warning",
+          "message": {
+            "text": "Package: musl\nInstalled Version: 1.2.4-r2\nVulnerability CVE-2024-0002\nSeverity: MEDIUM\nFixed Version: 1.2.5-r0\nLink: [CVE-2024-0002](https://avd.aquasec.com/nvd/cve-2024-0002)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "library/alpine",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "library/alpine: musl@1.2.4-r2"
+              }
+            }
+          ]
+        }
+      ],
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "ROOTPATH": {
+          "uri": "file:///"
+        }
+      },
+      "properties": {
+        "imageName": "ghcr.io/example/app:1.4.2",
+        "repoDigests": [
+          "ghcr.io/example/app@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        ],
+        "repoTags": [
+          "ghcr.io/example/app:1.4.2"
+        ]
+      }
+    }
+  ]
+}

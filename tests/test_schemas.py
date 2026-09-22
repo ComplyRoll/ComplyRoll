@@ -27,10 +27,12 @@ from complyroll.schemas import (
 
 TEST_ROOT = Path(__file__).parent
 GOLDEN = TEST_ROOT / "golden" / "ver-schema-examples.json"
-COMPILED_GOLDENS = {
-    ReportSchema.ACCEPTED_VULNERABILITY: TEST_ROOT / "golden" / "avi-fixtures.json",
-    ReportSchema.HISTORICAL_ACTIVITY: TEST_ROOT / "golden" / "historical-fixtures.json",
-}
+COMPILED_GOLDENS = (
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-fixtures.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-sarif.json"),
+    (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
+    (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-fixtures.json"),
+)
 SCHEMA_COMMIT = "5156719aa7d0def16cf66f6197db9d6c0024e0e7"
 
 
@@ -266,24 +268,27 @@ class ReportValidationTests(unittest.TestCase):
 
 
 class CompiledGoldenValidationTests(unittest.TestCase):
-    """The compiler's own AVI and historical goldens satisfy the official schemas.
+    """The compiler's own goldens satisfy the official schemas.
 
-    `ver-schema-examples.json` holds hand-written examples; these two goldens are what
-    ComplyRoll emits, so validating them here ties the projections to the schemas
+    `ver-schema-examples.json` holds hand-written examples; the compiled goldens in
+    `COMPILED_GOLDENS` are what ComplyRoll emits (two VDT goldens, one from STIG
+    artifacts and one from SARIF logs, plus the AVI and historical goldens), so
+    validating each against its own schema here ties the projections to the schemas
     without going through the report compiler.
     """
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.bundle = load_bundled_schema_bundle()
-        cls.goldens = {
-            report_schema: json.loads(path.read_text(encoding="utf-8"))
-            for report_schema, path in COMPILED_GOLDENS.items()
-        }
+        cls.goldens = tuple(
+            (report_schema, path.name, json.loads(path.read_text(encoding="utf-8")))
+            for report_schema, path in COMPILED_GOLDENS
+        )
+        cls.by_schema = {report_schema: instance for report_schema, _, instance in cls.goldens}
 
     def test_the_compiled_goldens_are_valid_against_their_own_schemas(self) -> None:
-        for report_schema, instance in self.goldens.items():
-            with self.subTest(schema=report_schema.value):
+        for report_schema, name, instance in self.goldens:
+            with self.subTest(golden=name, schema=report_schema.value):
                 result = validate_report(self.bundle, report_schema, instance)
 
                 self.assertTrue(result.is_valid)
@@ -294,7 +299,7 @@ class CompiledGoldenValidationTests(unittest.TestCase):
                 )
 
     def test_the_avi_golden_is_not_a_vulnerability_detail_report(self) -> None:
-        instance = self.goldens[ReportSchema.ACCEPTED_VULNERABILITY]
+        instance = self.by_schema[ReportSchema.ACCEPTED_VULNERABILITY]
 
         result = validate_report(self.bundle, ReportSchema.VULNERABILITY_DETAIL, instance)
 
@@ -303,7 +308,7 @@ class CompiledGoldenValidationTests(unittest.TestCase):
         self.assertTrue(any("vulnerabilities" in issue.message for issue in result.issues))
 
     def test_an_accepted_item_without_a_rationale_is_refused(self) -> None:
-        instance = copy.deepcopy(self.goldens[ReportSchema.ACCEPTED_VULNERABILITY])
+        instance = copy.deepcopy(self.by_schema[ReportSchema.ACCEPTED_VULNERABILITY])
         del instance["acceptedVulnerabilities"][0]["acceptanceRationale"]
 
         result = validate_report(self.bundle, ReportSchema.ACCEPTED_VULNERABILITY, instance)
@@ -315,7 +320,7 @@ class CompiledGoldenValidationTests(unittest.TestCase):
         )
 
     def test_a_snapshot_without_generated_at_is_refused(self) -> None:
-        instance = copy.deepcopy(self.goldens[ReportSchema.HISTORICAL_ACTIVITY])
+        instance = copy.deepcopy(self.by_schema[ReportSchema.HISTORICAL_ACTIVITY])
         del instance["generatedAt"]
 
         result = validate_report(self.bundle, ReportSchema.HISTORICAL_ACTIVITY, instance)

@@ -1,0 +1,832 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "SpecCorners",
+          "version": "1.0.0",
+          "guid": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+          "rules": [
+            {
+              "id": "CORNER-KINDS",
+              "shortDescription": {
+                "text": "Every result kind"
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              }
+            },
+            {
+              "id": "CORNER-SEV-ABC",
+              "shortDescription": {
+                "text": "Unusable security-severity"
+              },
+              "properties": {
+                "security-severity": "abc"
+              }
+            },
+            {
+              "id": "CORNER-SEV-OVERRIDE",
+              "shortDescription": {
+                "text": "Result-level security-severity override"
+              },
+              "properties": {
+                "security-severity": "3.0"
+              }
+            },
+            {
+              "id": "CORNER-SUPPRESS",
+              "shortDescription": {
+                "text": "Rejected suppression"
+              }
+            },
+            {
+              "id": "CORNER-MSG",
+              "shortDescription": {
+                "text": "Message string with placeholders"
+              },
+              "messageStrings": {
+                "found": {
+                  "text": "Found {0} inside {{braces}} at {1}; {2} stays literal and {{{0}}} is braced."
+                }
+              }
+            },
+            {
+              "id": "CORNER-LINK",
+              "shortDescription": {
+                "text": "Location link in message"
+              }
+            },
+            {
+              "id": "CORNER-DOTDOT",
+              "shortDescription": {
+                "text": "Parent segment in uri"
+              }
+            },
+            {
+              "id": "CORNER-SLASHES",
+              "shortDescription": {
+                "text": "Leading double slash in uri"
+              }
+            },
+            {
+              "id": "CORNER-EMPTY-URI",
+              "shortDescription": {
+                "text": "Empty uri"
+              }
+            },
+            {
+              "id": "CORNER-LOGICAL",
+              "shortDescription": {
+                "text": "Logical location only"
+              }
+            },
+            {
+              "id": "CORNER-NOLOC",
+              "shortDescription": {
+                "text": "No location at all"
+              }
+            },
+            {
+              "id": "CORNER-FIRST-LAST",
+              "shortDescription": {
+                "text": "First detection beside a later last detection"
+              }
+            },
+            {
+              "id": "CORNER-LAST-ONLY",
+              "shortDescription": {
+                "text": "Last detection only"
+              }
+            },
+            {
+              "id": "CORNER-Y",
+              "shortDescription": {
+                "text": "Descriptor that is not a prefix of the rule id"
+              }
+            },
+            {
+              "id": "CA5350",
+              "shortDescription": {
+                "text": "Do not use weak cryptographic algorithms"
+              }
+            },
+            {
+              "id": "CORNER-OVERRIDE",
+              "shortDescription": {
+                "text": "Invocation override promotes the level"
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              }
+            },
+            {
+              "id": "CORNER-ZERO-SEV",
+              "shortDescription": {
+                "text": "Zero security-severity beside an error level"
+              },
+              "properties": {
+                "security-severity": "0.0"
+              }
+            },
+            {
+              "id": "CORNER-BIDI",
+              "shortDescription": {
+                "text": "Bidi control and zero-width space in evidence"
+              }
+            }
+          ]
+        },
+        "extensions": [
+          {
+            "name": "corner-extension",
+            "guid": "0f2d1e4a-3b5c-4d6e-8f70-1a2b3c4d5e6f",
+            "globalMessageStrings": {
+              "shared": {
+                "text": "Global text for {0} from the extension."
+              }
+            },
+            "rules": [
+              {
+                "id": "CORNER-EXT-WINS",
+                "shortDescription": {
+                  "text": "Extension descriptor at the shadowed index"
+                }
+              },
+              {
+                "id": "CORNER-GLOBAL",
+                "shortDescription": {
+                  "text": "Global message string fallback"
+                }
+              },
+              {
+                "id": "CORNER-GUID",
+                "shortDescription": {
+                  "text": "Component referenced by guid"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "ruleConfigurationOverrides": [
+            {
+              "descriptor": {
+                "index": 15
+              },
+              "configuration": {
+                "level": "error"
+              }
+            }
+          ]
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "CORNER-KINDS",
+          "ruleIndex": 0,
+          "kind": "fail",
+          "message": {
+            "text": "kind fail"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/kinds/fail.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-KINDS",
+          "ruleIndex": 0,
+          "kind": "pass",
+          "message": {
+            "text": "kind pass"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/kinds/pass.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-KINDS",
+          "ruleIndex": 0,
+          "kind": "notApplicable",
+          "message": {
+            "text": "kind notApplicable"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/kinds/not_applicable.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-KINDS",
+          "ruleIndex": 0,
+          "kind": "review",
+          "message": {
+            "text": "kind review"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/kinds/review.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-KINDS",
+          "ruleIndex": 0,
+          "kind": "informational",
+          "message": {
+            "text": "kind informational"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/kinds/informational.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-KINDS",
+          "ruleIndex": 0,
+          "kind": "open",
+          "message": {
+            "text": "kind open"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/kinds/open.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-KINDS",
+          "ruleIndex": 0,
+          "kind": "bogus",
+          "message": {
+            "text": "kind outside the specification"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/kinds/bogus.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-SEV-ABC",
+          "ruleIndex": 1,
+          "level": "warning",
+          "message": {
+            "text": "security-severity abc falls through to the level"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/severity/abc.py"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-SEV-OVERRIDE",
+          "ruleIndex": 2,
+          "level": "warning",
+          "message": {
+            "text": "result-level security-severity 9.5 overrides the rule's 3.0"
+          },
+          "properties": {
+            "security-severity": "9.5"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/severity/override.py"
+                },
+                "region": {
+                  "startLine": 3
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-SUPPRESS",
+          "ruleIndex": 3,
+          "level": "error",
+          "message": {
+            "text": "suppression was rejected"
+          },
+          "suppressions": [
+            {
+              "kind": "external",
+              "status": "rejected",
+              "justification": "not a false positive"
+            }
+          ],
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/suppress/rejected.py"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-MSG",
+          "ruleIndex": 4,
+          "level": "note",
+          "message": {
+            "id": "found",
+            "arguments": [
+              "needle",
+              "line 3"
+            ]
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/message/placeholders.py"
+                },
+                "region": {
+                  "startLine": 3
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-LINK",
+          "ruleIndex": 5,
+          "level": "warning",
+          "message": {
+            "text": "Taint reaches [the sink](0) here."
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/message/sink.py"
+                },
+                "region": {
+                  "startLine": 8
+                }
+              },
+              "message": {
+                "text": "the sink"
+              }
+            }
+          ],
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/message/link.py"
+                },
+                "region": {
+                  "startLine": 5
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleIndex": 1,
+          "rule": {
+            "toolComponent": {
+              "index": 0
+            }
+          },
+          "level": "warning",
+          "message": {
+            "id": "shared",
+            "arguments": [
+              "CORNER-GLOBAL"
+            ]
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/extension/global.py"
+                },
+                "region": {
+                  "startLine": 6
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-DOTDOT",
+          "ruleIndex": 6,
+          "level": "warning",
+          "message": {
+            "text": "uri with a parent segment"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/../etc/passwd"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-SLASHES",
+          "ruleIndex": 7,
+          "level": "warning",
+          "message": {
+            "text": "uri with a leading double slash"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "//fileserver/share/config.ini"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-EMPTY-URI",
+          "ruleIndex": 8,
+          "level": "warning",
+          "message": {
+            "text": "uri that is empty after trimming"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "   "
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-LOGICAL",
+          "ruleIndex": 9,
+          "level": "warning",
+          "message": {
+            "text": "logical location only"
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "name": "render",
+                  "fullyQualifiedName": "com.example.ui.Renderer.render",
+                  "kind": "function"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-NOLOC",
+          "ruleIndex": 10,
+          "level": "warning",
+          "message": {
+            "text": "no location at all"
+          }
+        },
+        {
+          "ruleId": "CORNER-FIRST-LAST",
+          "ruleIndex": 11,
+          "level": "warning",
+          "message": {
+            "text": "first detection wins over a later last detection"
+          },
+          "provenance": {
+            "firstDetectionTimeUtc": "2026-09-01T08:30:00Z",
+            "lastDetectionTimeUtc": "2026-09-05T08:30:00Z"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/clock/first_last.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-LAST-ONLY",
+          "ruleIndex": 12,
+          "level": "warning",
+          "message": {
+            "text": "last detection only"
+          },
+          "provenance": {
+            "lastDetectionTimeUtc": "2026-09-04T08:30:00+02:00"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/clock/last_only.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-X",
+          "ruleIndex": 13,
+          "level": "warning",
+          "message": {
+            "text": "rule id string disagrees with the descriptor"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/rules/conflict.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CA5350/md5",
+          "ruleIndex": 14,
+          "level": "warning",
+          "message": {
+            "text": "hierarchical rule id under its descriptor"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/rules/hierarchical.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleIndex": 0,
+          "rule": {
+            "toolComponent": {
+              "index": 0
+            }
+          },
+          "level": "warning",
+          "message": {
+            "text": "extension descriptor wins over the driver descriptor at the same index"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/extension/shadow.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "rule": {
+            "index": 2,
+            "toolComponent": {
+              "guid": "0f2d1e4a-3b5c-4d6e-8f70-1a2b3c4d5e6f"
+            }
+          },
+          "level": "warning",
+          "message": {
+            "text": "component referenced by guid only"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/extension/guid.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-OVERRIDE",
+          "ruleIndex": 15,
+          "message": {
+            "text": "invocation override promotes note to error"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/level/override.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-ZERO-SEV",
+          "ruleIndex": 16,
+          "level": "error",
+          "message": {
+            "text": "security-severity 0.0 is unset; the level decides"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/severity/zero.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CORNER-BIDI",
+          "ruleIndex": 17,
+          "level": "warning",
+          "message": {
+            "text": "evidence with a bidi control \u202e and a zero-width\u200b space"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/evidence/bidi.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              },
+              "message": {
+                "text": "location message with \u200b zero-width space"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": {
+        "driver": {
+          "name": "OtherScanner",
+          "version": "2.0.0"
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": false
+        }
+      ],
+      "results": null
+    },
+    {
+      "tool": {
+        "driver": {
+          "name": "SpecCorners",
+          "version": "1.0.0",
+          "rules": [
+            {
+              "id": "CORNER-END-ONLY",
+              "shortDescription": {
+                "text": "Run clock from endTimeUtc only"
+              }
+            }
+          ]
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "endTimeUtc": "2026-09-03T12:00:00Z"
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "CORNER-END-ONLY",
+          "ruleIndex": 0,
+          "level": "warning",
+          "message": {
+            "text": "observed_at comes from the invocation end time"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/clock/end_only.py"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

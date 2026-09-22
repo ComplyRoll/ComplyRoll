@@ -26,6 +26,11 @@ All notable project changes will be documented here.
   does, so a valid ARF is accepted under either suffix and a misnamed CKL still reaches the CKL
   adapter. Observation identity hashes the artifact digest and not its name, so anyone who worked
   around this by renaming a file will not get duplicate cases when they stop.
+- A lone surrogate code point in a JSON string or object key (`"\ud800"`) passed the bounded JSON
+  parser and then crashed the report writer and the event store on `.encode("utf-8")`, for any
+  JSON artifact. `parse_json_bounded` now refuses it during the walk it already does, and the
+  dispatcher reports `artifact_parse_failed` with the code point named. Verified by parser tests
+  in `tests/test_safeio.py`.
 
 ### Added
 
@@ -54,6 +59,51 @@ All notable project changes will be documented here.
   permutation of a shared fleet case, and by a test that records the same evaluations in two
   stores eleven days apart and proves the report bytes are identical, so the store's
   `recordedAt` never reaches a report.
+- A SARIF 2.1.0 adapter (ADR 0011). `report vdt`, `report avi`, `report historical`, and `ingest`
+  now accept `.sarif` files, and names ending `.sarif.json`, from Trivy, Grype, Semgrep, CodeQL,
+  Checkov, or any conforming producer, beside the STIG checklists. Each result becomes one
+  observation per located resource: the driver name is the source tool, the rule identifier
+  resolved in the spec's order (an index, then `rule.guid`, then a lone exact id match, never a
+  prefix) is the source record id, the located file, image path, or logical name is the
+  resource, scoped by the image or repository the run declares, and the driver name plus the
+  automation category is the context key, through the unchanged nine-input identity of ADR 0002.
+  Results that share an identity inside one artifact fold into one observation with an
+  occurrence count and capped region lists. The caps count characters, not bytes, so a log that
+  fills them with four-byte text, or with quotes and backslashes that JSON escapes twice inside a
+  list, reaches the 512 KiB ceiling on one folded observation's canonical JSON, and that artifact is
+  refused on both paths, before the event store's own cap can. A suppressed result stays open with
+  its suppression recorded in metadata and a warning on the artifact, `baselineState` never moves a
+  disposition, `kind: open` is recorded as unknown so every report flags it, and scanner severity is
+  recorded as evidence and never sets PAIN. An integer `security-severity` is range-checked before
+  conversion, so an integer too large for a float is invalid rather than an overflow, and a string
+  must be an ASCII decimal, so `0_9` or another script's digits never band as CRITICAL. A
+  `ruleConfigurationOverrides` level applies from the result's own invocation when the entry's
+  descriptor reference resolves, by the same rules as a result's, to the result's own descriptor,
+  the first such entry winning; the reference's id counts only when it has no index and no guid that
+  names a descriptor, and then only if one descriptor alone has it, so descriptors that share an
+  id each keep their own level. Clocks are kept only from 1970 through 9000 UTC, the spec's hour 24
+  is read as the next midnight on every interpreter, a leap second or a date alone is refused, and
+  of two spellings of the earliest instant under different offsets the one whose text sorts first is
+  kept, so no order of results, runs, or invocations changes an observation's `observed_at`. Message
+  placeholders, location links, and CVE, GHSA, and CWE identifiers take ASCII letters and digits
+  only, and link text reads the spec's escaped brackets and backslashes in one linear pass; a
+  message substitutes at most 1,024 placeholders, an observation keeps at most 64 identifiers, and a
+  region line or column above 2**31 - 1 is absent. Diagnostics are coalesced per code per artifact
+  with occurrence counts and the first JSON paths, each path and detail sanitized and cut at 512
+  characters and each detail read from a bounded part of the value without sorting it, so one
+  artifact's diagnostics stay within about 56,000 characters whatever the input's size. A run's
+  shared rule and component data is resolved once, each shared tags, `deprecatedIds`, or
+  `repoDigests` list and each of a result's own lists and fingerprints is cut once to the items a
+  fold can keep, each shared uri and each descriptor id a result takes as its rule identifier is
+  checked once, and each override entry is resolved to its descriptor once, so a result's cost is
+  bounded by the caps rather than by the size of a template, list, or value it shares, or by the
+  size of its own lists once for each resource it names. An artifact's observations are capped
+  together at 256 MiB of canonical JSON, the same way on both paths. Six synthetic fixtures
+  (`trivy-image`, `grype-image`, `semgrep-code`, `codeql-repo`, `checkov-iac`, and
+  `sarif-spec-corners`) and two goldens (`tests/golden/vdt-sarif.json` and `vdt-sarif.md`) hold the
+  behavior. Verified by the 271 tests in `tests/test_sarif.py`, by the goldens on the stateless
+  path, and by the persisted path and the replay reader rebuilding the same report from history byte
+  for byte.
 
 ### Changed
 
@@ -110,6 +160,25 @@ All notable project changes will be documented here.
   each, every other timeframe and PAIN matrix unchanged), by the policy golden, which gained the
   `VDR-TFR-NMV` entry under both classes, and by the six report goldens, which moved only in the
   rules provenance block and in the overdue explanations that cite the dataset commit.
+- The CLI help text for report and ingest artifacts now reads "CKLB, CKL, XCCDF, ARF, or SARIF
+  file", and the package description reads "Compiles STIG, SCAP, and SARIF output into
+  schema-valid FedRAMP 20x vulnerability reports, with every response clock read from FedRAMP's
+  published rules dataset". The PyPI summary is baked in at build time, so it carries the
+  previous line until the next release.
+- The observation helpers the STIG adapters shared (`_text`, `_unique`, `_parse_timestamp`,
+  `_make_observation`, and `_missing_time_diagnostic`) moved out of `adapters/stig.py` into
+  `adapters/common.py` as `text_of`, `unique`, `parse_timestamp`, `make_observation`, and
+  `missing_time_diagnostic`, and `make_observation` takes a `resource_type` that defaults to
+  `host`. The move is the only edit on the STIG code paths in this work; every existing golden
+  is byte-identical, which is the proof it changed nothing.
+- `IngestLimits` gained `max_results_per_run` and `max_observations_per_artifact`, both 50,000 by
+  default, and `max_observation_bytes_per_artifact`, 256 MiB of canonical JSON summed over an
+  artifact's observations, since a fold copies the capped lists it keeps into every observation that
+  carries them; exceeding any of them refuses the artifact as `artifact_parse_failed`. Every
+  existing limit keeps its value.
+- `stigroll` skips a SARIF log with a warning on stderr (`warning: <name> is a SARIF log; stigroll
+  rolls up STIG checklists only, skipping`) instead of rolling it up; a run whose only input is a
+  SARIF log ends with `error: no findings parsed from any input` and exit status 1.
 
 ## 0.3.0a0 - 2026-08-23
 

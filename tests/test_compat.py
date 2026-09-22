@@ -40,6 +40,36 @@ class StigrollCompatibilityTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertEqual(stdout, f"{expected}\n")
 
+    def test_a_sarif_log_is_skipped_with_a_warning_and_the_csv_is_unchanged(self) -> None:
+        # stigroll rolls up STIG checklists; a SARIF log would otherwise read as zero
+        # findings in silence, so it is named and skipped before the parse diagnostics.
+        inputs = [
+            str(FIXTURES / "windows-host.ckl"),
+            str(FIXTURES / "trivy-image.sarif"),
+            str(FIXTURES / "ubuntu-host.cklb"),
+            str(FIXTURES / "openscap-results.xml"),
+        ]
+        result, stdout, stderr = self.run_cli([*inputs, "--format", "csv"])
+        expected = (GOLDEN / "mixed.csv").read_bytes().decode("utf-8")
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            stderr,
+            "warning: trivy-image.sarif is a SARIF log; stigroll rolls up STIG checklists "
+            "only, skipping\n",
+        )
+        self.assertEqual(stdout, f"{expected}\n")
+
+    def test_a_lone_sarif_log_yields_no_findings_and_exit_code_one(self) -> None:
+        result, stdout, stderr = self.run_cli([str(FIXTURES / "codeql-repo.sarif")])
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(
+            stderr,
+            "warning: codeql-repo.sarif is a SARIF log; stigroll rolls up STIG checklists "
+            "only, skipping\n"
+            "error: no findings parsed from any input\n",
+        )
+
     def test_json_matches_original_stigroll_golden_output(self) -> None:
         inputs = [
             str(FIXTURES / "windows-host.ckl"),

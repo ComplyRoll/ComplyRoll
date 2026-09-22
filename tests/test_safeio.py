@@ -9,13 +9,17 @@ from pathlib import Path
 
 from complyroll.adapters import IngestLimits, ingest_stig_artifact
 from complyroll.adapters.safeio import (
+    DEFAULT_LIMITS,
     InputLimitError,
     UnsafeXmlError,
+    parse_json_bounded,
     parse_xml_bounded,
     read_bounded,
 )
+from complyroll.adapters.sarif import SARIF_MEDIA_TYPE, SARIF_PARSER_VERSION
 
 NOW = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)
+SARIF_FIXTURE = Path(__file__).parent / "fixtures" / "trivy-image.sarif"
 
 INTERNAL_DTD_DOCUMENT = (
     '<?xml version="1.0"?>\n'
@@ -56,6 +60,14 @@ NAMESPACED_DOCUMENT = (
     'xmlns:dc="http://purl.org/dc/elements/1.1/" id="test">\n'
     '  <TestResult id="result-1" dc:source="scanner"><target>lab-ubuntu-02</target></TestResult>\n'
     "</Benchmark>\n"
+)
+
+# A checklist that is valid in every other way, with one lone surrogate escape in the
+# finding text. json.loads accepts it; the first .encode("utf-8") downstream did not.
+LONE_SURROGATE_CKLB = (
+    b'{"target_data":{"host_name":"lab-surrogate"},'
+    b'"stigs":[{"stig_name":"Synthetic STIG","rules":['
+    b'{"group_id":"V-1","status":"open","finding_details":"broken \\ud800 text"}]}]}'
 )
 
 
@@ -264,6 +276,25 @@ class XmlBoundaryTests(unittest.TestCase):
         self.assertEqual(len(root), 50)
 
 
+# The JSON walk counts values and never keys, and the root is at depth 1.
+class JsonBoundaryTests(unittest.TestCase):
+    def test_depth_limit_boundary(self) -> None:
+        payload = b'{"a":{"b":1}}'
+        parsed = parse_json_bounded(payload, IngestLimits(max_json_depth=3))
+        self.assertEqual(parsed, {"a": {"b": 1}})
+        with self.assertRaises(InputLimitError) as caught:
+            parse_json_bounded(payload, IngestLimits(max_json_depth=2))
+        self.assertIn("JSON nesting exceeds 2 levels", str(caught.exception))
+
+    def test_value_limit_boundary(self) -> None:
+        payload = b'{"a":[1,2]}'
+        parsed = parse_json_bounded(payload, IngestLimits(max_json_nodes=4))
+        self.assertEqual(parsed, {"a": [1, 2]})
+        with self.assertRaises(InputLimitError) as caught:
+            parse_json_bounded(payload, IngestLimits(max_json_nodes=3))
+        self.assertIn("JSON contains more than 3 values", str(caught.exception))
+
+
 class ReadBoundedTests(unittest.TestCase):
     def test_regular_file_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -317,6 +348,165 @@ class ReadBoundedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(FileNotFoundError):
                 read_bounded(Path(directory) / "absent.ckl")
+
+
+class IngestLimitFieldTests(unittest.TestCase):
+    """Three bounds for the SARIF adapter; the defaults keep every existing value."""
+
+    def test_the_two_new_fields_default_to_fifty_thousand(self) -> None:
+        limits = IngestLimits()
+
+        self.assertEqual(limits.max_results_per_run, 50_000)
+        self.assertEqual(limits.max_observations_per_artifact, 50_000)
+
+    def test_the_observation_byte_budget_defaults_to_eight_artifact_bounds(self) -> None:
+        limits = IngestLimits()
+
+        self.assertEqual(limits.max_observation_bytes_per_artifact, 256 * 1024 * 1024)
+        self.assertEqual(limits.max_observation_bytes_per_artifact, 8 * limits.max_artifact_bytes)
+
+    def test_default_limits_carry_the_new_fields_and_keep_every_existing_value(self) -> None:
+        self.assertEqual(DEFAULT_LIMITS, IngestLimits())
+        self.assertEqual(DEFAULT_LIMITS.max_artifact_bytes, 32 * 1024 * 1024)
+        self.assertEqual(DEFAULT_LIMITS.max_json_depth, 128)
+        self.assertEqual(DEFAULT_LIMITS.max_json_nodes, 500_000)
+        self.assertEqual(DEFAULT_LIMITS.max_xml_depth, 128)
+        self.assertEqual(DEFAULT_LIMITS.max_xml_elements, 500_000)
+        self.assertEqual(DEFAULT_LIMITS.max_results_per_run, 50_000)
+        self.assertEqual(DEFAULT_LIMITS.max_observations_per_artifact, 50_000)
+        self.assertEqual(DEFAULT_LIMITS.max_observation_bytes_per_artifact, 256 * 1024 * 1024)
+
+    def test_each_new_field_can_be_lowered_on_its_own(self) -> None:
+        results = IngestLimits(max_results_per_run=3)
+        observations = IngestLimits(max_observations_per_artifact=2)
+        observation_bytes = IngestLimits(max_observation_bytes_per_artifact=1_000)
+
+        self.assertEqual(results.max_results_per_run, 3)
+        self.assertEqual(results.max_observations_per_artifact, 50_000)
+        self.assertEqual(observations.max_observations_per_artifact, 2)
+        self.assertEqual(observations.max_results_per_run, 50_000)
+        self.assertEqual(observation_bytes.max_observation_bytes_per_artifact, 1_000)
+        self.assertEqual(observation_bytes.max_observations_per_artifact, 50_000)
+        self.assertEqual(observation_bytes.max_results_per_run, 50_000)
+
+
+class SarifIngestLimitTests(unittest.TestCase):
+    """Every bound the dispatcher is given reaches the SARIF read and the SARIF adapter."""
+
+    def test_an_oversized_sarif_log_is_refused_before_the_read(self) -> None:
+        size = len(SARIF_FIXTURE.read_bytes())
+        result = ingest_stig_artifact(
+            SARIF_FIXTURE, ingested_at=NOW, limits=IngestLimits(max_artifact_bytes=4)
+        )
+
+        self.assertFalse(result.successful)
+        self.assertIsNone(result.artifact)
+        self.assertEqual(result.observations, ())
+        self.assertEqual(
+            [(item.code, item.message, item.location) for item in result.errors],
+            [
+                (
+                    "artifact_read_failed",
+                    f"artifact is {size} bytes; maximum is 4 bytes",
+                    str(SARIF_FIXTURE),
+                )
+            ],
+        )
+
+    def test_each_lowered_bound_is_a_parse_failure_attributed_to_sarif(self) -> None:
+        # trivy-image.sarif is one run of five results that fold into three observations.
+        cases = (
+            (IngestLimits(max_json_nodes=50), "JSON contains more than 50 values"),
+            (IngestLimits(max_results_per_run=4), "runs[0] contains 5 results; maximum is 4"),
+            (
+                IngestLimits(max_observations_per_artifact=2),
+                "artifact yields more than 2 observations",
+            ),
+            (
+                IngestLimits(max_observation_bytes_per_artifact=1_000),
+                "artifact yields more than 1000 bytes of observation JSON",
+            ),
+        )
+        for limits, message in cases:
+            with self.subTest(message=message):
+                result = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=NOW, limits=limits)
+
+                self.assertFalse(result.successful)
+                self.assertEqual(result.observations, ())
+                assert result.artifact is not None
+                self.assertEqual(result.artifact.parser_name, "complyroll.sarif")
+                self.assertEqual(result.artifact.parser_version, SARIF_PARSER_VERSION)
+                self.assertEqual(result.artifact.media_type, SARIF_MEDIA_TYPE)
+                self.assertEqual(
+                    [(item.code, item.message, item.location) for item in result.errors],
+                    [("artifact_parse_failed", message, SARIF_FIXTURE.name)],
+                )
+
+
+class LoneSurrogateTests(unittest.TestCase):
+    """A lone surrogate is refused at parse, where the dispatcher reports it, not at write."""
+
+    def assert_refused(self, payload: bytes, kind: str, code_point: str) -> None:
+        with self.assertRaises(ValueError) as caught:
+            parse_json_bounded(payload)
+        self.assertNotIsInstance(caught.exception, InputLimitError)
+        message = str(caught.exception)
+        self.assertIn("lone surrogate", message)
+        self.assertIn(f"JSON {kind}", message)
+        self.assertIn(code_point, message)
+
+    def test_a_lone_surrogate_in_a_string_value_is_refused(self) -> None:
+        self.assert_refused(b'{"a":"\\ud800"}', "string", "U+D800")
+
+    def test_a_lone_surrogate_in_an_object_key_is_refused(self) -> None:
+        self.assert_refused(b'{"\\ud800":"a"}', "object key", "U+D800")
+
+    def test_a_lone_surrogate_nested_in_a_value_is_refused(self) -> None:
+        self.assert_refused(b'{"stigs":[{"rules":[{"title":"x\\udc00y"}]}]}', "string", "U+DC00")
+
+    def test_a_lone_surrogate_nested_in_a_key_is_refused(self) -> None:
+        self.assert_refused(b'[{"outer":{"inner \\udfff":1}}]', "object key", "U+DFFF")
+
+    def test_the_root_string_is_checked_too(self) -> None:
+        self.assert_refused(b'"\\ud800"', "string", "U+D800")
+
+    def test_a_valid_surrogate_pair_escape_still_parses(self) -> None:
+        value = parse_json_bounded(b'{"a":"\\ud83d\\ude00"}')
+
+        self.assertEqual(value, {"a": "\U0001F600"})
+        self.assertIsInstance(value["a"].encode("utf-8"), bytes)
+
+    def test_a_literal_astral_plane_character_still_parses_in_keys_and_values(self) -> None:
+        payload = '{"key \U0001F600":"\U0001F600 value"}'.encode()
+
+        self.assertEqual(parse_json_bounded(payload), {"key \U0001F600": "\U0001F600 value"})
+
+    def test_a_lone_surrogate_checklist_is_a_failed_parse_not_a_later_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "surrogate.cklb"
+            path.write_bytes(LONE_SURROGATE_CKLB)
+            result = ingest_stig_artifact(path, ingested_at=NOW)
+
+        self.assertFalse(result.successful)
+        self.assertEqual(result.observations, ())
+        self.assertIsNotNone(result.artifact)
+        assert result.artifact is not None
+        self.assertEqual(result.artifact.parser_name, "complyroll.cklb")
+        self.assertEqual(result.errors[0].code, "artifact_parse_failed")
+        self.assertIn("lone surrogate", result.errors[0].message)
+        self.assertIsInstance(result.to_canonical_json().encode("utf-8"), bytes)
+
+    def test_the_same_checklist_with_a_paired_escape_ingests(self) -> None:
+        payload = LONE_SURROGATE_CKLB.replace(b"\\ud800", b"\\ud83d\\ude00")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "astral.cklb"
+            path.write_bytes(payload)
+            result = ingest_stig_artifact(path, ingested_at=NOW)
+
+        self.assertTrue(result.successful, result.errors)
+        self.assertEqual(len(result.observations), 1)
+        self.assertEqual(result.observations[0].description, "broken \U0001F600 text")
+        self.assertIsInstance(result.to_canonical_json().encode("utf-8"), bytes)
 
 
 if __name__ == "__main__":

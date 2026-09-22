@@ -20,7 +20,7 @@ provider can publish and an independent assessor can recompute.
 
 | Surface | What it does |
 |---|---|
-| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, and ARF files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. Validated against the bundled official schema before anything is written |
+| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, ARF, and SARIF files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. Validated against the bundled official schema before anything is written |
 | `complyroll report avi ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles the same artifacts into an official-format Accepted Vulnerability Information report (`VER-RPT-AVI`): every accepted vulnerability with recorded activity in the report period, each with the acceptance rationale the official item requires, and a count of the active records that belong in the detail report instead. An accepted record whose evaluation carries no rationale stops the compile |
 | `complyroll report historical ARTIFACT... --class C --package-uri URI [--evaluations FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles a Historical VER Activity snapshot (`VER-TFR-MRH`) as of `--as-of`, with no report period: every non-accepted vulnerability, disposed ones included, under `activeVulnerabilities` and every accepted one under `acceptedVulnerabilities`, each in its current state |
 | `complyroll ingest ARTIFACT... --db STORE [--as-of T] [--actor NAME]` | Records each artifact and its observations as typed events (`artifact.ingested`, `observation.recorded`) in an append-only SQLite store, validated against published contracts before they are written. Re-running over the same bytes appends nothing |
@@ -31,7 +31,7 @@ provider can publish and an independent assessor can recompute.
 | `complyroll store verify --db STORE` | Walks the whole log checking payload digests, sequence and stream-version contiguity, the sequence counter, and the schema definitions, then audits the domain (every payload against its published contract, every event against its stream kind and the artifact identity its stream names, every artifact stream for completeness in both directions and for repeated observation identifiers, every metadata envelope), and exits non-zero on any fault, including on files the normal open refuses |
 | `complyroll validate REPORT --schema vulnerability-detail\|accepted-vulnerability\|historical-activity` | Validates a report against the pinned official schema, offline, printing JSON Pointers for every failure and the exact schema provenance |
 | `stigroll <files> [--cci-list U_CCI_List.xml] [--format markdown\|csv\|json] [-o FILE]` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output byte-for-byte |
-| `complyroll.adapters.ingest_stig_artifact(path)` | CKLB, CKL, XCCDF, and ARF files become immutable observations with artifact digest, parser identity, timestamps, and structured diagnostics |
+| `complyroll.adapters.ingest_stig_artifact(path)` | CKLB, CKL, XCCDF, ARF, and SARIF files become immutable observations with artifact digest, parser identity, timestamps, and structured diagnostics |
 | `complyroll.policy.load_bundled_policy(profile)` | Selects the 36 provider-facing VDR and VER rules for a 20x Class B or Class C profile from the pinned official dataset and calculates evaluation, PAIN response, and acceptance-threshold deadlines with full provenance, in the provider's calendar timezone |
 | `complyroll.store.SQLiteEventStore` | Append-only event log with optimistic concurrency, payload digests, schema and tail-integrity verification, and projection checkpoints. Domain events are written only through `complyroll.events.EventRepository`, which validates every payload against a published contract (ADR 0008) |
 
@@ -44,8 +44,12 @@ The claim is about the compiled report and about the same set of files. The even
 deliberately not order-independent, because an append-only log records what happened when. The persisted path (ADR 0008) records the same inputs as typed events and rebuilds
 this same report from the log, so changing an evaluation creates history instead of overwriting
 it. The accepted-vulnerability and historical-activity reports are projections of the same
-period-agnostic record set (ADR 0010), on both paths, which closes Phase 1. Phase 2 opens with
-the SARIF adapter. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
+period-agnostic record set (ADR 0010), on both paths, which closes Phase 1. Phase 2 opened with
+the SARIF adapter (ADR 0011): `.sarif` logs from Trivy, Grype, Semgrep, CodeQL, Checkov, or any
+other conforming SARIF 2.1.0 producer become observations beside the STIG ones, on both paths,
+with the located file, image, or logical name as the resource and the driver name in the group
+key. A log with no results is not yet evidence and fails ingest until the coverage observation
+lands. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
 
 ## Quick start
 
@@ -247,13 +251,14 @@ and digest. Assessors do not configure or operate ComplyRoll on a provider's beh
 - [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md): observation, case, evaluation, and evidence model
 - [`docs/FEDRAMP_2026_MAPPING.md`](docs/FEDRAMP_2026_MAPPING.md): current rule and schema mapping
 - [`docs/SECURITY.md`](docs/SECURITY.md): threat model and evidence-handling requirements
-- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0010
+- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0011
   (0007 fixes the report mappings: attested detection time, disposition table, clock semantics,
   overdue wording, the `x-complyroll` extension, and the evaluations file; 0009 adopts Common
   Definitions 0.3.0, which gives completed PAIN reductions an official slot and remediation its
   own disposition; 0010 splits the compiler into one period-agnostic record set and three report
   projections, fixes the acceptance instant to the evaluation's, and makes the historical report
-  a periodless snapshot of the whole population)
+  a periodless snapshot of the whole population; 0011 adds the SARIF adapter, keyed on the
+  located resource and the driver name rather than on producer fingerprints)
 - [`examples/`](examples/): the fixture-to-report demo inputs
 - [`AGENTS.md`](AGENTS.md): repository rules and development commands
 

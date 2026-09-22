@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL",
+          "organization": "GitHub",
+          "semanticVersion": "2.19.3",
+          "notifications": [],
+          "rules": []
+        },
+        "extensions": [
+          {
+            "name": "codeql/javascript-queries",
+            "semanticVersion": "1.2.4+7b2d3e1a",
+            "locations": [
+              {
+                "uri": "file:///opt/hostedtoolcache/CodeQL/2.19.3/x64/codeql/qlpacks/codeql/javascript-queries/1.2.4/qlpack.yml",
+                "description": {
+                  "text": "The QL pack root file."
+                }
+              }
+            ],
+            "rules": [
+              {
+                "id": "js/xss-through-dom",
+                "name": "js/xss-through-dom",
+                "shortDescription": {
+                  "text": "DOM text reinterpreted as HTML"
+                },
+                "fullDescription": {
+                  "text": "Reinterpreting text from the DOM as HTML can lead to a cross-site scripting vulnerability."
+                },
+                "defaultConfiguration": {
+                  "enabled": true,
+                  "level": "warning"
+                },
+                "properties": {
+                  "tags": [
+                    "security",
+                    "external/cwe/cwe-079",
+                    "external/cwe/cwe-116"
+                  ],
+                  "description": "Reinterpreting text from the DOM as HTML can lead to a cross-site scripting vulnerability.",
+                  "id": "js/xss-through-dom",
+                  "kind": "path-problem",
+                  "name": "DOM text reinterpreted as HTML",
+                  "precision": "high",
+                  "problem.severity": "warning",
+                  "security-severity": "6.1"
+                }
+              },
+              {
+                "id": "js/unused-local-variable",
+                "name": "js/unused-local-variable",
+                "shortDescription": {
+                  "text": "Unused variable, import, function or class"
+                },
+                "fullDescription": {
+                  "text": "Unused variables, imports, functions or classes may be a symptom of a bug and should be examined carefully."
+                },
+                "defaultConfiguration": {
+                  "enabled": true,
+                  "level": "note"
+                },
+                "properties": {
+                  "tags": [
+                    "maintainability"
+                  ],
+                  "description": "Unused variables, imports, functions or classes may be a symptom of a bug and should be examined carefully.",
+                  "id": "js/unused-local-variable",
+                  "kind": "problem",
+                  "name": "Unused variable, import, function or class",
+                  "precision": "very-high",
+                  "problem.severity": "recommendation"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "artifacts": [
+        {
+          "location": {
+            "uri": "src/ui/render.js",
+            "uriBaseId": "%SRCROOT%",
+            "index": 0
+          }
+        },
+        {
+          "location": {
+            "uri": "src/ui/helpers.js",
+            "uriBaseId": "%SRCROOT%",
+            "index": 1
+          }
+        }
+      ],
+      "invocations": [
+        {
+          "toolExecutionNotifications": [],
+          "executionSuccessful": true,
+          "startTimeUtc": "2026-09-01T02:00:00.1234567Z",
+          "endTimeUtc": "2026-09-01T02:07:12.6543210Z"
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "js/xss-through-dom",
+          "rule": {
+            "id": "js/xss-through-dom",
+            "index": 0,
+            "toolComponent": {
+              "index": 0
+            }
+          },
+          "message": {
+            "text": "[DOM text](1) is reinterpreted as HTML without escaping meta-characters."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0
+                },
+                "region": {
+                  "startLine": 44,
+                  "startColumn": 18,
+                  "endColumn": 31
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "5d1a2e7c9b3f0a41:1",
+            "primaryLocationStartColumnFingerprint": "13"
+          },
+          "codeFlows": [
+            {
+              "threadFlows": [
+                {
+                  "locations": [
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": {
+                            "uri": "src/ui/helpers.js",
+                            "uriBaseId": "%SRCROOT%",
+                            "index": 1
+                          },
+                          "region": {
+                            "startLine": 9,
+                            "startColumn": 10,
+                            "endColumn": 27
+                          }
+                        },
+                        "message": {
+                          "text": "DOM text"
+                        }
+                      }
+                    },
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": {
+                            "uri": "src/ui/render.js",
+                            "uriBaseId": "%SRCROOT%",
+                            "index": 0
+                          },
+                          "region": {
+                            "startLine": 44,
+                            "startColumn": 18,
+                            "endColumn": 31
+                          }
+                        },
+                        "message": {
+                          "text": "innerHTML"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "relatedLocations": [
+            {
+              "id": 1,
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/ui/helpers.js",
+                  "uriBaseId": "%SRCROOT%",
+                  "index": 1
+                },
+                "region": {
+                  "startLine": 9,
+                  "startColumn": 10,
+                  "endColumn": 27
+                }
+              },
+              "message": {
+                "text": "DOM text"
+              }
+            }
+          ],
+          "baselineState": "new"
+        },
+        {
+          "ruleId": "js/unused-local-variable",
+          "rule": {
+            "id": "js/unused-local-variable",
+            "index": 1,
+            "toolComponent": {
+              "index": 0
+            }
+          },
+          "message": {
+            "text": "Unused variable legacyCache."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/ui/helpers.js",
+                  "uriBaseId": "%SRCROOT%",
+                  "index": 1
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 7,
+                  "endColumn": 18
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "a04c2f8e11d7b6c3:1",
+            "primaryLocationStartColumnFingerprint": "2"
+          },
+          "baselineState": "unchanged"
+        },
+        {
+          "ruleId": "js/xss-through-dom",
+          "rule": {
+            "id": "js/xss-through-dom",
+            "index": 0,
+            "toolComponent": {
+              "index": 0
+            }
+          },
+          "kind": "open",
+          "level": "warning",
+          "message": {
+            "text": "Data flow into innerHTML could not be resolved; manual review required."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/ui/legacy.js",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "startLine": 120,
+                  "startColumn": 5,
+                  "endColumn": 42
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "c7e1f2a93b4d5e60:1",
+            "primaryLocationStartColumnFingerprint": "0"
+          },
+          "baselineState": "unchanged"
+        }
+      ],
+      "automationDetails": {
+        "id": "nightly/lint/2026-09-01"
+      },
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "%SRCROOT%": {
+          "uri": "file:///home/runner/work/webapp/webapp/"
+        }
+      },
+      "properties": {
+        "semmle.formatSpecifier": "sarif-latest"
+      },
+      "versionControlProvenance": [
+        {
+          "repositoryUri": "https://github.com/example/webapp/",
+          "revisionId": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+          "branch": "refs/heads/main"
+        }
+      ]
+    }
+  ]
+}

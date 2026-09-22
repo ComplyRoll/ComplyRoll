@@ -5,9 +5,22 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
-from complyroll.adapters import ingest_stig_artifact, load_cci_control_map
+from complyroll import adapters
+from complyroll.adapters import (
+    SARIF_PARSER_VERSION,
+    ArtifactProvenance,
+    IngestResult,
+    SarifAdapter,
+    common,
+    ingest_stig_artifact,
+    load_cci_control_map,
+    sarif,
+    stig,
+)
+from complyroll.adapters.sarif import SARIF_MEDIA_TYPE
 from complyroll.adapters.stig import (
     CCI_PARSER_VERSION,
     CKL_PARSER_VERSION,
@@ -17,7 +30,7 @@ from complyroll.adapters.stig import (
     CklbAdapter,
     XccdfAdapter,
 )
-from complyroll.models import ObservationDisposition
+from complyroll.models import ObservationDisposition, SourceSeverity
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FIRST_INGEST = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)
@@ -30,6 +43,65 @@ ARF_TEST_RESULT_ID = "xccdf_org.open-scap_testresult_xccdf_mil.synthetic.content
 # evaluated. Neither may reach an observation.
 ARF_ASSET_FQDN = "lab-rhel-03.synthetic.test"
 ARF_UNEVALUATED_CCI = "CCI-002418"
+
+SARIF_FIXTURE = FIXTURES / "trivy-image.sarif"
+SARIF_ATTRIBUTION = ("complyroll.sarif", SARIF_PARSER_VERSION, SARIF_MEDIA_TYPE)
+# The CKLB adapter's verdict on a SARIF log reaching it under a bare .json name. Dispatch is
+# by suffix alone (ADR 0011, decision 1), so the bytes are never sniffed toward SARIF.
+CKLB_SHAPE_MESSAGE = "JSON has no non-empty 'stigs' array"
+
+# Observation ids of every STIG fixture, recorded before the shared helpers moved from
+# stig.py to adapters/common.py (ADR 0011, decision 12). The goldens prove the move changed
+# nothing; this table names it.
+BASELINE_OBSERVATION_IDS = {
+    "ubuntu-host.cklb": (
+        "obs-f841f4f0e47c5d8710658d433ee82715d679f7a5cfbd9afb4a4e216688ad3926",
+        "obs-6cdf3ee1f2fa3cf51ea8aac1cc05c8534ec5e56d8398edd559ef5f226b68a674",
+        "obs-1577127e3e0aaa0b19f428f196a0d90407c3cb1be1864738f30fd1b64470d7f9",
+        "obs-49da1ef09ba9877e9ad9885dbcba70198a805e64f64c4578e0e1b77bba33a4b1",
+        "obs-7876b3a041cd260c9987490da7e6d6dd370be17ac84dddc3c7a748ca0e4e98c0",
+        "obs-dd8f546726ab5b2cb9a096254bd3679185ca8f2cd10045dd7de289ad5553e5d6",
+    ),
+    "windows-host.ckl": (
+        "obs-6e3d196cb5f895fecc7d879eac03f954de2d99f46fdd0bccc11d8f0e88a66dc4",
+        "obs-57e96b5e68e7278977ebf3eaed197fb61c24c7cea52fffb6e4b96ead1a08c660",
+    ),
+    "openscap-results.xml": (
+        "obs-c1a949d8bba45d81b6badd35b2a1c985370d60f37503e3ddf5c79e07ed45e883",
+        "obs-12dec8db9923fa7e3ffd7ac81ee7b5db79b14ffa798fa54cd71520af681d097c",
+        "obs-9d9083ec3329bc5beea5a41c62fb26a19048cbeba1e2c7dc2c7f1e63a081fb21",
+    ),
+    "openscap-arf.xml": (
+        "obs-e5ffbbd34cb4eadda6c3598f81e37547a5d8c376cb06fb5da20468a64ef2c7fe",
+        "obs-4cda4500eaae09c458a2a9ddcaaaab5e28dff7a68242ebe88158e2f0079254cc",
+        "obs-2b646b2a92c575e1a2969a3829a0782b4ef63880bc9379e1353166b1653b2a52",
+        "obs-0eb1fba3936a5aead6c964be06697e134ce6a414bcde9187a81c3c856c4b6709",
+    ),
+}
+
+SYNTHETIC_ARTIFACT = ArtifactProvenance.from_bytes(
+    path=Path("synthetic.cklb"),
+    content=b'{"stigs":[]}',
+    media_type="application/json",
+    parser_name="complyroll.cklb",
+    parser_version=CKLB_PARSER_VERSION,
+    ingested_at=FIRST_INGEST,
+)
+SYNTHETIC_FIELDS: dict[str, Any] = {
+    "artifact": SYNTHETIC_ARTIFACT,
+    "source_type": "cklb",
+    "source_tool": "Synthetic STIG",
+    "source_record_id": "V-1",
+    "resource_id": "lab-synthetic",
+    "observed_at": None,
+    "ingested_at": FIRST_INGEST,
+    "disposition": ObservationDisposition.OPEN,
+    "severity": SourceSeverity.MEDIUM,
+    "title": "Synthetic title",
+    "description": "Synthetic description",
+    "identifiers": ("CCI-000366",),
+    "context_key": "synthetic",
+}
 
 
 class StigAdapterTests(unittest.TestCase):
@@ -368,6 +440,101 @@ class ArfAdapterTests(unittest.TestCase):
         self.assertIn("rule-result", result.errors[0].message)
 
 
+class SarifDispatchTests(unittest.TestCase):
+    """The suffix alone chooses the SARIF adapter, and a SARIF failure is attributed to it."""
+
+    @staticmethod
+    def attribution_of(result: IngestResult) -> tuple[str, str, str]:
+        assert result.artifact is not None
+        artifact = result.artifact
+        return (artifact.parser_name, artifact.parser_version, artifact.media_type)
+
+    def test_both_sarif_suffixes_route_to_the_sarif_adapter(self) -> None:
+        reference = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=FIRST_INGEST)
+        # The double suffix is compared on the lowercased name, so an upper-case spelling
+        # routes too.
+        for name in ("scan.sarif", "scan.sarif.json", "Report.SARIF.JSON"):
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / name
+                    path.write_bytes(SARIF_FIXTURE.read_bytes())
+                    result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+                self.assertTrue(result.successful, result.errors)
+                self.assertEqual(self.attribution_of(result), SARIF_ATTRIBUTION)
+                self.assertEqual({item.source_type for item in result.observations}, {"sarif"})
+                self.assertEqual(
+                    {(item.parser_name, item.parser_version) for item in result.observations},
+                    {("complyroll.sarif", SARIF_PARSER_VERSION)},
+                )
+                # The name routes the read; only the bytes carry identity.
+                self.assertEqual(
+                    [item.observation_id for item in result.observations],
+                    [item.observation_id for item in reference.observations],
+                )
+
+    def test_bare_json_copy_of_a_sarif_log_still_fails_as_cklb(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.json"
+            path.write_bytes(SARIF_FIXTURE.read_bytes())
+            result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+        self.assertFalse(result.successful)
+        self.assertEqual(result.observations, ())
+        self.assertEqual(
+            self.attribution_of(result),
+            ("complyroll.cklb", CKLB_PARSER_VERSION, "application/json"),
+        )
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [("artifact_parse_failed", CKLB_SHAPE_MESSAGE)],
+        )
+
+    def test_checklist_under_a_sarif_suffix_is_refused_by_the_sarif_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "checklist.sarif"
+            path.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
+            result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+        self.assertFalse(result.successful)
+        self.assertEqual(result.observations, ())
+        self.assertEqual(self.attribution_of(result), SARIF_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [("artifact_parse_failed", "SARIF version must be the string 2.1.0")],
+        )
+
+    def test_malformed_sarif_is_attributed_to_the_sarif_adapter(self) -> None:
+        # Before this slice the parse-failure block blamed complyroll.xml-auto for any suffix
+        # it did not know; a .sarif that fails before the adapter runs must name the adapter.
+        cases = (
+            ("brace.sarif", b"{", "Expecting property name"),
+            ("bytes.sarif.json", b"\xff", "JSON must be UTF-8"),
+        )
+        for name, content, prefix in cases:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / name
+                    path.write_bytes(content)
+                    result = ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+                self.assertFalse(result.successful)
+                self.assertEqual(result.observations, ())
+                self.assertEqual(self.attribution_of(result), SARIF_ATTRIBUTION)
+                assert result.artifact is not None
+                self.assertNotEqual(result.artifact.parser_name, "complyroll.xml-auto")
+                self.assertEqual(result.artifact.digest_sha256, hashlib.sha256(content).hexdigest())
+                self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+                self.assertTrue(result.errors[0].message.startswith(prefix), result.errors[0])
+
+    def test_the_package_exports_the_sarif_adapter_and_its_version(self) -> None:
+        self.assertIn("SarifAdapter", adapters.__all__)
+        self.assertIn("SARIF_PARSER_VERSION", adapters.__all__)
+        self.assertIs(adapters.SarifAdapter, sarif.SarifAdapter)
+        self.assertIs(adapters.SARIF_PARSER_VERSION, sarif.SARIF_PARSER_VERSION)
+        self.assertIs(SarifAdapter, sarif.SarifAdapter)
+
+
 class ParserVersionIndependenceTests(unittest.TestCase):
     """Each adapter owns its identity input, so one bump cannot re-mint the others."""
 
@@ -383,6 +550,7 @@ class ParserVersionIndependenceTests(unittest.TestCase):
         self.assertEqual(CklbAdapter.version, CKLB_PARSER_VERSION)
         self.assertEqual(CklAdapter.version, CKL_PARSER_VERSION)
         self.assertEqual(XccdfAdapter.version, XCCDF_PARSER_VERSION)
+        self.assertEqual(SarifAdapter.version, SARIF_PARSER_VERSION)
 
     def test_artifact_provenance_uses_the_adapter_version(self) -> None:
         self.assertEqual(self._versions(FIXTURES / "ubuntu-host.cklb"), {CKLB_PARSER_VERSION})
@@ -391,6 +559,7 @@ class ParserVersionIndependenceTests(unittest.TestCase):
             self._versions(FIXTURES / "openscap-results.xml"), {XCCDF_PARSER_VERSION}
         )
         self.assertEqual(self._versions(ARF_FIXTURE), {XCCDF_PARSER_VERSION})
+        self.assertEqual(self._versions(SARIF_FIXTURE), {SARIF_PARSER_VERSION})
 
     def test_bumping_one_adapter_leaves_the_others_untouched(self) -> None:
         ckl_before = ingest_stig_artifact(
@@ -399,6 +568,7 @@ class ParserVersionIndependenceTests(unittest.TestCase):
         xccdf_before = ingest_stig_artifact(
             FIXTURES / "openscap-results.xml", ingested_at=FIRST_INGEST
         )
+        sarif_before = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=FIRST_INGEST)
 
         with mock.patch.object(CklbAdapter, "version", "99"):
             cklb = ingest_stig_artifact(FIXTURES / "ubuntu-host.cklb", ingested_at=FIRST_INGEST)
@@ -408,6 +578,7 @@ class ParserVersionIndependenceTests(unittest.TestCase):
             xccdf_after = ingest_stig_artifact(
                 FIXTURES / "openscap-results.xml", ingested_at=FIRST_INGEST
             )
+            sarif_after = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=FIRST_INGEST)
 
         self.assertTrue(all(item.parser_version == "99" for item in cklb.observations))
         self.assertEqual(
@@ -418,6 +589,34 @@ class ParserVersionIndependenceTests(unittest.TestCase):
             [item.observation_id for item in xccdf_before.observations],
             [item.observation_id for item in xccdf_after.observations],
         )
+        self.assertEqual(
+            [item.observation_id for item in sarif_before.observations],
+            [item.observation_id for item in sarif_after.observations],
+        )
+
+    def test_bumping_the_sarif_adapter_leaves_the_stig_adapters_untouched(self) -> None:
+        unbumped = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=FIRST_INGEST)
+
+        with mock.patch.object(SarifAdapter, "version", "99"):
+            bumped = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=FIRST_INGEST)
+            after = {
+                name: ingest_stig_artifact(FIXTURES / name, ingested_at=FIRST_INGEST)
+                for name in BASELINE_OBSERVATION_IDS
+            }
+
+        assert bumped.artifact is not None
+        self.assertEqual(bumped.artifact.parser_version, "99")
+        self.assertTrue(all(item.parser_version == "99" for item in bumped.observations))
+        # The parser version is an identity input, so the bump re-mints SARIF and nothing else.
+        self.assertNotEqual(
+            [item.observation_id for item in unbumped.observations],
+            [item.observation_id for item in bumped.observations],
+        )
+        for name, expected in BASELINE_OBSERVATION_IDS.items():
+            with self.subTest(fixture=name):
+                self.assertEqual(
+                    tuple(item.observation_id for item in after[name].observations), expected
+                )
 
     def test_cci_loader_uses_its_own_parser_version(self) -> None:
         with mock.patch.object(CklbAdapter, "version", "99"):
@@ -428,6 +627,43 @@ class ParserVersionIndependenceTests(unittest.TestCase):
         self.assertTrue(mapping_result.successful)
         assert mapping_result.artifact is not None
         self.assertEqual(mapping_result.artifact.parser_version, CCI_PARSER_VERSION)
+
+
+class CommonHelperMoveTests(unittest.TestCase):
+    """The STIG adapters read their shared helpers from adapters/common.py (decision 12)."""
+
+    def test_the_stig_adapters_use_the_shared_helpers(self) -> None:
+        self.assertIs(stig.text_of, common.text_of)
+        self.assertIs(stig.unique, common.unique)
+        self.assertIs(stig.parse_timestamp, common.parse_timestamp)
+        self.assertIs(stig.make_observation, common.make_observation)
+        self.assertIs(stig.missing_time_diagnostic, common.missing_time_diagnostic)
+
+    def test_every_stig_fixture_keeps_its_observation_ids_after_the_helper_move(self) -> None:
+        for name, expected in BASELINE_OBSERVATION_IDS.items():
+            with self.subTest(fixture=name):
+                result = ingest_stig_artifact(FIXTURES / name, ingested_at=FIRST_INGEST)
+
+                self.assertTrue(result.successful, result.errors)
+                self.assertEqual(
+                    tuple(item.observation_id for item in result.observations), expected
+                )
+                self.assertTrue(
+                    all(item.resource.resource_type == "host" for item in result.observations)
+                )
+
+    def test_make_observation_defaults_the_resource_type_to_host(self) -> None:
+        host = common.make_observation(**SYNTHETIC_FIELDS)
+        file = common.make_observation(**SYNTHETIC_FIELDS, resource_type="file")
+
+        self.assertEqual(host.resource.resource_type, "host")
+        self.assertEqual(host.resource.resource_id, "lab-synthetic")
+        self.assertEqual(host.observation_id, host.derived_observation_id)
+        self.assertEqual(file.resource.resource_type, "file")
+        self.assertEqual(file.observation_id, file.derived_observation_id)
+        # resource_type is one of the nine fingerprint inputs, so it must move the identity.
+        self.assertNotEqual(host.fingerprint, file.fingerprint)
+        self.assertNotEqual(host.observation_id, file.observation_id)
 
 
 if __name__ == "__main__":

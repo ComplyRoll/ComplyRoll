@@ -1,6 +1,6 @@
 # ComplyRoll build plan
 
-Status date: **2026-09-05**
+Status date: **2026-09-20**
 
 ## Outcome
 
@@ -188,7 +188,7 @@ Target: 3–4 weeks
 
 ### Deliverables
 
-- SARIF adapter.
+- SARIF adapter. **Complete, 2026-09-20** (ADR 0011).
 - CycloneDX or SPDX adapter.
 - CISA KEV enrichment.
 - Initial cloud, container, or CSPM JSON adapter selected from design-partner demand.
@@ -285,3 +285,12 @@ Target: after the local engine is stable
    three projections, `report avi` and `report historical` on both paths, four goldens, and the
    rebuilt reports reconciled against the stateless ones byte for byte). Phase 1 is closed; the
    Phase 2 deliverables above start with the SARIF adapter.
+8. SARIF 2.1.0 adapter for Trivy, Grype, Semgrep, CodeQL, Checkov, and any conforming producer.
+   **Complete, 2026-09-20** (ADR 0011: `.sarif` dispatch, the located resource as the observation's
+   resource under four permanent resource types, the driver name in the group key, folding by
+   identity under per-observation caps, six fixtures, two goldens, and the rebuilt report
+   reconciled against the stateless one byte for byte).
+9. A system-origin coverage observation for a clean scan, so that a SARIF log with no results
+   stops failing ingest (ADR 0011 Decision 13) and a failed invocation becomes evidence of a
+   detection gap instead of an error. Not started; it is the first gap the adapter's users will
+   meet, because a clean log fails the whole `ingest` run that includes it.

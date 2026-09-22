@@ -86,7 +86,7 @@ tables describe intent, not shipped code.
 | Field | Purpose |
 |---|---|
 | `resource_id` | Stable provider identifier |
-| `resource_type` | Host, image, repository, service, policy, process, identity, etc. |
+| `resource_type` | Host, image, repository, service, policy, process, identity, etc. Observations already carry one on `ResourceRef`: `host` for the STIG sources and `image`, `file`, `logical`, or `scan` for SARIF (ADR 0011) |
 | `service_id` | Cloud service or component membership |
 | `boundary_status` | In, inherited, interconnected, customer-responsible, or unknown |
 | `drift_likelihood` | Likely, not likely, or unknown |
@@ -121,6 +121,16 @@ System observations carry no artifact name or digest; they require `observed_at`
 window) and a non-blank `context_key` naming the producing validation or job. Their identity is
 SHA-256 over a JSON-encoded list of origin, source type, tool, parser name and version, record
 identifier, resource, context key, and the UTC observation time (ADR 0002 amendment).
+
+A SARIF observation (ADR 0011) takes its identity from the literal source type `sarif`, the
+driver name as `source_tool`, the rule identifier resolved in the spec's order as
+`source_record_id`, the located resource (`image`, `file`, `logical`, or `scan`, with the scoped
+uri or logical name as the id), the driver name plus the automation category as `context_key`,
+and the artifact digest, through the same nine-input recipe as every other artifact
+observation. The result's region, its message text, the producer's `fingerprints` and
+`partialFingerprints`, and its `guid` and `correlationGuid` are recorded as metadata and are
+never identity, so a line move, a reworded message, or a producer's own hashing scheme cannot
+re-mint an observation.
 
 ### Phase 0 observation identity
 

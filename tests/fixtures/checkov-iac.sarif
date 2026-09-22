@@ -1,0 +1,133 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Checkov",
+          "version": "3.2.255",
+          "informationUri": "https://checkov.io",
+          "rules": [
+            {
+              "id": "CKV_AWS_18",
+              "name": "Ensure the S3 bucket has access logging enabled",
+              "shortDescription": {
+                "text": "Ensure the S3 bucket has access logging enabled"
+              },
+              "fullDescription": {
+                "text": "Ensure the S3 bucket has access logging enabled"
+              },
+              "help": {
+                "text": "\"Ensure the S3 bucket has access logging enabled\nResource: aws_s3_bucket.artifacts\""
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              }
+            },
+            {
+              "id": "CKV_CVE_2024_0005@requests",
+              "name": "requests 2.31.0 is affected by CVE-2024-0005",
+              "shortDescription": {
+                "text": "requests 2.31.0 is affected by CVE-2024-0005"
+              },
+              "fullDescription": {
+                "text": "The installed version of requests is affected by a known vulnerability; upgrade to 2.32.0 or later."
+              },
+              "help": {
+                "text": "\"requests 2.31.0 is affected by CVE-2024-0005\nResource: app/requirements.txt.requests\""
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "security-severity": "8.6",
+                "tags": [
+                  "CVE-2024-0005"
+                ]
+              }
+            }
+          ],
+          "organization": "bridgecrew"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CKV_AWS_18",
+          "ruleIndex": 0,
+          "level": "error",
+          "attachments": [],
+          "message": {
+            "text": "Ensure the S3 bucket has access logging enabled"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "terraform/s3.tf"
+                },
+                "region": {
+                  "startLine": 3,
+                  "endLine": 12,
+                  "snippet": {
+                    "text": "resource \"aws_s3_bucket\" \"artifacts\" {\n  bucket = \"example-artifacts\"\n}"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CKV_AWS_18",
+          "ruleIndex": 0,
+          "level": "error",
+          "attachments": [],
+          "message": {
+            "text": "Ensure the S3 bucket has access logging enabled"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "terraform/logs.tf"
+                },
+                "region": {
+                  "startLine": 1,
+                  "endLine": 9,
+                  "snippet": {
+                    "text": "resource \"aws_s3_bucket\" \"logs\" {\n  bucket = \"example-logs\"\n}"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CKV_CVE_2024_0005@requests",
+          "ruleIndex": 1,
+          "level": "error",
+          "attachments": [],
+          "message": {
+            "text": "requests 2.31.0 is affected by CVE-2024-0005"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "app/requirements.txt"
+                },
+                "region": {
+                  "startLine": 4,
+                  "endLine": 4,
+                  "snippet": {
+                    "text": "requests==2.31.0"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

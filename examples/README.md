@@ -248,6 +248,51 @@ human-readable form (CDS-CSO-CBF). It is not the monthly human-readable report
 historical activity (once a month for Class B, every 14 days for Class C, both SHOULD); the
 operator runs `report historical` when it is due.
 
+## Other formats
+
+`report vdt`, `report avi`, `report historical`, and `ingest` take SARIF 2.1.0 logs beside the
+checklists: a `.sarif` file, or a name ending `.sarif.json`, from Trivy, Grype, Semgrep, CodeQL,
+Checkov, or any conforming producer (ADR 0011). Each result becomes one observation per located
+resource, scoped by the image or repository the run declares, and the driver name keeps two
+scanners that report the same CVE as separate cases. This run adds the Trivy image scan from the
+test fixtures to the three checklists above.
+
+```bash
+complyroll report vdt \
+  tests/fixtures/ubuntu-host.cklb \
+  tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml \
+  tests/fixtures/trivy-image.sarif \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-31T23:59:59Z \
+  --as-of 2026-08-21T12:00:00Z \
+  --detected-at 2026-08-01T00:00:00Z \
+  --evaluations examples/evaluations.json \
+  -o vdt-mixed.json \
+  --markdown vdt-mixed.md
+```
+
+Trivy and Semgrep logs declare no scan time, so `--detected-at` is required for them exactly as
+it is for the checklists; a CodeQL log carries invocation clocks and needs no attestation. The
+report gains two vulnerabilities, `case-10f5974d95a33fdf` (CVE-2024-0001, two files in the
+image) and `case-889c19760e425785` (CVE-2024-0002), the inputs table names the parser, and the
+diagnostics record that the five Trivy results folded into three observations:
+
+```text
+| trivy-image.sarif | 5ec28341654c | complyroll.sarif 1 | 3 |
+```
+
+```text
+info: results_collapsed: result folded into an observation that shares its identity (2 occurrences: runs[0].results[1], runs[0].results[4]) [trivy-image.sarif]
+warning: source_timestamp_missing: source artifact does not declare an observation timestamp; observed_at is unknown [trivy-image.sarif]
+```
+
+A log whose runs carry no results is not yet evidence: it fails with `no_observations`, and on
+the persisted path it fails the whole `ingest` run that includes it. Leave clean logs out until
+the coverage observation lands (build plan backlog item 9).
+
 ## Verifying the log
 
 `complyroll store verify --db complyroll.db` walks the whole log and exits non-zero on any

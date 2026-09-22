@@ -22,18 +22,20 @@ flowchart TD
 ### Source adapters
 
 Adapters parse a source artifact or event and return normalized observations plus diagnostics.
-They do not assign PAIN, accept risk, calculate compliance, or mutate cases.
+They do not assign PAIN, accept risk, calculate compliance, or mutate cases. A SARIF result
+becomes one observation per located resource, and the producer's own fingerprints and guids are
+recorded as metadata, never trusted as identity (ADR 0011).
 
 Initial adapters:
 
 - CKLB
 - CKL
 - XCCDF/ARF
+- SARIF 2.1.0 (Trivy, Grype, Semgrep, CodeQL, Checkov, any conforming producer)
 - CCI mapping
 
 Planned adapters:
 
-- SARIF
 - CycloneDX/SPDX
 - CISA KEV
 - Cloud, container, and CSPM sources
@@ -167,7 +169,7 @@ Candidates for later slices: `case.action_planned`, `case.action_completed`,
 
 ```text
 src/complyroll/
-  adapters/       # Phase 0 adapter contracts, safe parsing, and STIG/XCCDF/CCI implementations
+  adapters/       # Phase 0 adapter contracts, safe parsing, STIG/XCCDF/CCI implementations, and sarif.py (ADR 0011)
   compat/         # predecessor-compatible stigroll CLI and renderers
   correlation/    # correlation v0: open observations grouped into vulnerabilities (ADR 0007)
   data/           # bundled immutable source manifests, rules, and official schemas

@@ -43,11 +43,31 @@ The standard-library ingestion layer currently enforces:
   expat's own amplification limiter remains as a backstop. Literal `<!DOCTYPE` text inside CDATA or
   comments is ordinary character data and is accepted.
 - No archive extraction, XInclude processing, network lookup, or imported-code execution
+- For SARIF, at most 50,000 results per run (`max_results_per_run`) and 50,000 observations per
+  artifact (`max_observations_per_artifact`), both `IngestLimits` fields, and at most 256
+  locations per result; exceeding any of them refuses the artifact
+- A SARIF observation is capped member by member (512-character identity inputs, 2,048-character
+  uris, 512-character titles and scalar metadata values, 4,096-character descriptions, and 64
+  list items of 256 characters each), and one folded observation over
+  `MAX_OBSERVATION_JSON_BYTES` (512 KiB of canonical JSON) refuses the artifact on the stateless
+  and persisted paths alike, so no payload the store's `MAX_EVENT_JSON_BYTES` (1 MiB) or
+  `MAX_EVENT_JSON_VALUES` (100,000) would refuse is ever built
+- A lone surrogate code point in any JSON string or object key is refused at parse, for every
+  JSON adapter
 
 Callers may lower these limits for their environment. Raising them is an explicit caller decision.
 Compatibility CSV output neutralizes formula-leading cells, and Markdown table output escapes raw
 HTML, delimiters, and embedded line breaks. Markdown link and image syntax is not yet neutralized;
 treat rendered roll-ups from untrusted checklists accordingly.
+
+The SARIF adapter refuses identity and degrades evidence (ADR 0011 Decision 10). An identity
+input that carries a control, format, surrogate, or line-separator code point, or that exceeds
+its cap, fails the artifact, while titles, messages, tags, and metadata values are sanitized and
+truncated with the cut members named. Every uri in a log is text: it is validated, recorded, and
+never opened, resolved, or fetched. Message placeholders are expanded by a single-pass pattern
+substitution, never by `str.format`. A very large CodeQL log can exceed the 500,000 JSON value
+bound while staying under 32 MiB; it fails closed with a message that names the bound, and
+raising it is the caller's decision.
 
 ## Evidence integrity
 

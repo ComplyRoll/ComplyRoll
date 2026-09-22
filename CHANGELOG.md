@@ -26,6 +26,11 @@ All notable project changes will be documented here.
   does, so a valid ARF is accepted under either suffix and a misnamed CKL still reaches the CKL
   adapter. Observation identity hashes the artifact digest and not its name, so anyone who worked
   around this by renaming a file will not get duplicate cases when they stop.
+- A lone surrogate code point in a JSON string or object key (`"\ud800"`) passed the bounded JSON
+  parser and then crashed the report writer and the event store on `.encode("utf-8")`, for any
+  JSON artifact. `parse_json_bounded` now refuses it during the walk it already does, and the
+  dispatcher reports `artifact_parse_failed` with the code point named. Verified by parser tests
+  in `tests/test_safeio.py`.
 
 ### Added
 
@@ -54,6 +59,25 @@ All notable project changes will be documented here.
   permutation of a shared fleet case, and by a test that records the same evaluations in two
   stores eleven days apart and proves the report bytes are identical, so the store's
   `recordedAt` never reaches a report.
+- A SARIF 2.1.0 adapter (ADR 0011). `report vdt`, `report avi`, `report historical`, and `ingest`
+  now accept `.sarif` files, and names ending `.sarif.json`, from Trivy, Grype, Semgrep, CodeQL,
+  Checkov, or any conforming producer, beside the STIG checklists. Each result becomes one
+  observation per located resource: the driver name is the source tool, the rule identifier
+  resolved in the spec's order is the source record id, the located file, image path, or logical
+  name is the resource, scoped by the image or repository the run declares, and the driver name
+  plus the automation category is the context key, through the unchanged nine-input identity of
+  ADR 0002. Results that share an identity inside one artifact fold into one observation with an
+  occurrence count and capped region lists, and one folded observation over 512 KiB of canonical
+  JSON refuses the artifact on both paths, before the event store's own cap can. A suppressed
+  result stays open with its suppression recorded in metadata and a warning on the artifact,
+  `baselineState` never moves a disposition, `kind: open` is recorded as unknown so every report
+  flags it, and scanner severity is recorded as evidence and never sets PAIN. Diagnostics are
+  coalesced per code per artifact with occurrence counts and the first JSON paths. Six synthetic
+  fixtures (`trivy-image`, `grype-image`, `semgrep-code`, `codeql-repo`, `checkov-iac`, and
+  `sarif-spec-corners`) and two goldens (`tests/golden/vdt-sarif.json` and `vdt-sarif.md`) hold
+  the behavior. Verified by the 188 tests in `tests/test_sarif.py`, by the goldens on the
+  stateless path, and by the persisted path and the replay reader rebuilding the same report
+  from history byte for byte.
 
 ### Changed
 
@@ -110,6 +134,23 @@ All notable project changes will be documented here.
   each, every other timeframe and PAIN matrix unchanged), by the policy golden, which gained the
   `VDR-TFR-NMV` entry under both classes, and by the six report goldens, which moved only in the
   rules provenance block and in the overdue explanations that cite the dataset commit.
+- The CLI help text for report and ingest artifacts now reads "CKLB, CKL, XCCDF, ARF, or SARIF
+  file", and the package description reads "Compiles STIG, SCAP, and SARIF output into
+  schema-valid FedRAMP 20x vulnerability reports, with every response clock read from FedRAMP's
+  published rules dataset". The PyPI summary is baked in at build time, so it carries the
+  previous line until the next release.
+- The observation helpers the STIG adapters shared (`_text`, `_unique`, `_parse_timestamp`,
+  `_make_observation`, and `_missing_time_diagnostic`) moved out of `adapters/stig.py` into
+  `adapters/common.py` as `text_of`, `unique`, `parse_timestamp`, `make_observation`, and
+  `missing_time_diagnostic`, and `make_observation` takes a `resource_type` that defaults to
+  `host`. The move is the only edit on the STIG code paths in this work; every existing golden
+  is byte-identical, which is the proof it changed nothing.
+- `IngestLimits` gained `max_results_per_run` and `max_observations_per_artifact`, both 50,000 by
+  default; exceeding either refuses the artifact as `artifact_parse_failed`. Every existing limit
+  keeps its value.
+- `stigroll` skips a SARIF log with a warning on stderr (`warning: <name> is a SARIF log; stigroll
+  rolls up STIG checklists only, skipping`) instead of rolling it up; a run whose only input is a
+  SARIF log ends with `error: no findings parsed from any input` and exit status 1.
 
 ## 0.3.0a0 - 2026-08-23
 

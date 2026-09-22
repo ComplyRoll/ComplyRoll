@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "complyroll"
 version = "0.3.0a0"
-description = "Compiles STIG and SCAP output into schema-valid FedRAMP 20x vulnerability reports, with every response clock read from FedRAMP's published rules dataset"
+description = "Compiles STIG, SCAP, and SARIF output into schema-valid FedRAMP 20x vulnerability reports, with every response clock read from FedRAMP's published rules dataset"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

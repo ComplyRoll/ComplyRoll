@@ -111,7 +111,10 @@ A VDR vulnerability is not limited to a CVE or scanner finding. Relevant sources
 - Stale Security Decision Record statements
 - Failures in the detection or response process
 
-This scope is why ComplyRoll models `Observation` separately from `VulnerabilityCase`.
+This scope is why ComplyRoll models `Observation` separately from `VulnerabilityCase`. SARIF
+observations (ADR 0011) enter that model the same way STIG ones do: they feed the same VDR
+evaluation and response clocks from the same detection time, and a scanner's severity is
+recorded as evidence and never sets PAIN.
 
 ## Class C operational mapping
 

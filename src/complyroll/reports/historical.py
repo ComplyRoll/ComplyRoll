@@ -47,6 +47,7 @@ from .vdt import (
     _write_footer,
     _write_header,
     _write_inputs,
+    _write_kev_summary,
     _write_provenance,
     _write_vulnerability_table,
     compile_record_set_from_artifacts,
@@ -180,6 +181,7 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
     write(f"| Evaluated | {sum(1 for item in active if item.is_evaluated)} |")
     write(f"| Not yet evaluated | {sum(1 for item in active if not item.is_evaluated)} |")
     write(f"| Overdue | {sum(1 for item in active if item.is_overdue)} |")
+    _write_kev_summary(write, active, metadata.options)
     for rating in PainRating:
         count = sum(1 for item in active if item.current_rating is rating)
         write(f"| Current PAIN {rating.name} | {count} |")
@@ -191,6 +193,7 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
         heading="Active vulnerabilities",
         empty_message="No active vulnerabilities are recorded.",
         details_heading="Active vulnerability details",
+        as_of=metadata.options.as_of,
     )
     _write_vulnerability_table(
         write,
@@ -198,6 +201,7 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
         heading="Accepted vulnerabilities",
         empty_message="No accepted vulnerabilities are recorded.",
         details_heading="Accepted vulnerability details",
+        as_of=metadata.options.as_of,
         rationales=rationales,
     )
     _write_attestation_section(write, _population(report), metadata)

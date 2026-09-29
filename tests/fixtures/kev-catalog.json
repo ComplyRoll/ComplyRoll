@@ -1,0 +1,199 @@
+{
+  "title": "SYNTHETIC catalog for ComplyRoll tests; not CISA data",
+  "catalogVersion": "2026.09.14",
+  "dateReleased": "2026-09-14T17:00:00.1234Z",
+  "count": 12,
+  "x-fixtureNote": "Every entry is synthetic and every id is CVE-2099-*. CVE-2099-0008 is dated 2026-09-20, after this catalog's own release, only to exercise the dateAdded filter. CVE-2099-0010 is due before it was added, as some historical catalog entries were.",
+  "vulnerabilities": [
+    {
+      "cveID": "CVE-2099-0006",
+      "vendorProject": "Example Vendor",
+      "product": "Example Archive Tool",
+      "vulnerabilityName": "Example Archive Tool Symlink Following",
+      "dateAdded": "2026-08-10",
+      "shortDescription": "A synthetic symlink-following flaw in the Example Archive Tool extractor.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-08-31",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [
+        "CWE-59"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0001",
+      "vendorProject": "Exämple Gmbh Zürich",
+      "product": "Example Web Gateway",
+      "vulnerabilityName": "Example Web Gateway Path Traversal",
+      "dateAdded": "2026-08-27",
+      "shortDescription": "A synthetic path traversal in the Example Web Gateway ‘files’ handler; the vendor advisory text arrived as �� in this fixture on purpose.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-09-10",
+      "knownRansomwareCampaignUse": "Known",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing. Carries non-ASCII prose and U+FFFD.",
+      "cwes": [
+        "CWE-22"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-9999",
+      "vendorProject": "Example Vendor",
+      "product": "Example Unmatched Product",
+      "vulnerabilityName": "Example Unmatched Product Negative Control",
+      "dateAdded": "2026-09-01",
+      "shortDescription": "A synthetic entry no fixture record carries.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-09-15",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [],
+      "x-fixtureUnknownKey": "Tolerated: the loader ignores keys it does not read."
+    },
+    {
+      "cveID": "CVE-2099-0004",
+      "vendorProject": "Example Vendor",
+      "product": "Example TLS Toolkit",
+      "vulnerabilityName": "Example TLS Toolkit Improper Certificate Validation",
+      "dateAdded": "2026-08-20",
+      "shortDescription": "A synthetic certificate validation flaw in the Example TLS Toolkit.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-09-03",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [
+        "CWE-295"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0009",
+      "vendorProject": "Example Vendor",
+      "product": "Example Legacy Daemon",
+      "vulnerabilityName": "Example Legacy Daemon Buffer Overflow",
+      "dateAdded": "2026-06-01",
+      "shortDescription": "A synthetic stack buffer overflow in the Example Legacy Daemon.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-06-15",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [
+        "CWE-121"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0002",
+      "vendorProject": "Example Vendor",
+      "product": "Example Image Library",
+      "vulnerabilityName": "Example Image Library Heap Overflow",
+      "dateAdded": "2026-09-08",
+      "shortDescription": "A synthetic heap overflow in the Example Image Library decoder.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-09-22",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [
+        "CWE-122"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0011",
+      "vendorProject": "Example Vendor",
+      "product": "Example Queue Broker",
+      "vulnerabilityName": "Example Queue Broker Deserialization",
+      "dateAdded": "2026-08-24",
+      "shortDescription": "A synthetic unsafe deserialization in the Example Queue Broker.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-09-07",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [
+        "CWE-502"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0010",
+      "vendorProject": "Example Vendor",
+      "product": "Example Old Server",
+      "vulnerabilityName": "Example Old Server Authentication Bypass",
+      "dateAdded": "2026-03-02",
+      "shortDescription": "A synthetic authentication bypass in the Example Old Server.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-02-27",
+      "knownRansomwareCampaignUse": "Unknown",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing. Due before added, as some historical catalogs were; no forensicTriage.",
+      "cwes": [
+        "CWE-287"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0007",
+      "vendorProject": "Example Vendor",
+      "product": "Example Logging Library",
+      "vulnerabilityName": "Example Logging Library Format String",
+      "dateAdded": "2026-09-01",
+      "shortDescription": "A synthetic format string flaw in the Example Logging Library.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-09-04",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [
+        "CWE-134"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0003",
+      "vendorProject": "Example Vendor",
+      "product": "Example Image Library",
+      "vulnerabilityName": "Example Image Library Integer Overflow",
+      "dateAdded": "2026-09-10",
+      "shortDescription": "A synthetic integer overflow in the Example Image Library resize path.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-09-24",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "Yes",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [
+        "CWE-190"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0005",
+      "vendorProject": "Example Vendor",
+      "product": "Example Template Engine",
+      "vulnerabilityName": "Example Template Engine Code Injection",
+      "dateAdded": "2026-08-25",
+      "shortDescription": "A synthetic code injection in the Example Template Engine sandbox.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-09-08",
+      "knownRansomwareCampaignUse": "Known",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing.",
+      "cwes": [
+        "CWE-94"
+      ]
+    },
+    {
+      "cveID": "CVE-2099-0008",
+      "vendorProject": "Example Vendor",
+      "product": "Example Proxy",
+      "vulnerabilityName": "Example Proxy Request Smuggling",
+      "dateAdded": "2026-09-20",
+      "shortDescription": "A synthetic request smuggling flaw in the Example Proxy.",
+      "requiredAction": "Synthetic fixture action: apply the example vendor fix or remove the example product.",
+      "dueDate": "2026-10-04",
+      "knownRansomwareCampaignUse": "Unknown",
+      "forensicTriage": "No",
+      "notes": "Synthetic fixture entry for ComplyRoll tests; not a CISA listing. Dated after this catalog's release on purpose.",
+      "cwes": [
+        "CWE-444"
+      ]
+    }
+  ]
+}

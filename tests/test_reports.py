@@ -21,12 +21,14 @@ from complyroll.reports import (
     MAX_EVALUATIONS_BYTES,
     CompiledArtifact,
     CompiledAviReport,
+    CompiledDeadline,
     CompiledHistoricalReport,
     CompiledRecordSet,
     CompiledReport,
     CompiledVdtReport,
     DetectionAttestation,
     EvaluationSet,
+    KevCatalog,
     ReportCompileError,
     ReportInputError,
     ReportOptions,
@@ -103,6 +105,7 @@ def options(
     calendar_timezone: str = "UTC",
     period_from: datetime | None = PERIOD_FROM,
     period_to: datetime | None = PERIOD_TO,
+    kev_catalog: KevCatalog | None = None,
 ) -> ReportOptions:
     return ReportOptions(
         certification_class=certification_class,
@@ -112,6 +115,7 @@ def options(
         as_of=as_of,
         calendar_timezone=calendar_timezone,
         detected_at_attestation=detected_at,
+        kev_catalog=kev_catalog,
     )
 
 
@@ -379,7 +383,10 @@ def assert_markdown_carries_the_json(
     observations grouped into it, each computed deadline with its due instant and
     whether it is satisfied, and every source artifact with the parser version that
     read it (ADR 0007 amendment, the two renderings carry the same audit content).
-    `sections` pairs each Markdown details heading with the document array it renders.
+    With a CISA KEV catalog it also demands every matched entry's cveID and due date
+    and the clock's due instant in the Known exploited line, and the catalog digest in
+    the Provenance table (ADR 0012). `sections` pairs each Markdown details heading
+    with the document array it renders.
     """
 
     markdown = report.to_markdown()
@@ -410,6 +417,27 @@ def assert_markdown_carries_the_json(
                     "yes" if deadline["satisfied"] else "no",
                     f"{heading} {deadline['ruleId']} satisfied",
                 )
+
+            known = [
+                line for line in body.splitlines() if line.startswith("- **Known exploited:** ")
+            ]
+            test.assertEqual(len(known), 1 if "kev" in extension else 0, f"{heading} KEV line")
+            kev = extension.get("kev")
+            if kev is not None:
+                for entry in kev["entries"]:
+                    test.assertIn(entry["cveId"], known[0], f"{heading} KEV entry")
+                    test.assertIn(entry["dueDate"], known[0], f"{heading} KEV due date")
+                test.assertIn(kev["dueAt"], known[0], f"{heading} KEV due instant")
+
+    provenance = markdown_table_rows(markdown_section(markdown, "Provenance"), 3, "Source")
+    kev_source = report.document["x-complyroll"].get("kevSource")
+    if kev_source is None:
+        test.assertNotIn("KEV catalog", provenance)
+    else:
+        row = provenance.get("KEV catalog")
+        test.assertIsNotNone(row, "the Provenance table omits the KEV catalog")
+        assert row is not None
+        test.assertEqual(row[2], kev_source["sha256"])
 
     inputs = markdown_table_rows(markdown_section(markdown, "Inputs"), 4, "Artifact")
     artifacts = report.document["x-complyroll"]["artifacts"]
@@ -1873,6 +1901,28 @@ class RenderingParityTests(unittest.TestCase):
 
     def test_the_markdown_twin_states_every_fact_the_json_carries(self) -> None:
         assert_markdown_carries_the_json(self, self.report)
+
+    def test_a_deadline_with_no_structured_timeframe_publishes_null(self) -> None:
+        # The VDR-TFR-KEV due date comes from the CISA catalog, not a timeframe (ADR 0012);
+        # a timeframe deadline keeps its object form.
+        start = datetime(2026, 8, 27, tzinfo=UTC)
+        due = datetime(2026, 9, 11, tzinfo=UTC)
+        catalog = CompiledDeadline(
+            rule_id="VDR-TFR-KEV",
+            rule_name="Remediate KEVs",
+            force="SHOULD",
+            anchor="catalog",
+            start_at=start,
+            due_at=due,
+            timeframe_amount=None,
+            timeframe_unit=None,
+            satisfied=False,
+        )
+        timed = replace(catalog, timeframe_amount=5, timeframe_unit="days")
+
+        self.assertIsNone(catalog.to_dict()["timeframe"])
+        self.assertEqual(catalog.to_dict()["dueAt"], "2026-09-11T00:00:00Z")
+        self.assertEqual(timed.to_dict()["timeframe"], {"amount": 5, "unit": "days"})
 
     def test_every_compiled_deadline_publishes_whether_it_is_satisfied(self) -> None:
         # The Markdown twin printed a Satisfied column the JSON extension had no field

@@ -45,6 +45,7 @@ from .reports import (
     compile_vdt_report,
     compile_vdt_report_from_history,
     load_evaluations,
+    load_kev_catalog,
     parse_rfc3339,
 )
 from .schemas import (
@@ -355,6 +356,14 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         "--evaluations",
         metavar="FILE",
         help="JSON file of completed contextual evaluations",
+    )
+    # `append` rather than a plain option so a second `--kev` can be refused. argparse
+    # would otherwise keep the last one and apply a catalog the operator did not mean.
+    parser.add_argument(
+        "--kev",
+        action="append",
+        metavar="FILE",
+        help="CISA KEV catalog JSON feed to apply (read locally, never fetched)",
     )
     parser.add_argument(
         "--detected-at",
@@ -763,10 +772,17 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     output = Path(args.output) if args.output else None
     markdown = Path(args.markdown) if args.markdown else None
     evaluations_path = Path(args.evaluations) if args.evaluations else None
+    kev_paths = [Path(item) for item in (args.kev or ())]
 
     conflict = _report_source_conflict(args, command.name)
     if conflict is not None:
         return _fail(stderr, "invalid_option", conflict)
+    if len(kev_paths) > 1:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} takes one --kev catalog, not {len(kev_paths)}",
+        )
     if database is not None:
         missing = _refuse_missing_store(stderr, database)
         if missing is not None:
@@ -791,9 +807,13 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             outputs=(output, markdown),
             inputs=(
                 *artifacts,
+                *kev_paths,
                 *(item for item in (evaluations_path, database) if item),
             ),
         )
+        # Loaded before the options it belongs to, so a malformed catalog is refused as
+        # the input it is rather than as one more bad option.
+        kev_catalog = load_kev_catalog(kev_paths[0]) if kev_paths else None
         options = ReportOptions(
             certification_class=CertificationClass(args.certification_class),
             package_uri=args.package_uri,
@@ -804,6 +824,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             detected_at_attestation=(
                 parse_rfc3339(args.detected_at, "--detected-at") if args.detected_at else None
             ),
+            kev_catalog=kev_catalog,
         )
         evaluations = load_evaluations(evaluations_path) if evaluations_path else None
     except ReportInputError as exc:
@@ -830,6 +851,9 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     operator attested, so naming any of them alongside `--db` asks one run to honour two
     sources of truth. Naming neither leaves nothing to compile. The message names the
     command the operator ran, so a refusal reads back as their own invocation.
+
+    `--kev` is absent from this list on purpose: no store holds a CISA KEV catalog, so a
+    catalog is a per-run input on both paths and never a second source of truth.
     """
 
     named = [

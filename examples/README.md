@@ -293,6 +293,108 @@ A log whose runs carry no results is not yet evidence: it fails with `no_observa
 the persisted path it fails the whole `ingest` run that includes it. Leave clean logs out until
 the coverage observation lands (build plan backlog item 9).
 
+## Known exploited vulnerabilities
+
+`VDR-TFR-KEV` says a provider should remediate a Known Exploited Vulnerability by the due date
+in CISA's catalog, "even if the vulnerability has been fully mitigated". Supply that catalog
+with `--kev` and each report gains the clock (ADR 0012).
+
+Download the feed yourself. ComplyRoll never fetches it, ships no copy of it, and records
+nothing about it in the event store: it is a per-run input, read from a local file, on the
+stateless path and the `--db` path alike. Take the JSON feed from CISA's Known Exploited
+Vulnerabilities Catalog page, save it, and pass the path. The report pins whichever bytes it
+read by their SHA-256, so a report can always be checked against the catalog it was compiled
+from.
+
+The commands below use the synthetic catalog and SARIF logs from the test fixtures, so they run
+from a source checkout with no download. Every identifier in them is `CVE-2099-*`; none of it is
+CISA data.
+
+```bash
+complyroll report vdt \
+  tests/fixtures/kev-image-web.sarif \
+  tests/fixtures/kev-image-worker.sarif \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-09-01T00:00:00Z \
+  --to 2026-09-30T23:59:59Z \
+  --as-of 2026-09-15T12:00:00Z \
+  --calendar-tz UTC \
+  --evaluations examples/evaluations-kev.json \
+  --kev tests/fixtures/kev-catalog.json \
+  -o vdt-kev.json \
+  --markdown vdt-kev.md
+
+complyroll report avi \
+  tests/fixtures/kev-image-web.sarif \
+  tests/fixtures/kev-image-worker.sarif \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-09-01T00:00:00Z \
+  --to 2026-09-30T23:59:59Z \
+  --as-of 2026-09-15T12:00:00Z \
+  --calendar-tz UTC \
+  --evaluations examples/evaluations-kev.json \
+  --kev tests/fixtures/kev-catalog.json \
+  -o avi-kev.json \
+  --markdown avi-kev.md
+
+complyroll report historical \
+  tests/fixtures/kev-image-web.sarif \
+  tests/fixtures/kev-image-worker.sarif \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --as-of 2026-09-15T12:00:00Z \
+  --calendar-tz UTC \
+  --evaluations examples/evaluations-kev.json \
+  --kev tests/fixtures/kev-catalog.json \
+  -o historical-kev.json \
+  --markdown historical-kev.md
+```
+
+These are the six files under `tests/golden/` whose names end `-kev`, byte for byte. The SARIF
+fixtures declare an invocation clock, so no `--detected-at` is needed, and the same three
+commands compile from a store by replacing the two logs and `--evaluations` with
+`--db complyroll.db`: `--kev` sits beside `--db` rather than conflicting with it, because no
+store holds a catalog.
+
+Each report names the catalog in its Provenance table and counts the clock in its Summary:
+
+```text
+| KEV catalog | kev-catalog.json, CISA KEV catalog version 2026.09.14, released 2026-09-14T17:00:00.123400Z, 11 entries | 40c6d1465ca52c5ddb3b7bf1a6d92cfe884e33b4d2e90ac4551090e66d6c49fd |
+```
+
+```text
+| Known exploited, CISA KEV | 8 |
+| Past a CISA KEV due date | 5 |
+```
+
+and each record carries a line naming every matched entry, which entry the clock follows, and
+where that clock stands:
+
+```text
+- **Known exploited:** CVE-2099-0004 (added 2026-08-20, due 2026-09-03, ransomware use Unknown, forensic triage No); the clock follows CVE-2099-0004, due date 2026-09-03 ended 2026-09-04T00:00:00Z; past due
+```
+
+That record is fully mitigated, and it is overdue anyway, which is what the rule's parenthetical
+asks for. A remediated or false-positive record stops the clock; acceptance does not. An
+accepted record is never officially overdue, so the AVI report shows "Overdue 0" beside "Past a
+CISA KEV due date 1" and publishes the missed date on the record.
+
+The run also reports what the catalog could not answer for. One fixture entry is dated after
+`--as-of`, so it was not applied:
+
+```text
+info: kev_entries_after_as_of: 1 catalog entry dated after 2026-09-15 was not applied; 1 compiled record carries it [sha256:40c6d1465ca52c5ddb3b7bf1a6d92cfe884e33b4d2e90ac4551090e66d6c49fd]
+```
+
+A catalog released after `--as-of` stops the run instead of being applied, because entries change
+after publication and a later catalog cannot show which due dates were in force then. To
+regenerate an old report, use the catalog that was current at its `--as-of`; the old report's
+`kevSource` digest says which one that was. A catalog more than three days old is a warning, not
+a refusal, and a run given no catalog produces exactly the bytes it produced before, with no
+`kev` key anywhere.
+
 ## Verifying the log
 
 `complyroll store verify --db complyroll.db` walks the whole log and exits non-zero on any

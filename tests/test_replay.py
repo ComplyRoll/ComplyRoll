@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from itertools import permutations
 from pathlib import Path
 
+from test_kev import KEV_ARTIFACTS, KEV_CATALOG, KEV_EVALUATIONS, KEV_OVERRIDES
 from test_reports import (
     ACCEPTED_EVALUATIONS,
     ARTIFACTS,
@@ -62,6 +63,7 @@ from complyroll.reports import (
     compile_vdt_report,
     compile_vdt_report_from_history,
     load_evaluations,
+    load_kev_catalog,
 )
 from complyroll.store import SQLiteEventStore
 
@@ -1589,6 +1591,184 @@ class DamagedIngestHistoryTests(StoreFixture):
         self.attest()
 
         self.assertEqual(len(self.replay().document["vulnerabilities"]), 1)
+
+
+class KevReplayTests(StoreFixture):
+    """ADR 0012: KEV enrichment reads the compiled records, so both paths agree.
+
+    The catalog is a compile-time input and never enters the log, which is what makes
+    a KEV report reproducible from history at all: the same store and the same catalog
+    print the same bytes, and the report names the catalog it used by digest.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.catalog = load_kev_catalog(KEV_CATALOG)
+        self.ingest(KEV_ARTIFACTS)
+        self.correlate()
+        self.evaluate(KEV_EVALUATIONS)
+
+    def kev_options(self, **overrides: object) -> dict[str, object]:
+        return {**KEV_OVERRIDES, "kev_catalog": self.catalog, **overrides}
+
+    def agree(self, *, kind: ReportKind = "vdt", **overrides: object) -> AnyReport:
+        return self.assert_paths_agree(
+            KEV_ARTIFACTS, KEV_EVALUATIONS, kind=kind, **self.kev_options(**overrides)
+        )
+
+    def test_the_two_paths_agree_on_every_projection(self) -> None:
+        for kind in REPORT_KINDS:
+            with self.subTest(report=kind):
+                report = self.agree(kind=kind)
+                self.assertEqual(
+                    report.document["x-complyroll"]["kevSource"]["sha256"], self.catalog.sha256
+                )
+                self.assertIn("- **Known exploited:** CVE-2099-", report.to_markdown())
+
+    def test_the_replayed_reports_reproduce_the_kev_goldens(self) -> None:
+        # The goldens were cut through the command line from the artifacts, so this is
+        # the claim that history replays into the published bytes and not merely into
+        # something the stateless path happens to agree with.
+        for kind in REPORT_KINDS:
+            with self.subTest(report=kind):
+                replayed = self.replay(kind=kind, **self.kev_options())
+
+                self.assertEqual(
+                    replayed.to_json(),
+                    (GOLDEN / f"{kind}-kev.json").read_text(encoding="utf-8"),
+                )
+                self.assertEqual(
+                    replayed.to_markdown(),
+                    (GOLDEN / f"{kind}-kev.md").read_text(encoding="utf-8"),
+                )
+
+    def test_the_replayed_clock_carries_the_same_entries_and_instants(self) -> None:
+        replayed = self.replay(**self.kev_options())
+        stateless = self.stateless(KEV_ARTIFACTS, KEV_EVALUATIONS, **self.kev_options())
+        clocks = {
+            item["providerTrackingId"]: item["x-complyroll"]["kev"]
+            for item in replayed.document["vulnerabilities"]
+        }
+        self.assertEqual(
+            clocks,
+            {
+                item["providerTrackingId"]: item["x-complyroll"]["kev"]
+                for item in stateless.document["vulnerabilities"]
+            },
+        )
+        bound = [value for value in clocks.values() if value is not None]
+        self.assertEqual(len(bound), 8)
+        self.assertEqual(
+            sorted({entry["cveId"] for value in bound for entry in value["entries"]}),
+            [
+                "CVE-2099-0001",
+                "CVE-2099-0002",
+                "CVE-2099-0003",
+                "CVE-2099-0004",
+                "CVE-2099-0005",
+                "CVE-2099-0007",
+                "CVE-2099-0009",
+                "CVE-2099-0011",
+            ],
+        )
+
+    def test_the_two_paths_agree_on_the_kev_diagnostics(self) -> None:
+        replayed = self.replay(**self.kev_options())
+        stateless = self.stateless(KEV_ARTIFACTS, KEV_EVALUATIONS, **self.kev_options())
+        kev_notes = [
+            (item.code, item.level, item.message, item.location)
+            for item in replayed.diagnostics
+            if item.code.startswith("kev_")
+        ]
+        self.assertEqual(
+            kev_notes,
+            [
+                (item.code, item.level, item.message, item.location)
+                for item in stateless.diagnostics
+                if item.code.startswith("kev_")
+            ],
+        )
+        self.assertEqual([code for code, *_ in kev_notes], ["kev_entries_after_as_of"])
+
+    def kev_store(self, artifacts: Sequence[Path], evaluations: Path) -> EventRepository:
+        """Drive the KEV inputs through the writers the command line would call.
+
+        `populate` also attests a detection time, which these SARIF fixtures already
+        carry, so this builds the store the same way `setUp` does instead.
+        """
+
+        repository = self.open_repository(self.fresh_workspace())
+        for path in artifacts:
+            record_ingest(
+                repository,
+                ingest_stig_artifact(Path(path), ingested_at=INGESTED_AT),
+                metadata=self.metadata,
+                ingested_at=INGESTED_AT,
+            )
+        correlate_cases(repository, metadata=self.metadata, now=INGESTED_AT)
+        apply_evaluations(
+            repository,
+            load_evaluations(evaluations),
+            metadata=self.metadata,
+            now=INGESTED_AT,
+        )
+        return repository
+
+    def test_history_ingested_in_reverse_still_agrees_with_the_stateless_path(self) -> None:
+        reversed_store = self.kev_store(tuple(reversed(KEV_ARTIFACTS)), KEV_EVALUATIONS)
+        for kind in REPORT_KINDS:
+            with self.subTest(report=kind):
+                forward = self.replay(kind=kind, **self.kev_options())
+                backward = compile_from_history(
+                    reversed_store,
+                    kind=kind,
+                    options=options(**self.kev_options()),  # type: ignore[arg-type]
+                )
+                self.assertEqual(backward.to_json(), forward.to_json())
+                self.assertEqual(backward.to_markdown(), forward.to_markdown())
+
+    def test_the_evaluation_order_never_moves_a_clock(self) -> None:
+        entries = json.loads(KEV_EVALUATIONS.read_text(encoding="utf-8"))["evaluations"]
+        expected = self.replay(**self.kev_options()).to_json()
+        for index, order in enumerate(permutations(range(3))):
+            shuffled = [entries[position] for position in order] + entries[3:]
+            with self.subTest(order=order):
+                repository = self.kev_store(
+                    KEV_ARTIFACTS, self.write_evaluations(shuffled, f"kev-{index}.json")
+                )
+                report = compile_from_history(
+                    repository,
+                    kind="vdt",
+                    options=options(**self.kev_options()),  # type: ignore[arg-type]
+                )
+                self.assertEqual(report.to_json(), expected)
+
+    def test_a_catalog_released_after_as_of_stops_both_paths_the_same_way(self) -> None:
+        overrides = self.kev_options(as_of=datetime(2026, 9, 10, 12, tzinfo=UTC))
+        diagnostics = []
+        for path in ("replay", "stateless"):
+            with self.subTest(path=path), self.assertRaises(ReportCompileError) as caught:
+                if path == "replay":
+                    self.replay(**overrides)
+                else:
+                    self.stateless(KEV_ARTIFACTS, KEV_EVALUATIONS, **overrides)
+            diagnostics.append(caught.exception.diagnostics)
+        self.assertEqual(len(diagnostics), 2)
+        self.assertEqual(
+            [(item.code, item.message, item.location) for item in diagnostics[0]],
+            [(item.code, item.message, item.location) for item in diagnostics[1]],
+        )
+        self.assertEqual(diagnostics[0][0].code, "kev_catalog_after_as_of")
+
+    def test_the_same_store_without_a_catalog_publishes_no_kev_at_all(self) -> None:
+        for kind in REPORT_KINDS:
+            with self.subTest(report=kind):
+                bare = {**KEV_OVERRIDES}
+                report = self.assert_paths_agree(
+                    KEV_ARTIFACTS, KEV_EVALUATIONS, kind=kind, **bare
+                )
+                self.assertNotIn("kevSource", report.document["x-complyroll"])
+                self.assertNotIn("Known exploited", report.to_markdown())
 
 
 if __name__ == "__main__":

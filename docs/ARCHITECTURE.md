@@ -37,10 +37,16 @@ Initial adapters:
 Planned adapters:
 
 - CycloneDX/SPDX
-- CISA KEV
 - Cloud, container, and CSPM sources
 - Change and deployment events
 - KSI validation runs
+
+Report inputs, which are not adapters and produce no observations:
+
+- The CISA Known Exploited Vulnerabilities catalog, supplied per run with `--kev`. It is read
+  locally, never fetched or bundled, and never written to the store: it reaches the compiler
+  only as a report option, so the stateless path and the persisted path apply it identically.
+  The report names the catalog it used by the SHA-256 of the bytes that were read (ADR 0012).
 
 ### Observation ledger
 
@@ -94,8 +100,10 @@ using the source subset's type, path, class, and affected-party applicability. C
 timeframes, and PAIN matrices are resolved directly from `varies_by_class`. Calculated deadlines
 retain the rule ID, profile, source commit, dataset version, last-updated value, and SHA-256.
 
-Missing structured timeframes remain unknown. Policy code does not extract numbers from prose,
-invent KEV deadlines, or calculate business days without an explicit calendar.
+Missing structured timeframes remain unknown. Policy code does not extract numbers from prose or
+calculate business days without an explicit calendar, and it invents no KEV deadline: a KEV due
+date comes only from a catalog the operator supplies, used literally, and a run with no catalog
+reports no KEV deadline at all.
 
 ### Report projections
 

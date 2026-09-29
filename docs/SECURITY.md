@@ -60,6 +60,23 @@ The standard-library ingestion layer currently enforces:
   56,000 characters whatever the input's size
 - A lone surrogate code point in any JSON string or object key is refused at parse, for every
   JSON adapter
+- For a CISA KEV catalog supplied with `--kev`, 8 MiB maximum (the live feed is about 1.7 MB),
+  at most 20,000 entries (the live feed holds about 1,700), and 16 levels of JSON nesting (the
+  feed reaches 5), with the standard 500,000-value bound unchanged. The catalog is read through
+  the same bounded reader as an artifact and is never fetched: the operator downloads the feed
+  from CISA out of band, and ComplyRoll opens no socket for it, bundles no copy, and writes
+  nothing about it to the event store
+- The catalog is validated field by field before any value is used. Every field is type-checked
+  before any regex or parse runs, a JSON `null` in an optional field is refused rather than read
+  as absent, all three dates are matched against explicit ASCII patterns before `fromisoformat`
+  (which otherwise accepts basic, week, and other non-RFC forms), and every year is held between
+  1970 and 9000 so that the next-day due instant and the UTC normalization cannot raise
+  `OverflowError` past the CLI's handlers. Any failure refuses the run as `invalid_input` and
+  publishes nothing
+- Catalog error messages quote only values that have already passed validation, or a `repr` cut
+  to 64 characters, so an 8 MiB field cannot become an 8 MiB stderr line. A second `--kev` is
+  refused rather than silently applying the last one, and naming the catalog as an output is
+  refused as an input overwrite
 
 Callers may lower these limits for their environment. Raising them is an explicit caller decision.
 Compatibility CSV output neutralizes formula-leading cells, and Markdown table output escapes raw

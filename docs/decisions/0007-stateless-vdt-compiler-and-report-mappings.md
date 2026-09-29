@@ -343,3 +343,62 @@ the flag continues to work. The same schema version gave `vulnerabilityDetail` a
 `painReductionEvents` array, so the Decision 8 extension no longer carries that list and the
 report publishes it on the vulnerability record instead. The sentence under Rejected alternatives
 about inventing a fourth disposition value records the enumeration as it stood on 2026-08-21.
+
+## Amendment 2026-09-25: the CISA KEV clock
+
+ADR 0012 adds the first deadline that comes from outside FedRAMP's rules dataset. Three rules
+recorded here need amending to admit it.
+
+### Decision 6: the stop set, and a due instant that is a civil date
+
+Decision 6 anticipated a KEV clock stopping "only on remediation". The implemented stop set is
+`{REMEDIATED, FALSE_POSITIVE}`: a weakness found not to exist was never a KEV in the first
+place, so a false positive stops the clock for the same reason remediation does, and a `closed`
+case counts through whichever of the two it closed as. Partial and full mitigation still do not
+stop it, and neither does acceptance.
+
+Decision 6's first bullet says a timeframe is an exact elapsed duration from its anchor, with no
+rounding to end of day, on the grounds that this is never later than any calendar reading. The
+KEV clock is an exception to it, and not a violation of its reasoning. `VDR-TFR-KEV` carries no
+timeframe at all: the catalog publishes a civil date, `YYYY-MM-DD` with no zone, so there is no
+anchor to elapse from and nothing to round. The due instant is the end of that date in UTC,
+`datetime.combine(due + timedelta(days=1), time(0), UTC)`, and it does not read `--calendar-tz`.
+The justification is that it is a fixed reference rather than the earliest reading: one global
+document with one date per entry has to mean the same instant in every report that cites it,
+and a provider-local zone would make the same catalog carry different deadlines for different
+providers. Every other clock keeps the elapsed-duration rule unchanged.
+
+### Decision 7: KEV sets `isOverdue`, except on accepted records
+
+Decision 7's list of rules that can set `overdueStatus.isOverdue` gains `VDR-TFR-KEV`: at
+`--as-of`, a record whose KEV due instant has passed with no remediation and no false-positive
+finding recorded is overdue, and the required `explanation` names the rule, its force, the
+class, the catalog version and release instant, the matched CVE, the due date, and the instant
+it ended, alongside the provenance commit and the optional-adoption sentence the other clauses
+already carry. Where more than one rule has passed, the clauses appear in the order the
+deadlines are listed, so an unevaluated KEV reads its `VER-TFR-EVU` clause first and its
+`VDR-TFR-KEV` clause second.
+
+An accepted record is never officially overdue, on any rule including this one. `FRD-ACV` and
+`FRD-ODV` partition the population: an accepted vulnerability is one the provider does not
+intend to remediate, and `FRD-ODV` reaches only a vulnerability the provider "intends to fully
+mitigate or remediate but has not". An accepted record therefore keeps exactly
+`{"isOverdue": false}`, and the missed KEV date is still published in `x-complyroll` and in the
+record's Known exploited line, so nothing is hidden by the partition. This is what ADR 0010's
+`{"isOverdue": false}` result rests on from here on; the reasoning it gave, that acceptance
+satisfied every deadline the record had, does not reach a KEV clock, which acceptance does not
+satisfy.
+
+### Report period selects contents: open KEV work stays listed
+
+The period rule gains one clause for KEV records. A record that is not accepted, whose KEV clock
+is matched and not satisfied, whose detection is on or before the period end, and one of whose
+matched catalog entries was listed on or before the UTC date of the period end, appears in the
+Vulnerability Detail Report even when it had no other activity in the period.
+
+Under `VDR-TFR-KEV` a mitigated KEV is unresolved, so this is the existing rule applied rather
+than a new one: an open weakness is activity in every period until it is resolved, and a KEV
+that has only been mitigated is not resolved. The listing bound is what keeps it from reaching
+backwards. Nothing orders `--as-of` against the period end and `--as-of` defaults to now, so an
+August report compiled in September must not pull in a record that was quiet through August and
+became a KEV afterwards. AVI and historical selection are unchanged.

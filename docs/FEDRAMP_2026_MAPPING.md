@@ -1,6 +1,6 @@
 # FedRAMP 2026 mapping
 
-Status date: **2026-09-16**
+Status date: **2026-09-25**
 
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
@@ -23,9 +23,15 @@ while the parsed JSON is identical.
 the policy layer exposes it through `SelectedRule.timeframe` and `deadline_for_rule`. The reports
 do not turn it into a per-vulnerability deadline: the rule is a recurrence clock on each
 non-machine-based information resource, and ComplyRoll has no information resource records yet,
-so that clock is scheduled with the Phase 2 coverage and freshness work. KEV due dates require the
-applicable CISA catalog input, and `VDR-TFR-KEV` applies "even if the vulnerability has been fully
-mitigated", so a KEV clock stops on remediation, not on mitigation.
+so that clock is scheduled with the Phase 2 coverage and freshness work.
+
+`VDR-TFR-KEV` is implemented (ADR 0012). It is the one selected rule with no structured
+timeframe, because its deadline is published in the CISA Known Exploited Vulnerabilities
+catalog rather than in the rules dataset, so the catalog is supplied per run with `--kev` and
+its `dueDate` is used literally. The rule applies "even if the vulnerability has been fully
+mitigated", so the clock stops only on remediation or a false-positive finding, and never on
+mitigation or on acceptance. The due instant is the end of the published date in UTC, the
+midnight that begins the following day, and it does not read `--calendar-tz`.
 
 ComplyRoll raised the missing pair on 2026-08-24 as
 [FedRAMP/community discussion 164](https://github.com/FedRAMP/community/discussions/164):
@@ -146,7 +152,9 @@ mitigation, full mitigation, or remediation.
 | N2 | 48 days | 128 days | 192 days |
 
 N1 vulnerabilities are handled during routine operations under the current table. KEVs also
-follow applicable CISA KEV due dates.
+follow the due dates in the CISA catalog the operator supplies, which are used literally and are
+never recomputed from BOD 26-04 Table 1: ComplyRoll holds none of that table's per-asset inputs,
+and `VDR-TFR-KEV` names the catalog's dates.
 
 ## Required evaluation information
 

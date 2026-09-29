@@ -105,6 +105,38 @@ All notable project changes will be documented here.
   path, and by the persisted path and the replay reader rebuilding the same report from history byte
   for byte.
 
+- CISA KEV enrichment (ADR 0012). `complyroll report vdt`, `report avi`, and `report
+  historical` take `--kev FILE`, a CISA Known Exploited Vulnerabilities catalog JSON feed the
+  operator downloads out of band; it is read locally, never fetched, never bundled, and never
+  written to the store, so it applies to the stateless path and the `--db` path the same way and
+  the two paths stay byte-identical. A record is a KEV when one of its `CVE-` source identifiers
+  equals a catalog `cveID` exactly and that entry's `dateAdded` is on or before the UTC date of
+  `--as-of`. The clock uses the catalog's `dueDate` literally, ends at the midnight that begins
+  the following UTC day, ignores `--calendar-tz`, starts at `dateAdded` under the new `catalog`
+  anchor, and stops only on a remediated or false-positive record, so a fully mitigated KEV keeps
+  running, which is what `VDR-TFR-KEV` requires. One clock per record binds to the earliest due
+  date and, on a tie, the lowest `cveID`, while every matched entry is listed. Each record's
+  `x-complyroll` gains a `kev` block, null when nothing matched, with the bound CVE, the due date
+  and instant, `satisfied`, `pastDue`, a status of `open`, `pastDue`, `accepted`, `remediated`, or
+  `falsePositive`, and the matched entries; the report extension gains `kevSource`, naming the
+  catalog's file name, raw-byte SHA-256, size, version, release instant, declared count, and the
+  entries this run considered. The Markdown twin gains a Provenance row carrying the digest, the
+  Summary rows `Known exploited, CISA KEV` and `Past a CISA KEV due date`, a `Known exploited`
+  detail line per record, and the `VDR-TFR-KEV` deadline row. Seven diagnostics report what the
+  catalog did: a catalog released after `--as-of` and a policy with no `VDR-TFR-KEV` stop the run,
+  a catalog more than three days old and a record whose identifier list may have been truncated
+  warn, and entries dated after `--as-of`, a run with no CVE identifiers at all, and a run where
+  none matched are reported as information. The catalog is read through the bounded reader at 8
+  MiB, 20,000 entries, and JSON depth 16, validated field by field with every date checked against
+  an ASCII pattern before it is parsed and every year held between 1970 and 9000, and any failure
+  refuses the run as `invalid_input` with a message that starts "KEV catalog". A second `--kev` is
+  refused rather than silently applying the last one, and naming the catalog as an output is
+  refused as an input overwrite. Six goldens, `tests/golden/vdt-kev.{json,md}`,
+  `avi-kev.{json,md}`, and `historical-kev.{json,md}`, and two synthetic SARIF fixtures with a
+  synthetic catalog whose every identifier is `CVE-2099-*` hold the behavior; the fourteen
+  existing goldens are byte-identical, which is the proof that a run without `--kev` changed
+  nothing.
+
 ### Changed
 
 - Repositioned the one-line description. "Evidence automation for continuous authorization" used
@@ -179,6 +211,22 @@ All notable project changes will be documented here.
 - `stigroll` skips a SARIF log with a warning on stderr (`warning: <name> is a SARIF log; stigroll
   rolls up STIG checklists only, skipping`) instead of rolling it up; a run whose only input is a
   SARIF log ends with `error: no findings parsed from any input` and exit status 1.
+- The Vulnerability Detail Report keeps a record with an open KEV clock even when it had no
+  other activity in the period, provided it is not accepted, was detected on or before the period
+  end, and one of its matched catalog entries was listed on or before that date. Under
+  `VDR-TFR-KEV` a mitigated KEV is unresolved, and an unresolved weakness was already activity in
+  every period; without this a provider could mitigate a KEV and watch it drop out of the next
+  quiet period's report. Adding `--kev` can therefore raise the overdue count on a run that
+  previously reported none, because a fully mitigated KEV past its catalog due date is now
+  officially overdue. An accepted record is never officially overdue on any rule, including this
+  one: it keeps `{"isOverdue": false}` and publishes the missed date in `x-complyroll`, which is
+  the `FRD-ACV` and `FRD-ODV` partition made visible in the accepted-vulnerability report's
+  Summary, where "Overdue 0" can sit beside "Past a CISA KEV due date 1". AVI and historical
+  selection are unchanged, and a run without `--kev` selects exactly what it selected before.
+- `CompiledDeadline.timeframe` may now be null, and the `x-complyroll` deadline row publishes
+  `"timeframe": null` for a rule that carries none. `VDR-TFR-KEV` is the first selected rule with
+  no structured timeframe, since its deadline is a date in someone else's document rather than a
+  duration from an anchor. Every existing deadline row is unchanged.
 
 ## 0.3.0a0 - 2026-08-23
 

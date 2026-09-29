@@ -40,15 +40,61 @@ A calculated deadline is a derived value with explicit inputs and policy provena
 |---|---|
 | `rule_id` / `rule_name` | Official rule that supplied the timeframe |
 | `force` | Selected MUST, SHOULD, MAY, or negative force for the profile |
-| `start_at` | Detection, completed evaluation, or recurrence anchor |
-| `due_at` | UTC result of applying the structured source timeframe |
-| `timeframe` | Exact source amount and unit |
+| `start_at` | Detection, completed evaluation, catalog listing, or recurrence anchor |
+| `due_at` | UTC result of applying the structured source timeframe, or an external due date |
+| `timeframe` | Exact source amount and unit, or null when the rule carries none |
 | `profile` | Certification type, path, class, and affected party |
 | `provenance` | Repository, commit, dataset version/date, and SHA-256 |
 | `description` | Source context for PAIN response matrix entries when applicable |
 
 An absent structured timeframe is represented as unavailable, not inferred from rule prose. A
 192-day acceptance deadline is an escalation threshold and never an automatic acceptance event.
+
+`VDR-TFR-KEV` is the one selected rule whose deadline is not a duration at all, so its row
+publishes `"timeframe": null` and the anchor `catalog`: `start_at` is the date the CISA catalog
+added the entry, at 00:00:00Z, and `due_at` is the end of the catalog's published due date in
+UTC, which is the midnight that begins the following day. Neither instant reads the configured
+calendar timezone, because one global catalog has to mean the same instant in every report that
+cites it.
+
+## CISA KEV enrichment
+
+A KEV clock is a report-time enrichment, not a stored record. It exists only on a run given a
+catalog with `--kev`, and it reaches the compiler as a report option rather than as an event, so
+the stateless and persisted paths produce identical bytes (ADR 0012).
+
+Each compiled vulnerability's `x-complyroll` gains a `kev` key, null when the record matched no
+catalog entry dated on or before the UTC date of `--as-of`:
+
+| Field | Purpose |
+|---|---|
+| `cveId` | The identifier the clock is bound to: earliest due date, lowest `cveID` on a tie |
+| `dueDate` | The catalog's published `dueDate` for that entry, used literally |
+| `dueAt` | The end of that date in UTC, the midnight beginning the following day |
+| `satisfied` | Whether the record is remediated or a false positive, as recorded at run time |
+| `pastDue` | Not satisfied and `--as-of` is strictly after `dueAt` |
+| `status` | `remediated`, `falsePositive`, `accepted`, `pastDue`, or `open` |
+| `entries` | Every matched entry, with `cveId`, `dateAdded`, `dueDate`, and the two optional catalog flags |
+
+`status` is the first of those that applies, in that order, so a satisfied record reports how it
+was satisfied and an accepted record reports `accepted` even when `pastDue` is true. Counts of
+records past a KEV due date read `pastDue` and never `status`, so an accepted record that missed
+its date is counted.
+
+The report-level `x-complyroll` gains `kevSource`, which identifies the catalog the run read:
+
+| Field | Purpose |
+|---|---|
+| `name` | The catalog file's base name |
+| `sha256` | SHA-256 of the raw bytes as read, before any BOM is stripped |
+| `sizeBytes` | Size of those bytes |
+| `catalogVersion` | The catalog's own version string, descriptive only |
+| `dateReleased` | The catalog's release instant, normalized to UTC |
+| `count` | The entry count the catalog declares |
+| `entriesConsidered` | How many entries this run applied after the `dateAdded` filter |
+
+`catalogVersion` is not unique within a day and entries change after publication, so the digest
+and not the version is the catalog's identity. Neither key exists in a run given no catalog.
 
 ## Schema validation result
 

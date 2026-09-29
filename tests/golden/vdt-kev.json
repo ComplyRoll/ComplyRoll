@@ -1,0 +1,1013 @@
+{
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "reportPeriod": {
+    "from": "2026-09-01T00:00:00Z",
+    "to": "2026-09-30T23:59:59Z"
+  },
+  "vulnerabilities": [
+    {
+      "currentRating": 2,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-03T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "explanation": "VDR-TFR-KEV (SHOULD, Class C): the CISA KEV catalog (version 2026.09.14, released 2026-09-14T17:00:00.123400Z) lists CVE-2099-0001 with due date 2026-09-10, which ended 2026-09-11T00:00:00Z with no remediation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "providerTrackingId": "case-d71ea9b36c49f957",
+      "vulnerabilityDescription": "CVE-2099-0001: libexample-net: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-01-09T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": false,
+            "startAt": "2026-09-03T15:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-14T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": false,
+            "startAt": "2026-09-03T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "catalog",
+            "dueAt": "2026-09-11T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-KEV",
+            "ruleName": "Remediate KEVs",
+            "satisfied": false,
+            "startAt": "2026-08-27T00:00:00Z",
+            "timeframe": null
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+        "kev": {
+          "cveId": "CVE-2099-0001",
+          "dueAt": "2026-09-11T00:00:00Z",
+          "dueDate": "2026-09-10",
+          "entries": [
+            {
+              "cveId": "CVE-2099-0001",
+              "dateAdded": "2026-08-27",
+              "dueDate": "2026-09-10",
+              "forensicTriage": "No",
+              "knownRansomwareCampaignUse": "Known"
+            }
+          ],
+          "pastDue": true,
+          "satisfied": false,
+          "status": "pastDue"
+        },
+        "observationIds": [
+          "obs-d381463fef2c952a7a7e2274a607d9f27ea6142e1f76397eb310d6ed560d2795"
+        ],
+        "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/usr/lib/libexample-net.so.4",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0001"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 2,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-09T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "explanation": "VDR-TFR-KEV (SHOULD, Class C): the CISA KEV catalog (version 2026.09.14, released 2026-09-14T17:00:00.123400Z) lists CVE-2099-0001 with due date 2026-09-10, which ended 2026-09-11T00:00:00Z with no remediation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "providerTrackingId": "case-bfcbac2c7be88a19",
+      "vulnerabilityDescription": "CVE-2099-0001: libexample-net: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-01-15T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": false,
+            "startAt": "2026-09-09T15:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-20T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": false,
+            "startAt": "2026-09-09T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "catalog",
+            "dueAt": "2026-09-11T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-KEV",
+            "ruleName": "Remediate KEVs",
+            "satisfied": false,
+            "startAt": "2026-08-27T00:00:00Z",
+            "timeframe": null
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+        "kev": {
+          "cveId": "CVE-2099-0001",
+          "dueAt": "2026-09-11T00:00:00Z",
+          "dueDate": "2026-09-10",
+          "entries": [
+            {
+              "cveId": "CVE-2099-0001",
+              "dateAdded": "2026-08-27",
+              "dueDate": "2026-09-10",
+              "forensicTriage": "No",
+              "knownRansomwareCampaignUse": "Known"
+            }
+          ],
+          "pastDue": true,
+          "satisfied": false,
+          "status": "pastDue"
+        },
+        "observationIds": [
+          "obs-dbac8172b00830769d652188353b4d62851eae1beef77781a8c5f4ef4131d05d"
+        ],
+        "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/worker:2.3.1/usr/lib/libexample-net.so.4",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0001"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-02T10:15:00Z and closed 2026-09-07T10:15:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-47c219a4b195f33c",
+      "vulnerabilityDescription": "CVE-2099-0002: example-parser: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "catalog",
+            "dueAt": "2026-09-23T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-KEV",
+            "ruleName": "Remediate KEVs",
+            "satisfied": false,
+            "startAt": "2026-09-08T00:00:00Z",
+            "timeframe": null
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "kev": {
+          "cveId": "CVE-2099-0002",
+          "dueAt": "2026-09-23T00:00:00Z",
+          "dueDate": "2026-09-22",
+          "entries": [
+            {
+              "cveId": "CVE-2099-0002",
+              "dateAdded": "2026-09-08",
+              "dueDate": "2026-09-22",
+              "forensicTriage": "No",
+              "knownRansomwareCampaignUse": "Unknown"
+            },
+            {
+              "cveId": "CVE-2099-0003",
+              "dateAdded": "2026-09-10",
+              "dueDate": "2026-09-24",
+              "forensicTriage": "Yes",
+              "knownRansomwareCampaignUse": "Unknown"
+            }
+          ],
+          "pastDue": false,
+          "satisfied": false,
+          "status": "open"
+        },
+        "observationIds": [
+          "obs-ee33af54dd59c492a6b6f0f1f9bb7395c76dd3ed52b6987b77bea9f4c03fb18d"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/app/package-lock.json",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0002",
+          "CVE-2099-0003"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 2,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-04T15:00:00Z",
+      "finalDisposition": "Fully Mitigated",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "explanation": "VDR-TFR-KEV (SHOULD, Class C): the CISA KEV catalog (version 2026.09.14, released 2026-09-14T17:00:00.123400Z) lists CVE-2099-0004 with due date 2026-09-03, which ended 2026-09-04T00:00:00Z with no remediation recorded. A recorded mitigation does not stop this clock. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "providerTrackingId": "case-c4a0253c9a9ff48b",
+      "supplementaryRiskInformation": "SYNTHETIC. A network policy blocks the flawed listener while the package upgrade waits for the next image build.",
+      "vulnerabilityDescription": "CVE-2099-0004: example-tls: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-01-10T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": true,
+            "startAt": "2026-09-04T15:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-15T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": true,
+            "startAt": "2026-09-04T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "catalog",
+            "dueAt": "2026-09-04T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-KEV",
+            "ruleName": "Remediate KEVs",
+            "satisfied": false,
+            "startAt": "2026-08-20T00:00:00Z",
+            "timeframe": null
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+        "kev": {
+          "cveId": "CVE-2099-0004",
+          "dueAt": "2026-09-04T00:00:00Z",
+          "dueDate": "2026-09-03",
+          "entries": [
+            {
+              "cveId": "CVE-2099-0004",
+              "dateAdded": "2026-08-20",
+              "dueDate": "2026-09-03",
+              "forensicTriage": "No",
+              "knownRansomwareCampaignUse": "Unknown"
+            }
+          ],
+          "pastDue": true,
+          "satisfied": false,
+          "status": "pastDue"
+        },
+        "observationIds": [
+          "obs-c15514491b1444bedf9a7e1e12767e6d31c03f2e22c1671af6229d5b92bea720"
+        ],
+        "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/lib/apk/db/installed",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0004"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 2,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-05T15:00:00Z",
+      "finalDisposition": "Remediated",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "providerTrackingId": "case-fdc849d3efe49644",
+      "vulnerabilityDescription": "CVE-2099-0005: example-image: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-01-11T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": true,
+            "startAt": "2026-09-05T15:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-16T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": true,
+            "startAt": "2026-09-05T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "catalog",
+            "dueAt": "2026-09-09T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-KEV",
+            "ruleName": "Remediate KEVs",
+            "satisfied": true,
+            "startAt": "2026-08-25T00:00:00Z",
+            "timeframe": null
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+        "kev": {
+          "cveId": "CVE-2099-0005",
+          "dueAt": "2026-09-09T00:00:00Z",
+          "dueDate": "2026-09-08",
+          "entries": [
+            {
+              "cveId": "CVE-2099-0005",
+              "dateAdded": "2026-08-25",
+              "dueDate": "2026-09-08",
+              "forensicTriage": "No",
+              "knownRansomwareCampaignUse": "Known"
+            }
+          ],
+          "pastDue": false,
+          "satisfied": true,
+          "status": "remediated"
+        },
+        "observationIds": [
+          "obs-3abb7ded51f9d8d11b04165c1c5b5b1e6968556f27b12736724444bcccb36e85"
+        ],
+        "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+        "remediated": true,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/usr/share/example-image/VERSION",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0005"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 2,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-07T15:00:00Z",
+      "finalDisposition": "False Positive",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "providerTrackingId": "case-f5d5b19005c2d816",
+      "vulnerabilityDescription": "CVE-2099-0007: example-xml: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-01-13T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": true,
+            "startAt": "2026-09-07T15:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-18T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": true,
+            "startAt": "2026-09-07T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "catalog",
+            "dueAt": "2026-09-05T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-KEV",
+            "ruleName": "Remediate KEVs",
+            "satisfied": true,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": null
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+        "kev": {
+          "cveId": "CVE-2099-0007",
+          "dueAt": "2026-09-05T00:00:00Z",
+          "dueDate": "2026-09-04",
+          "entries": [
+            {
+              "cveId": "CVE-2099-0007",
+              "dateAdded": "2026-09-01",
+              "dueDate": "2026-09-04",
+              "forensicTriage": "No",
+              "knownRansomwareCampaignUse": "Unknown"
+            }
+          ],
+          "pastDue": false,
+          "satisfied": true,
+          "status": "falsePositive"
+        },
+        "observationIds": [
+          "obs-a5d523acf3e4626fef3983e454167d98fdcbb4436d18dd4ee0522c571a02f45a"
+        ],
+        "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/app/requirements.txt",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0007"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 2,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-10T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "providerTrackingId": "case-1a88bd335ba6c185",
+      "vulnerabilityDescription": "CVE-2099-0008: example-auth: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-01-16T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": false,
+            "startAt": "2026-09-10T15:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-21T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": false,
+            "startAt": "2026-09-10T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+        "kev": null,
+        "observationIds": [
+          "obs-7f828b983a0eed4906b1876300403c47211a7b61496ac33c5741b4323db4bc33"
+        ],
+        "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/app/Gemfile.lock",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0008"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 2,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-11T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "explanation": "VDR-TFR-KEV (SHOULD, Class C): the CISA KEV catalog (version 2026.09.14, released 2026-09-14T17:00:00.123400Z) lists CVE-2099-0009 with due date 2026-06-15, which ended 2026-06-16T00:00:00Z with no remediation recorded. The due date had passed before detection at 2026-09-02T10:15:00Z. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "providerTrackingId": "case-9d2c5885ea234bd0",
+      "vulnerabilityDescription": "CVE-2099-0009: example-zip: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-01-17T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": false,
+            "startAt": "2026-09-11T15:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-22T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": false,
+            "startAt": "2026-09-11T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "catalog",
+            "dueAt": "2026-06-16T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-KEV",
+            "ruleName": "Remediate KEVs",
+            "satisfied": false,
+            "startAt": "2026-06-01T00:00:00Z",
+            "timeframe": null
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+        "kev": {
+          "cveId": "CVE-2099-0009",
+          "dueAt": "2026-06-16T00:00:00Z",
+          "dueDate": "2026-06-15",
+          "entries": [
+            {
+              "cveId": "CVE-2099-0009",
+              "dateAdded": "2026-06-01",
+              "dueDate": "2026-06-15",
+              "forensicTriage": "No",
+              "knownRansomwareCampaignUse": "Unknown"
+            }
+          ],
+          "pastDue": true,
+          "satisfied": false,
+          "status": "pastDue"
+        },
+        "observationIds": [
+          "obs-241dad5b2367d88038b33ebd5c92d7a2c869cac56960ce108bb0196e295f9741"
+        ],
+        "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/usr/bin/example-zip",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0009"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-02T10:15:00Z and closed 2026-09-07T10:15:00Z with no evaluation recorded. VDR-TFR-KEV (SHOULD, Class C): the CISA KEV catalog (version 2026.09.14, released 2026-09-14T17:00:00.123400Z) lists CVE-2099-0011 with due date 2026-09-07, which ended 2026-09-08T00:00:00Z with no remediation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-154434fe3008eee7",
+      "vulnerabilityDescription": "CVE-2099-0011: example-http: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "catalog",
+            "dueAt": "2026-09-08T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-KEV",
+            "ruleName": "Remediate KEVs",
+            "satisfied": false,
+            "startAt": "2026-08-24T00:00:00Z",
+            "timeframe": null
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "kev": {
+          "cveId": "CVE-2099-0011",
+          "dueAt": "2026-09-08T00:00:00Z",
+          "dueDate": "2026-09-07",
+          "entries": [
+            {
+              "cveId": "CVE-2099-0011",
+              "dateAdded": "2026-08-24",
+              "dueDate": "2026-09-07",
+              "forensicTriage": "No",
+              "knownRansomwareCampaignUse": "Unknown"
+            }
+          ],
+          "pastDue": true,
+          "satisfied": false,
+          "status": "pastDue"
+        },
+        "observationIds": [
+          "obs-3e1b5b69bf4262f5bbd4dbef6d9e3ab920b07ddd8ef7d316a04f632a94696b5f"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/app/pom.xml",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0011"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 2,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-08T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "providerTrackingId": "case-587d3908c5469d3d",
+      "vulnerabilityDescription": "CVE-2099-0100: example-log: synthetic flaw for KEV tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-01-14T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": false,
+            "startAt": "2026-09-08T15:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-19T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": false,
+            "startAt": "2026-09-08T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+        "kev": null,
+        "observationIds": [
+          "obs-0df6ddaafb71230d0fe551d27ae4afb0048cb701206cc1ae5ec82c8d21c8be10"
+        ],
+        "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/kev/web:2.3.1/app/go.sum",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0100"
+        ],
+        "untimestampedObservationIds": []
+      }
+    }
+  ],
+  "x-complyroll": {
+    "artifacts": [
+      {
+        "name": "kev-image-web.sarif",
+        "observationCount": 10,
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "37776a3ba338f102504df2734d8f89c084f89e538ea885946cb3ff1f0706fd33",
+        "sizeBytes": 20447
+      },
+      {
+        "name": "kev-image-worker.sarif",
+        "observationCount": 1,
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "facea1dd3b8d005b3d768a55e82b468096a82e5d7c916ab2c091586162ae6e57",
+        "sizeBytes": 2950
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "detectionTimeAttestation": null,
+    "diagnostics": [
+      {
+        "code": "kev_entries_after_as_of",
+        "level": "info",
+        "location": "sha256:40c6d1465ca52c5ddb3b7bf1a6d92cfe884e33b4d2e90ac4551090e66d6c49fd",
+        "message": "1 catalog entry dated after 2026-09-15 was not applied; 1 compiled record carries it"
+      },
+      {
+        "code": "accepted_excluded",
+        "level": "info",
+        "location": "CVE-2099-0006",
+        "message": "case-94c71266d391144a is an accepted vulnerability and belongs in the VER-RPT-AVI report, not the Vulnerability Detail Report"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "excludedByPeriod": 0,
+    "generatedAt": "2026-09-15T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.3.0a0"
+    },
+    "kevSource": {
+      "catalogVersion": "2026.09.14",
+      "count": 12,
+      "dateReleased": "2026-09-14T17:00:00.123400Z",
+      "entriesConsidered": 11,
+      "name": "kev-catalog.json",
+      "sha256": "40c6d1465ca52c5ddb3b7bf1a6d92cfe884e33b4d2e90ac4551090e66d6c49fd",
+      "sizeBytes": 8753
+    },
+    "parserVersions": {
+      "complyroll.sarif": "1"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "5e9499e8cb9d0367c888ce41040175270fc9f007ae4f61d0ced34cca81cfe497"
+    }
+  }
+}

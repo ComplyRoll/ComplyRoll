@@ -94,3 +94,14 @@ documents, the only other change between the two pins is the `terms` array of 41
 the selector does not read; `2026.09.13.02` (upstream pull request 29) touched only those arrays
 and the FRD definitions. The selected rule count stays at 36 per class, and every other
 timeframe, force, and PAIN matrix is unchanged, as the policy golden shows.
+
+## Amendment 2026-09-25: the KEV source input exists
+
+The sentence under Decision that keeps KEV due dates as external inputs from the applicable
+CISA catalog, and the Consequences line saying KEV deadlines need a source input, are answered
+by ADR 0012. The catalog is supplied per run through `--kev`, never fetched, bundled, or
+stored, and it is pinned in the published report by the SHA-256 of the bytes that were read.
+`VDR-TFR-KEV` itself is still selected from the verified dataset in the ordinary way, so its
+force, name, and null timeframe come from the rules commit and not from this compiler; a
+selected policy that lacks the rule raises `kev_rule_unavailable` rather than supplying one.
+Business-day deadlines still have no authoritative calendar and remain unsupported.

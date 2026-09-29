@@ -123,10 +123,10 @@ Target: 3–4 weeks
 Shipped as listed, with five exceptions carried into Phase 2 as a scope change rather than
 closed as done: information resource records and response action records (the
 `InformationResource` and `ResponseAction` entities in `docs/DATA_MODEL.md` are still planned),
-the KEV clock (part of Phase 2's CISA KEV enrichment), the reporting recurrence clocks (the
-compiler emits no clock for `VER-TFR-MHR` or `VER-TFR-MRH`; ADR 0007 Decision 6 and ADR 0010
-Decision 5 record that the cadence is the operator's), and HTML output (each report ships a
-Markdown twin only). Rating changes ship as the PAIN reduction events on each vulnerability
+the KEV clock, the reporting recurrence clocks (the compiler emits no clock for `VER-TFR-MHR` or
+`VER-TFR-MRH`; ADR 0007 Decision 6 and ADR 0010 Decision 5 record that the cadence is the
+operator's), and HTML output (each report ships a Markdown twin only). The KEV clock has since
+landed with Phase 2's CISA KEV enrichment (ADR 0012), so four of the five are still carried. Rating changes ship as the PAIN reduction events on each vulnerability
 detail rather than as a record of their own.
 
 ### CLI
@@ -190,7 +190,7 @@ Target: 3–4 weeks
 
 - SARIF adapter. **Complete, 2026-09-20** (ADR 0011).
 - CycloneDX or SPDX adapter.
-- CISA KEV enrichment.
+- CISA KEV enrichment. **Complete, 2026-09-25** (ADR 0012).
 - Initial cloud, container, or CSPM JSON adapter selected from design-partner demand.
 - Git/deployment change-event ingestion.
 - Expected-resource versus observed-resource coverage checks.
@@ -200,8 +200,8 @@ Target: 3–4 weeks
 - System-generated observations for failed imports, stale coverage, missing resources, or broken
   response workflows.
 - Carried from Phase 1 as a scope change: information resource and response action records, the
-  KEV clock (with the KEV enrichment above), the reporting recurrence clocks, and HTML report
-  output.
+  reporting recurrence clocks, and HTML report output. The KEV clock shipped with the KEV
+  enrichment above.
 
 ### Exit criteria
 

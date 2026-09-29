@@ -13,25 +13,37 @@ import dataclasses
 import hashlib
 import inspect
 import json
+import re
 import tempfile
 import unittest
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from test_reports import compile_fixtures, options, summary_counts
+
 from complyroll.adapters import ingest_stig_artifact
 from complyroll.models import CaseStatus, Observation
+from complyroll.policy import (
+    CertificationClass,
+    load_bundled_rule_source_snapshot,
+    select_policy,
+)
 from complyroll.reports import (
     MAX_KEV_CATALOG_BYTES,
     MAX_KEV_ENTRIES,
     KevCatalog,
     KevStatus,
+    ReportCompileError,
     ReportInputError,
+    load_evaluations,
     load_kev_catalog,
     parse_kev_catalog,
 )
 from complyroll.reports.kev import (
     KEV_LIMITS,
+    KEV_STALE_AFTER,
     KEV_STOPS,
     MAX_TRUNCATED_METADATA_BYTES,
     cve_may_be_missing,
@@ -39,6 +51,7 @@ from complyroll.reports.kev import (
     kev_clock,
     start_instant,
 )
+from complyroll.reports.vdt import _kev_clause, _kev_line, _kev_rule
 
 # *--- Fixtures ---*
 
@@ -819,6 +832,916 @@ class KevMatchIncompleteUnitTests(unittest.TestCase):
                 )
                 self.assertEqual(len(observation.source_identifiers), 64)
                 self.assertIs(cve_may_be_missing(observation), expected)
+
+
+# *--- Report Fixtures ---*
+
+EXAMPLES = REPO_ROOT / "examples"
+KEV_ARTIFACTS = (FIXTURES / "kev-image-web.sarif", FIXTURES / "kev-image-worker.sarif")
+KEV_EVALUATIONS = EXAMPLES / "evaluations-kev.json"
+KEV_AS_OF = datetime(2026, 9, 15, 12, tzinfo=UTC)
+#: The settings every KEV report test runs with, and the ones the goldens are cut at.
+#: The shared `options()` defaults sit in August, where this catalog is released after
+#: `as_of` and these fixtures compile nothing, so a KEV assertion on them would either
+#: raise or pass on an empty report.
+KEV_OVERRIDES: dict[str, Any] = {
+    "as_of": KEV_AS_OF,
+    "detected_at": None,
+    "period_from": datetime(2026, 9, 1, tzinfo=UTC),
+    "period_to": datetime(2026, 9, 30, 23, 59, 59, tzinfo=UTC),
+}
+WEB = "Trivy|images/web"
+WORKER = "Trivy|images/worker"
+#: Every fixture record by the label the plan gives it: its context key and source record.
+KEV_LABELS = {
+    "R1": (WEB, "CVE-2099-0001"),
+    "R2": (WEB, "CVE-2099-0002"),
+    "R3": (WEB, "CVE-2099-0004"),
+    "R4": (WEB, "CVE-2099-0005"),
+    "R5": (WEB, "CVE-2099-0006"),
+    "R6": (WEB, "CVE-2099-0007"),
+    "R7": (WEB, "CVE-2099-0100"),
+    "R8": (WORKER, "CVE-2099-0001"),
+    "R9": (WEB, "CVE-2099-0008"),
+    "R10": (WEB, "CVE-2099-0009"),
+    "R11": (WEB, "CVE-2099-0011"),
+}
+KEV_LINE_PREFIX = "- **Known exploited:** "
+
+
+def fixture_entry(cve_id: str) -> Any:
+    """Return one entry of the fixture catalog, whatever date it was added."""
+    (entry,) = fixture_catalog().matches([cve_id], on_or_before=date(2099, 12, 31))
+    return entry
+
+
+def kev_report(
+    *,
+    kind: str = "vdt",
+    catalog: KevCatalog | None = None,
+    artifacts: Sequence[Path] = KEV_ARTIFACTS,
+    evaluations: Path | None = KEV_EVALUATIONS,
+    **overrides: Any,
+) -> Any:
+    """Compile one report over the KEV fixtures with the shared KEV settings."""
+    parsed = None if evaluations is None else load_evaluations(evaluations)
+    return compile_fixtures(
+        artifacts=list(artifacts),
+        evaluations=parsed,
+        kind=kind,  # type: ignore[arg-type]
+        **{**KEV_OVERRIDES, **overrides, "kev_catalog": catalog},
+    )
+
+
+def by_label(records: Sequence[Any]) -> dict[str, Any]:
+    """Index compiled records by the label the plan's fixture table gives each one."""
+    keyed = {(item.context_key, item.source_record_id): item for item in records}
+    return {label: keyed[key] for label, key in KEV_LABELS.items() if key in keyed}
+
+
+def kev_clause_of(record: Any) -> str:
+    """Return the VDR-TFR-KEV clause out of a record's one overdue explanation."""
+    explanation = record.overdue_explanation
+    if "VDR-TFR-KEV (" not in explanation:
+        raise AssertionError(f"{record.source_record_id} carries no KEV clause")
+    tail = explanation.split("VDR-TFR-KEV (", 1)[1].split("Rules dataset commit", 1)[0]
+    return f"VDR-TFR-KEV ({tail.strip()}"
+
+
+def kev_deadline_of(record: Any) -> dict[str, Any]:
+    """Return the one VDR-TFR-KEV deadline a record publishes."""
+    found = [item for item in record.deadlines if item.rule_id == "VDR-TFR-KEV"]
+    if len(found) != 1:
+        raise AssertionError(f"{record.source_record_id} has {len(found)} KEV deadlines")
+    return found[0].to_dict()
+
+
+def known_exploited_lines(markdown: str) -> list[str]:
+    """Return every Known exploited detail line of a Markdown twin, in document order."""
+    return [
+        line[len(KEV_LINE_PREFIX) :]
+        for line in markdown.splitlines()
+        if line.startswith(KEV_LINE_PREFIX)
+    ]
+
+
+def kev_evaluation(cve: str, completed: str, *, context: str = WEB, **extra: object) -> dict:
+    """Return one evaluation entry for a KEV fixture record, with fields added."""
+    entry: dict[str, object] = {
+        "match": {"sourceRecordId": cve, "contextKey": context, "sourceType": "sarif"},
+        "completedAt": completed,
+        "isInternetReachable": False,
+        "isLikelyExploitable": True,
+        "pain": 2,
+        "potentialAgencyImpact": "SYNTHETIC. The flawed package holds no agency data.",
+        "rationale": "SYNTHETIC. The service is internal only and needs local access.",
+        "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+    }
+    entry.update(extra)
+    return entry
+
+
+def write_evaluations(directory: Path, entries: Sequence[dict]) -> Path:
+    """Write one evaluations file into a temporary directory and return its path."""
+    path = directory / "evaluations.json"
+    path.write_text(json.dumps({"evaluations": list(entries)}), encoding="utf-8")
+    return path
+
+
+def shifted_web_artifact(directory: Path, *, start: str, end: str) -> Path:
+    """Write a copy of the web fixture whose one run ran at another instant."""
+    payload = json.loads((FIXTURES / "kev-image-web.sarif").read_text(encoding="utf-8"))
+    for run in payload["runs"]:
+        for invocation in run["invocations"]:
+            invocation["startTimeUtc"] = start
+            invocation["endTimeUtc"] = end
+    path = directory / "kev-image-web.sarif"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def tagged_web_artifact(directory: Path, tags: Sequence[str]) -> Path:
+    """Write a copy of the web fixture whose first result carries extra identifiers."""
+    payload = json.loads((FIXTURES / "kev-image-web.sarif").read_text(encoding="utf-8"))
+    result = payload["runs"][0]["results"][0]
+    result.setdefault("properties", {})["tags"] = list(tags)
+    path = directory / "kev-image-web.sarif"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+# *--- The Clock In A Report ---*
+
+
+class KevReportClockTests(unittest.TestCase):
+    """The clock as the three projections publish it, over the plan's fixture table."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.catalog = fixture_catalog()
+        cls.vdt = kev_report(catalog=cls.catalog)
+        cls.avi = kev_report(kind="avi", catalog=cls.catalog)
+        cls.historical = kev_report(kind="historical", catalog=cls.catalog)
+        cls.records = by_label(cls.vdt.vulnerabilities)
+        cls.accepted = by_label([item.vulnerability for item in cls.avi.accepted])
+
+    def test_every_reported_record_carries_the_clock_the_plan_names(self) -> None:
+        expected = {
+            "R1": ("pastDue", True, False, True),
+            "R2": ("open", False, False, True),
+            "R3": ("pastDue", True, False, True),
+            "R4": ("remediated", False, True, False),
+            "R6": ("falsePositive", False, True, False),
+            "R8": ("pastDue", True, False, True),
+            "R10": ("pastDue", True, False, True),
+            "R11": ("pastDue", True, False, True),
+        }
+        self.assertEqual(sorted(self.records), sorted([*expected, "R7", "R9"]))
+        for label, (status, past_due, satisfied, overdue) in expected.items():
+            with self.subTest(record=label):
+                record = self.records[label]
+                self.assertIsNotNone(record.kev)
+                self.assertEqual(record.kev.status.value, status)
+                self.assertEqual(record.kev.past_due, past_due)
+                self.assertEqual(record.kev.satisfied, satisfied)
+                self.assertEqual(record.is_overdue, overdue)
+        for label in ("R7", "R9"):
+            with self.subTest(record=label):
+                self.assertTrue(self.records[label].kev_checked)
+                self.assertIsNone(self.records[label].kev)
+                self.assertFalse(self.records[label].is_overdue)
+
+    def test_a_mitigation_does_not_stop_the_clock_but_a_disposition_does(self) -> None:
+        # VDR-TFR-KEV runs "even if the vulnerability has been fully mitigated"; remediation
+        # and a false positive stop it, so neither R4 nor R6 is past due (ADR 0012).
+        mitigation = "A recorded mitigation does not stop this clock."
+        self.assertIn(mitigation, kev_clause_of(self.records["R3"]))
+        for label in ("R4", "R6"):
+            with self.subTest(record=label):
+                record = self.records[label]
+                self.assertTrue(kev_deadline_of(record)["satisfied"])
+                self.assertEqual(record.to_official_dict()["overdueStatus"], {"isOverdue": False})
+
+    def test_an_accepted_record_keeps_its_clock_and_is_never_officially_overdue(self) -> None:
+        record = self.accepted["R5"]
+        self.assertEqual(record.kev.status.value, "accepted")
+        self.assertTrue(record.kev.past_due)
+        self.assertFalse(record.kev.satisfied)
+        self.assertFalse(record.is_overdue)
+        detail = self.avi.document["acceptedVulnerabilities"][0]["vulnerabilityDetail"]
+        self.assertEqual(detail["overdueStatus"], {"isOverdue": False})
+        self.assertFalse(kev_deadline_of(record)["satisfied"])
+
+    def test_the_summary_rows_count_the_past_due_boolean_not_the_status(self) -> None:
+        expected = {
+            "vdt": (self.vdt, 6, 8, 5),
+            "avi": (self.avi, 0, 1, 1),
+            "historical": (self.historical, 6, 8, 5),
+        }
+        for kind, (report, overdue, known, past_due) in expected.items():
+            with self.subTest(report=kind):
+                counts = summary_counts(report.to_markdown())
+                self.assertEqual(counts["Overdue"], overdue)
+                self.assertEqual(counts["Known exploited, CISA KEV"], known)
+                self.assertEqual(counts["Past a CISA KEV due date"], past_due)
+
+    def test_one_cve_on_two_records_gives_each_its_own_clock(self) -> None:
+        first, second = self.records["R1"], self.records["R8"]
+        self.assertNotEqual(first.tracking_id, second.tracking_id)
+        self.assertEqual(first.kev.to_dict(), second.kev.to_dict())
+        self.assertEqual(kev_deadline_of(first), kev_deadline_of(second))
+
+    def test_a_record_with_two_matched_entries_binds_to_the_earliest_due_date(self) -> None:
+        clock = self.records["R2"].kev
+        self.assertEqual(
+            [entry.cve_id for entry in clock.entries], ["CVE-2099-0002", "CVE-2099-0003"]
+        )
+        self.assertEqual(clock.bound.cve_id, "CVE-2099-0002")
+
+    def test_the_evu_clause_precedes_the_kev_clause_in_one_explanation(self) -> None:
+        record = self.records["R11"]
+        self.assertEqual(
+            [item.rule_id for item in record.deadlines], ["VER-TFR-EVU", "VDR-TFR-KEV"]
+        )
+        explanation = record.overdue_explanation
+        self.assertLess(explanation.index("VER-TFR-EVU ("), explanation.index("VDR-TFR-KEV ("))
+        self.assertEqual(record.to_official_dict()["overdueStatus"]["explanation"], explanation)
+
+    def test_the_detection_sentence_appears_only_when_the_due_date_had_passed(self) -> None:
+        sentence = "The due date had passed before detection at 2026-09-02T10:15:00Z."
+        self.assertIn(sentence, kev_clause_of(self.records["R10"]))
+        for label in ("R1", "R3", "R8", "R11"):
+            with self.subTest(record=label):
+                self.assertNotIn("before detection", kev_clause_of(self.records[label]))
+
+    def test_the_clause_names_the_catalog_version_release_and_due_date(self) -> None:
+        self.assertEqual(
+            kev_clause_of(self.records["R1"]),
+            "VDR-TFR-KEV (SHOULD, Class C): the CISA KEV catalog (version 2026.09.14, "
+            "released 2026-09-14T17:00:00.123400Z) lists CVE-2099-0001 with due date "
+            "2026-09-10, which ended 2026-09-11T00:00:00Z with no remediation recorded.",
+        )
+
+    def test_the_kev_deadline_publishes_the_catalog_anchor_and_a_null_timeframe(self) -> None:
+        self.assertEqual(
+            kev_deadline_of(self.records["R1"]),
+            {
+                "ruleId": "VDR-TFR-KEV",
+                "ruleName": "Remediate KEVs",
+                "force": "SHOULD",
+                "anchor": "catalog",
+                "startAt": "2026-08-27T00:00:00Z",
+                "dueAt": "2026-09-11T00:00:00Z",
+                "satisfied": False,
+                "timeframe": None,
+            },
+        )
+
+    def test_the_report_extension_names_the_catalog_by_digest(self) -> None:
+        expected = {
+            "name": "kev-catalog.json",
+            "sha256": self.catalog.sha256,
+            "sizeBytes": KEV_CATALOG.stat().st_size,
+            "catalogVersion": "2026.09.14",
+            "dateReleased": "2026-09-14T17:00:00.123400Z",
+            "count": 12,
+            "entriesConsidered": 11,
+        }
+        for kind, report in (("vdt", self.vdt), ("avi", self.avi), ("historical", self.historical)):
+            with self.subTest(report=kind):
+                self.assertEqual(report.document["x-complyroll"]["kevSource"], expected)
+
+    def test_the_provenance_row_carries_the_catalog_and_its_digest(self) -> None:
+        row = (
+            "| KEV catalog | kev-catalog.json, CISA KEV catalog version 2026.09.14, released "
+            f"2026-09-14T17:00:00.123400Z, 11 entries | {self.catalog.sha256} |"
+        )
+        for kind, report in (("vdt", self.vdt), ("avi", self.avi), ("historical", self.historical)):
+            with self.subTest(report=kind):
+                self.assertIn(row, report.to_markdown().splitlines())
+
+    def test_the_record_extension_publishes_the_clock_and_nulls_an_unmatched_one(self) -> None:
+        by_tracking = {
+            item["providerTrackingId"]: item["x-complyroll"]
+            for item in self.vdt.document["vulnerabilities"]
+        }
+        self.assertEqual(
+            by_tracking[self.records["R1"].tracking_id]["kev"], self.records["R1"].kev.to_dict()
+        )
+        self.assertIsNone(by_tracking[self.records["R7"].tracking_id]["kev"])
+        self.assertIn("kev", by_tracking[self.records["R7"].tracking_id])
+
+    def test_every_projection_writes_one_known_exploited_line_per_record(self) -> None:
+        self.assertEqual(len(known_exploited_lines(self.vdt.to_markdown())), 10)
+        self.assertEqual(len(known_exploited_lines(self.avi.to_markdown())), 1)
+        self.assertEqual(len(known_exploited_lines(self.historical.to_markdown())), 11)
+
+    def test_the_known_exploited_line_names_every_entry_then_the_bound_clock(self) -> None:
+        found = {
+            record.tracking_id: line
+            for record, line in zip(
+                self.vdt.vulnerabilities,
+                known_exploited_lines(self.vdt.to_markdown()),
+                strict=True,
+            )
+        }
+        expected = {
+            "R1": "CVE-2099-0001 (added 2026-08-27, due 2026-09-10, ransomware use Known, "
+            "forensic triage No); the clock follows CVE-2099-0001, due date 2026-09-10 "
+            "ended 2026-09-11T00:00:00Z; past due",
+            "R2": "CVE-2099-0002 (added 2026-09-08, due 2026-09-22, ransomware use Unknown, "
+            "forensic triage No), CVE-2099-0003 (added 2026-09-10, due 2026-09-24, "
+            "ransomware use Unknown, forensic triage Yes); the clock follows CVE-2099-0002, "
+            "due date 2026-09-22 ends 2026-09-23T00:00:00Z; open",
+            "R4": "CVE-2099-0005 (added 2026-08-25, due 2026-09-08, ransomware use Known, "
+            "forensic triage No); the clock follows CVE-2099-0005, due date 2026-09-08 "
+            "ended 2026-09-09T00:00:00Z; stopped by remediation",
+            "R6": "CVE-2099-0007 (added 2026-09-01, due 2026-09-04, ransomware use Unknown, "
+            "forensic triage No); the clock follows CVE-2099-0007, due date 2026-09-04 "
+            "ended 2026-09-05T00:00:00Z; stopped as a false positive",
+            "R7": "no entry in the supplied CISA KEV catalog dated on or before 2026-09-15",
+            "R9": "no entry in the supplied CISA KEV catalog dated on or before 2026-09-15",
+        }
+        for label, line in expected.items():
+            with self.subTest(record=label):
+                self.assertEqual(found[self.records[label].tracking_id], line)
+        self.assertEqual(
+            known_exploited_lines(self.avi.to_markdown())[0],
+            "CVE-2099-0006 (added 2026-08-10, due 2026-08-31, ransomware use Unknown, "
+            "forensic triage No); the clock follows CVE-2099-0006, due date 2026-08-31 "
+            "ended 2026-09-01T00:00:00Z; accepted, past due",
+        )
+
+    def test_an_absent_optional_catalog_field_renders_n_a(self) -> None:
+        clock = kev_clock([fixture_entry("CVE-2099-0010")], status=None, as_of=KEV_AS_OF)
+        self.assertIn("forensic triage n/a", _kev_line(clock, KEV_AS_OF))
+
+    def test_every_markdown_tail_and_verb_is_fixed_by_status(self) -> None:
+        entry = fixture_entry("CVE-2099-0001")
+        before = entry.due_at - timedelta(days=1)
+        after = entry.due_at + timedelta(days=1)
+        cases = (
+            (None, before, "ends", "open"),
+            (None, after, "ended", "past due"),
+            (CaseStatus.ACCEPTED, before, "ends", "accepted"),
+            (CaseStatus.ACCEPTED, after, "ended", "accepted, past due"),
+            (CaseStatus.REMEDIATED, after, "ended", "stopped by remediation"),
+            (CaseStatus.FALSE_POSITIVE, after, "ended", "stopped as a false positive"),
+        )
+        for status, as_of, verb, tail in cases:
+            with self.subTest(status=status, tail=tail):
+                clock = kev_clock([entry], status=status, as_of=as_of)
+                line = _kev_line(clock, as_of)
+                self.assertTrue(line.endswith(f"; {tail}"), line)
+                self.assertIn(f"due date 2026-09-10 {verb} 2026-09-11T00:00:00Z", line)
+
+    def test_the_mitigation_sentence_marks_a_mitigation_and_nothing_else(self) -> None:
+        entry = fixture_entry("CVE-2099-0001")
+        report_options = options(**KEV_OVERRIDES)
+        rule = select_policy(load_bundled_rule_source_snapshot(), report_options.profile).rule(
+            "VDR-TFR-KEV"
+        )
+        mitigated = {CaseStatus.PARTIALLY_MITIGATED, CaseStatus.FULLY_MITIGATED}
+        sentence = " A recorded mitigation does not stop this clock."
+        for status in (None, *CaseStatus):
+            with self.subTest(status=status):
+                clock = kev_clock([entry], status=status, as_of=KEV_AS_OF)
+                clause = _kev_clause(
+                    clock, rule, self.catalog, report_options, entry.start_at, status
+                )
+                self.assertIs(clause.endswith(sentence), status in mitigated)
+
+    def test_the_calendar_zone_never_moves_the_kev_parts_of_a_report(self) -> None:
+        # Whole reports differ by design: both print calendarTimezone, and the month
+        # deadlines are calendar arithmetic in the zone.
+        for zone in ("America/Phoenix", "Pacific/Kiritimati"):
+            with self.subTest(zone=zone):
+                shifted = by_label(
+                    kev_report(catalog=self.catalog, calendar_timezone=zone).vulnerabilities
+                )
+                self.assertEqual(sorted(shifted), sorted(self.records))
+                for label, record in self.records.items():
+                    other = shifted[label]
+                    self.assertEqual(
+                        None if record.kev is None else record.kev.to_dict(),
+                        None if other.kev is None else other.kev.to_dict(),
+                    )
+                    if record.kev is not None:
+                        self.assertEqual(kev_deadline_of(record), kev_deadline_of(other))
+                    if "VDR-TFR-KEV (" in record.overdue_explanation:
+                        self.assertEqual(kev_clause_of(record), kev_clause_of(other))
+
+
+class KevRuleSelectionTests(unittest.TestCase):
+    """A run with a catalog needs VDR-TFR-KEV; a run without one never asks for it."""
+
+    def test_a_policy_without_the_rule_stops_the_run(self) -> None:
+        profile = options(**KEV_OVERRIDES).profile
+        policy = select_policy(load_bundled_rule_source_snapshot(), profile)
+        stripped = dataclasses.replace(
+            policy, rules=tuple(item for item in policy.rules if item.rule_id != "VDR-TFR-KEV")
+        )
+        with self.assertRaises(ReportCompileError) as caught:
+            _kev_rule(stripped)
+        (diagnostic,) = caught.exception.diagnostics
+        self.assertEqual(diagnostic.code, "kev_rule_unavailable")
+        self.assertEqual(diagnostic.level.value, "error")
+        self.assertIn("VDR-TFR-KEV", diagnostic.message)
+
+    def test_both_supported_classes_select_the_rule(self) -> None:
+        for certification_class in (CertificationClass.B, CertificationClass.C):
+            with self.subTest(certification_class=certification_class):
+                profile = options(certification_class=certification_class, **KEV_OVERRIDES).profile
+                policy = select_policy(load_bundled_rule_source_snapshot(), profile)
+                self.assertEqual(_kev_rule(policy).rule_id, "VDR-TFR-KEV")
+
+
+# *--- Diagnostics ---*
+
+
+class KevDiagnosticsTests(unittest.TestCase):
+    """Every KEV note the compiler raises, each isolated from the others."""
+
+    def codes(self, report: Any) -> list[str]:
+        return [item.code for item in report.diagnostics if item.code.startswith("kev_")]
+
+    def note(self, report: Any, code: str) -> Any:
+        found = [item for item in report.diagnostics if item.code == code]
+        if len(found) != 1:
+            raise AssertionError(f"{code} raised {len(found)} times, not once")
+        return found[0]
+
+    def test_a_catalog_released_after_as_of_stops_the_run(self) -> None:
+        catalog = fixture_catalog()
+        with self.assertRaises(ReportCompileError) as caught:
+            kev_report(catalog=catalog, as_of=datetime(2026, 9, 14, 16, 59, 59, tzinfo=UTC))
+        (diagnostic,) = caught.exception.diagnostics
+        self.assertEqual(diagnostic.code, "kev_catalog_after_as_of")
+        self.assertEqual(diagnostic.level.value, "error")
+        self.assertEqual(diagnostic.location, f"sha256:{catalog.sha256}")
+        self.assertIn("released 2026-09-14T17:00:00.123400Z", diagnostic.message)
+        self.assertIn("after as_of 2026-09-14T16:59:59Z", diagnostic.message)
+
+    def test_a_catalog_released_exactly_at_as_of_is_accepted(self) -> None:
+        report = kev_report(catalog=fixture_catalog(), as_of=RELEASED)
+        self.assertNotIn("kev_catalog_after_as_of", self.codes(report))
+
+    def test_a_catalog_older_than_the_stale_window_warns(self) -> None:
+        report = kev_report(catalog=fixture_catalog(), as_of=datetime(2026, 9, 20, 12, tzinfo=UTC))
+        note = self.note(report, "kev_catalog_stale")
+        self.assertEqual(note.level.value, "warning")
+        self.assertEqual(
+            note.message,
+            "the CISA KEV catalog was released 2026-09-14T17:00:00.123400Z, more than 3 days "
+            "before as_of 2026-09-20T12:00:00Z; entries CISA added since its release are not "
+            "applied",
+        )
+
+    def test_the_stale_window_turns_over_one_second_past_three_days(self) -> None:
+        boundary = RELEASED + KEV_STALE_AFTER
+        cases = (
+            ("inside it", boundary - timedelta(days=1), False),
+            ("exactly three days", boundary, False),
+            ("one second later", boundary + timedelta(seconds=1), True),
+        )
+        for label, as_of, stale in cases:
+            with self.subTest(case=label):
+                report = kev_report(catalog=fixture_catalog(), as_of=as_of)
+                self.assertIs("kev_catalog_stale" in self.codes(report), stale)
+
+    def test_entries_dated_after_as_of_are_counted_not_applied(self) -> None:
+        report = kev_report(catalog=fixture_catalog())
+        note = self.note(report, "kev_entries_after_as_of")
+        self.assertEqual(note.level.value, "info")
+        self.assertEqual(
+            note.message,
+            "1 catalog entry dated after 2026-09-15 was not applied; 1 compiled record carries it",
+        )
+        # CVE-2099-0008 is that entry, and R9 is the record that carries it.
+        self.assertIsNone(by_label(report.vulnerabilities)["R9"].kev)
+
+    def test_records_without_any_cve_identifier_raise_one_note(self) -> None:
+        # The STIG fixtures carry STIG rule ids, never CVEs. This catalog sits well
+        # inside the stale window at the shared August `as_of` and adds nothing after
+        # it, so neither of the other catalog-level notes can also fire here.
+        catalog = parse_kev_catalog(
+            minimal_catalog(
+                [minimal_entry("CVE-2099-7777", added="2026-08-01", due="2026-08-15")],
+                released="2026-08-20T00:00:00Z",
+            ),
+            name="kev-catalog.json",
+        )
+        report = compile_fixtures(kev_catalog=catalog)
+        self.assertEqual(self.codes(report), ["kev_no_cve_identifiers"])
+        note = self.note(report, "kev_no_cve_identifiers")
+        self.assertEqual(note.level.value, "info")
+        self.assertEqual(note.location, f"sha256:{catalog.sha256}")
+        self.assertTrue(all(item.kev is None for item in report.vulnerabilities))
+        self.assertTrue(all(item.kev_checked for item in report.vulnerabilities))
+
+    def test_cve_records_that_match_nothing_raise_the_other_note(self) -> None:
+        catalog = parse_kev_catalog(
+            minimal_catalog([minimal_entry("CVE-2099-7777")]), name="kev-catalog.json"
+        )
+        report = kev_report(catalog=catalog)
+        self.assertEqual(self.codes(report), ["kev_no_matches"])
+        self.assertEqual(
+            self.note(report, "kev_no_matches").message,
+            "11 compiled records carry CVE identifiers, and none matched a CISA KEV catalog "
+            "entry dated on or before 2026-09-15",
+        )
+
+    def test_one_match_silences_the_no_matches_note(self) -> None:
+        catalog = parse_kev_catalog(
+            minimal_catalog([minimal_entry("CVE-2099-0001")]), name="kev-catalog.json"
+        )
+        report = kev_report(catalog=catalog)
+        self.assertEqual(self.codes(report), [])
+
+    def test_a_record_whose_identifiers_were_cut_warns_once(self) -> None:
+        tags = [f"CVE-2099-{1000 + index}" for index in range(70)]
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = tagged_web_artifact(Path(directory), tags)
+            report = kev_report(catalog=fixture_catalog(), artifacts=[artifact, KEV_ARTIFACTS[1]])
+        record = by_label(report.vulnerabilities)["R1"]
+        note = self.note(report, "kev_match_incomplete")
+        self.assertEqual(note.level.value, "warning")
+        self.assertEqual(note.location, "CVE-2099-0001")
+        self.assertEqual(
+            note.message,
+            f"{record.tracking_id} groups an observation whose source identifiers were cut at "
+            "the adapter's limit, and a CVE may be among those dropped, so a CISA KEV entry "
+            "for it cannot be matched",
+        )
+        # The cut does not stop the identifiers that survived from matching.
+        self.assertEqual(record.kev.bound.cve_id, "CVE-2099-0001")
+
+    def test_catalog_notes_precede_record_notes_and_locate_differently(self) -> None:
+        tags = [f"CVE-2099-{1000 + index}" for index in range(70)]
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = tagged_web_artifact(Path(directory), tags)
+            report = kev_report(
+                catalog=fixture_catalog(),
+                artifacts=[artifact, KEV_ARTIFACTS[1]],
+                as_of=datetime(2026, 9, 20, 12, tzinfo=UTC),
+            )
+        self.assertEqual(self.codes(report), ["kev_catalog_stale", "kev_match_incomplete"])
+        stale, incomplete = (self.note(report, code) for code in self.codes(report))
+        self.assertTrue(stale.location.startswith("sha256:"))
+        self.assertEqual(incomplete.location, "CVE-2099-0001")
+
+    def test_the_same_bytes_under_another_name_raise_the_same_location(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "elsewhere.json"
+            copy.write_bytes(KEV_CATALOG.read_bytes())
+            renamed = load_kev_catalog(copy)
+        report = kev_report(catalog=renamed)
+        original = kev_report(catalog=fixture_catalog())
+        self.assertEqual(renamed.name, "elsewhere.json")
+        self.assertEqual(
+            [(item.code, item.location) for item in report.diagnostics],
+            [(item.code, item.location) for item in original.diagnostics],
+        )
+        # Only `kevSource.name` tells the two runs apart.
+        self.assertNotEqual(
+            report.document["x-complyroll"]["kevSource"],
+            original.document["x-complyroll"]["kevSource"],
+        )
+        self.assertEqual(
+            report.document["x-complyroll"]["kevSource"] | {"name": "kev-catalog.json"},
+            original.document["x-complyroll"]["kevSource"],
+        )
+
+    def test_every_projection_raises_the_same_kev_notes(self) -> None:
+        catalog = fixture_catalog()
+        expected = self.codes(kev_report(catalog=catalog))
+        for kind in ("avi", "historical"):
+            with self.subTest(report=kind):
+                self.assertEqual(self.codes(kev_report(kind=kind, catalog=catalog)), expected)
+
+
+# *--- Period Selection ---*
+
+
+class KevSelectionTests(unittest.TestCase):
+    """An open KEV clock keeps quiet work in the Vulnerability Detail Report."""
+
+    AUGUST = {
+        "period_from": datetime(2026, 8, 1, tzinfo=UTC),
+        "period_to": datetime(2026, 8, 31, 23, 59, 59, tzinfo=UTC),
+    }
+
+    def quiet_report(self, *, directory: Path, disposition: str, **overrides: Any) -> Any:
+        """Compile a September report over work whose only activity was in August."""
+        artifact = shifted_web_artifact(
+            directory, start="2026-08-02T10:15:00Z", end="2026-08-02T10:16:30Z"
+        )
+        evaluations = write_evaluations(
+            directory,
+            [
+                kev_evaluation("CVE-2099-0004", "2026-08-05T12:00:00Z", disposition=disposition),
+            ],
+        )
+        return kev_report(
+            artifacts=[artifact], evaluations=evaluations, detected_at=None, **overrides
+        )
+
+    def excluded(self, report: Any) -> set[str]:
+        return {item.location for item in report.diagnostics if item.code == "excluded_by_period"}
+
+    def test_an_open_kev_clock_keeps_a_record_the_period_would_drop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            without = self.quiet_report(
+                directory=Path(directory), disposition="fully_mitigated", catalog=None
+            )
+            with_catalog = self.quiet_report(
+                directory=Path(directory),
+                disposition="fully_mitigated",
+                catalog=fixture_catalog(),
+            )
+        self.assertIn("CVE-2099-0004", self.excluded(without))
+        self.assertNotIn("CVE-2099-0004", self.excluded(with_catalog))
+        kept = by_label(with_catalog.vulnerabilities)["R3"]
+        self.assertEqual(kept.kev.status.value, "pastDue")
+        self.assertFalse(kept.kev.satisfied)
+
+    def test_a_stopped_kev_clock_keeps_nothing(self) -> None:
+        for disposition in ("remediated", "false_positive"):
+            with self.subTest(disposition=disposition), tempfile.TemporaryDirectory() as directory:
+                report = self.quiet_report(
+                    directory=Path(directory),
+                    disposition=disposition,
+                    catalog=fixture_catalog(),
+                )
+                self.assertIn("CVE-2099-0004", self.excluded(report))
+
+    def test_an_entry_listed_after_the_period_end_keeps_nothing(self) -> None:
+        # CVE-2099-0002 was added 2026-09-08, after this August period ended, so an
+        # August report must not pull it in; CVE-2099-0004 was added 2026-08-20.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            artifact = shifted_web_artifact(
+                path, start="2026-07-02T10:15:00Z", end="2026-07-02T10:16:30Z"
+            )
+            evaluations = write_evaluations(
+                path,
+                [
+                    kev_evaluation(
+                        "CVE-2099-0002", "2026-07-05T12:00:00Z", disposition="fully_mitigated"
+                    ),
+                    kev_evaluation(
+                        "CVE-2099-0004", "2026-07-05T12:00:00Z", disposition="fully_mitigated"
+                    ),
+                ],
+            )
+            report = kev_report(
+                artifacts=[artifact],
+                evaluations=evaluations,
+                catalog=fixture_catalog(),
+                detected_at=None,
+                **self.AUGUST,
+            )
+        self.assertIn("CVE-2099-0002", self.excluded(report))
+        self.assertNotIn("CVE-2099-0004", self.excluded(report))
+
+    def test_a_record_detected_after_the_period_end_keeps_nothing(self) -> None:
+        # The fixtures are detected 2026-09-02, so an August report cannot keep them
+        # however open their KEV clocks are.
+        report = kev_report(catalog=fixture_catalog(), **self.AUGUST)
+        self.assertEqual(report.vulnerabilities, ())
+        self.assertTrue(self.excluded(report))
+
+    def test_the_avi_and_historical_selections_never_read_the_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            artifact = shifted_web_artifact(
+                path, start="2026-08-02T10:15:00Z", end="2026-08-02T10:16:30Z"
+            )
+            evaluations = write_evaluations(
+                path,
+                [
+                    kev_evaluation(
+                        "CVE-2099-0004", "2026-08-05T12:00:00Z", disposition="fully_mitigated"
+                    ),
+                ],
+            )
+            shared = {"artifacts": [artifact], "evaluations": evaluations, "detected_at": None}
+            for kind in ("avi", "historical"):
+                with self.subTest(report=kind):
+                    without = kev_report(kind=kind, catalog=None, **shared)
+                    with_catalog = kev_report(kind=kind, catalog=fixture_catalog(), **shared)
+                    self.assertEqual(self.excluded(with_catalog), self.excluded(without))
+
+    def test_the_avi_still_excludes_an_accepted_record_quiet_through_the_period(self) -> None:
+        # CVE-2099-0006 is past its KEV due date and accepted, so its clock is neither
+        # satisfied nor stopped; the AVI drops it anyway because it was quiet in August.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            artifact = shifted_web_artifact(
+                path, start="2026-08-02T10:15:00Z", end="2026-08-02T10:16:30Z"
+            )
+            evaluations = write_evaluations(
+                path,
+                [
+                    kev_evaluation(
+                        "CVE-2099-0006",
+                        "2026-08-05T12:00:00Z",
+                        disposition="accepted",
+                        acceptanceRationale=(
+                            "SYNTHETIC. The flaw is accepted for one release cycle."
+                        ),
+                    ),
+                ],
+            )
+            report = kev_report(
+                kind="avi",
+                artifacts=[artifact],
+                evaluations=evaluations,
+                catalog=fixture_catalog(),
+                period_from=datetime(2026, 7, 1, tzinfo=UTC),
+                period_to=datetime(2026, 7, 31, 23, 59, 59, tzinfo=UTC),
+            )
+        self.assertEqual(report.accepted, ())
+        self.assertIn("CVE-2099-0006", self.excluded(report))
+
+
+# *--- Without A Catalog ---*
+
+
+class KevWithoutCatalogTests(unittest.TestCase):
+    """A run with no catalog publishes nothing about the KEV catalog at all."""
+
+    def test_no_catalog_leaves_the_record_extension_untouched(self) -> None:
+        report = kev_report()
+        self.assertEqual(len(report.vulnerabilities), 10)
+        for record in report.vulnerabilities:
+            with self.subTest(record=record.source_record_id):
+                self.assertFalse(record.kev_checked)
+                self.assertIsNone(record.kev)
+                self.assertNotIn("kev", record.to_official_dict()["x-complyroll"])
+                self.assertNotIn("VDR-TFR-KEV", [item.rule_id for item in record.deadlines])
+
+    def test_no_catalog_leaves_the_report_extension_and_markdown_untouched(self) -> None:
+        for kind in ("vdt", "avi", "historical"):
+            with self.subTest(report=kind):
+                report = kev_report(kind=kind)
+                self.assertTrue(_tracking_ids(_published(report.document)))
+                self.assertNotIn("kevSource", report.document["x-complyroll"])
+                markdown = report.to_markdown()
+                self.assertEqual(known_exploited_lines(markdown), [])
+                self.assertNotIn("KEV catalog", markdown)
+                self.assertNotIn("Known exploited, CISA KEV", markdown)
+                self.assertNotIn("Past a CISA KEV due date", markdown)
+
+    def test_no_catalog_raises_no_kev_diagnostic(self) -> None:
+        for kind in ("vdt", "avi", "historical"):
+            with self.subTest(report=kind):
+                report = kev_report(kind=kind)
+                self.assertEqual(
+                    [item.code for item in report.diagnostics if item.code.startswith("kev_")], []
+                )
+
+    def test_a_catalog_of_the_wrong_type_is_refused_when_the_options_are_built(self) -> None:
+        for value in (KEV_CATALOG, str(KEV_CATALOG), KEV_CATALOG.read_bytes(), object()):
+            with self.subTest(value=type(value).__name__), self.assertRaises(TypeError):
+                options(kev_catalog=value)  # type: ignore[arg-type]
+
+
+# *--- Document Order ---*
+
+
+class KevOrderTests(unittest.TestCase):
+    """The KEV additions never move a record, a row or a key that was there before."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.catalog = fixture_catalog()
+
+    def test_a_catalog_never_reorders_the_records_of_a_report(self) -> None:
+        for kind, keys in (
+            ("vdt", ("vulnerabilities",)),
+            ("avi", ("acceptedVulnerabilities",)),
+            ("historical", ("activeVulnerabilities", "acceptedVulnerabilities")),
+        ):
+            without = kev_report(kind=kind)
+            with_catalog = kev_report(kind=kind, catalog=self.catalog)
+            for key in keys:
+                with self.subTest(report=kind, array=key):
+                    self.assertEqual(
+                        _tracking_ids(without.document[key]),
+                        _tracking_ids(with_catalog.document[key]),
+                    )
+                    self.assertTrue(_tracking_ids(without.document[key]))
+
+    def test_a_catalog_adds_keys_and_changes_nothing_else_in_the_json(self) -> None:
+        without = kev_report().document
+        with_catalog = kev_report(catalog=self.catalog).document
+        self.assertEqual(
+            set(with_catalog["x-complyroll"]) - set(without["x-complyroll"]), {"kevSource"}
+        )
+        for before, after in zip(
+            without["vulnerabilities"], with_catalog["vulnerabilities"], strict=True
+        ):
+            with self.subTest(record=before["providerTrackingId"]):
+                self.assertEqual(list(before), list(after))
+                extension = after["x-complyroll"]
+                self.assertEqual(
+                    list(before["x-complyroll"]) + ["kev"],
+                    [key for key in extension if key != "kev"] + ["kev"],
+                )
+                self.assertEqual(
+                    [item for item in extension["deadlines"] if item["ruleId"] != "VDR-TFR-KEV"],
+                    before["x-complyroll"]["deadlines"],
+                )
+
+    def test_the_artifact_order_never_moves_a_byte(self) -> None:
+        forward = kev_report(catalog=self.catalog)
+        backward = kev_report(catalog=self.catalog, artifacts=tuple(reversed(KEV_ARTIFACTS)))
+        self.assertEqual(backward.to_json(), forward.to_json())
+        self.assertEqual(backward.to_markdown(), forward.to_markdown())
+
+    def test_a_permuted_catalog_changes_only_its_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            permuted = load_kev_catalog(permuted_catalog(Path(directory)))
+        self.assertEqual(permuted.entries, self.catalog.entries)
+        self.assertNotEqual(permuted.sha256, self.catalog.sha256)
+        self.assertNotEqual(permuted, self.catalog)
+
+        original = kev_report(catalog=self.catalog)
+        other = kev_report(catalog=permuted)
+        for first, second in zip(original.vulnerabilities, other.vulnerabilities, strict=True):
+            with self.subTest(record=first.source_record_id):
+                self.assertEqual(first.source_record_id, second.source_record_id)
+                self.assertEqual(
+                    None if first.kev is None else first.kev.to_dict(),
+                    None if second.kev is None else second.kev.to_dict(),
+                )
+                self.assertEqual(
+                    [item.to_dict() for item in first.deadlines],
+                    [item.to_dict() for item in second.deadlines],
+                )
+                self.assertEqual(first.overdue_explanation, second.overdue_explanation)
+        # The masking has to hide a real difference, or the comparison proves nothing.
+        self.assertNotEqual(other.to_json(), original.to_json())
+        self.assertEqual(_masked(other.to_json()), _masked(original.to_json()))
+        self.assertEqual(_masked(other.to_markdown()), _masked(original.to_markdown()))
+        self.assertEqual(
+            [(item.code, item.message, _masked(item.location)) for item in other.diagnostics],
+            [(item.code, item.message, _masked(item.location)) for item in original.diagnostics],
+        )
+
+    def test_the_same_bytes_under_another_name_move_only_the_catalog_label(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "elsewhere.json"
+            copy.write_bytes(KEV_CATALOG.read_bytes())
+            renamed = kev_report(catalog=load_kev_catalog(copy))
+        original = kev_report(catalog=self.catalog)
+        self.assertIn('"elsewhere.json"', renamed.to_json())
+        self.assertIn("| elsewhere.json,", renamed.to_markdown())
+        self.assertEqual(
+            renamed.to_json().replace('"elsewhere.json"', '"kev-catalog.json"'),
+            original.to_json(),
+        )
+        self.assertEqual(
+            renamed.to_markdown().replace("| elsewhere.json,", "| kev-catalog.json,"),
+            original.to_markdown(),
+        )
+
+    def test_the_kev_deadline_is_appended_after_every_other_one(self) -> None:
+        report = kev_report(kind="historical", catalog=self.catalog)
+        every = [*report.active, *(item.vulnerability for item in report.accepted)]
+        for record in every:
+            rule_ids = [item.rule_id for item in record.deadlines]
+            with self.subTest(record=record.source_record_id):
+                if "VDR-TFR-KEV" in rule_ids:
+                    self.assertEqual(rule_ids[-1], "VDR-TFR-KEV")
+                    self.assertNotIn("VDR-TFR-KEV", rule_ids[:-1])
+
+
+def permuted_catalog(directory: Path) -> Path:
+    """Write the fixture catalog with its entries in another order and return the path."""
+    payload = json.loads(KEV_CATALOG.read_text(encoding="utf-8"))
+    payload["vulnerabilities"] = list(reversed(payload["vulnerabilities"]))
+    path = directory / "kev-catalog.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _masked(text: str) -> str:
+    """Blank every sha256 digest and the byte size that moves with the catalog file."""
+    masked = re.sub(r"[0-9a-f]{64}", "<sha256>", text)
+    return re.sub(r'"sizeBytes": \d+', '"sizeBytes": <bytes>', masked)
+
+
+def _published(document: dict) -> list[dict]:
+    """Return every record array of one document, concatenated in document order."""
+    keys = ("vulnerabilities", "activeVulnerabilities", "acceptedVulnerabilities")
+    return [item for key in keys for item in document.get(key, ())]
+
+
+def _tracking_ids(records: Sequence[dict]) -> list[str]:
+    """Read the tracking ids out of one published array, whatever it wraps them in."""
+    return [item.get("vulnerabilityDetail", item)["providerTrackingId"] for item in records]
 
 
 if __name__ == "__main__":

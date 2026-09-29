@@ -49,6 +49,7 @@ from .vdt import (
     _write_footer,
     _write_header,
     _write_inputs,
+    _write_kev_summary,
     _write_provenance,
     _write_vulnerability_table,
     compile_record_set_from_artifacts,
@@ -243,6 +244,7 @@ def _render_avi_markdown(report: CompiledAviReport) -> str:
     write(f"| Excluded by report period | {metadata.excluded_by_period} |")
     write(f"| Active, not reported here | {report.active_not_reported} |")
     write(f"| Overdue | {sum(1 for item in records if item.is_overdue)} |")
+    _write_kev_summary(write, records, metadata.options)
     for rating in PainRating:
         count = sum(1 for item in records if item.current_rating is rating)
         write(f"| Current PAIN {rating.name} | {count} |")
@@ -254,6 +256,7 @@ def _render_avi_markdown(report: CompiledAviReport) -> str:
         heading="Accepted vulnerabilities",
         empty_message="No accepted vulnerabilities had recorded activity in this period.",
         details_heading="Accepted vulnerability details",
+        as_of=metadata.options.as_of,
         rationales=rationales,
     )
     _write_attestation_section(write, records, metadata)

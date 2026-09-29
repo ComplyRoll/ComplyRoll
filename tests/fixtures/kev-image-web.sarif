@@ -1,0 +1,563 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "informationUri": "https://example.test/trivy",
+          "name": "Trivy",
+          "rules": [
+            {
+              "id": "CVE-2099-0001",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "libexample-net: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. libexample-net before 4.2.1 has an invented flaw used only by the ComplyRoll KEV tests (R1)."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0001",
+              "help": {
+                "text": "Vulnerability CVE-2099-0001\nSeverity: CRITICAL\nPackage: libexample-net\nFixed Version: 4.2.1\nLink: [CVE-2099-0001](https://example.test/advisories/cve-2099-0001)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "CRITICAL"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0002",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-parser: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-parser before 1.8.4 has an invented flaw used only by the ComplyRoll KEV tests (R2)."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0002",
+              "help": {
+                "text": "Vulnerability CVE-2099-0002\nSeverity: HIGH\nPackage: example-parser\nFixed Version: 1.8.4\nLink: [CVE-2099-0002](https://example.test/advisories/cve-2099-0002)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "HIGH",
+                  "cve-2099-0003"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0004",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-tls: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-tls before 3.0.10 has an invented flaw used only by the ComplyRoll KEV tests (R3)."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0004",
+              "help": {
+                "text": "Vulnerability CVE-2099-0004\nSeverity: HIGH\nPackage: example-tls\nFixed Version: 3.0.10\nLink: [CVE-2099-0004](https://example.test/advisories/cve-2099-0004)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0005",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-image: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-image before 2.1.2 has an invented flaw used only by the ComplyRoll KEV tests (R4)."
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0005",
+              "help": {
+                "text": "Vulnerability CVE-2099-0005\nSeverity: MEDIUM\nPackage: example-image\nFixed Version: 2.1.2\nLink: [CVE-2099-0005](https://example.test/advisories/cve-2099-0005)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0006",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-cron: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-cron before 0.9.4 has an invented flaw used only by the ComplyRoll KEV tests (R5)."
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0006",
+              "help": {
+                "text": "Vulnerability CVE-2099-0006\nSeverity: MEDIUM\nPackage: example-cron\nFixed Version: 0.9.4\nLink: [CVE-2099-0006](https://example.test/advisories/cve-2099-0006)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0007",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-xml: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-xml before 5.4.1 has an invented flaw used only by the ComplyRoll KEV tests (R6)."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0007",
+              "help": {
+                "text": "Vulnerability CVE-2099-0007\nSeverity: HIGH\nPackage: example-xml\nFixed Version: 5.4.1\nLink: [CVE-2099-0007](https://example.test/advisories/cve-2099-0007)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0100",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-log: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-log before 2.0.3 has an invented flaw used only by the ComplyRoll KEV tests (R7)."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0100",
+              "help": {
+                "text": "Vulnerability CVE-2099-0100\nSeverity: LOW\nPackage: example-log\nFixed Version: 2.0.3\nLink: [CVE-2099-0100](https://example.test/advisories/cve-2099-0100)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0008",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-auth: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-auth before 7.1.1 has an invented flaw used only by the ComplyRoll KEV tests (R9)."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0008",
+              "help": {
+                "text": "Vulnerability CVE-2099-0008\nSeverity: HIGH\nPackage: example-auth\nFixed Version: 7.1.1\nLink: [CVE-2099-0008](https://example.test/advisories/cve-2099-0008)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0009",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-zip: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-zip before 1.1.6 has an invented flaw used only by the ComplyRoll KEV tests (R10)."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0009",
+              "help": {
+                "text": "Vulnerability CVE-2099-0009\nSeverity: CRITICAL\nPackage: example-zip\nFixed Version: 1.1.6\nLink: [CVE-2099-0009](https://example.test/advisories/cve-2099-0009)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "CRITICAL"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2099-0011",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-http: synthetic flaw for KEV tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-http before 3.3.3 has an invented flaw used only by the ComplyRoll KEV tests (R11)."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0011",
+              "help": {
+                "text": "Vulnerability CVE-2099-0011\nSeverity: HIGH\nPackage: example-http\nFixed Version: 3.3.3\nLink: [CVE-2099-0011](https://example.test/advisories/cve-2099-0011)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            }
+          ],
+          "version": "0.55.2"
+        }
+      },
+      "automationDetails": {
+        "id": "images/web/run-7"
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "startTimeUtc": "2026-09-02T10:15:00Z",
+          "endTimeUtc": "2026-09-02T10:16:30Z"
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "CVE-2099-0001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Package: libexample-net\nInstalled Version: 4.2.0\nVulnerability CVE-2099-0001\nSeverity: CRITICAL\nFixed Version: 4.2.1\nLink: [CVE-2099-0001](https://example.test/advisories/cve-2099-0001)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "usr/lib/libexample-net.so.4",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "usr/lib/libexample-net.so.4: libexample-net@4.2.0"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0002",
+          "ruleIndex": 1,
+          "level": "error",
+          "message": {
+            "text": "Package: example-parser\nInstalled Version: 1.8.3\nVulnerability CVE-2099-0002\nSeverity: HIGH\nFixed Version: 1.8.4\nLink: [CVE-2099-0002](https://example.test/advisories/cve-2099-0002)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "app/package-lock.json",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "app/package-lock.json: example-parser@1.8.3"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0004",
+          "ruleIndex": 2,
+          "level": "error",
+          "message": {
+            "text": "Package: example-tls\nInstalled Version: 3.0.9\nVulnerability CVE-2099-0004\nSeverity: HIGH\nFixed Version: 3.0.10\nLink: [CVE-2099-0004](https://example.test/advisories/cve-2099-0004)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "lib/apk/db/installed",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "lib/apk/db/installed: example-tls@3.0.9"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0005",
+          "ruleIndex": 3,
+          "level": "warning",
+          "message": {
+            "text": "Package: example-image\nInstalled Version: 2.1.0\nVulnerability CVE-2099-0005\nSeverity: MEDIUM\nFixed Version: 2.1.2\nLink: [CVE-2099-0005](https://example.test/advisories/cve-2099-0005)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "usr/share/example-image/VERSION",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "usr/share/example-image/VERSION: example-image@2.1.0"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0006",
+          "ruleIndex": 4,
+          "level": "warning",
+          "message": {
+            "text": "Package: example-cron\nInstalled Version: 0.9.1\nVulnerability CVE-2099-0006\nSeverity: MEDIUM\nFixed Version: 0.9.4\nLink: [CVE-2099-0006](https://example.test/advisories/cve-2099-0006)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "etc/example-cron/release",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "etc/example-cron/release: example-cron@0.9.1"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0007",
+          "ruleIndex": 5,
+          "level": "error",
+          "message": {
+            "text": "Package: example-xml\nInstalled Version: 5.4.0\nVulnerability CVE-2099-0007\nSeverity: HIGH\nFixed Version: 5.4.1\nLink: [CVE-2099-0007](https://example.test/advisories/cve-2099-0007)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "app/requirements.txt",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "app/requirements.txt: example-xml@5.4.0"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0100",
+          "ruleIndex": 6,
+          "level": "note",
+          "message": {
+            "text": "Package: example-log\nInstalled Version: 2.0.0\nVulnerability CVE-2099-0100\nSeverity: LOW\nFixed Version: 2.0.3\nLink: [CVE-2099-0100](https://example.test/advisories/cve-2099-0100)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "app/go.sum",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "app/go.sum: example-log@2.0.0"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0008",
+          "ruleIndex": 7,
+          "level": "error",
+          "message": {
+            "text": "Package: example-auth\nInstalled Version: 7.1.0\nVulnerability CVE-2099-0008\nSeverity: HIGH\nFixed Version: 7.1.1\nLink: [CVE-2099-0008](https://example.test/advisories/cve-2099-0008)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "app/Gemfile.lock",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "app/Gemfile.lock: example-auth@7.1.0"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0009",
+          "ruleIndex": 8,
+          "level": "error",
+          "message": {
+            "text": "Package: example-zip\nInstalled Version: 1.1.5\nVulnerability CVE-2099-0009\nSeverity: CRITICAL\nFixed Version: 1.1.6\nLink: [CVE-2099-0009](https://example.test/advisories/cve-2099-0009)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "usr/bin/example-zip",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "usr/bin/example-zip: example-zip@1.1.5"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2099-0011",
+          "ruleIndex": 9,
+          "level": "error",
+          "message": {
+            "text": "Package: example-http\nInstalled Version: 3.3.2\nVulnerability CVE-2099-0011\nSeverity: HIGH\nFixed Version: 3.3.3\nLink: [CVE-2099-0011](https://example.test/advisories/cve-2099-0011)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "app/pom.xml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "app/pom.xml: example-http@3.3.2"
+              }
+            }
+          ]
+        }
+      ],
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "ROOTPATH": {
+          "uri": "file:///"
+        }
+      },
+      "properties": {
+        "imageName": "registry.example.test/kev/web:2.3.1",
+        "repoTags": [
+          "registry.example.test/kev/web:2.3.1"
+        ]
+      }
+    }
+  ]
+}

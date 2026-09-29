@@ -1,0 +1,137 @@
+{
+  "evaluations": [
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0001",
+        "contextKey": "Trivy|images/web",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-03T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)"
+    },
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0004",
+        "contextKey": "Trivy|images/web",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-04T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+      "disposition": "fully_mitigated",
+      "supplementaryRiskInformation": "SYNTHETIC. A network policy blocks the flawed listener while the package upgrade waits for the next image build."
+    },
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0005",
+        "contextKey": "Trivy|images/web",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-05T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+      "disposition": "remediated"
+    },
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0006",
+        "contextKey": "Trivy|images/web",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-06T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+      "disposition": "accepted",
+      "acceptanceRationale": "SYNTHETIC. Accepted under change record CR-2099 until the scheduler is retired at the end of the quarter."
+    },
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0007",
+        "contextKey": "Trivy|images/web",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-07T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+      "disposition": "false_positive",
+      "isFalsePositive": true
+    },
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0100",
+        "contextKey": "Trivy|images/web",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-08T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)"
+    },
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0001",
+        "contextKey": "Trivy|images/worker",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-09T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)"
+    },
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0008",
+        "contextKey": "Trivy|images/web",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-10T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)"
+    },
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0009",
+        "contextKey": "Trivy|images/web",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-11T15:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": true,
+      "pain": 2,
+      "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+      "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+      "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)"
+    }
+  ]
+}

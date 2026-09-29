@@ -93,13 +93,13 @@ entries is about 300,000, and the nesting reaches depth 5. No `IngestLimits` fie
 Every field the loader reads is type-checked with `isinstance` before any regex or parse runs,
 so no `TypeError` or `AttributeError` can escape a field rule, and a JSON `null` in an optional
 field is refused rather than read as absent. Beyond that the loader refuses a root that is not
-an object, a `catalogVersion` that is not one to 64 printable ASCII characters, a `dateReleased`
-that is not an RFC 3339 instant by an ASCII-class pattern checked before `parse_rfc3339`, a
-`count` that is missing or not equal to the number of entries, a `vulnerabilities` list longer
-than `MAX_KEV_ENTRIES`, a `cveID` that is not `CVE-[0-9]{4}-[0-9]{4,19}`, a `dateAdded` or
-`dueDate` that is not `[0-9]{4}-[0-9]{2}-[0-9]{2}` or is an impossible date, a duplicate
-`cveID`, and a `knownRansomwareCampaignUse` or `forensicTriage` that is present but not one to
-32 printable ASCII characters.
+an object, a `catalogVersion` that is not one to 64 printable ASCII characters with no spaces
+(`[\x21-\x7e]{1,64}`), a `dateReleased` that is not an RFC 3339 instant by an ASCII-class
+pattern checked before `parse_rfc3339`, a `count` that is missing or not equal to the number
+of entries, a `vulnerabilities` list longer than `MAX_KEV_ENTRIES`, a `cveID` that is not
+`CVE-[0-9]{4}-[0-9]{4,19}`, a `dateAdded` or `dueDate` that is not `[0-9]{4}-[0-9]{2}-[0-9]{2}`
+or is an impossible date, a duplicate `cveID`, and a `knownRansomwareCampaignUse` or
+`forensicTriage` that is present but not one to 32 printable ASCII characters.
 
 The date patterns use explicit `[0-9]` classes rather than `\d`, because `\d` without
 `re.ASCII` matches other decimal digits, and they run before `fromisoformat`, because on 3.11
@@ -256,10 +256,10 @@ With a catalog, every record's extension gains a `kev` key, null when the record
 nothing, and the report extension gains `kevSource`. Without a catalog, neither key exists
 anywhere and every byte of every output is what it was before this slice.
 
-Emitting `"kev": null` unconditionally was rejected: it would move all fourteen existing
+Emitting `"kev": null` unconditionally was rejected: it would move the eight existing report
 goldens and every consumer's parse for a field that is absent information, not a null value.
 The two shapes are pinned by the three new golden pairs and by the fourteen existing ones,
-which all compile without a catalog.
+every one of which is produced without a catalog.
 
 ## Decision 10: `VDR-CSO-AKE` is out of scope
 
@@ -277,12 +277,15 @@ is carried in this repository. The tracking ids are the ones `tests/golden/vdt-k
 `tests/golden/avi-kev.md` carry.
 
 - **A due date at the boundary.** `case-d71ea9b36c49f957` carries `CVE-2099-0001`, added
-  2026-08-27 and due 2026-09-10. The due instant is 2026-09-11T00:00:00Z, so a remediation
-  recorded at 2026-09-10T23:59:59Z would have been in time and one at 2026-09-11T00:00:00Z
-  would not. At `as_of` nothing is recorded, so the status is `pastDue` and the clause reads
-  "lists CVE-2099-0001 with due date 2026-09-10, which ended 2026-09-11T00:00:00Z with no
-  remediation recorded." The same CVE on the worker image is `case-bfcbac2c7be88a19`, a second
-  record with its own clock: one catalog entry, two flagged records, no deduplication.
+  2026-08-27 and due 2026-09-10. The due instant is 2026-09-11T00:00:00Z and the comparison is
+  strict, so the open record is not past due at an `as_of` of 2026-09-11T00:00:00Z and is past
+  due one second later. ComplyRoll records no remediation instant: a remediated status stops
+  the clock whenever the remediation happened, and a late one cannot be told from a timely one
+  (see Consequences). At the golden's `as_of` nothing is recorded, so the status is `pastDue`
+  and the clause reads "lists CVE-2099-0001 with due date 2026-09-10, which ended
+  2026-09-11T00:00:00Z with no remediation recorded." The same CVE on the worker image is
+  `case-bfcbac2c7be88a19`, a second record with its own clock: one catalog entry, two flagged
+  records, no deduplication.
 - **A mitigated past-due record.** `case-c4a0253c9a9ff48b` carries `CVE-2099-0004`, due
   2026-09-03, and is evaluated `fully_mitigated`. Mitigation is not in `KEV_STOPS`, so the
   clock runs and the record is officially overdue. Its clause adds "A recorded mitigation does
@@ -305,9 +308,10 @@ is carried in this repository. The tracking ids are the ones `tests/golden/vdt-k
   `CVE-2099-0002` and the line reads "due date 2026-09-22 ends 2026-09-23T00:00:00Z; open".
   The verb is "ends" rather than "ended" because the instant is still ahead of `as_of`. The
   record is overdue, but on `VER-TFR-EVU` and not on KEV, so its explanation carries only the
-  evaluation clause. `case-154434fe3008eee7` is the same shape with both clocks run out: its
-  one explanation carries the `VER-TFR-EVU` clause followed by the `VDR-TFR-KEV` clause, which
-  is the clause order in text and not only in the deadline list.
+  evaluation clause. `case-154434fe3008eee7` (one CVE, `CVE-2099-0011`) is likewise unevaluated
+  but with both clocks run out: its one explanation carries the `VER-TFR-EVU` clause followed
+  by the `VDR-TFR-KEV` clause, which is the clause order in text and not only in the deadline
+  list.
 - **A record the catalog does not cover yet.** `case-1a88bd335ba6c185` carries
   `CVE-2099-0008`, which the fixture catalog lists with `dateAdded` 2026-09-20, after `as_of`.
   Its `kev` is null and its Known exploited line reads "no entry in the supplied CISA KEV
@@ -359,8 +363,9 @@ is carried in this repository. The tracking ids are the ones `tests/golden/vdt-k
   `kev_match_incomplete`; three inform, `kev_entries_after_as_of`, `kev_no_cve_identifiers`,
   and `kev_no_matches`. Catalog-level ones are located at `sha256:<hex>` and per-record ones
   at the record's source record id.
-- `vdt.py` grows by about ninety lines ahead of its planned split. The loader and the clock
-  live in `reports/kev.py`, so the split has less to move, not more.
+- `vdt.py` grows by 370 insertions and 19 deletions, a net of 351 lines, ahead of its planned
+  split. The loader and the clock live in `reports/kev.py`, so the split has less to move, not
+  more.
 
 ## Rejected alternatives
 
@@ -394,8 +399,8 @@ is carried in this repository. The tracking ids are the ones `tests/golden/vdt-k
   compiling on a Monday would be blocked for no defect.
 - The due instant as an activity instant for period selection: it would pull a record into a
   period on a date nothing happened in. Decision 7 uses detection and the listing date instead.
-- Emitting `"kev": null` with no catalog: it moves all fourteen existing goldens for a key that
-  means "not asked", not "no value".
+- Emitting `"kev": null` with no catalog: it moves the eight existing report goldens for a key
+  that means "not asked", not "no value".
 - Reusing `trivy-image.sarif` for the fixtures: its CVEs are real identifiers, and the KEV
   fixtures had to be synthetic in every field a catalog touches.
 - Hardcoding the rule's force or name: they come from the selected policy, so a rules dataset

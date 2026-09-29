@@ -53,10 +53,12 @@ MAX_TRUNCATED_METADATA_BYTES = 4 * 1024
 
 # SECURITY: ASCII classes only. `fromisoformat` alone also accepts basic, week, space-separated,
 # hour-only, and comma-fraction forms, and `\d` would admit every Unicode digit. The hour stops
-# at 23 because 3.14 reads T24:00:00 as the next midnight where 3.11 and 3.13 refuse it.
+# at 23 because 3.14 reads T24:00:00 as the next midnight where 3.11 and 3.13 refuse it. The
+# offset hour and minute are bounded here because `fromisoformat` caps only the total offset
+# below 24 hours: it folds an offset minute of 60 to 99 into the instant instead of refusing it.
 _DATE_RELEASED_PATTERN = (
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-9]{2}:[0-9]{2}"
-    r"(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})"
+    r"(\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])"
 )
 _DATE_RELEASED = re.compile(_DATE_RELEASED_PATTERN)
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -429,8 +431,9 @@ def _count(raw: Mapping[str, Any]) -> int:
     value = raw["count"]
     if isinstance(value, bool) or not isinstance(value, int):
         raise _refusal("", f"count must be a JSON integer, got {_json_type(value)}")
-    if value < 0:
-        raise _refusal("", f"count must not be negative, got {value}")
+    # NOTE: A JSON integer has no size limit, so the value is bounded before it is echoed.
+    if not 0 <= value <= MAX_KEV_ENTRIES:
+        raise _refusal("", f"count must be 0 to {MAX_KEV_ENTRIES}, got {_excerpt(str(value))}")
     return value
 
 

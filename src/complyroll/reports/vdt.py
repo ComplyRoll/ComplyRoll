@@ -642,7 +642,7 @@ def compile_record_set(
     kev_rule: SelectedRule | None = None
     if catalog is not None:
         _require_kev_catalog_by_as_of(catalog, options)
-        kev_rule = _kev_rule(policy)
+        kev_rule = _kev_rule(policy, catalog)
 
     compiled: list[CompiledVulnerability] = []
     missing_detection: list[str] = []
@@ -1109,10 +1109,12 @@ def _require_kev_catalog_by_as_of(catalog: KevCatalog, options: ReportOptions) -
     )
 
 
-def _kev_rule(policy: SelectedPolicy) -> SelectedRule:
+def _kev_rule(policy: SelectedPolicy, catalog: KevCatalog) -> SelectedRule:
     """Return the selected VDR-TFR-KEV rule, or stop the run when the policy lacks it.
 
-    Only a run with a catalog asks, so a run without one never needs the rule.
+    Only a run with a catalog asks, so a run without one never needs the rule. The
+    refusal is a catalog-level note like every other one that is not per record, so it
+    is located by the catalog digest rather than by a record id (ADR 0012).
     """
 
     try:
@@ -1128,6 +1130,7 @@ def _kev_rule(policy: SelectedPolicy) -> SelectedRule:
                         f"{policy.profile.certification_class.value} policy selects no "
                         f"{_KEV_RULE} rule, so no KEV clock can run"
                     ),
+                    location=_kev_location(catalog),
                 ),
             )
         ) from exc

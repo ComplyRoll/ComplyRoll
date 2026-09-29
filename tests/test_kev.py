@@ -17,7 +17,7 @@ import re
 import tempfile
 import unittest
 from collections.abc import Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +141,13 @@ def minimal_catalog(
             "vulnerabilities": entries,
         }
     )
+
+
+def with_declared_count(entries: list[dict[str, object]], count: object) -> bytes:
+    """Return a minimal catalog whose declared count is replaced, whatever it types as."""
+    payload = json.loads(minimal_catalog(entries))
+    payload["count"] = count
+    return encoded(payload)
 
 
 def nested_lists(depth: int) -> object:
@@ -273,6 +280,10 @@ class KevLoaderTests(unittest.TestCase):
     def test_nesting_at_the_depth_bound_is_accepted(self) -> None:
         # The root is depth 1 and a root value depth 2, so 15 nested lists reach depth 16.
         self.assertEqual(KEV_LIMITS.max_json_depth, 16)
+        # The other two published bounds are pinned literally beside it, so the numbers
+        # docs/SECURITY.md and ADR 0012 print cannot drift without a test saying so.
+        self.assertEqual(MAX_KEV_ENTRIES, 20_000)
+        self.assertEqual(MAX_KEV_CATALOG_BYTES, 8 * 1024 * 1024)
         catalog = parse_kev_catalog(
             with_root("x-fixtureNote", nested_lists(15)), name=KEV_CATALOG_NAME
         )
@@ -438,6 +449,9 @@ class KevLoaderRefusalTests(unittest.TestCase):
                 "hour 24": with_root("dateReleased", "2026-09-14T24:00:00Z"),
                 "leap second": with_root("dateReleased", "2026-12-31T23:59:60Z"),
                 "offset 24 hours": with_root("dateReleased", "2026-09-14T17:00:00+24:00"),
+                "offset minute 60": with_root("dateReleased", "2026-09-14T17:00:00+00:60"),
+                "offset minute 99": with_root("dateReleased", "2026-09-14T17:00:00+22:99"),
+                "west offset minute 60": with_root("dateReleased", "2026-09-14T17:00:00-00:60"),
                 "year 1 east": with_root("dateReleased", "0001-01-01T00:00:00+01:00"),
                 "year 9999 west": with_root("dateReleased", "9999-12-31T23:59:59-01:00"),
                 "before 1970": with_root("dateReleased", "1969-12-31T23:59:59Z"),
@@ -457,7 +471,6 @@ class KevLoaderRefusalTests(unittest.TestCase):
         self.assert_each_refused(
             {
                 "missing": with_root("count", MISSING),
-                "bool": with_root("count", True),
                 "string": with_root("count", "12"),
                 "float": with_root("count", 12.0),
                 "null": with_root("count", None),
@@ -467,6 +480,24 @@ class KevLoaderRefusalTests(unittest.TestCase):
             },
             "count",
         )
+        # True equals 1 and False equals 0, so a bool matching the entry count clears every
+        # later rule; only the type rule keeps it out of a published `"count": true`.
+        self.assert_each_refused(
+            {
+                "bool": with_root("count", True),
+                "true with one entry": with_declared_count([minimal_entry("CVE-2099-0001")], True),
+                "false with no entries": with_declared_count([], False),
+            },
+            "count must be a JSON integer",
+        )
+
+    def test_a_huge_count_is_refused_without_being_echoed(self) -> None:
+        # NOTE: 4,000 digits parse; Python refuses int-to-str past 4,300, which json.loads
+        # reports as a ValueError the loader already turns into a bounded refusal.
+        for label, value in (("positive", 10**4000), ("negative", -(10**4000))):
+            with self.subTest(sign=label):
+                message = self.assert_refused(with_root("count", value), "count must be 0 to")
+                self.assertNotIn("0" * 100, message)
 
     def test_vulnerabilities_rules(self) -> None:
         self.assert_each_refused(
@@ -817,11 +848,17 @@ class KevMatchIncompleteUnitTests(unittest.TestCase):
         deep = "[" * 1000 + "]" * 1000
         oversized = json.dumps(["title"] * (MAX_TRUNCATED_METADATA_BYTES // 8))
         self.assertGreater(len(oversized), MAX_TRUNCATED_METADATA_BYTES)
+        # The cap is a byte cap, and a two-byte character reaches it while the character
+        # count is still under; this note decodes cleanly and names no identifier list.
+        wide = json.dumps(["ü" * 4090], ensure_ascii=False)
+        self.assertLessEqual(len(wide), MAX_TRUNCATED_METADATA_BYTES)
+        self.assertGreater(len(wide.encode("utf-8")), MAX_TRUNCATED_METADATA_BYTES)
         for label, note in (
             ("undecodable", "source_identifiers"),
             ("not a list", '{"source_identifiers": true}'),
             ("not strings", "[1, 2]"),
             ("over 4 KiB", oversized),
+            ("under 4 KiB of chars, over 4 KiB of bytes", wide),
             ("1000 deep", deep),
         ):
             with self.subTest(note=label):
@@ -1083,6 +1120,21 @@ class KevReportClockTests(unittest.TestCase):
             with self.subTest(record=label):
                 self.assertNotIn("before detection", kev_clause_of(self.records[label]))
 
+    def test_the_detection_sentence_needs_detection_strictly_past_the_due_instant(self) -> None:
+        # R3's clock ends 2026-09-04T00:00:00Z. A detection at that instant did not follow
+        # a due date that had already passed; one second later it did.
+        for detected, present in (("2026-09-04T00:00:00Z", False), ("2026-09-04T00:00:01Z", True)):
+            with self.subTest(detected=detected), tempfile.TemporaryDirectory() as directory:
+                artifact = shifted_web_artifact(Path(directory), start=detected, end=detected)
+                report = kev_report(
+                    catalog=self.catalog,
+                    artifacts=[artifact],
+                    evaluations=None,
+                    detected_at=None,
+                )
+                clause = kev_clause_of(by_label(report.vulnerabilities)["R3"])
+                self.assertIs("before detection" in clause, present)
+
     def test_the_clause_names_the_catalog_version_release_and_due_date(self) -> None:
         self.assertEqual(
             kev_clause_of(self.records["R1"]),
@@ -1191,14 +1243,17 @@ class KevReportClockTests(unittest.TestCase):
         after = entry.due_at + timedelta(days=1)
         cases = (
             (None, before, "ends", "open"),
+            # The due instant itself has ended, and an open clock is not yet past due there.
+            (None, entry.due_at, "ended", "open"),
             (None, after, "ended", "past due"),
             (CaseStatus.ACCEPTED, before, "ends", "accepted"),
+            (CaseStatus.ACCEPTED, entry.due_at, "ended", "accepted"),
             (CaseStatus.ACCEPTED, after, "ended", "accepted, past due"),
             (CaseStatus.REMEDIATED, after, "ended", "stopped by remediation"),
             (CaseStatus.FALSE_POSITIVE, after, "ended", "stopped as a false positive"),
         )
         for status, as_of, verb, tail in cases:
-            with self.subTest(status=status, tail=tail):
+            with self.subTest(status=status, verb=verb, tail=tail):
                 clock = kev_clock([entry], status=status, as_of=as_of)
                 line = _kev_line(clock, as_of)
                 self.assertTrue(line.endswith(f"; {tail}"), line)
@@ -1239,6 +1294,29 @@ class KevReportClockTests(unittest.TestCase):
                         self.assertEqual(kev_deadline_of(record), kev_deadline_of(other))
                     if "VDR-TFR-KEV (" in record.overdue_explanation:
                         self.assertEqual(kev_clause_of(record), kev_clause_of(other))
+        # `dueAt` prints in UTC either way, so only the past-due comparison could drift, and
+        # only at an `as_of` within one zone offset of a due instant. R2's clock ends
+        # 2026-09-23T00:00:00Z and the zones sit -7h and +14h from UTC, so these two
+        # instants straddle it inside the band.
+        straddled = []
+        for as_of in (datetime(2026, 9, 22, 20, tzinfo=UTC), datetime(2026, 9, 23, 3, tzinfo=UTC)):
+            clocks = {}
+            for zone in ("UTC", "America/Phoenix", "Pacific/Kiritimati"):
+                shifted = by_label(
+                    kev_report(
+                        catalog=self.catalog, as_of=as_of, calendar_timezone=zone
+                    ).vulnerabilities
+                )
+                clocks[zone] = {
+                    label: (record.kev.past_due, record.kev.status.value)
+                    for label, record in shifted.items()
+                    if record.kev is not None
+                }
+            for zone, seen in clocks.items():
+                with self.subTest(as_of=as_of.isoformat(), zone=zone):
+                    self.assertEqual(seen, clocks["UTC"])
+            straddled.append(clocks["UTC"]["R2"])
+        self.assertEqual(straddled, [(False, "open"), (True, "pastDue")])
 
 
 class KevRuleSelectionTests(unittest.TestCase):
@@ -1250,19 +1328,26 @@ class KevRuleSelectionTests(unittest.TestCase):
         stripped = dataclasses.replace(
             policy, rules=tuple(item for item in policy.rules if item.rule_id != "VDR-TFR-KEV")
         )
+        catalog = fixture_catalog()
         with self.assertRaises(ReportCompileError) as caught:
-            _kev_rule(stripped)
+            _kev_rule(stripped, catalog)
         (diagnostic,) = caught.exception.diagnostics
         self.assertEqual(diagnostic.code, "kev_rule_unavailable")
         self.assertEqual(diagnostic.level.value, "error")
         self.assertIn("VDR-TFR-KEV", diagnostic.message)
+        # It is catalog-level, so it locates like every other catalog-level code.
+        self.assertEqual(diagnostic.location, f"sha256:{catalog.sha256}")
+        self.assertTrue(
+            diagnostic.render().endswith(f" [sha256:{catalog.sha256}]"), diagnostic.render()
+        )
 
     def test_both_supported_classes_select_the_rule(self) -> None:
+        catalog = fixture_catalog()
         for certification_class in (CertificationClass.B, CertificationClass.C):
             with self.subTest(certification_class=certification_class):
                 profile = options(certification_class=certification_class, **KEV_OVERRIDES).profile
                 policy = select_policy(load_bundled_rule_source_snapshot(), profile)
-                self.assertEqual(_kev_rule(policy).rule_id, "VDR-TFR-KEV")
+                self.assertEqual(_kev_rule(policy, catalog).rule_id, "VDR-TFR-KEV")
 
 
 # *--- Diagnostics ---*
@@ -1328,6 +1413,24 @@ class KevDiagnosticsTests(unittest.TestCase):
         )
         # CVE-2099-0008 is that entry, and R9 is the record that carries it.
         self.assertIsNone(by_label(report.vulnerabilities)["R9"].kev)
+
+    def test_the_listing_bound_reads_the_utc_date_of_as_of_not_its_local_one(self) -> None:
+        # CVE-2099-0008 was listed 2026-09-20 and R9 carries it. `--as-of` keeps whatever
+        # offset it was given, so the two instants below sit on either side of UTC midnight
+        # while their local dates say the opposite of their UTC ones.
+        catalog = fixture_catalog()
+        west = datetime(2026, 9, 19, 20, tzinfo=timezone(timedelta(hours=-5)))
+        applied = kev_report(catalog=catalog, as_of=west)
+        record = by_label(applied.vulnerabilities)["R9"]
+        self.assertEqual(record.kev.entries, (fixture_entry("CVE-2099-0008"),))
+        self.assertEqual(applied.document["x-complyroll"]["kevSource"]["entriesConsidered"], 12)
+        self.assertNotIn("kev_entries_after_as_of", self.codes(applied))
+
+        east = datetime(2026, 9, 20, 2, tzinfo=timezone(timedelta(hours=5)))
+        withheld = kev_report(catalog=catalog, as_of=east)
+        self.assertIsNone(by_label(withheld.vulnerabilities)["R9"].kev)
+        self.assertEqual(withheld.document["x-complyroll"]["kevSource"]["entriesConsidered"], 11)
+        self.assertIn("kev_entries_after_as_of", self.codes(withheld))
 
     def test_records_without_any_cve_identifier_raise_one_note(self) -> None:
         # The STIG fixtures carry STIG rule ids, never CVEs. This catalog sits well
@@ -1473,6 +1576,47 @@ class KevSelectionTests(unittest.TestCase):
         kept = by_label(with_catalog.vulnerabilities)["R3"]
         self.assertEqual(kept.kev.status.value, "pastDue")
         self.assertFalse(kept.kev.satisfied)
+
+    def test_an_open_clock_still_short_of_its_due_date_keeps_the_record_too(self) -> None:
+        # The branch reads `satisfied`, not `past_due`: CVE-2099-0004 re-dated to a due
+        # date ahead of `as_of` is open and unsatisfied, which is what Decision 7 keeps.
+        catalog = parse_kev_catalog(
+            with_entry("dueDate", "2026-09-30", index=3), name=KEV_CATALOG_NAME
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            report = self.quiet_report(
+                directory=Path(directory), disposition="fully_mitigated", catalog=catalog
+            )
+        self.assertNotIn("CVE-2099-0004", self.excluded(report))
+        kept = by_label(report.vulnerabilities)["R3"]
+        self.assertEqual(kept.kev.status.value, "open")
+        self.assertFalse(kept.kev.past_due)
+        self.assertFalse(kept.kev.satisfied)
+
+    def test_the_listing_bound_reads_the_utc_date_of_the_period_end(self) -> None:
+        # CVE-2099-0004 re-listed 2026-10-01. A period ending 2026-09-30T21:00:00-05:00 is
+        # 2026-10-01T02:00Z, so the entry was listed inside it; the mirror ends
+        # 2026-10-01T03:00:00+05:00, which is 2026-09-30T22:00Z, so it was not.
+        payload = fixture_payload()
+        relisted = payload["vulnerabilities"][3]
+        self.assertEqual(relisted["cveID"], "CVE-2099-0004")
+        relisted["dateAdded"] = "2026-10-01"
+        relisted["dueDate"] = "2026-10-20"
+        catalog = parse_kev_catalog(encoded(payload), name=KEV_CATALOG_NAME)
+        cases = (
+            ("west of UTC", datetime(2026, 9, 30, 21, tzinfo=timezone(timedelta(hours=-5))), False),
+            ("east of UTC", datetime(2026, 10, 1, 3, tzinfo=timezone(timedelta(hours=5))), True),
+        )
+        for label, period_to, excluded in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as directory:
+                report = self.quiet_report(
+                    directory=Path(directory),
+                    disposition="fully_mitigated",
+                    catalog=catalog,
+                    as_of=datetime(2026, 10, 5, 12, tzinfo=UTC),
+                    period_to=period_to,
+                )
+                self.assertIs("CVE-2099-0004" in self.excluded(report), excluded)
 
     def test_a_stopped_kev_clock_keeps_nothing(self) -> None:
         for disposition in ("remediated", "false_positive"):

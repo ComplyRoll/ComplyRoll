@@ -73,11 +73,11 @@ catalog entry dated on or before the UTC date of `--as-of`:
 | `dueAt` | The end of that date in UTC, the midnight beginning the following day |
 | `satisfied` | Whether the record is remediated or a false positive, as recorded at run time |
 | `pastDue` | Not satisfied and `--as-of` is strictly after `dueAt` |
-| `status` | `open`, `pastDue`, `accepted`, `remediated`, or `falsePositive` |
+| `status` | `remediated`, `falsePositive`, `accepted`, `pastDue`, or `open` |
 | `entries` | Every matched entry, with `cveId`, `dateAdded`, `dueDate`, and the two optional catalog flags |
 
-`status` resolves in that order with the first match winning, so a satisfied record reports how
-it was satisfied and an accepted record reports `accepted` even when `pastDue` is true. Counts of
+`status` is the first of those that applies, in that order, so a satisfied record reports how it
+was satisfied and an accepted record reports `accepted` even when `pastDue` is true. Counts of
 records past a KEV due date read `pastDue` and never `status`, so an accepted record that missed
 its date is counted.
 

@@ -1625,6 +1625,23 @@ class KevReplayTests(StoreFixture):
                 )
                 self.assertIn("- **Known exploited:** CVE-2099-", report.to_markdown())
 
+    def test_the_replayed_reports_reproduce_the_kev_goldens(self) -> None:
+        # The goldens were cut through the command line from the artifacts, so this is
+        # the claim that history replays into the published bytes and not merely into
+        # something the stateless path happens to agree with.
+        for kind in REPORT_KINDS:
+            with self.subTest(report=kind):
+                replayed = self.replay(kind=kind, **self.kev_options())
+
+                self.assertEqual(
+                    replayed.to_json(),
+                    (GOLDEN / f"{kind}-kev.json").read_text(encoding="utf-8"),
+                )
+                self.assertEqual(
+                    replayed.to_markdown(),
+                    (GOLDEN / f"{kind}-kev.md").read_text(encoding="utf-8"),
+                )
+
     def test_the_replayed_clock_carries_the_same_entries_and_instants(self) -> None:
         replayed = self.replay(**self.kev_options())
         stateless = self.stateless(KEV_ARTIFACTS, KEV_EVALUATIONS, **self.kev_options())

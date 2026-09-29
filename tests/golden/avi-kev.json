@@ -1,0 +1,180 @@
+{
+  "acceptedVulnerabilities": [
+    {
+      "acceptanceRationale": "SYNTHETIC. Accepted under change record CR-2099 until the scheduler is retired at the end of the quarter.",
+      "vulnerabilityDetail": {
+        "currentRating": 2,
+        "detection": {
+          "detectedAt": "2026-09-02T10:15:00Z",
+          "detectionSource": "Trivy"
+        },
+        "evaluationCompletedAt": "2026-09-06T15:00:00Z",
+        "isInternetReachable": false,
+        "isLikelyExploitable": true,
+        "overdueStatus": {
+          "isOverdue": false
+        },
+        "potentialAgencyImpact": "SYNTHETIC. The flawed package runs inside the image but holds no agency data on its own.",
+        "providerTrackingId": "case-94c71266d391144a",
+        "vulnerabilityDescription": "CVE-2099-0006: example-cron: synthetic flaw for KEV tests",
+        "x-complyroll": {
+          "deadlines": [
+            {
+              "anchor": "detection",
+              "dueAt": "2026-09-07T10:15:00Z",
+              "force": "SHOULD",
+              "ruleId": "VER-TFR-EVU",
+              "ruleName": "Evaluate Vulnerabilities Quickly",
+              "satisfied": true,
+              "startAt": "2026-09-02T10:15:00Z",
+              "timeframe": {
+                "amount": 5,
+                "unit": "days"
+              }
+            },
+            {
+              "anchor": "evaluation",
+              "dueAt": "2027-01-12T15:00:00Z",
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PVR",
+              "ruleName": "Mitigation and Remediation Expectations",
+              "satisfied": true,
+              "startAt": "2026-09-06T15:00:00Z",
+              "timeframe": {
+                "amount": 128,
+                "unit": "days"
+              }
+            },
+            {
+              "anchor": "evaluation",
+              "dueAt": "2027-03-17T15:00:00Z",
+              "force": "MUST",
+              "ruleId": "VER-TFR-MAV",
+              "ruleName": "Mark Accepted Vulnerabilities",
+              "satisfied": true,
+              "startAt": "2026-09-06T15:00:00Z",
+              "timeframe": {
+                "amount": 192,
+                "unit": "days"
+              }
+            },
+            {
+              "anchor": "catalog",
+              "dueAt": "2026-09-01T00:00:00Z",
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-KEV",
+              "ruleName": "Remediate KEVs",
+              "satisfied": false,
+              "startAt": "2026-08-10T00:00:00Z",
+              "timeframe": null
+            }
+          ],
+          "detectedAtSource": "artifact",
+          "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
+          "kev": {
+            "cveId": "CVE-2099-0006",
+            "dueAt": "2026-09-01T00:00:00Z",
+            "dueDate": "2026-08-31",
+            "entries": [
+              {
+                "cveId": "CVE-2099-0006",
+                "dateAdded": "2026-08-10",
+                "dueDate": "2026-08-31",
+                "forensicTriage": "No",
+                "knownRansomwareCampaignUse": "Unknown"
+              }
+            ],
+            "pastDue": true,
+            "satisfied": false,
+            "status": "accepted"
+          },
+          "observationIds": [
+            "obs-e6be6b137e1d8f189549f2d89528da85f1f58cb8d26a3f3de67515e6df2ad660"
+          ],
+          "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
+          "remediated": false,
+          "resources": [
+            {
+              "resourceId": "registry.example.test/kev/web:2.3.1/etc/example-cron/release",
+              "resourceType": "image"
+            }
+          ],
+          "sourceIdentifiers": [
+            "CVE-2099-0006"
+          ],
+          "untimestampedObservationIds": []
+        }
+      }
+    }
+  ],
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "reportPeriod": {
+    "from": "2026-09-01T00:00:00Z",
+    "to": "2026-09-30T23:59:59Z"
+  },
+  "x-complyroll": {
+    "activeNotReported": 10,
+    "artifacts": [
+      {
+        "name": "kev-image-web.sarif",
+        "observationCount": 10,
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "37776a3ba338f102504df2734d8f89c084f89e538ea885946cb3ff1f0706fd33",
+        "sizeBytes": 20447
+      },
+      {
+        "name": "kev-image-worker.sarif",
+        "observationCount": 1,
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "facea1dd3b8d005b3d768a55e82b468096a82e5d7c916ab2c091586162ae6e57",
+        "sizeBytes": 2950
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "detectionTimeAttestation": null,
+    "diagnostics": [
+      {
+        "code": "kev_entries_after_as_of",
+        "level": "info",
+        "location": "sha256:40c6d1465ca52c5ddb3b7bf1a6d92cfe884e33b4d2e90ac4551090e66d6c49fd",
+        "message": "1 catalog entry dated after 2026-09-15 was not applied; 1 compiled record carries it"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "excludedByPeriod": 0,
+    "generatedAt": "2026-09-15T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.3.0a0"
+    },
+    "kevSource": {
+      "catalogVersion": "2026.09.14",
+      "count": 12,
+      "dateReleased": "2026-09-14T17:00:00.123400Z",
+      "entriesConsidered": 11,
+      "name": "kev-catalog.json",
+      "sha256": "40c6d1465ca52c5ddb3b7bf1a6d92cfe884e33b4d2e90ac4551090e66d6c49fd",
+      "sizeBytes": 8753
+    },
+    "parserVersions": {
+      "complyroll.sarif": "1"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-accepted-vulnerability-info-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "2b0b758205b7cae4695a758a6a1b0a98d128972913aad2afdb9bc2e2207192d0"
+    }
+  }
+}

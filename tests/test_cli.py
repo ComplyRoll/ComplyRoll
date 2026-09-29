@@ -99,6 +99,55 @@ HISTORICAL_ARGUMENTS = (
 #: snapshot, and out of the Vulnerability Detail Report.
 ACCEPTED_CASE = "case-04efea8c137ae82f"
 
+#: The synthetic CISA KEV catalog and the run the three KEV goldens were cut with. Every
+#: identifier in it is `CVE-2099-*`; no real catalog content is carried in this repo.
+KEV_CATALOG = FIXTURES / "kev-catalog.json"
+KEV_EVALUATIONS = EXAMPLES / "evaluations-kev.json"
+KEV_ARTIFACTS = (
+    str(FIXTURES / "kev-image-web.sarif"),
+    str(FIXTURES / "kev-image-worker.sarif"),
+)
+KEV_AS_OF = "2026-09-15T12:00:00Z"
+#: The settings all three KEV commands share. The calendar zone is named even though the
+#: KEV clock never reads it, so the goldens pin that the zone makes no difference.
+KEV_ARGUMENTS = (
+    "--class",
+    "C",
+    "--package-uri",
+    "https://example.test/cpo",
+    "--calendar-tz",
+    "UTC",
+)
+#: The reporting period the two period-taking commands use; `historical` is a snapshot.
+KEV_PERIOD = ("--from", "2026-09-01T00:00:00Z", "--to", "2026-09-30T23:59:59Z")
+
+
+def kev_argv(
+    kind: str,
+    *,
+    catalog: Path | None = KEV_CATALOG,
+    db: Path | None = None,
+    as_of: str = KEV_AS_OF,
+) -> list[str]:
+    """Build one KEV report invocation, from the artifacts or from a store.
+
+    The two paths differ only in where the records come from: a catalog is a per-run
+    input on both, so `--kev` is spelled the same way either way.
+    """
+
+    argv = ["report", kind]
+    if db is None:
+        argv += [*KEV_ARTIFACTS, "--evaluations", str(KEV_EVALUATIONS)]
+    else:
+        argv += ["--db", str(db)]
+    argv += [*KEV_ARGUMENTS, "--as-of", as_of]
+    if kind != "historical":
+        argv += list(KEV_PERIOD)
+    if catalog is not None:
+        argv += ["--kev", str(catalog)]
+    return argv
+
+
 #: What a destination held before a run that fails part way through publishing it. The
 #: rollback has to put exactly this back.
 PREVIOUS_REPORT = '{"note": "the report a previous run published"}\n'
@@ -944,6 +993,105 @@ class ReportHistoricalCommandTests(unittest.TestCase):
         )
 
 
+class KevReportCommandTests(unittest.TestCase):
+    """`--kev` on all three commands, reading the artifacts from disk.
+
+    The catalog is an input like any other: it is named in the overwrite guard, it is
+    read before the options it belongs to so a malformed one is refused as bad input
+    rather than as a bad option, and only one may be given.
+    """
+
+    KINDS = ("vdt", "avi", "historical")
+
+    def test_every_command_reproduces_its_kev_golden_pair(self) -> None:
+        for kind in self.KINDS:
+            with self.subTest(report=kind), tempfile.TemporaryDirectory() as directory:
+                json_path = Path(directory) / "report.json"
+                markdown_path = Path(directory) / "report.md"
+
+                code, out, err = run(
+                    [*kev_argv(kind), "-o", str(json_path), "--markdown", str(markdown_path)]
+                )
+
+                self.assertEqual(code, 0, msg=err)
+                self.assertEqual(out, "")
+                self.assertIn("info: kev_entries_after_as_of", err)
+                self.assertEqual(
+                    json_path.read_bytes(), (GOLDEN / f"{kind}-kev.json").read_bytes()
+                )
+                self.assertEqual(
+                    markdown_path.read_bytes(), (GOLDEN / f"{kind}-kev.md").read_bytes()
+                )
+
+    def test_a_malformed_catalog_is_refused_as_bad_input_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "kev.json"
+            catalog.write_text('{"vulnerabilities": [{}]}', encoding="utf-8")
+            json_path = Path(directory) / "report.json"
+
+            code, out, err = run([*kev_argv("vdt", catalog=catalog), "-o", str(json_path)])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: invalid_input: KEV catalog:", err)
+            self.assertFalse(json_path.exists())
+
+    def test_a_catalog_that_is_not_there_is_refused_as_bad_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            missing = Path(directory) / "gone.json"
+
+            code, out, err = run([*kev_argv("vdt", catalog=missing), "-o", str(json_path)])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: invalid_input: KEV catalog cannot be read", err)
+            self.assertFalse(json_path.exists())
+
+    def test_writing_a_report_over_the_catalog_is_refused(self) -> None:
+        for option in ("-o", "--markdown"):
+            with self.subTest(destination=option), tempfile.TemporaryDirectory() as directory:
+                catalog = Path(directory) / "kev-catalog.json"
+                shutil.copyfile(KEV_CATALOG, catalog)
+                before = catalog.read_bytes()
+
+                code, out, err = run([*kev_argv("vdt", catalog=catalog), option, str(catalog)])
+
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn("refusing to overwrite the input file", err)
+                self.assertEqual(catalog.read_bytes(), before)
+
+    def test_a_second_catalog_is_refused_on_every_command(self) -> None:
+        # `--kev` appends, so argparse would otherwise keep the last of several and
+        # apply a catalog the operator did not mean to name.
+        for kind in self.KINDS:
+            with self.subTest(report=kind):
+                code, out, err = run([*kev_argv(kind), "--kev", str(KEV_CATALOG)])
+
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn(
+                    f"error: invalid_option: report {kind} takes one --kev catalog, not 2", err
+                )
+
+    def test_a_catalog_released_after_the_as_of_instant_stops_the_run(self) -> None:
+        # The refusal is a compile diagnostic, not an option error, so it reaches the
+        # operator through `_persisted_run` even though this path opens no store.
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+
+            code, out, err = run(
+                [*kev_argv("vdt", as_of="2026-09-10T00:00:00Z"), "-o", str(json_path)]
+            )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: kev_catalog_after_as_of", err)
+            self.assertIn("supply the catalog current then", err)
+            self.assertFalse(json_path.exists())
+
+
 class ValidateCommandTests(unittest.TestCase):
     def test_a_valid_report_prints_the_schema_provenance(self) -> None:
         code, out, err = run(
@@ -1561,6 +1709,88 @@ class PersistedAcceptedSequenceTests(PersistedStoreTestCase):
         )
         self.assertEqual(len(document["vulnerabilities"]), 5)
         self.assertIn(f"info: accepted_excluded: {ACCEPTED_CASE}", err)
+
+
+class PersistedKevReportTests(PersistedStoreTestCase):
+    """The same three KEV reports compiled from a store rather than from the artifacts.
+
+    No store holds a CISA KEV catalog, so `--kev` is a per-run input here too and sits
+    beside `--db` rather than conflicting with it. The KEV SARIF fixtures declare their
+    own timestamps, so the sequence needs no detection attestation.
+    """
+
+    def populate_kev(self) -> None:
+        """Run the writing commands the KEV fixtures need, in the documented order."""
+
+        self.succeeds(
+            [
+                "ingest",
+                *KEV_ARTIFACTS,
+                "--db",
+                str(self.database),
+                "--as-of",
+                KEV_AS_OF,
+                "--actor",
+                "golden",
+            ]
+        )
+        self.correlate()
+        self.succeeds(
+            [
+                "cases",
+                "evaluate",
+                "--db",
+                str(self.database),
+                "--evaluations",
+                str(KEV_EVALUATIONS),
+                "--actor",
+                "golden",
+            ]
+        )
+
+    def test_a_store_and_a_catalog_together_reproduce_the_golden_pairs(self) -> None:
+        self.populate_kev()
+
+        for kind in ("vdt", "avi", "historical"):
+            with self.subTest(report=kind):
+                json_path = self.workspace / f"{kind}.json"
+                markdown_path = self.workspace / f"{kind}.md"
+
+                _, err = self.succeeds(
+                    [
+                        *kev_argv(kind, db=self.database),
+                        "-o",
+                        str(json_path),
+                        "--markdown",
+                        str(markdown_path),
+                    ]
+                )
+
+                self.assertIn("info: kev_entries_after_as_of", err)
+                self.assertEqual(
+                    json_path.read_bytes(), (GOLDEN / f"{kind}-kev.json").read_bytes()
+                )
+                self.assertEqual(
+                    markdown_path.read_bytes(), (GOLDEN / f"{kind}-kev.md").read_bytes()
+                )
+
+    def test_a_catalog_beside_a_store_is_not_a_source_conflict(self) -> None:
+        self.populate_kev()
+
+        code, out, err = run(kev_argv("vdt", db=self.database))
+
+        self.assertEqual(code, 0, msg=err)
+        self.assertNotIn("invalid_option", err)
+        self.assertEqual(out, (GOLDEN / "vdt-kev.json").read_text(encoding="utf-8"))
+
+    def test_a_second_catalog_is_refused_against_a_store_too(self) -> None:
+        self.populate_kev()
+
+        code, out, err = run([*kev_argv("vdt", db=self.database), "--kev", str(KEV_CATALOG)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: invalid_option: report vdt takes one --kev catalog, not 2", err)
 
 
 class PersistedIngestTests(PersistedStoreTestCase):
@@ -2725,6 +2955,19 @@ class HelpTextTests(unittest.TestCase):
             "avi compile an Accepted Vulnerability Information report (VER-RPT-AVI)", text
         )
         self.assertIn("historical compile a Historical VER Activity snapshot (VER-TFR-MRH)", text)
+
+    def test_every_report_command_offers_the_kev_catalog_flag(self) -> None:
+        # That the feed is read from disk and never fetched belongs in the help text:
+        # an operator who expected the command to download it would otherwise read a
+        # stale report as a current one.
+        for kind in ("vdt", "avi", "historical"):
+            with self.subTest(command=kind):
+                text = help_text(["report", kind])
+
+                self.assertIn("--kev FILE", text)
+                self.assertIn(
+                    "CISA KEV catalog JSON feed to apply (read locally, never fetched)", text
+                )
 
     def test_store_verify_names_the_sidecar_files_a_walk_can_leave(self) -> None:
         text = help_text(["store", "verify"])

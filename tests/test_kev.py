@@ -21,7 +21,16 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from test_reports import compile_fixtures, options, summary_counts
+from test_reports import (
+    AVI_DETAIL_SECTIONS,
+    GOLDEN,
+    HISTORICAL_DETAIL_SECTIONS,
+    VDT_DETAIL_SECTIONS,
+    assert_markdown_carries_the_json,
+    compile_fixtures,
+    options,
+    summary_counts,
+)
 
 from complyroll.adapters import ingest_stig_artifact
 from complyroll.models import CaseStatus, Observation
@@ -1742,6 +1751,129 @@ def _published(document: dict) -> list[dict]:
 def _tracking_ids(records: Sequence[dict]) -> list[str]:
     """Read the tracking ids out of one published array, whatever it wraps them in."""
     return [item.get("vulnerabilityDetail", item)["providerTrackingId"] for item in records]
+
+
+# *--- Goldens ---*
+
+
+class KevGoldenTests(unittest.TestCase):
+    """The three KEV golden pairs, byte for byte, with every count reconciled.
+
+    The goldens were cut through the command line with the settings `KEV_OVERRIDES`
+    names. The 14 goldens that predate this slice are compiled without a catalog and do
+    not move, which is where the "no catalog changes nothing" claim is proved.
+    """
+
+    SECTIONS = {
+        "vdt": VDT_DETAIL_SECTIONS,
+        "avi": AVI_DETAIL_SECTIONS,
+        "historical": HISTORICAL_DETAIL_SECTIONS,
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.catalog = fixture_catalog()
+        cls.reports = {kind: kev_report(kind=kind, catalog=cls.catalog) for kind in cls.SECTIONS}
+
+    def golden(self, kind: str, suffix: str) -> Path:
+        return GOLDEN / f"{kind}-kev.{suffix}"
+
+    def test_every_golden_pair_is_reproduced_byte_for_byte(self) -> None:
+        for kind, report in self.reports.items():
+            with self.subTest(report=kind, rendering="json"):
+                self.assertEqual(
+                    report.to_json().encode("utf-8"), self.golden(kind, "json").read_bytes()
+                )
+            with self.subTest(report=kind, rendering="markdown"):
+                self.assertEqual(
+                    report.to_markdown().encode("utf-8"), self.golden(kind, "md").read_bytes()
+                )
+
+    def test_compiling_twice_yields_identical_bytes(self) -> None:
+        for kind, report in self.reports.items():
+            with self.subTest(report=kind):
+                again = kev_report(kind=kind, catalog=fixture_catalog())
+                self.assertEqual(again.to_json(), report.to_json())
+                self.assertEqual(again.to_markdown(), report.to_markdown())
+
+    def test_every_golden_validates_against_its_official_schema(self) -> None:
+        for kind, report in self.reports.items():
+            with self.subTest(report=kind):
+                self.assertTrue(report.validation.is_valid)
+                self.assertEqual(report.validation.issues, ())
+
+    def test_every_markdown_twin_carries_its_json(self) -> None:
+        for kind, report in self.reports.items():
+            with self.subTest(report=kind):
+                assert_markdown_carries_the_json(self, report, sections=self.SECTIONS[kind])
+
+    def test_the_vdt_summary_reconciles_with_the_plan_counts(self) -> None:
+        report = self.reports["vdt"]
+        counts = summary_counts(report.to_markdown())
+        records = by_label(report.vulnerabilities)
+        self.assertEqual(counts["Vulnerabilities reported"], len(report.vulnerabilities))
+        self.assertEqual(counts["Vulnerabilities reported"], 10)
+        self.assertEqual(counts["Accepted, reported under VER-RPT-AVI"], 1)
+        self.assertEqual(counts["Excluded by report period"], 0)
+        self.assertEqual(
+            sorted(label for label, item in records.items() if item.is_overdue),
+            ["R1", "R10", "R11", "R2", "R3", "R8"],
+        )
+        self.assertEqual(
+            sorted(label for label, item in records.items() if item.kev is not None),
+            ["R1", "R10", "R11", "R2", "R3", "R4", "R6", "R8"],
+        )
+        self.assertEqual(
+            sorted(
+                label
+                for label, item in records.items()
+                if item.kev is not None and item.kev.past_due
+            ),
+            ["R1", "R10", "R11", "R3", "R8"],
+        )
+        self.assertEqual(counts["Overdue"], 6)
+        self.assertEqual(counts["Known exploited, CISA KEV"], 8)
+        self.assertEqual(counts["Past a CISA KEV due date"], 5)
+
+    def test_the_avi_partitions_overdue_from_past_a_kev_due_date(self) -> None:
+        # FRD-ACV and FRD-ODV made visible: an accepted record is never officially
+        # overdue, and its KEV clock is past due all the same.
+        report = self.reports["avi"]
+        counts = summary_counts(report.to_markdown())
+        self.assertEqual(counts["Accepted vulnerabilities reported"], 1)
+        self.assertEqual(counts["Active, not reported here"], 10)
+        self.assertEqual(counts["Overdue"], 0)
+        self.assertEqual(counts["Known exploited, CISA KEV"], 1)
+        self.assertEqual(counts["Past a CISA KEV due date"], 1)
+
+    def test_the_historical_snapshot_counts_the_whole_population(self) -> None:
+        report = self.reports["historical"]
+        counts = summary_counts(report.to_markdown())
+        self.assertEqual(counts["Active vulnerabilities"], len(report.active))
+        self.assertEqual(counts["Accepted vulnerabilities"], len(report.accepted))
+        self.assertEqual(counts["Active vulnerabilities"], 10)
+        self.assertEqual(counts["Accepted vulnerabilities"], 1)
+        self.assertEqual(counts["Overdue"], 6)
+        self.assertEqual(counts["Known exploited, CISA KEV"], 8)
+        self.assertEqual(counts["Past a CISA KEV due date"], 5)
+
+    def test_the_goldens_name_the_catalog_the_run_used(self) -> None:
+        for kind in self.reports:
+            with self.subTest(report=kind):
+                published = json.loads(self.golden(kind, "json").read_text(encoding="utf-8"))
+                self.assertEqual(
+                    published["x-complyroll"]["kevSource"],
+                    {
+                        "name": KEV_CATALOG_NAME,
+                        "sha256": self.catalog.sha256,
+                        "sizeBytes": KEV_CATALOG.stat().st_size,
+                        "catalogVersion": "2026.09.14",
+                        "dateReleased": "2026-09-14T17:00:00.123400Z",
+                        "count": 12,
+                        "entriesConsidered": 11,
+                    },
+                )
+                self.assertIn(self.catalog.sha256, self.golden(kind, "md").read_text("utf-8"))
 
 
 if __name__ == "__main__":

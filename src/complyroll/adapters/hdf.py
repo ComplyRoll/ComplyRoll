@@ -112,6 +112,23 @@ HDF_METADATA_KEYS = frozenset(
         "truncated",
     }
 )
+# A fold takes each group whole from one candidate, so one copy's justification is never
+# paired with another copy's expiration (decision 9).
+_WAIVER_KEYS = frozenset(
+    {"waived", "waiver_justification", "waiver_expiration", "waiver_run", "waiver_skipped"}
+)
+_ATTESTATION_KEYS = frozenset(
+    {
+        "attested",
+        "attestation_status",
+        "attestation_explanation",
+        "attestation_frequency",
+        "attestation_updated",
+    }
+)
+# A fold takes these from the strongest candidate, and each list from every candidate.
+_SEVERITY_KEYS = frozenset({"impact", "severity_tag", "severity_override", "severity_source"})
+_LIST_KEYS = frozenset({"failed_results", "failure_messages", "nist_tags"})
 
 # A failure beats an error, a pass beats a skip, and not applicable ranks lowest, as the
 # producers roll a control up; this is not SARIF's worst-wins table (decision 4).
@@ -181,6 +198,8 @@ class _Profile:
     body: Mapping[str, Any]
     scalars: dict[str, str] = field(default_factory=dict)
     truncated: set[str] = field(default_factory=set)
+    # Parent links between the profile and its root, set once its chain resolves.
+    depth: int = 0
 
 
 @dataclass(slots=True)
@@ -189,6 +208,8 @@ class _Candidate:
 
     order: tuple[Any, ...]
     path: str
+    # The profile's depth under its root, which orders the shadowed copies (decision 9).
+    depth: int
     has_results: bool
     disposition: ObservationDisposition
     disposition_source: str
@@ -401,7 +422,8 @@ class _HdfParse(EvidenceParse):
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
                 "resource_identity_fallback",
-                "platform.target_id is absent or blank; the root profile name is the resource",
+                "platform.target_id is absent, blank, or not a string; the root profile name "
+                "is the resource",
                 "platform",
             )
         for key, member in (("platform_name", "name"), ("platform_release", "release")):
@@ -443,7 +465,8 @@ class _HdfParse(EvidenceParse):
         return indexed
 
     # The walk follows parent_profile upward with a visited set, and every profile it passes
-    # shares the answer, so each link is followed once and each fault is reported once.
+    # shares the answer and learns its depth, so each link is followed once and each fault is
+    # reported once.
     def _root_of(self, profile: _Profile) -> str | None:
         """Return the name of the root a profile hangs under, or None when the chain breaks."""
         chain: list[str] = []
@@ -473,6 +496,13 @@ class _HdfParse(EvidenceParse):
             current = parent
         for name in chain:
             self.roots[name] = root
+        if root is not None and chain:
+            # A walk that reached the root counts from it; one that met a resolved profile
+            # counts on from that profile's depth.
+            depth = -1 if chain[-1] == current.name else current.depth
+            for name in reversed(chain):
+                depth += 1
+                self.profiles[name].depth = depth
         return root
 
     def _scan_profile(self, profile: _Profile, root: str) -> None:
@@ -560,11 +590,15 @@ class _HdfParse(EvidenceParse):
                 )
         severity, severity_scalars = self._control_severity(tags, impact, path, truncated)
 
-        waiver = _mapping(control.get("waiver_data"))
-        if waiver:
-            self._waiver(waiver, scalars, path, truncated)
-        attestation = _mapping(control.get("attestation_data"))
-        attested = bool(attestation)
+        # Absent, null, and every empty or false value mean none; any other value is one, and
+        # only an object's members are read, so a malformed member is never silent (decision 5).
+        raw_waiver = control.get("waiver_data")
+        if raw_waiver:
+            self._waiver(_mapping(raw_waiver), scalars, path, truncated)
+        raw_attestation = control.get("attestation_data")
+        # A marker result under any attestation lends no clock and no text, whatever its shape.
+        attested = bool(raw_attestation)
+        attestation = _mapping(raw_attestation)
         if attestation:
             for key, member in (
                 ("attestation_status", "status"),
@@ -596,24 +630,22 @@ class _HdfParse(EvidenceParse):
                 clocks.append(clock)
         if attested:
             scalars["attested"] = "expired" if expired else "true"
+            notes = ["expired"] if expired else []
+            if attestation is None:
+                notes.append("attestation_data is not an object")
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
                 "control_attested",
-                "control carries attestation data; the disposition comes from its results and "
-                "the attestation is recorded as metadata",
+                "control carries attestation data; the attestation is recorded as metadata and "
+                "never changes the disposition",
                 path,
-                detail="expired" if expired else "",
+                detail="; ".join(notes),
             )
 
         disposition, source, rolled = _control_disposition(impact, dispositions)
-        if source == "impact_zero":
-            self.diagnostics.add(
-                DiagnosticLevel.INFO,
-                "impact_zero_not_applicable",
-                "impact is 0, so the control is not applicable whatever its results say",
-                path,
-                detail=f"results would read {rolled.name}",
-            )
+        # An empty copy's line waits for _shadow, which knows whether the copy yields anything.
+        if source == "impact_zero" and results:
+            self._impact_zero(path, rolled)
         for key, member, items in (
             ("failed_results", "failed_results", failures),
             ("failure_messages", "failure_messages", messages),
@@ -632,7 +664,8 @@ class _HdfParse(EvidenceParse):
         identifiers, identifiers_cut = first_identifiers(
             self._identifiers(control, tags, record_id, path)
         )
-        # The order is a function of content alone, so the fold ignores document order.
+        # The order is a function of content alone, so the fold ignores document order. The cut
+        # keys come last, so a text that spells the cut marker never ties with one that was cut.
         candidate = _Candidate(
             order=(
                 title,
@@ -641,8 +674,10 @@ class _HdfParse(EvidenceParse):
                     sorted({**scalars, **severity_scalars, "disposition_source": source}.items())
                 ),
                 tuple(sorted(lists.items())),
+                tuple(sorted(truncated)),
             ),
             path=path,
+            depth=profile.depth,
             has_results=bool(results),
             disposition=disposition,
             disposition_source=source,
@@ -737,17 +772,24 @@ class _HdfParse(EvidenceParse):
         return severity, scalars
 
     def _waiver(
-        self, waiver: Mapping[str, Any], scalars: dict[str, str], path: str, truncated: set[str]
+        self,
+        waiver: Mapping[str, Any] | None,
+        scalars: dict[str, str],
+        path: str,
+        truncated: set[str],
     ) -> None:
-        """Record a non-empty waiver as metadata; it never moves the disposition (decision 5)."""
+        """Record a present waiver as metadata; it never moves the disposition (decision 5)."""
         scalars["waived"] = "true"
         self.diagnostics.add(
             DiagnosticLevel.WARNING,
             "control_waived",
-            "control carries waiver data; the disposition comes from its results and the "
-            "waiver is recorded as metadata",
+            "control carries waiver data; the waiver is recorded as metadata and never changes "
+            "the disposition",
             path,
+            detail="" if waiver is not None else "waiver_data is not an object",
         )
+        if waiver is None:
+            return
         self._scalar(scalars, "waiver_justification", waiver.get("justification"), path, truncated)
         self._scalar(scalars, "waiver_expiration", waiver.get("expiration_date"), path, truncated)
         run = waiver.get("run")
@@ -758,6 +800,16 @@ class _HdfParse(EvidenceParse):
             scalars["waiver_skipped"] = "true" if skipped else "false"
         else:
             self._scalar(scalars, "waiver_skipped", skipped, path, truncated)
+
+    def _impact_zero(self, path: str, rolled: ObservationDisposition) -> None:
+        """Say that a kept copy's impact 0 overrides what its results would read (decision 6)."""
+        self.diagnostics.add(
+            DiagnosticLevel.INFO,
+            "impact_zero_not_applicable",
+            "impact is 0, so the control is not applicable whatever its results say",
+            path,
+            detail=f"results would read {rolled.name}",
+        )
 
     def _identifiers(
         self, control: Mapping[str, Any], tags: Mapping[str, Any], record_id: str, path: str
@@ -789,12 +841,18 @@ class _HdfParse(EvidenceParse):
         for key in sorted(self.folds):
             candidates = self.folds[key]
             if not any(candidate.has_results for candidate in candidates):
+                # Every empty copy is kept, so each impact-0 one yields its line here.
+                for candidate in candidates:
+                    if candidate.disposition_source == "impact_zero":
+                        self._impact_zero(candidate.path, ObservationDisposition.ERROR)
                 continue
             kept: list[_Candidate] = []
+            shadowed: list[_Candidate] = []
             for candidate in candidates:
                 if candidate.has_results:
                     kept.append(candidate)
                 else:
+                    shadowed.append(candidate)
                     self.diagnostics.add(
                         DiagnosticLevel.INFO,
                         "profile_control_shadowed",
@@ -802,7 +860,28 @@ class _HdfParse(EvidenceParse):
                         "profile of this run; it yields no observation",
                         candidate.path,
                     )
+            self._hand_over(kept, shadowed)
             self.folds[key] = kept
+
+    # An overlay's waiver or attestation can sit on a wrapper's empty copy while the results sit
+    # on the leaf, so a shadowed copy passes its group on instead of losing it, but only a group
+    # that no survivor carries. The outermost shadowed carrier passes first, as a wrapper
+    # overrides the layers it includes, and content breaks a tie, so document order never
+    # decides. A shadowed copy has no results and so no marker, so its attestation is never
+    # expired, and an expired one can only be a survivor's own, which the fold keeps first.
+    def _hand_over(self, kept: list[_Candidate], shadowed: list[_Candidate]) -> None:
+        """Give every survivor the first shadowed carrier's group when none carries its own."""
+        shadowed.sort(key=lambda candidate: (candidate.depth, candidate.order))
+        for flag, group in (("waived", _WAIVER_KEYS), ("attested", _ATTESTATION_KEYS)):
+            if any(flag in candidate.scalars for candidate in kept):
+                continue
+            carrier = next((candidate for candidate in shadowed if flag in candidate.scalars), None)
+            if carrier is None:
+                continue
+            handed = {name: value for name, value in carrier.scalars.items() if name in group}
+            for candidate in kept:
+                candidate.scalars.update(handed)
+                candidate.truncated |= carrier.truncated & group
 
     # The fold is a pure function of the candidate set: every choice is a max, a min, or a
     # sort, so document order never reaches the observation (decision 9).
@@ -812,23 +891,42 @@ class _HdfParse(EvidenceParse):
         ordered = sorted(candidates, key=lambda candidate: candidate.order)
         primary = ordered[0]
         path = primary.path
-        truncated: set[str] = set()
-        for candidate in ordered:
-            truncated |= candidate.truncated
         worst = max(ordered, key=lambda candidate: HDF_DISPOSITION_RANK[candidate.disposition])
         strongest = max(ordered, key=lambda candidate: SEVERITY_RANK[candidate.severity])
+        # A waiver or an attestation on any copy is recorded. min keeps the first of equals, so
+        # an expired attestation is kept over a current one, and a lapse is never folded away.
+        waiver = next((candidate for candidate in ordered if "waived" in candidate.scalars), None)
+        attestation = min(
+            (candidate for candidate in ordered if "attested" in candidate.scalars),
+            key=lambda candidate: candidate.scalars["attested"] != "expired",
+            default=None,
+        )
         observed = [candidate.observed_at for candidate in ordered if candidate.observed_at]
         observed_at = earliest(observed) if observed else None
         if observed_at is None:
             self.diagnostics.add_fixed(missing_time_diagnostic(self.artifact))
 
-        metadata = dict(primary.scalars)
+        # truncated names a cut only where the observation writes the value that was cut.
+        truncated = primary.truncated - _SEVERITY_KEYS - _WAIVER_KEYS - _ATTESTATION_KEYS
+        truncated |= strongest.truncated & _SEVERITY_KEYS
+        metadata = {
+            name: value
+            for name, value in primary.scalars.items()
+            if name not in _WAIVER_KEYS and name not in _ATTESTATION_KEYS
+        }
+        for carrier, group in ((waiver, _WAIVER_KEYS), (attestation, _ATTESTATION_KEYS)):
+            if carrier is not None:
+                metadata.update(
+                    {name: value for name, value in carrier.scalars.items() if name in group}
+                )
+                truncated |= carrier.truncated & group
         metadata.update(strongest.severity_scalars)
         metadata["disposition_source"] = worst.disposition_source
         for count_key in _ZERO_COUNTS:
             metadata[count_key] = str(sum(candidate.counts[count_key] for candidate in ordered))
         lists: dict[str, set[str]] = {}
         for candidate in ordered:
+            truncated |= candidate.truncated & _LIST_KEYS
             for member, items in candidate.lists.items():
                 lists.setdefault(member, set()).update(items)
         for member, union in sorted(lists.items()):
@@ -911,6 +1009,13 @@ class HdfAdapter:
         data = document.value
         if not isinstance(data, Mapping):
             raise AdapterParseError("HDF root must be a JSON object")
+        # SECURITY: A checklist's own member is refused under an HDF name, so a document that
+        # carries both shapes is read as a checklist or not at all (decision 1).
+        if "stigs" in data:
+            raise AdapterParseError(
+                "HDF document carries a 'stigs' member; a STIG Viewer checklist is read under "
+                "a .cklb or .json name"
+            )
         # The two other shapes an operator may hold are named, so the refusal says which.
         if "profiles" not in data:
             if "baselines" in data:

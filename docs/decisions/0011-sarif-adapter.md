@@ -604,9 +604,9 @@ Decision 1).
 Neither of Decision 1's two reasons applies to that check. A checklist carries `stigs`, so no
 existing `.json` checklist changes dispatch or compat behavior. CKLB attribution of a malformed
 bare `.json` is now pinned, which supersedes the sentence that nothing in the suite pins it:
-`test_adapters.py:684` pins that `{` saved as `scan.json` fails as CKLB, and
-`test_adapters.py:694` pins that an HDF document saved as `scan.json` and refused by the node
-bound is attributed to CKLB too. `test_adapters.py:487` still pins that a SARIF log saved as
+`test_adapters.py:714` pins that `{` saved as `scan.json` fails as CKLB, and
+`test_adapters.py:724` pins that an HDF document saved as `scan.json` and refused by the node
+bound is attributed to CKLB too. `test_adapters.py:493` still pins that a SARIF log saved as
 `scan.json` fails as CKLB, and the Rejected alternatives entry for a bare `.json` SARIF sniff
 stands.
 
@@ -616,3 +616,10 @@ the eight evidence methods moved into the `EvidenceParse` base class that `_Arti
 subclasses (ADR 0013 Decision 11). `sarif.py` still binds every old name it and its tests read,
 and every SARIF golden stayed byte-identical. Decision 9 is unchanged: HDF's roll-up uses its own
 rank table, and `_DISPOSITION_RANK` at `sarif.py:153-160` was not touched.
+
+The shared identifier patterns changed too, which narrows Decision 5. Every pattern ends on a
+token boundary as it starts on one, so `CVE-2024-1234evil` and `CWE-79suffix` name no
+identifier while `CVE-2024-1234.` names one (`test_sarif.py:2209`). The CVE and CWE patterns had
+ended on a digit boundary, so an id run into a letter was cut out of its token; the GHSA pattern
+already ended as it started. No SARIF fixture carries such a token, and every SARIF golden
+stayed byte-identical.

@@ -66,11 +66,13 @@ _KEPT_CONTROLS = frozenset({"\t", "\n"})
 # letter class also matches U+0130, U+0131, U+017F, and U+212A, so either would let a lookalike
 # become a placeholder or an identifier. A CVE sequence number has 4 to 19 digits, the bound
 # of the cveId pattern in the CVE record format.
-CVE = re.compile(r"(?<![A-Za-z0-9])CVE-([0-9]{4})-([0-9]{4,19})(?![0-9])", re.IGNORECASE | re.ASCII)
+CVE = re.compile(
+    r"(?<![A-Za-z0-9])CVE-([0-9]{4})-([0-9]{4,19})(?![A-Za-z0-9])", re.IGNORECASE | re.ASCII
+)
 GHSA = re.compile(
     r"(?<![A-Za-z0-9])GHSA(?:-[A-Za-z0-9]{4}){3}(?![A-Za-z0-9])", re.IGNORECASE | re.ASCII
 )
-CWE = re.compile(r"(?<![A-Za-z0-9])CWE-([0-9]{1,5})(?![0-9])", re.IGNORECASE | re.ASCII)
+CWE = re.compile(r"(?<![A-Za-z0-9])CWE-([0-9]{1,5})(?![A-Za-z0-9])", re.IGNORECASE | re.ASCII)
 # The spec's end-of-day clock, 24:00 with zero seconds, and any hour 24 fromisoformat reads:
 # one of its date forms, one separator character of any kind, then the hour.
 END_OF_DAY = re.compile(

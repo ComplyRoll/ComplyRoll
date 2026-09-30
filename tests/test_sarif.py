@@ -2206,6 +2206,30 @@ class SarifRuleResolutionTests(unittest.TestCase):
                 item = only_observation(ingest_document(make_log(make_run([result]))))
                 self.assertEqual(item.source_identifiers, ("CVE-2021-1234", "CWE-79"))
 
+    def test_an_identifier_run_into_a_letter_or_digit_names_no_identifier(self) -> None:
+        # A match ends on a token boundary as it starts on one: an ASCII letter or digit right
+        # after the number refuses the whole token rather than cutting an identifier out of it.
+        for tag in ("CVE-2024-1234evil", "cve-2024-1234X", "CWE-79suffix"):
+            with self.subTest(tag=tag):
+                result = make_result(properties={"tags": [tag]})
+                item = only_observation(ingest_document(make_log(make_run([result]))))
+                self.assertEqual(item.source_identifiers, ())
+        # Punctuation, an underscore, and a character outside ASCII still end the token, so
+        # the identifier before them is kept.
+        kept = {
+            "CVE-2024-1234.": ("CVE-2024-1234",),
+            "CVE-2024-1234_x": ("CVE-2024-1234",),
+            "(CWE-79)": ("CWE-79",),
+            "CVE-2024-1234,CWE-79": ("CVE-2024-1234", "CWE-79"),
+            "CVE-2024-1234\u212a": ("CVE-2024-1234",),
+            "CWE-79\u00e9": ("CWE-79",),
+        }
+        for tag, expected in kept.items():
+            with self.subTest(tag=tag):
+                result = make_result(properties={"tags": [tag]})
+                item = only_observation(ingest_document(make_log(make_run([result]))))
+                self.assertEqual(item.source_identifiers, expected)
+
     def test_rule_name_is_the_title_when_the_descriptor_has_no_short_description(self) -> None:
         rules = [{"id": "R1", "name": "InsecureHashRule", "fullDescription": {"text": "Long"}}]
         item = only_observation(ingest_document(make_log(make_run([make_result()], rules=rules))))
@@ -4121,7 +4145,7 @@ class SarifDegradedEvidenceTests(unittest.TestCase):
         self.assertEqual(output.observations, ())
         self.assertEqual(
             only_diagnostic(output, "artifact_parse_failed").message,
-            "duplicate JSON object key is prohibited: name",
+            "duplicate JSON object key is prohibited: 'name'",
         )
         self.assertEqual(attribution(output), SARIF_ATTRIBUTION)
 
@@ -4811,6 +4835,37 @@ class SarifPathEquivalenceTests(StoreFixture):
             {"2026-09-01T00:00:00Z"},
         )
         self.assertEqual(persisted.to_json(), stateless.to_json())
+
+    def test_a_rule_text_that_leads_with_its_id_is_prefixed_once_on_both_paths(self) -> None:
+        payload = json.loads((FIXTURES / "codeql-repo.sarif").read_text(encoding="utf-8"))
+        rule = payload["runs"][0]["tool"]["extensions"][0]["rules"][0]
+        self.assertEqual(rule["id"], "js/xss-through-dom")
+        rule["shortDescription"]["text"] = "js/xss-through-dom: DOM text reinterpreted as HTML"
+        path = self.workspace / "prefixed.sarif"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.ingest([path])
+        self.correlate()
+        self.attest(detected_at=REPORT_DETECTED_AT)
+        persisted = compile_vdt_report_from_history(self.repository, options=report_options())
+        stateless = compile_vdt_report(
+            [path], options=report_options(detected_at=REPORT_DETECTED_AT)
+        )
+        for label, report in (("persisted", persisted), ("stateless", stateless)):
+            with self.subTest(path=label):
+                self.assertTrue(report.validation.is_valid)
+                self.assertEqual(
+                    sorted(
+                        item["vulnerabilityDescription"]
+                        for item in report.document["vulnerabilities"]
+                    ),
+                    [
+                        "js/unused-local-variable: Unused variable, import, function or class",
+                        "js/xss-through-dom: DOM text reinterpreted as HTML",
+                    ],
+                )
+                self.assertEqual(report.to_markdown().count("js/xss-through-dom: js/"), 0)
+        self.assertEqual(persisted.to_json(), stateless.to_json())
+        self.assertEqual(persisted.to_markdown(), stateless.to_markdown())
 
 
 # *--- Saturated Caps ---*

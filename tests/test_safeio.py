@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import threading
@@ -295,6 +296,23 @@ class JsonBoundaryTests(unittest.TestCase):
         with self.assertRaises(InputLimitError) as caught:
             parse_json_bounded(payload, IngestLimits(max_json_nodes=3))
         self.assertIn("JSON contains more than 3 values", str(caught.exception))
+
+    def test_a_duplicate_key_is_quoted_and_cut_in_its_message(self) -> None:
+        # The key reaches stderr, so a terminal escape in it arrives escaped and a long one
+        # arrives cut, as a diagnostic detail does.
+        key = json.dumps("\x1b[2J" + "A" * 3000)
+        payload = f"{{{key}:1,{key}:2}}".encode()
+        with self.assertRaises(ValueError) as caught:
+            parse_json_bounded(payload)
+        message = str(caught.exception)
+        self.assertNotIn("\x1b", message)
+        self.assertLessEqual(len(message), 600)
+        self.assertTrue(
+            message.startswith("duplicate JSON object key is prohibited: '\\x1b[2J"), message
+        )
+        self.assertEqual(
+            message, "duplicate JSON object key is prohibited: '\\x1b[2J" + "A" * 509 + "'"
+        )
 
 
 class ReadBoundedTests(unittest.TestCase):

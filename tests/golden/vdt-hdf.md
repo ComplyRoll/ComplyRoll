@@ -44,7 +44,7 @@
 
 ### case-1706b7990cce1346: CVE-2099-0001
 
-- **Description:** CVE-2099-0001: CVE-2099-0001: synthlib: synthetic cross-site scripting in the template renderer
+- **Description:** CVE-2099-0001: synthlib: synthetic cross-site scripting in the template renderer
 - **Detection source:** heimdall-tools
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
 - **Observations without a source timestamp:** obs-57743407f37bbeba0fbac2295ff639f12c27fd77febc41dfc01dbeba65b39519
@@ -60,7 +60,7 @@
 
 ### case-057bbe4ee9dde990: CVE-2099-0102
 
-- **Description:** CVE-2099-0102: CVE-2099-0102: synthcrypt: synthetic heap overflow in the record decoder
+- **Description:** CVE-2099-0102: synthcrypt: synthetic heap overflow in the record decoder
 - **Detection source:** heimdall-tools
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
 - **Observations without a source timestamp:** obs-a339485bcdccdf6217f93567e0f573f5aae57f9c90b6470afad26f35be765547
@@ -76,7 +76,7 @@
 
 ### case-71446ac59461edb8: CVE-2099-0103
 
-- **Description:** CVE-2099-0103: CVE-2099-0103: synthzip: synthetic path traversal on archive extraction
+- **Description:** CVE-2099-0103: synthzip: synthetic path traversal on archive extraction
 - **Detection source:** heimdall-tools
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
 - **Observations without a source timestamp:** obs-a6049562adb7185a3ab4fcf65040462c0bcda7d85cf98ebeafa230fd34305b15
@@ -136,8 +136,8 @@ The operator attested a detection time of 2026-09-01T00:00:00Z for 3 vulnerabili
 
 ## Diagnostics
 
-- **warning** control_attested: control carries attestation data; the disposition comes from its results and the attestation is recorded as metadata (1 occurrence: profiles[1].controls[1]) [inspec-overlay.json]
-- **warning** control_waived: control carries waiver data; the disposition comes from its results and the waiver is recorded as metadata (1 occurrence: profiles[0].controls[5]) [inspec-linux-host.hdf.json]
+- **warning** control_attested: control carries attestation data; the attestation is recorded as metadata and never changes the disposition (1 occurrence: profiles[1].controls[1]) [inspec-overlay.json]
+- **warning** control_waived: control carries waiver data; the waiver is recorded as metadata and never changes the disposition (1 occurrence: profiles[0].controls[5]) [inspec-linux-host.hdf.json]
 - **info** converted_document: platform.name is Heimdall Tools; the source tool is heimdall-tools and the resource is the converter's target (1 occurrence: platform) [saf-trivy-image.hdf.json]
 - **info** impact_zero_not_applicable: impact is 0, so the control is not applicable whatever its results say (1 occurrence: profiles[0].controls[3]; first: results would read OPEN) [inspec-linux-host.hdf.json]
 - **info** profile_control_shadowed: control has no results and the same id carries results in another profile of this run; it yields no observation (2 occurrences: profiles[0].controls[0], profiles[0].controls[1]) [inspec-overlay.json]

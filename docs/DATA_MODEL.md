@@ -175,8 +175,9 @@ uri or logical name as the id), the driver name plus the automation category as 
 and the artifact digest, through the same nine-input recipe as every other artifact
 observation. The result's region, its message text, the producer's `fingerprints` and
 `partialFingerprints`, and its `guid` and `correlationGuid` are recorded as metadata and are
-never identity, so a line move, a reworded message, or a producer's own hashing scheme cannot
-re-mint an observation.
+never identity. A line move, a reworded message, or a producer's own hashing scheme changes the
+log's bytes, so the observation id moves with the artifact digest, as it does for every
+artifact, while the resource and the tracking id are kept.
 
 An HDF observation (ADR 0013) takes its identity from the literal source type `hdf`, the source
 tool `inspec`, or `heimdall-tools` when `platform.name` is `Heimdall Tools`, the control `id` as
@@ -185,7 +186,10 @@ with the root profile name when the document declares no target), the name of th
 the control hangs under as `context_key`, and the artifact digest, through the same nine-input
 recipe. The profile version and `sha256`, the result clocks, the waiver and attestation data, and
 the layer of an overlay that carried the results are recorded as metadata and are never
-identity, so a profile patch or a renamed leaf under the same root cannot re-mint an observation.
+identity. A profile patch or a renamed leaf under the same root changes the document's bytes, so
+the observation id moves with the artifact digest, as it does for every artifact, while the
+tracking id is kept: its context key is the root profile name, and the version, `sha256`, and
+leaf name are not in it.
 
 ### Phase 0 observation identity
 

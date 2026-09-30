@@ -25,7 +25,9 @@ from complyroll.adapters import (
     sarif,
     stig,
 )
+from complyroll.adapters.common import observation_bytes
 from complyroll.adapters.hdf import HDF_MEDIA_TYPE, looks_like_hdf
+from complyroll.adapters.safeio import InputLimitError
 from complyroll.adapters.sarif import SARIF_MEDIA_TYPE
 from complyroll.adapters.stig import (
     CCI_PARSER_VERSION,
@@ -55,6 +57,10 @@ SARIF_ATTRIBUTION = ("complyroll.sarif", SARIF_PARSER_VERSION, SARIF_MEDIA_TYPE)
 # The CKLB adapter's verdict on a SARIF log reaching it under a bare .json name. Dispatch is
 # by suffix alone (ADR 0011, decision 1), so the bytes are never sniffed toward SARIF.
 CKLB_SHAPE_MESSAGE = "JSON has no non-empty 'stigs' array"
+HDF_STIGS_MESSAGE = (
+    "HDF document carries a 'stigs' member; a STIG Viewer checklist is read under a .cklb or "
+    ".json name"
+)
 
 HDF_FIXTURE = FIXTURES / "inspec-linux-host.hdf.json"
 HDF_OVERLAY_FIXTURE = FIXTURES / "inspec-overlay.json"
@@ -661,8 +667,32 @@ class HdfDispatchTests(unittest.TestCase):
         self.assertEqual(self.attribution_of(result), HDF_ATTRIBUTION)
         self.assertEqual(
             [(item.code, item.message) for item in result.errors],
-            [("artifact_parse_failed", "HDF profiles must be a non-empty array")],
+            [("artifact_parse_failed", HDF_STIGS_MESSAGE)],
         )
+
+    def test_a_checklist_and_exec_polyglot_is_read_by_its_name_or_not_at_all(self) -> None:
+        # One document that is both a whole checklist and a whole exec run: an HDF name
+        # refuses it outright, and a bare .json name reads the checklist, never both.
+        polyglot = json.loads(HDF_FIXTURE.read_text(encoding="utf-8"))
+        checklist = json.loads((FIXTURES / "ubuntu-host.cklb").read_text(encoding="utf-8"))
+        for member in ("stigs", "target_data", "title"):
+            polyglot[member] = checklist[member]
+        content = json.dumps(polyglot).encode("utf-8")
+
+        refused = self.ingest_as("scan.hdf.json", content)
+        self.assertFalse(refused.successful)
+        self.assertEqual(refused.observations, ())
+        self.assertEqual(self.attribution_of(refused), HDF_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in refused.errors],
+            [("artifact_parse_failed", HDF_STIGS_MESSAGE)],
+        )
+
+        read = self.ingest_as("scan.json", content)
+        self.assertTrue(read.successful, read.errors)
+        self.assertEqual(self.attribution_of(read), CKLB_ATTRIBUTION)
+        self.assertEqual(len(read.observations), 6)
+        self.assertEqual({item.source_type for item in read.observations}, {"cklb"})
 
     def test_malformed_hdf_is_attributed_to_the_hdf_adapter(self) -> None:
         cases = (
@@ -931,6 +961,35 @@ class CommonHelperMoveTests(unittest.TestCase):
         # resource_type is one of the nine fingerprint inputs, so it must move the identity.
         self.assertNotEqual(host.fingerprint, file.fingerprint)
         self.assertNotEqual(host.observation_id, file.observation_id)
+
+
+class ObservationBytesTests(unittest.TestCase):
+    """observation_bytes admits a size equal to its ceiling or its remaining budget."""
+
+    def setUp(self) -> None:
+        result = ingest_stig_artifact(FIXTURES / "windows-host.ckl", ingested_at=FIRST_INGEST)
+        self.observation = result.observations[0]
+        self.size = len(self.observation.to_canonical_json().encode("utf-8"))
+
+    def test_a_size_equal_to_the_ceiling_is_admitted(self) -> None:
+        size = self.size
+        self.assertEqual(
+            observation_bytes(self.observation, ceiling=size, budget=size, spent=0), size
+        )
+        with self.assertRaisesRegex(
+            InputLimitError, rf"is {size} bytes of canonical JSON; maximum is {size - 1}$"
+        ):
+            observation_bytes(self.observation, ceiling=size - 1, budget=size, spent=0)
+
+    def test_a_size_equal_to_the_remaining_budget_is_admitted(self) -> None:
+        size = self.size
+        self.assertEqual(
+            observation_bytes(self.observation, ceiling=size, budget=7 + size, spent=7), size
+        )
+        with self.assertRaisesRegex(
+            InputLimitError, rf"^artifact yields more than {7 + size - 1} bytes"
+        ):
+            observation_bytes(self.observation, ceiling=size, budget=7 + size - 1, spent=7)
 
 
 if __name__ == "__main__":

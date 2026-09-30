@@ -122,9 +122,9 @@ observations (ADR 0011) enter that model the same way STIG ones do: they feed th
 evaluation and response clocks from the same detection time, and a scanner's severity is
 recorded as evidence and never sets PAIN. HDF observations (ADR 0013), from InSpec or from a
 `saf convert` conversion, enter it the same way. An InSpec waiver never accepts risk in
-ComplyRoll: it is recorded as metadata, the control's results still decide its disposition, and
-acceptance remains an operator's evaluation. An InSpec impact or severity tag is evidence too,
-and never sets PAIN.
+ComplyRoll: it is recorded as metadata and never changes the control's disposition, which the
+results decide unless impact 0 reads not applicable first, and acceptance remains an operator's
+evaluation. An InSpec impact or severity tag is evidence too, and never sets PAIN.
 
 ## Class C operational mapping
 

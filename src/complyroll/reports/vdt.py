@@ -1538,7 +1538,12 @@ def _describe(group: VulnerabilityGroup) -> str:
     title = group.title.strip()
     if not title:
         return group.source_record_id
-    return f"{group.source_record_id}: {title}"
+    # A title that already leads with the record id, as an HDF CVE control's does, is kept
+    # as written rather than prefixed twice; the match is exact and case-sensitive.
+    record_id = group.source_record_id
+    if title == record_id or title.startswith(f"{record_id}: "):
+        return title
+    return f"{record_id}: {title}"
 
 
 def _compute_deadlines(

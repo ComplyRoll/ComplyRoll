@@ -191,7 +191,9 @@ CONVERTED_SUMMARY = (
     "platform.name is Heimdall Tools; the source tool is heimdall-tools and the resource is "
     "the converter's target"
 )
-FALLBACK_SUMMARY = "platform.target_id is absent or blank; the root profile name is the resource"
+FALLBACK_SUMMARY = (
+    "platform.target_id is absent, blank, or not a string; the root profile name is the resource"
+)
 IDENTITY_SUMMARY = "an identity input cannot be used as written"
 NOT_LOADED_SUMMARY = (
     "profile status is not loaded; its controls carry no results and yield error observations"
@@ -201,12 +203,12 @@ INVALID_IMPACT_SUMMARY = (
 )
 INVALID_SEVERITY_SUMMARY = "severity tag is not none, low, medium, high, or critical; ignored"
 WAIVED_SUMMARY = (
-    "control carries waiver data; the disposition comes from its results and the waiver is "
-    "recorded as metadata"
+    "control carries waiver data; the waiver is recorded as metadata and never changes the "
+    "disposition"
 )
 ATTESTED_SUMMARY = (
-    "control carries attestation data; the disposition comes from its results and the "
-    "attestation is recorded as metadata"
+    "control carries attestation data; the attestation is recorded as metadata and never "
+    "changes the disposition"
 )
 IMPACT_ZERO_SUMMARY = "impact is 0, so the control is not applicable whatever its results say"
 INVALID_STATUS_SUMMARY = (
@@ -228,6 +230,10 @@ MISSING_CLOCK_MESSAGE = (
     "source artifact does not declare an observation timestamp; observed_at is unknown"
 )
 NO_OBSERVATIONS_MESSAGE = "HDF document contains no usable controls"
+STIGS_MESSAGE = (
+    "HDF document carries a 'stigs' member; a STIG Viewer checklist is read under a .cklb or "
+    ".json name"
+)
 CYCLE_SUMMARY = "parent_profile links form a cycle"
 DANGLING_SUMMARY = "parent_profile names no profile in this document"
 
@@ -1564,6 +1570,28 @@ class HdfDispositionTests(unittest.TestCase):
                 self.assertEqual(output.diagnostics, ())
                 self.assertEqual(only_observation(output).disposition, PASS)
 
+    def test_impact_zero_decides_before_a_profile_that_did_not_load(self) -> None:
+        output = parse_direct(
+            make_document(
+                make_profile(
+                    controls=[make_control(results=[], impact=0), make_control("SYN-CTL-0002", [])],
+                    status="skipped",
+                    status_message=SKIP_MESSAGE,
+                )
+            )
+        )
+        self.assertEqual(
+            [
+                (item.disposition, metadata(item)["disposition_source"])
+                for item in output.observations
+            ],
+            [(NOT_APPLICABLE, "impact_zero"), (ERROR, "no_results")],
+        )
+        self.assertEqual(
+            diagnostic_codes(output),
+            ["profile_not_loaded", "impact_zero_not_applicable", "source_timestamp_missing"],
+        )
+
     def test_a_passed_result_that_raised_reads_error(self) -> None:
         output = run_control(make_result("passed", exception="NameError", backtrace=BACKTRACE))
         observation = only_observation(output)
@@ -1868,7 +1896,7 @@ class HdfWaiverAttestationTests(unittest.TestCase):
 
     def test_absent_null_or_empty_data_means_no_waiver_or_attestation(self) -> None:
         for member in ("waiver_data", "attestation_data"):
-            for value in (ABSENT, None, {}):
+            for value in (ABSENT, None, {}, [], "", False, 0):
                 with self.subTest(member=member, value=value):
                     output = run_control(make_result("failed"), **{member: value})
                     observation = only_observation(output)
@@ -2021,8 +2049,23 @@ class HdfWaiverAttestationTests(unittest.TestCase):
             coalesced(ATTESTED_SUMMARY, CONTROL_PATH, detail="expired"),
         )
 
+    def test_an_expired_marker_anywhere_among_the_results_says_expired(self) -> None:
+        for trailing in (make_result("passed", ATTESTED_MARKER), make_result("passed")):
+            with self.subTest(trailing=trailing["code_desc"]):
+                output = run_control(
+                    make_result("skipped", "No-op"),
+                    make_result("skipped", EXPIRED_MARKER),
+                    trailing,
+                    attestation_data={"status": "passed"},
+                )
+                self.assertEqual(metadata(only_observation(output))["attested"], "expired")
+                self.assertEqual(
+                    only_diagnostic(output, "control_attested").message,
+                    coalesced(ATTESTED_SUMMARY, CONTROL_PATH, detail="expired"),
+                )
+
     def test_the_marker_is_an_ordinary_result_without_attestation_data(self) -> None:
-        for attestation in (ABSENT, None, {}):
+        for attestation in (ABSENT, None, {}, [], "", False, 0):
             with self.subTest(attestation=attestation):
                 output = run_control(
                     make_result(
@@ -2042,6 +2085,97 @@ class HdfWaiverAttestationTests(unittest.TestCase):
                 )
                 self.assertNotIn("attested", metadata(observation))
                 self.assertEqual(output.diagnostics, ())
+
+    def test_a_non_object_attestation_is_recorded_and_its_marker_lends_nothing(self) -> None:
+        results = (
+            make_result("skipped", "Synthetic converted check", ""),
+            make_result(
+                "failed",
+                ATTESTED_MARKER,
+                "2026-09-05T09:00:00Z",
+                message="Updated By: Synthetic Person",
+            ),
+        )
+        for attestation in (["x"], "x", True, 5):
+            with self.subTest(attestation=attestation):
+                output = run_control(*results, attestation_data=attestation)
+                observation = only_observation(output)
+                recorded = metadata(observation)
+                self.assertEqual(observation.disposition, OPEN)
+                self.assertIsNone(observation.observed_at)
+                self.assertNotIn("failed_results", recorded)
+                self.assertNotIn("failure_messages", recorded)
+                self.assertNotIn("Updated By", observation.to_canonical_json())
+                self.assertEqual(
+                    {key: value for key, value in recorded.items() if key.startswith("attest")},
+                    {"attested": "true"},
+                )
+                self.assertEqual(
+                    only_diagnostic(output, "control_attested").message,
+                    coalesced(
+                        ATTESTED_SUMMARY, CONTROL_PATH, detail="attestation_data is not an object"
+                    ),
+                )
+                self.assertEqual(
+                    diagnostic_codes(output), ["control_attested", "source_timestamp_missing"]
+                )
+        # An empty value is no attestation, so the same marker is an ordinary failure.
+        for attestation in ([], ""):
+            with self.subTest(attestation=attestation):
+                output = run_control(*results, attestation_data=attestation)
+                observation = only_observation(output)
+                self.assertEqual(observation.observed_at, datetime(2026, 9, 5, 9, tzinfo=UTC))
+                self.assertEqual(metadata(observation)["failed_results"], encoded(ATTESTED_MARKER))
+                self.assertEqual(
+                    metadata(observation)["failure_messages"],
+                    encoded("Updated By: Synthetic Person"),
+                )
+                self.assertNotIn("attested", metadata(observation))
+                self.assertEqual(output.diagnostics, ())
+
+    def test_a_non_object_waiver_is_recorded_with_no_member_read(self) -> None:
+        for waiver in (["x"], "x", True, 5):
+            with self.subTest(waiver=waiver):
+                output = run_control(make_result("failed"), waiver_data=waiver)
+                observation = only_observation(output)
+                self.assertEqual(observation.disposition, OPEN)
+                self.assertEqual(
+                    {
+                        key: value
+                        for key, value in metadata(observation).items()
+                        if key.startswith("waive")
+                    },
+                    {"waived": "true"},
+                )
+                self.assertEqual(
+                    diagnostic_lines(output),
+                    [
+                        (
+                            DiagnosticLevel.WARNING,
+                            "control_waived",
+                            coalesced(
+                                WAIVED_SUMMARY, CONTROL_PATH, detail="waiver_data is not an object"
+                            ),
+                        )
+                    ],
+                )
+
+    def test_an_expired_marker_under_a_non_object_attestation_names_both(self) -> None:
+        output = run_control(
+            make_result("skipped", "No-op"),
+            make_result("skipped", EXPIRED_MARKER, "2026-09-06T18:00:00Z"),
+            attestation_data="x",
+        )
+        observation = only_observation(output)
+        self.assertEqual(observation.disposition, NOT_REVIEWED)
+        self.assertEqual(observation.observed_at, CLOCK_AT)
+        self.assertEqual(metadata(observation)["attested"], "expired")
+        self.assertEqual(
+            only_diagnostic(output, "control_attested").message,
+            coalesced(
+                ATTESTED_SUMMARY, CONTROL_PATH, detail="expired; attestation_data is not an object"
+            ),
+        )
 
     def test_a_converted_control_attested_later_stays_clockless(self) -> None:
         output = run_control(
@@ -2268,6 +2402,14 @@ class HdfIdentifierTests(unittest.TestCase):
             ),
             ("SYN-V-100001", "SYN-V-100001r1_rule", "SYN-CTL-0001"),
         )
+        # The three STIG ids are scalars, so an array, a number, or a bool is dropped unnamed.
+        dropped = run_control(
+            make_result(), tags={"gid": ["SYN-V-100001"], "rid": 100001, "stig_id": True}
+        )
+        self.assertFalse(
+            {"group_id", "rule_id", "stig_id"} & set(metadata(only_observation(dropped)))
+        )
+        self.assertEqual(diagnostic_codes(dropped), [])
 
     def test_seventy_ccis_are_cut_to_sixty_four_and_the_cut_is_named(self) -> None:
         ccis = [f"CCI-9000{index:02d}" for index in range(70)]
@@ -2293,6 +2435,16 @@ class HdfIdentifierTests(unittest.TestCase):
         self.assertEqual(observation.source_identifiers, tuple(ccis))
         self.assertNotIn("CVE-2099-0001", observation.source_identifiers)
         self.assertTrue(cve_may_be_missing(observation))
+
+    def test_sixty_four_ccis_and_no_cve_still_say_a_cve_may_be_missing(self) -> None:
+        # The cut item sorts after every CVE, so the kept list cannot show whether one was cut.
+        ccis = [f"CCI-9000{index:02d}" for index in range(MAX_LIST_ITEMS)]
+        for tags in ({"cwe": ["CWE-79"]}, {"cve": ["GHSA-abcd-efgh-2345"]}):
+            with self.subTest(tags=tags):
+                observation = observe(make_result("failed"), tags={"cci": ccis, **tags})
+                self.assertEqual(observation.source_identifiers, tuple(ccis))
+                self.assertEqual(metadata(observation)["truncated"], encoded("source_identifiers"))
+                self.assertTrue(cve_may_be_missing(observation))
 
     def test_sixty_four_ccis_alone_are_not_cut(self) -> None:
         ccis = [f"CCI-9000{index:02d}" for index in range(MAX_LIST_ITEMS)]
@@ -2377,10 +2529,8 @@ class HdfOverlayTests(unittest.TestCase):
                     "impact_zero_not_applicable",
                     coalesced(
                         IMPACT_ZERO_SUMMARY,
-                        "profiles[0].controls[3]",
-                        "profiles[1].controls[3]",
                         "profiles[2].controls[3]",
-                        detail="results would read ERROR",
+                        detail="results would read OPEN",
                     ),
                 ),
                 (
@@ -2545,6 +2695,524 @@ class HdfOverlayTests(unittest.TestCase):
             ],
         )
 
+    def test_each_impact_zero_line_names_a_leaf_copy_that_yields_an_observation(self) -> None:
+        records = ("SYN-OVL-0101", "SYN-OVL-0102", "SYN-OVL-0103")
+
+        def layer(name: str, with_results: bool, **members: Any) -> dict[str, Any]:
+            controls = [
+                layered_control(record, [make_result("failed")] if with_results else [], impact=0)
+                for record in records
+            ]
+            return make_profile(name, controls, **members)
+
+        output = parse_direct(
+            make_document(
+                layer("synthetic-wrapper", False),
+                layer("synthetic-middle", False, parent_profile="synthetic-wrapper"),
+                layer("synthetic-leaf", True, parent_profile="synthetic-middle"),
+            )
+        )
+        self.assertEqual(
+            [item.disposition for item in output.observations], [NOT_APPLICABLE] * len(records)
+        )
+        self.assertEqual(
+            only_diagnostic(output, "impact_zero_not_applicable").message,
+            coalesced(
+                IMPACT_ZERO_SUMMARY,
+                *(f"profiles[2].controls[{index}]" for index in range(len(records))),
+                detail="results would read OPEN",
+            ),
+        )
+
+    def test_an_impact_zero_line_stays_when_the_artifact_fails_closed(self) -> None:
+        # An ERROR withholds every observation but no diagnostic, so both emission sites still
+        # write the line, and it then names a copy that yields nothing.
+        malformed = make_control("SYN-CTL-0002", results=["Synthetic text"])
+        for results, rolled in (([make_result("failed")], "OPEN"), ([], "ERROR")):
+            with self.subTest(rolled=rolled):
+                output = parse_direct(
+                    document_with(make_control(results=results, impact=0), malformed)
+                )
+                self.assertEqual(output.observations, ())
+                self.assertEqual(
+                    sorted(diagnostic_codes(output)),
+                    ["impact_zero_not_applicable", "invalid_control"],
+                )
+                self.assertEqual(
+                    only_diagnostic(output, "impact_zero_not_applicable").message,
+                    coalesced(
+                        IMPACT_ZERO_SUMMARY,
+                        "profiles[0].controls[0]",
+                        detail=f"results would read {rolled}",
+                    ),
+                )
+                self.assertEqual(
+                    only_diagnostic(output, "invalid_control").message,
+                    coalesced("result must be an object", "profiles[0].controls[1].results[0]"),
+                )
+
+    def test_the_leaf_copy_impact_governs_over_empty_impact_zero_layers(self) -> None:
+        output = parse_direct(
+            make_document(
+                make_profile("synthetic-wrapper", [layered_control("SYN-OVL-0001", [], impact=0)]),
+                make_profile(
+                    "synthetic-middle",
+                    [layered_control("SYN-OVL-0001", [], impact=0)],
+                    parent_profile="synthetic-wrapper",
+                ),
+                make_profile(
+                    "synthetic-leaf",
+                    [layered_control("SYN-OVL-0001", [make_result("failed")], impact=0.5)],
+                    parent_profile="synthetic-middle",
+                ),
+            )
+        )
+        observation = only_observation(output)
+        self.assertEqual(observation.disposition, OPEN)
+        self.assertEqual(metadata(observation)["disposition_source"], "results")
+        self.assertEqual(metadata(observation)["impact"], "0.5")
+        self.assertEqual(diagnostic_codes(output), ["profile_control_shadowed"])
+
+    def test_a_copy_whose_results_are_all_malformed_still_shadows_an_empty_copy(self) -> None:
+        output = parse_direct(
+            make_document(
+                make_profile("synthetic-root", [make_control(results=[])]),
+                make_profile(
+                    "synthetic-overlay",
+                    [make_control(results=[1])],
+                    parent_profile="synthetic-root",
+                ),
+                target=ABSENT,
+                platform_name="linux",
+            )
+        )
+        self.assertEqual(output.observations, ())
+        self.assertEqual(
+            diagnostic_lines(output),
+            [
+                (
+                    DiagnosticLevel.WARNING,
+                    "resource_identity_fallback",
+                    coalesced(FALLBACK_SUMMARY, "platform"),
+                ),
+                (
+                    DiagnosticLevel.ERROR,
+                    "invalid_control",
+                    coalesced("result must be an object", "profiles[1].controls[0].results[0]"),
+                ),
+                (
+                    DiagnosticLevel.INFO,
+                    "profile_control_shadowed",
+                    coalesced(SHADOWED_SUMMARY, "profiles[0].controls[0]"),
+                ),
+            ],
+        )
+
+    def test_a_copy_whose_results_are_all_malformed_is_never_shadowed(self) -> None:
+        output = parse_direct(
+            make_document(
+                make_profile("synthetic-root", [make_control(results=[1])]),
+                make_profile(
+                    "synthetic-overlay",
+                    [make_control(results=[make_result()])],
+                    parent_profile="synthetic-root",
+                ),
+                target=ABSENT,
+                platform_name="linux",
+            )
+        )
+        self.assertEqual(output.observations, ())
+        self.assertEqual(
+            diagnostic_lines(output),
+            [
+                (
+                    DiagnosticLevel.WARNING,
+                    "resource_identity_fallback",
+                    coalesced(FALLBACK_SUMMARY, "platform"),
+                ),
+                (
+                    DiagnosticLevel.ERROR,
+                    "invalid_control",
+                    coalesced("result must be an object", "profiles[0].controls[0].results[0]"),
+                ),
+            ],
+        )
+
+
+HANDOVER_WAIVER = {
+    "justification": "Synthetic wrapper waiver.",
+    "expiration_date": "2026-12-31",
+    "run": True,
+    "skipped_due_to_waiver": False,
+}
+HANDOVER_ATTESTATION = {
+    "status": "passed",
+    "explanation": "Synthetic wrapper attestation.",
+    "frequency": "annually",
+    "updated": "2026-09-04",
+    "updated_by": "Riley Example",
+}
+
+
+def chain_of(*controls: dict[str, Any]) -> dict[str, Any]:
+    """Chain one profile per control copy, root first, each the parent of the next."""
+    names = ("synthetic-wrapper", "synthetic-middle")[: len(controls) - 1] + ("synthetic-leaf",)
+    profiles: list[dict[str, Any]] = []
+    parent: Any = ABSENT
+    for name, control in zip(names, controls, strict=True):
+        profiles.append(make_profile(name, [control], parent_profile=parent))
+        parent = name
+    return make_document(*profiles)
+
+
+def group_of(observation: Observation, prefix: str) -> dict[str, str]:
+    """Return the metadata members whose key starts with the prefix."""
+    return {key: value for key, value in metadata(observation).items() if key.startswith(prefix)}
+
+
+class HdfShadowHandoverTests(unittest.TestCase):
+    """A shadowed copy hands its waiver or attestation group to the copies that survive."""
+
+    def test_a_waiver_on_the_empty_root_copy_reaches_the_leaf_observation(self) -> None:
+        for status, disposition in (("failed", OPEN), ("passed", PASS), ("skipped", NOT_REVIEWED)):
+            with self.subTest(status=status):
+                leaf = make_control(results=[make_result(status)])
+                output = parse_direct(
+                    chain_of(make_control(results=[], waiver_data=HANDOVER_WAIVER), leaf)
+                )
+                observation = only_observation(output)
+                baseline = only_observation(parse_direct(chain_of(make_control(results=[]), leaf)))
+                self.assertEqual(observation.disposition, disposition)
+                self.assertEqual(baseline.disposition, disposition)
+                self.assertEqual(
+                    group_of(observation, "waive"),
+                    {
+                        "waived": "true",
+                        "waiver_expiration": "2026-12-31",
+                        "waiver_justification": "Synthetic wrapper waiver.",
+                        "waiver_run": "true",
+                        "waiver_skipped": "false",
+                    },
+                )
+                self.assertEqual(metadata(observation)["profile_name"], "synthetic-leaf")
+                self.assertEqual(
+                    diagnostic_lines(output),
+                    [
+                        (
+                            DiagnosticLevel.WARNING,
+                            "control_waived",
+                            coalesced(WAIVED_SUMMARY, "profiles[0].controls[0]"),
+                        ),
+                        (
+                            DiagnosticLevel.INFO,
+                            "profile_control_shadowed",
+                            coalesced(SHADOWED_SUMMARY, "profiles[0].controls[0]"),
+                        ),
+                    ],
+                )
+
+    def test_an_attestation_on_the_empty_root_copy_reaches_the_leaf_observation(self) -> None:
+        leaf = make_control(
+            results=[
+                make_result("skipped", "No-op", "2026-09-05T10:00:00Z"),
+                make_result("passed", ATTESTED_MARKER, "2026-09-04T08:00:00Z"),
+            ]
+        )
+        output = parse_direct(
+            chain_of(make_control(results=[], attestation_data=HANDOVER_ATTESTATION), leaf)
+        )
+        observation = only_observation(output)
+        baseline = only_observation(parse_direct(chain_of(make_control(results=[]), leaf)))
+        self.assertEqual(observation.disposition, PASS)
+        self.assertEqual(baseline.disposition, PASS)
+        self.assertEqual(
+            group_of(observation, "attest"),
+            {
+                "attested": "true",
+                "attestation_explanation": "Synthetic wrapper attestation.",
+                "attestation_frequency": "annually",
+                "attestation_status": "passed",
+                "attestation_updated": "2026-09-04",
+            },
+        )
+        self.assertNotIn("Riley Example", observation.to_canonical_json())
+        # The marker rule reads the copy's own attestation_data. The leaf has none, so its
+        # marker is an ordinary result and lends its clock, as it does with no attestation.
+        self.assertEqual(observation.observed_at, datetime(2026, 9, 4, 8, tzinfo=UTC))
+        self.assertEqual(baseline.observed_at, observation.observed_at)
+        own = only_observation(
+            parse_direct(
+                chain_of(
+                    make_control(results=[]), {**leaf, "attestation_data": HANDOVER_ATTESTATION}
+                )
+            )
+        )
+        self.assertEqual(own.observed_at, datetime(2026, 9, 5, 10, tzinfo=UTC))
+        self.assertEqual(
+            diagnostic_lines(output),
+            [
+                (
+                    DiagnosticLevel.WARNING,
+                    "control_attested",
+                    coalesced(ATTESTED_SUMMARY, "profiles[0].controls[0]"),
+                ),
+                (
+                    DiagnosticLevel.INFO,
+                    "profile_control_shadowed",
+                    coalesced(SHADOWED_SUMMARY, "profiles[0].controls[0]"),
+                ),
+            ],
+        )
+
+    def test_the_outermost_shadowed_carrier_hands_over_each_group(self) -> None:
+        # By content the middle copy sorts first, so only the layer order picks the wrapper's
+        # waiver. Each group is chosen on its own, so the attestation comes from the middle.
+        wrapper = make_control(
+            results=[], waiver_data={"justification": "Synthetic wrapper waiver."}
+        )
+        middle = make_control(
+            results=[],
+            waiver_data={"justification": "Synthetic middle waiver."},
+            attestation_data={"status": "passed", "explanation": "Synthetic middle attestation."},
+        )
+        document = chain_of(wrapper, middle, make_control(results=[make_result("failed")]))
+        artifact = synthetic_artifact(document)
+        rendered = set()
+        for profiles in permutations(document["profiles"]):
+            with self.subTest(order=[profile["name"] for profile in profiles]):
+                observation = only_observation(
+                    parse_direct({**document, "profiles": list(profiles)}, artifact)
+                )
+                self.assertEqual(observation.disposition, OPEN)
+                self.assertEqual(
+                    group_of(observation, "waive"),
+                    {"waived": "true", "waiver_justification": "Synthetic wrapper waiver."},
+                )
+                self.assertEqual(
+                    group_of(observation, "attest"),
+                    {
+                        "attested": "true",
+                        "attestation_explanation": "Synthetic middle attestation.",
+                        "attestation_status": "passed",
+                    },
+                )
+                rendered.add(observation.to_canonical_json())
+        self.assertEqual(len(rendered), 1)
+
+    def test_a_survivor_attestation_is_kept_over_a_shadowed_one(self) -> None:
+        # A shadowed copy has no results and so no marker, so its attestation always reads
+        # "true", and an expired attestation can only be a survivor's own.
+        shadowed = make_control(
+            results=[],
+            attestation_data={"status": "passed", "explanation": "Synthetic shadowed text."},
+        )
+        for marker, status, attested in (
+            (EXPIRED_MARKER, "skipped", "expired"),
+            (ATTESTED_MARKER, "passed", "true"),
+        ):
+            with self.subTest(attested=attested):
+                leaf = make_control(
+                    results=[make_result("skipped", "No-op"), make_result(status, marker)],
+                    attestation_data={"status": "passed", "explanation": "Synthetic leaf text."},
+                )
+                observation = only_observation(parse_direct(chain_of(shadowed, leaf)))
+                self.assertEqual(
+                    group_of(observation, "attest"),
+                    {
+                        "attested": attested,
+                        "attestation_explanation": "Synthetic leaf text.",
+                        "attestation_status": "passed",
+                    },
+                )
+
+    def test_a_non_object_member_on_a_shadowed_copy_is_recorded_with_no_member_read(
+        self,
+    ) -> None:
+        leaf = make_control(results=[make_result("failed")])
+        for member, prefix, flag, code, summary in (
+            ("waiver_data", "waive", "waived", "control_waived", WAIVED_SUMMARY),
+            ("attestation_data", "attest", "attested", "control_attested", ATTESTED_SUMMARY),
+        ):
+            for value in ("Synthetic text", ["Synthetic item"], True, 1):
+                with self.subTest(member=member, value=value):
+                    output = parse_direct(
+                        chain_of(make_control(results=[], **{member: value}), leaf)
+                    )
+                    observation = only_observation(output)
+                    self.assertEqual(group_of(observation, prefix), {flag: "true"})
+                    self.assertEqual(observation.disposition, OPEN)
+                    self.assertEqual(
+                        only_diagnostic(output, code).message,
+                        coalesced(
+                            summary,
+                            "profiles[0].controls[0]",
+                            detail=f"{member} is not an object",
+                        ),
+                    )
+
+    def test_truncated_names_a_cut_group_key_only_from_the_chosen_carrier(self) -> None:
+        cut = {"justification": "J" * OVER_SCALAR}
+        kept = {"justification": "Synthetic waiver."}
+        for wrapper, middle, leaf, named in (
+            (cut, kept, {}, True),
+            (kept, cut, {}, False),
+            (cut, cut, kept, False),
+        ):
+            with self.subTest(wrapper=len(wrapper["justification"]), leaf=bool(leaf)):
+                observation = only_observation(
+                    parse_direct(
+                        chain_of(
+                            make_control(results=[], waiver_data=wrapper),
+                            make_control(results=[], waiver_data=middle),
+                            make_control(results=[make_result("failed")], waiver_data=leaf),
+                        )
+                    )
+                )
+                justification = metadata(observation)["waiver_justification"]
+                self.assertEqual(justification.endswith(TRUNCATION_MARKER), named)
+                self.assertEqual(
+                    "waiver_justification"
+                    in json.loads(metadata(observation).get("truncated", "[]")),
+                    named,
+                )
+
+    def test_a_carrier_hands_over_the_cuts_of_its_group_and_no_other(self) -> None:
+        # The wrapper's title, description, gid, and nist list are cut as well, but they stay
+        # on the shadowed copy, so truncated names only the waiver key the survivor now writes.
+        wrapper = make_control(
+            results=[],
+            title="T" * OVER_SCALAR,
+            desc="D" * OVER_DESCRIPTION,
+            tags={
+                "gid": "G" * OVER_SCALAR,
+                "nist": [numbered("N", index, OVER_ITEM) for index in range(OVER_LIST)],
+            },
+            waiver_data={"justification": "J" * OVER_SCALAR},
+        )
+        leaf = make_control(results=[make_result("failed")], tags={"nist": ["SYN-NIST-001"]})
+        observation = only_observation(parse_direct(chain_of(wrapper, leaf)))
+        self.assertEqual(json.loads(metadata(observation)["truncated"]), ["waiver_justification"])
+        self.assertTrue(metadata(observation)["waiver_justification"].endswith(TRUNCATION_MARKER))
+        self.assertEqual(observation.title, "Synthetic control")
+        self.assertEqual(observation.description, "A synthetic control description.")
+        self.assertEqual(json.loads(metadata(observation)["nist_tags"]), ["SYN-NIST-001"])
+        self.assertNotIn("gid", metadata(observation))
+
+    def test_a_survivor_group_never_blocks_the_other_group_handover(self) -> None:
+        # Each group is decided on its own: a leaf's own waiver keeps the wrapper's waiver out
+        # and still takes the wrapper's attestation, and the reverse.
+        own_waiver = {"justification": "Synthetic leaf waiver."}
+        own_attestation = {"status": "failed", "explanation": "Synthetic leaf attestation."}
+        handed_waiver = {
+            "waived": "true",
+            "waiver_expiration": "2026-12-31",
+            "waiver_justification": "Synthetic wrapper waiver.",
+            "waiver_run": "true",
+            "waiver_skipped": "false",
+        }
+        handed_attestation = {
+            "attested": "true",
+            "attestation_explanation": "Synthetic wrapper attestation.",
+            "attestation_frequency": "annually",
+            "attestation_status": "passed",
+            "attestation_updated": "2026-09-04",
+        }
+        for leaf_members, wrapper_members, waiver, attestation in (
+            (
+                {"waiver_data": own_waiver},
+                {"attestation_data": HANDOVER_ATTESTATION},
+                {"waived": "true", "waiver_justification": "Synthetic leaf waiver."},
+                handed_attestation,
+            ),
+            (
+                {"attestation_data": own_attestation},
+                {"waiver_data": HANDOVER_WAIVER},
+                handed_waiver,
+                {
+                    "attested": "true",
+                    "attestation_explanation": "Synthetic leaf attestation.",
+                    "attestation_status": "failed",
+                },
+            ),
+        ):
+            with self.subTest(leaf=sorted(leaf_members)):
+                leaf = make_control(results=[make_result("failed")], **leaf_members)
+                observation = only_observation(
+                    parse_direct(chain_of(make_control(results=[], **wrapper_members), leaf))
+                )
+                self.assertEqual(observation.disposition, OPEN)
+                self.assertEqual(group_of(observation, "waive"), waiver)
+                self.assertEqual(group_of(observation, "attest"), attestation)
+
+    def test_with_two_leaves_a_shadowed_group_is_used_only_when_no_leaf_carries_one(
+        self,
+    ) -> None:
+        root = make_profile(
+            "synthetic-root",
+            [make_control(results=[], waiver_data={"justification": "Synthetic root waiver."})],
+        )
+
+        def leaf(name: str, **members: Any) -> dict[str, Any]:
+            control = make_control(results=[make_result("failed")], **members)
+            return make_profile(name, [control], parent_profile="synthetic-root")
+
+        for own, expected in (
+            (ABSENT, "Synthetic root waiver."),
+            ({"justification": "Synthetic leaf waiver."}, "Synthetic leaf waiver."),
+        ):
+            document = make_document(
+                root, leaf("synthetic-leaf-a"), leaf("synthetic-leaf-b", waiver_data=own)
+            )
+            artifact = synthetic_artifact(document)
+            for profiles in permutations(document["profiles"]):
+                with self.subTest(expected=expected, order=[item["name"] for item in profiles]):
+                    observation = only_observation(
+                        parse_direct({**document, "profiles": list(profiles)}, artifact)
+                    )
+                    self.assertEqual(metadata(observation)["waiver_justification"], expected)
+                    self.assertEqual(metadata(observation)["occurrence_count"], "2")
+
+    def test_a_shadowed_copy_without_a_group_contributes_nothing(self) -> None:
+        leaf = make_control(results=[make_result("failed")])
+        rich = make_control(
+            results=[],
+            title="Synthetic wrapper title CVE-2099-0001",
+            desc="Synthetic wrapper description.",
+            impact=0.9,
+            tags={"severity": "critical", "nist": ["SYN-NIST-001"], "cci": ["CCI-000366"]},
+        )
+        artifact = synthetic_artifact(chain_of(rich, leaf))
+        plain = only_observation(parse_direct(chain_of(make_control(results=[]), leaf), artifact))
+        observation = only_observation(parse_direct(chain_of(rich, leaf), artifact))
+        self.assertEqual(observation.to_canonical_json(), plain.to_canonical_json())
+        self.assertNotIn("waived", metadata(observation))
+        self.assertNotIn("attested", metadata(observation))
+
+    def test_reversed_profiles_controls_and_results_give_the_same_bytes(self) -> None:
+        # Two waived copies share the wrapper's depth, so content alone breaks their tie.
+        def document() -> dict[str, Any]:
+            wrapper = make_profile(
+                "synthetic-wrapper",
+                [
+                    make_control(results=[], waiver_data={"justification": "Synthetic B."}),
+                    make_control(results=[], waiver_data={"justification": "Synthetic A."}),
+                    make_control(results=[], attestation_data={"status": "passed"}),
+                ],
+            )
+            leaf = make_profile(
+                "synthetic-leaf",
+                [make_control(results=[make_result("failed"), make_result("passed")])],
+                parent_profile="synthetic-wrapper",
+            )
+            return make_document(wrapper, leaf)
+
+        artifact = synthetic_artifact(document())
+        original = only_observation(parse_direct(document(), artifact))
+        reversed_output = only_observation(parse_direct(reversed_everywhere(document()), artifact))
+        self.assertEqual(metadata(original)["waiver_justification"], "Synthetic A.")
+        self.assertEqual(metadata(original)["attested"], "true")
+        self.assertEqual(reversed_output.to_canonical_json(), original.to_canonical_json())
+
 
 # *--- Folding ---*
 
@@ -2629,6 +3297,280 @@ class HdfFoldTests(unittest.TestCase):
                     [item.to_canonical_json() for item in reversed_output.observations],
                     [item.to_canonical_json() for item in original.observations],
                 )
+
+    def test_a_waiver_on_either_copy_is_recorded_whatever_the_order(self) -> None:
+        waived = make_control(
+            results=[make_result("failed")],
+            waiver_data={"justification": "Synthetic waiver justification."},
+        )
+        plain = make_control(results=[make_result("failed")])
+        artifact = synthetic_artifact(document_with(waived, plain))
+        rendered = set()
+        for controls in ((waived, plain), (plain, waived)):
+            with self.subTest(first_waived="waiver_data" in controls[0]):
+                output = parse_direct(document_with(*controls), artifact)
+                observation = only_observation(output)
+                self.assertEqual(metadata(observation)["waived"], "true")
+                self.assertEqual(
+                    metadata(observation)["waiver_justification"],
+                    "Synthetic waiver justification.",
+                )
+                self.assertEqual(
+                    only_diagnostic(output, "control_waived").level, DiagnosticLevel.WARNING
+                )
+                rendered.add(observation.to_canonical_json())
+        self.assertEqual(len(rendered), 1)
+
+    def test_an_attested_copy_keeps_its_attestation_when_its_title_sorts_later(self) -> None:
+        attested = make_control(
+            title="Synthetic title B",
+            results=[make_result("skipped", "No-op"), make_result("passed", ATTESTED_MARKER)],
+            attestation_data={"status": "passed", "explanation": "Synthetic explanation."},
+        )
+        plain = make_control(title="Synthetic title A", results=[make_result("passed")])
+        for controls in ((attested, plain), (plain, attested)):
+            with self.subTest(first_title=controls[0]["title"]):
+                observation = only_observation(parse_direct(document_with(*controls)))
+                self.assertEqual(observation.title, "Synthetic title A")
+                self.assertEqual(
+                    {
+                        key: value
+                        for key, value in metadata(observation).items()
+                        if key.startswith("attest")
+                    },
+                    {
+                        "attested": "true",
+                        "attestation_explanation": "Synthetic explanation.",
+                        "attestation_status": "passed",
+                    },
+                )
+
+    def test_a_waiver_on_one_of_two_leaf_profiles_is_recorded(self) -> None:
+        # The waived leaf's profile name sorts later, so it is never the primary.
+        root = make_profile("synthetic-root", [make_control(results=[])])
+        first = make_profile(
+            "synthetic-leaf-a",
+            [make_control(results=[make_result("passed")])],
+            parent_profile="synthetic-root",
+        )
+        second = make_profile(
+            "synthetic-leaf-b",
+            [
+                make_control(
+                    results=[make_result("failed")],
+                    waiver_data={"justification": "Synthetic waiver justification."},
+                )
+            ],
+            parent_profile="synthetic-root",
+        )
+        for profiles in ((root, first, second), (root, second, first)):
+            with self.subTest(first_leaf=profiles[1]["name"]):
+                observation = only_observation(parse_direct(make_document(*profiles)))
+                self.assertEqual(metadata(observation)["profile_name"], "synthetic-leaf-a")
+                self.assertEqual(metadata(observation)["waived"], "true")
+                self.assertEqual(
+                    metadata(observation)["waiver_justification"],
+                    "Synthetic waiver justification.",
+                )
+                self.assertEqual(observation.disposition, OPEN)
+
+    def test_a_waiver_group_comes_whole_from_the_first_waived_copy(self) -> None:
+        # Copy B sorts first by its expiration, while copy A's justification sorts first, so a
+        # member-by-member choice would pair one copy's justification with the other's date.
+        copy_a = make_control(
+            waiver_data={
+                "justification": "Synthetic justification A.",
+                "expiration_date": "2026-12-31",
+            }
+        )
+        copy_b = make_control(
+            waiver_data={
+                "justification": "Synthetic justification B.",
+                "expiration_date": "2026-01-31",
+            }
+        )
+        plain = make_control()
+        artifact = synthetic_artifact(document_with(copy_a, copy_b, plain))
+        rendered = set()
+        for controls in permutations((copy_a, copy_b, plain)):
+            with self.subTest(order=[control.get("waiver_data") for control in controls]):
+                observation = only_observation(parse_direct(document_with(*controls), artifact))
+                self.assertEqual(
+                    {
+                        key: value
+                        for key, value in metadata(observation).items()
+                        if key.startswith("waive")
+                    },
+                    {
+                        "waived": "true",
+                        "waiver_expiration": "2026-01-31",
+                        "waiver_justification": "Synthetic justification B.",
+                    },
+                )
+                rendered.add(observation.to_canonical_json())
+        self.assertEqual(len(rendered), 1)
+
+    def test_an_expired_attestation_wins_over_a_current_one_with_its_own_members(self) -> None:
+        current = make_control(
+            results=[make_result("skipped", "No-op"), make_result("passed", ATTESTED_MARKER)],
+            attestation_data={"status": "passed", "explanation": "Synthetic current."},
+        )
+        lapsed = make_control(
+            results=[make_result("skipped", "No-op"), make_result("skipped", EXPIRED_MARKER)],
+            attestation_data={"status": "failed", "explanation": "Synthetic lapsed."},
+        )
+        for controls in ((current, lapsed), (lapsed, current)):
+            with self.subTest(first=controls[0]["attestation_data"]["explanation"]):
+                observation = only_observation(parse_direct(document_with(*controls)))
+                self.assertEqual(
+                    {
+                        key: value
+                        for key, value in metadata(observation).items()
+                        if key.startswith("attest")
+                    },
+                    {
+                        "attested": "expired",
+                        "attestation_explanation": "Synthetic lapsed.",
+                        "attestation_status": "failed",
+                    },
+                )
+
+    def test_a_cut_waiver_on_a_later_copy_is_named_in_truncated(self) -> None:
+        plain = make_control(title="Synthetic title A")
+        waived = make_control(
+            title="Synthetic title B", waiver_data={"justification": "J" * OVER_SCALAR}
+        )
+        for controls in ((plain, waived), (waived, plain)):
+            with self.subTest(first_title=controls[0]["title"]):
+                output = parse_direct(document_with(*controls))
+                observation = only_observation(output)
+                self.assertEqual(observation.title, "Synthetic title A")
+                self.assertEqual(
+                    len(metadata(observation)["waiver_justification"]), MAX_METADATA_VALUE_CHARS
+                )
+                self.assertEqual(
+                    metadata(observation)["truncated"], encoded("waiver_justification")
+                )
+
+    def test_a_text_that_spells_the_cut_marker_folds_the_same_either_way(self) -> None:
+        # Both copies write the same justification, and only one was cut, so the cut keys are
+        # the one difference left for the order to decide on.
+        spelled = "J" * (MAX_METADATA_VALUE_CHARS - len(TRUNCATION_MARKER)) + TRUNCATION_MARKER
+        spelling = make_control(waiver_data={"justification": spelled})
+        cut = make_control(waiver_data={"justification": "J" * OVER_SCALAR})
+        artifact = synthetic_artifact(document_with(spelling, cut))
+        rendered = set()
+        for controls in ((spelling, cut), (cut, spelling)):
+            with self.subTest(first_cut=controls[0] is cut):
+                observation = only_observation(parse_direct(document_with(*controls), artifact))
+                self.assertEqual(metadata(observation)["waiver_justification"], spelled)
+                self.assertNotIn("truncated", metadata(observation))
+                rendered.add(observation.to_canonical_json())
+        self.assertEqual(len(rendered), 1)
+
+    def test_a_cut_title_on_a_later_copy_is_not_named(self) -> None:
+        plain = make_control(title="Synthetic title A")
+        long = make_control(title="Z" * (MAX_TITLE_CHARS + 50))
+        for controls in ((plain, long), (long, plain)):
+            with self.subTest(first_title=controls[0]["title"][:17]):
+                observation = only_observation(parse_direct(document_with(*controls)))
+                self.assertEqual(observation.title, "Synthetic title A")
+                self.assertNotIn("truncated", metadata(observation))
+
+    def test_identifiers_cut_only_by_the_fold_are_named_and_warned(self) -> None:
+        first = [f"CCI-{index:06d}" for index in range(1, 41)]
+        second = [f"CCI-{index:06d}" for index in range(41, 81)]
+        output = parse_direct(
+            document_with(
+                make_control(tags={"cci": first}),
+                make_control(
+                    results=[make_result("failed")],
+                    tags={"cci": second, "cve": ["CVE-2099-0001"]},
+                ),
+            )
+        )
+        observation = only_observation(output)
+        self.assertEqual(observation.source_identifiers, tuple((first + second)[:MAX_LIST_ITEMS]))
+        self.assertNotIn("CVE-2099-0001", observation.source_identifiers)
+        self.assertEqual(metadata(observation).get("truncated"), encoded("source_identifiers"))
+        self.assertTrue(cve_may_be_missing(observation))
+        self.assertIn("evidence_truncated", diagnostic_codes(output))
+
+    def test_identifiers_that_fill_the_cap_exactly_across_copies_are_not_cut(self) -> None:
+        first = [f"CCI-{index:06d}" for index in range(1, 33)]
+        second = [f"CCI-{index:06d}" for index in range(33, 65)]
+        output = parse_direct(
+            document_with(
+                make_control(tags={"cci": first}),
+                make_control(results=[make_result("failed")], tags={"cci": second}),
+            )
+        )
+        observation = only_observation(output)
+        self.assertEqual(observation.source_identifiers, tuple(first + second))
+        self.assertNotIn("truncated", metadata(observation))
+        self.assertNotIn("evidence_truncated", diagnostic_codes(output))
+
+    def test_a_list_cut_on_a_later_copy_is_named(self) -> None:
+        cut = make_control(
+            title="Synthetic title B",
+            results=[make_result("failed", "F" * (MAX_LIST_ITEM_CHARS + 50))],
+        )
+        clean = make_control(title="Synthetic title A", results=[make_result("passed")])
+        for controls in ((cut, clean), (clean, cut)):
+            with self.subTest(first_title=controls[0]["title"]):
+                output = parse_direct(document_with(*controls))
+                observation = only_observation(output)
+                self.assertEqual(observation.title, "Synthetic title A")
+                self.assertEqual(metadata(observation)["truncated"], encoded("failed_results"))
+                self.assertEqual(
+                    diagnostic_codes(output), ["evidence_truncated", "results_collapsed"]
+                )
+
+    def test_the_disposition_source_comes_from_the_worst_copy(self) -> None:
+        for results, disposition, source in (
+            (([make_result("passed")], [make_result("failed")]), OPEN, "results"),
+            (([], []), ERROR, "no_results"),
+        ):
+            zero = make_control(title="Synthetic title A", results=results[0], impact=0)
+            other = make_control(title="Synthetic title B", results=results[1])
+            for controls in ((zero, other), (other, zero)):
+                with self.subTest(source=source, first_title=controls[0]["title"]):
+                    observation = only_observation(parse_direct(document_with(*controls)))
+                    self.assertEqual(observation.title, "Synthetic title A")
+                    self.assertEqual(observation.disposition, disposition)
+                    self.assertEqual(metadata(observation)["disposition_source"], source)
+
+    def test_equal_instants_keep_the_same_clock_whatever_the_primary(self) -> None:
+        for titles in (
+            ("Synthetic title A", "Synthetic title B"),
+            ("Synthetic title B", "Synthetic title A"),
+        ):
+            with self.subTest(titles=titles):
+                observation = only_observation(
+                    parse_direct(
+                        document_with(
+                            make_control(
+                                title=titles[0],
+                                results=[make_result(start_time="2026-09-05T10:00:00Z")],
+                            ),
+                            make_control(
+                                title=titles[1],
+                                results=[make_result(start_time="2026-09-05T03:00:00-07:00")],
+                            ),
+                        )
+                    )
+                )
+                assert observation.observed_at is not None
+                self.assertEqual(observation.observed_at.isoformat(), "2026-09-05T03:00:00-07:00")
+
+    def test_the_title_orders_the_copies_before_the_description(self) -> None:
+        first = make_control(title="Synthetic title A", desc="Synthetic description Z.")
+        second = make_control(title="Synthetic title B", desc="Synthetic description A.")
+        for controls in ((first, second), (second, first)):
+            with self.subTest(first_title=controls[0]["title"]):
+                observation = only_observation(parse_direct(document_with(*controls)))
+                self.assertEqual(observation.title, "Synthetic title A")
+                self.assertEqual(observation.description, "Synthetic description Z.")
 
 
 # *--- Identity Stability ---*
@@ -2802,16 +3744,20 @@ class HdfRefusalTests(unittest.TestCase):
             (make_document(version=""), "HDF version must be a non-empty string"),
             (make_document(version="   "), "HDF version must be a non-empty string"),
             (make_document(version=5), "HDF version must be a non-empty string"),
+            # A 'stigs' member refuses the document whatever its value and whatever else it
+            # carries, ahead of every other check.
+            (make_document(stigs=[]), STIGS_MESSAGE),
+            (make_document(stigs=None), STIGS_MESSAGE),
+            ({"stigs": [], "baselines": []}, STIGS_MESSAGE),
+            (make_document(stigs={}, version=ABSENT), STIGS_MESSAGE),
         )
         for payload, message in cases:
             with self.subTest(message=message, payload=str(payload)[:60]):
                 self.assert_parse_failure(ingest_document(payload), message)
 
-    def test_a_checklist_under_the_hdf_suffix_is_refused_for_its_profiles(self) -> None:
+    def test_a_checklist_under_the_hdf_suffix_is_refused_for_its_stigs_member(self) -> None:
         raw = (FIXTURES / "ubuntu-host.cklb").read_bytes()
-        self.assert_parse_failure(
-            ingest_document(None, raw=raw), "HDF profiles must be a non-empty array"
-        )
+        self.assert_parse_failure(ingest_document(None, raw=raw), STIGS_MESSAGE)
 
     def test_each_unusable_profile_is_an_error_at_its_path(self) -> None:
         null_controls = make_profile()
@@ -2979,6 +3925,71 @@ class HdfRefusalTests(unittest.TestCase):
                 (DiagnosticLevel.ERROR, "no_observations", NO_OBSERVATIONS_MESSAGE),
             ],
         )
+        # The converter line is written before the target is read, so a converted document
+        # keeps it beside the refusal.
+        converted = parse_direct(
+            make_document(platform_name=HDF_CONVERTER_PLATFORM, target="synthetic\u2028host")
+        )
+        self.assertEqual(converted.observations, ())
+        self.assertEqual(
+            diagnostic_lines(converted),
+            [
+                (
+                    DiagnosticLevel.INFO,
+                    "converted_document",
+                    coalesced(CONVERTED_SUMMARY, "platform"),
+                ),
+                *diagnostic_lines(output),
+            ],
+        )
+
+    def test_a_profile_name_is_refused_whole_past_its_cap(self) -> None:
+        name = "P" * MAX_IDENTITY_CHARS
+        accepted = only_observation(parse_direct(make_document(make_profile(name))))
+        self.assertEqual(accepted.context_key, name)
+        output = parse_direct(make_document(make_profile(name + "P")))
+        self.assertEqual(output.observations, ())
+        self.assertEqual(
+            diagnostic_lines(output),
+            [
+                (
+                    DiagnosticLevel.ERROR,
+                    "identity_input_invalid",
+                    coalesced(
+                        IDENTITY_SUMMARY,
+                        "profiles[0].name",
+                        detail=f"profile name is {MAX_IDENTITY_CHARS + 1} characters; maximum is "
+                        f"{MAX_IDENTITY_CHARS}",
+                    ),
+                ),
+                (DiagnosticLevel.ERROR, "no_observations", NO_OBSERVATIONS_MESSAGE),
+            ],
+        )
+
+    def test_a_target_id_is_refused_whole_past_its_cap(self) -> None:
+        target = "T" * MAX_IDENTITY_CHARS
+        accepted = only_observation(parse_direct(make_document(target=target)))
+        self.assertEqual(
+            (accepted.resource.resource_type, accepted.resource.resource_id), ("target", target)
+        )
+        output = parse_direct(make_document(target=target + "T"))
+        self.assertEqual(output.observations, ())
+        self.assertEqual(
+            diagnostic_lines(output),
+            [
+                (
+                    DiagnosticLevel.ERROR,
+                    "identity_input_invalid",
+                    coalesced(
+                        IDENTITY_SUMMARY,
+                        "platform.target_id",
+                        detail=f"target_id is {MAX_IDENTITY_CHARS + 1} characters; maximum is "
+                        f"{MAX_IDENTITY_CHARS}",
+                    ),
+                ),
+                (DiagnosticLevel.ERROR, "no_observations", NO_OBSERVATIONS_MESSAGE),
+            ],
+        )
 
 
 # *--- Degraded Evidence ---*
@@ -3066,6 +4077,42 @@ class HdfDegradedEvidenceTests(unittest.TestCase):
             ),
         )
 
+    def test_repeated_list_items_are_counted_once_before_the_cap(self) -> None:
+        output = run_control(
+            *[make_result("failed", "same check", message="same msg")] * (MAX_LIST_ITEMS + 1),
+            make_result("failed", "zz other check", message="zz other msg"),
+            tags={"nist": ["AC-2"] * (MAX_LIST_ITEMS + 1) + ["SI-4"]},
+        )
+        recorded = metadata(only_observation(output))
+        self.assertEqual(recorded["failed_results"], encoded("same check", "zz other check"))
+        self.assertEqual(recorded["failure_messages"], encoded("same msg", "zz other msg"))
+        self.assertEqual(recorded["nist_tags"], encoded("AC-2", "SI-4"))
+        self.assertNotIn("truncated", recorded)
+
+    def test_only_the_descriptions_entry_labelled_default_stands_in_for_desc(self) -> None:
+        entries = [
+            "not an object",
+            {"label": "check", "data": "Synthetic check text."},
+            {"label": "default", "data": "Synthetic default text."},
+            {"label": "fix", "data": "Synthetic fix text."},
+        ]
+        for desc in (None, ""):
+            with self.subTest(desc=desc):
+                observation = observe(make_result(), desc=desc, descriptions=entries)
+                self.assertEqual(observation.description, "Synthetic default text.")
+        observation = observe(
+            make_result(), desc=None, descriptions=[{"label": "fix", "data": "Synthetic fix text."}]
+        )
+        self.assertEqual(observation.description, "")
+        self.assertNotIn("Synthetic fix text.", observation.to_canonical_json())
+
+    def test_a_blank_or_non_string_desc_falls_back_to_the_default_entry(self) -> None:
+        entries = [{"label": "default", "data": "Synthetic default text."}]
+        for desc in ("", "  \n\t ", 5, ["x"]):
+            with self.subTest(desc=desc):
+                observation = observe(make_result(), desc=desc, descriptions=entries)
+                self.assertEqual(observation.description, "Synthetic default text.")
+
 
 # *--- Bounds ---*
 
@@ -3114,6 +4161,16 @@ class HdfBoundsTests(unittest.TestCase):
             "profiles[0].controls[0] contains 3 results; maximum is 2",
             "synthetic.hdf.json",
         )
+        # Each bound admits a count equal to it.
+        accepted = ingest_fixture(LINUX, limits=IngestLimits(max_results_per_run=6))
+        self.assertTrue(accepted.successful, accepted.errors)
+        self.assertEqual(len(accepted.observations), 6)
+        accepted = ingest_document(
+            document_with(make_control(results=[make_result()] * 2)),
+            limits=IngestLimits(max_results_per_run=2),
+        )
+        self.assertTrue(accepted.successful, accepted.errors)
+        self.assertEqual(len(accepted.observations), 1)
 
     def test_the_observation_count_is_bounded(self) -> None:
         self.assert_bound(
@@ -3526,6 +4583,25 @@ class HdfPathEquivalenceTests(StoreFixture):
         self.assertEqual(outcome.attested, CLOCKLESS_TRACKING_IDS)
         self.assertEqual(outcome.not_applicable, CLOCKED_TRACKING_IDS)
         self.assertEqual(outcome.skipped, ())
+
+    def test_a_cve_title_is_stored_as_written_and_reported_with_one_prefix(self) -> None:
+        # The case keeps the converter's title, which already leads with the CVE id, and the
+        # report renders it as it stands rather than naming the id twice.
+        self.persist()
+        title = "CVE-2099-0001: synthlib: synthetic cross-site scripting in the template renderer"
+        created = {
+            record.payload["sourceRecordId"]: record.payload
+            for record in self.repository.read_all()
+            if record.event_type == "case.created"
+        }
+        self.assertEqual(created["CVE-2099-0001"]["title"], title)
+        report = compile_vdt_report_from_history(self.repository, options=report_options())
+        descriptions = {
+            item["vulnerabilityDescription"] for item in report.document["vulnerabilities"]
+        }
+        self.assertIn(title, descriptions)
+        self.assertNotIn("CVE-2099-0001: CVE-2099-0001", report.to_json())
+        self.assertNotIn("CVE-2099-0001: CVE-2099-0001", report.to_markdown())
 
     def test_without_the_attestation_both_paths_stop_on_the_converted_cases(self) -> None:
         self.ingest(HDF_ARTIFACTS)

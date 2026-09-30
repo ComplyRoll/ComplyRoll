@@ -56,9 +56,10 @@ due date the catalog published, which keeps running over a fully mitigated weakn
 catalog by the SHA-256 of the bytes it read. Slice 3 is the HDF adapter (ADR 0013): InSpec runs
 and `saf convert` output in the Heimdall Data Format become observations on the declared target,
 keyed under the root profile, with a failed control OPEN, an errored one ERROR, and impact 0 not
-applicable. Waivers and attestations are recorded as metadata, and only results decide a
-disposition, the one `saf attest apply` appends included. An overlay's empty wrapper copies give
-way to the copy that ran. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
+applicable. Waivers and attestations are recorded as metadata and never change a
+disposition: the results decide it, the one `saf attest apply` appends included, except that
+impact 0 reads not applicable first. An overlay's empty wrapper copies give way to the copy that
+ran. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
 
 ## Quick start
 
@@ -271,7 +272,8 @@ and digest. Assessors do not configure or operate ComplyRoll on a provider's beh
   KEV enrichment, an operator-supplied catalog that is never fetched, bundled, or stored and
   is pinned in the report by the digest of its bytes; 0013 adds the HDF adapter, keyed on the
   declared target and the root profile, with waivers and attestations recorded as metadata and
-  only results deciding a disposition)
+  never changing a disposition, which the results decide unless impact 0 reads not applicable
+  first)
 - [`examples/`](examples/): the fixture-to-report demo inputs
 - [`AGENTS.md`](AGENTS.md): repository rules and development commands
 

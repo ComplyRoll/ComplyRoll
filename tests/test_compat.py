@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -11,6 +12,16 @@ from complyroll.compat.stigroll import Finding, main, render_csv, render_markdow
 TEST_ROOT = Path(__file__).parent
 FIXTURES = TEST_ROOT / "fixtures"
 GOLDEN = TEST_ROOT / "golden"
+# A checklist under each SARIF or HDF name, and the refusal its adapter gives it.
+REFUSED_CHECKLISTS = (
+    (
+        "checklist.hdf.json",
+        "HDF document carries a 'stigs' member; a STIG Viewer checklist is read under a "
+        ".cklb or .json name",
+    ),
+    ("checklist.sarif", "SARIF version must be the string 2.1.0"),
+    ("checklist.sarif.json", "SARIF version must be the string 2.1.0"),
+)
 
 
 class StigrollCompatibilityTests(unittest.TestCase):
@@ -105,6 +116,57 @@ class StigrollCompatibilityTests(unittest.TestCase):
                     "only, skipping\n"
                     "error: no findings parsed from any input\n",
                 )
+
+    def run_on(self, name: str, content: bytes, *arguments: str) -> tuple[int, str, str]:
+        """Run the CLI on one file written under the given name, then the given arguments."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / name
+            path.write_bytes(content)
+            return self.run_cli([str(path), *arguments])
+
+    def test_a_refused_checklist_says_why_and_is_never_named_as_a_log_or_document(self) -> None:
+        # A file that fails under a SARIF or HDF name is neither, so it is told why as a
+        # checklist is, rather than skipped as the log or document it could not be read as.
+        checklist = (FIXTURES / "ubuntu-host.cklb").read_bytes()
+        for name, message in REFUSED_CHECKLISTS:
+            with self.subTest(name=name):
+                result, stdout, stderr = self.run_on(name, checklist)
+                self.assertEqual(result, 1)
+                self.assertEqual(stdout, "")
+                self.assertEqual(
+                    stderr,
+                    f"warning: could not parse {name}: {message}\n"
+                    "error: no findings parsed from any input\n",
+                )
+
+    def test_malformed_json_under_a_sarif_or_hdf_name_names_the_decode_error(self) -> None:
+        try:
+            json.loads("{")
+        except json.JSONDecodeError as exc:
+            decode_error = str(exc)
+        for name in ("malformed.hdf.json", "malformed.sarif", "malformed.sarif.json"):
+            with self.subTest(name=name):
+                result, stdout, stderr = self.run_on(name, b"{")
+                self.assertEqual(result, 1)
+                self.assertEqual(stdout, "")
+                self.assertEqual(
+                    stderr,
+                    f"warning: could not parse {name}: {decode_error}\n"
+                    "error: no findings parsed from any input\n",
+                )
+                self.assertNotIn("skipping", stderr)
+
+    def test_a_malformed_sarif_or_hdf_file_leaves_the_checklist_rollup_unchanged(self) -> None:
+        checklist = str(FIXTURES / "ubuntu-host.cklb")
+        alone, expected, quiet = self.run_cli([checklist, "--format", "csv"])
+        self.assertEqual((alone, quiet), (0, ""))
+        for name in ("malformed.hdf.json", "malformed.sarif", "malformed.sarif.json"):
+            with self.subTest(name=name):
+                result, stdout, stderr = self.run_on(name, b"{", checklist, "--format", "csv")
+                self.assertEqual(result, 0)
+                self.assertEqual(stdout, expected)
+                self.assertTrue(stderr.startswith(f"warning: could not parse {name}: "), stderr)
+                self.assertEqual(stderr.count("\n"), 1)
 
     def test_json_matches_original_stigroll_golden_output(self) -> None:
         inputs = [

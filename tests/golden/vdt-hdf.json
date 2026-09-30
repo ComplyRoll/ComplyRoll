@@ -15,7 +15,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-1706b7990cce1346",
-      "vulnerabilityDescription": "CVE-2099-0001: CVE-2099-0001: synthlib: synthetic cross-site scripting in the template renderer",
+      "vulnerabilityDescription": "CVE-2099-0001: synthlib: synthetic cross-site scripting in the template renderer",
       "x-complyroll": {
         "deadlines": [
           {
@@ -64,7 +64,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-057bbe4ee9dde990",
-      "vulnerabilityDescription": "CVE-2099-0102: CVE-2099-0102: synthcrypt: synthetic heap overflow in the record decoder",
+      "vulnerabilityDescription": "CVE-2099-0102: synthcrypt: synthetic heap overflow in the record decoder",
       "x-complyroll": {
         "deadlines": [
           {
@@ -112,7 +112,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-71446ac59461edb8",
-      "vulnerabilityDescription": "CVE-2099-0103: CVE-2099-0103: synthzip: synthetic path traversal on archive extraction",
+      "vulnerabilityDescription": "CVE-2099-0103: synthzip: synthetic path traversal on archive extraction",
       "x-complyroll": {
         "deadlines": [
           {
@@ -285,13 +285,13 @@
         "code": "control_attested",
         "level": "warning",
         "location": "inspec-overlay.json",
-        "message": "control carries attestation data; the disposition comes from its results and the attestation is recorded as metadata (1 occurrence: profiles[1].controls[1])"
+        "message": "control carries attestation data; the attestation is recorded as metadata and never changes the disposition (1 occurrence: profiles[1].controls[1])"
       },
       {
         "code": "control_waived",
         "level": "warning",
         "location": "inspec-linux-host.hdf.json",
-        "message": "control carries waiver data; the disposition comes from its results and the waiver is recorded as metadata (1 occurrence: profiles[0].controls[5])"
+        "message": "control carries waiver data; the waiver is recorded as metadata and never changes the disposition (1 occurrence: profiles[0].controls[5])"
       },
       {
         "code": "converted_document",

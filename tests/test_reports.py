@@ -13,7 +13,7 @@ from typing import Literal, overload
 
 from complyroll import __version__
 from complyroll.adapters import DiagnosticLevel, IngestResult, ingest_stig_artifact
-from complyroll.correlation import group_open_observations
+from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.models import CaseStatus
 from complyroll.policy import CertificationClass
 from complyroll.reports import (
@@ -44,6 +44,7 @@ from complyroll.reports import (
     project_historical,
     project_vdt,
 )
+from complyroll.reports.vdt import _describe
 from complyroll.schemas import ReportSchema, validate_bundled_report
 
 MIXED_TIMESTAMP_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
@@ -1872,6 +1873,39 @@ class RenderingParityTests(unittest.TestCase):
             options=options(),
             evaluations=load_evaluations(EXAMPLES / "evaluations.json"),
         )
+
+    def test_the_description_names_the_record_id_exactly_once(self) -> None:
+        record_id = "SYN-RULE-1"
+        cases = (
+            ("SYN-RULE-1: synthetic text", "SYN-RULE-1: synthetic text"),
+            ("  SYN-RULE-1: synthetic text  ", "SYN-RULE-1: synthetic text"),
+            ("synthetic text", "SYN-RULE-1: synthetic text"),
+            ("Semgrep Finding: SYN-RULE-1", "SYN-RULE-1: Semgrep Finding: SYN-RULE-1"),
+            ("", "SYN-RULE-1"),
+            ("   ", "SYN-RULE-1"),
+            ("SYN-RULE-1", "SYN-RULE-1"),
+            # The match is exact and case-sensitive, and it needs the separator.
+            ("syn-rule-1: synthetic text", "SYN-RULE-1: syn-rule-1: synthetic text"),
+            ("SYN-RULE-1:synthetic text", "SYN-RULE-1: SYN-RULE-1:synthetic text"),
+            ("SYN-RULE-10: synthetic text", "SYN-RULE-1: SYN-RULE-10: synthetic text"),
+            ("SYN-RULE-1 synthetic text", "SYN-RULE-1: SYN-RULE-1 synthetic text"),
+        )
+        for title, expected in cases:
+            with self.subTest(title=title):
+                group = VulnerabilityGroup(
+                    tracking_id="case-0000000000000000",
+                    source_type="synthetic",
+                    source_record_id=record_id,
+                    context_key="synthetic-context",
+                    observations=(),
+                    resources=(),
+                    source_identifiers=(),
+                    title=title,
+                    description="",
+                    earliest_observed_at=None,
+                    detection_sources=(),
+                )
+                self.assertEqual(_describe(group), expected)
 
     def test_every_vulnerability_has_a_markdown_detail_section(self) -> None:
         markdown = self.report.to_markdown()

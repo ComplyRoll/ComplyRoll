@@ -1939,6 +1939,23 @@ class PersistedIngestTests(PersistedStoreTestCase):
         self.assertTrue(err.startswith("error: "))
         self.assertFalse(self.database.exists())
 
+    def test_a_duplicate_key_never_writes_a_terminal_escape_to_stderr(self) -> None:
+        # The duplicated key is untrusted text, and the refusal that names it is printed.
+        artifact = self.workspace / "escape.hdf.json"
+        key = json.dumps("\x1b[2J\x1b]0;synthetic\x07" + "A" * 3000)
+        artifact.write_text(f"{{{key}:1,{key}:2}}", encoding="utf-8")
+
+        code, out, err = run(["ingest", str(artifact), "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(
+            "error: artifact_parse_failed: duplicate JSON object key is prohibited: ", err
+        )
+        self.assertNotIn("\x1b", err)
+        self.assertNotIn("\x07", err)
+        self.assertFalse(self.database.exists())
+
     def test_a_failing_second_artifact_leaves_no_store_behind(self) -> None:
         # Every artifact is parsed before the store is opened, so the first artifact's
         # observations are never recorded and no database file is created at all.

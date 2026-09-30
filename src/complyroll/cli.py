@@ -176,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     ingest.add_argument(
-        "artifacts", nargs="+", metavar="ARTIFACT", help="CKLB, CKL, XCCDF, ARF, or SARIF file"
+        "artifacts", nargs="+", metavar="ARTIFACT", help="CKLB, CKL, XCCDF, ARF, SARIF, or HDF file"
     )
     _add_database_option(ingest, "event store to append to, created when it does not exist")
     ingest.add_argument(
@@ -315,7 +315,7 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
     """
 
     parser.add_argument(
-        "artifacts", nargs="*", metavar="ARTIFACT", help="CKLB, CKL, XCCDF, ARF, or SARIF file"
+        "artifacts", nargs="*", metavar="ARTIFACT", help="CKLB, CKL, XCCDF, ARF, SARIF, or HDF file"
     )
     parser.add_argument(
         "--db",

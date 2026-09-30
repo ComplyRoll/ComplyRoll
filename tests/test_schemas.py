@@ -30,6 +30,7 @@ GOLDEN = TEST_ROOT / "golden" / "ver-schema-examples.json"
 COMPILED_GOLDENS = (
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-fixtures.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-sarif.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-hdf.json"),
     (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-fixtures.json"),
 )
@@ -271,8 +272,8 @@ class CompiledGoldenValidationTests(unittest.TestCase):
     """The compiler's own goldens satisfy the official schemas.
 
     `ver-schema-examples.json` holds hand-written examples; the compiled goldens in
-    `COMPILED_GOLDENS` are what ComplyRoll emits (two VDT goldens, one from STIG
-    artifacts and one from SARIF logs, plus the AVI and historical goldens), so
+    `COMPILED_GOLDENS` are what ComplyRoll emits (three VDT goldens, from STIG
+    artifacts, SARIF logs and HDF documents, plus the AVI and historical goldens), so
     validating each against its own schema here ties the projections to the schemas
     without going through the report compiler.
     """

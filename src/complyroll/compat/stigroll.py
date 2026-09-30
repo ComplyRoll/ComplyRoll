@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from complyroll.adapters import SarifAdapter, ingest_stig_artifact, load_cci_control_map
+from complyroll.adapters import HdfAdapter, SarifAdapter, ingest_stig_artifact, load_cci_control_map
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
 
 SEVERITY_TO_CAT = {
@@ -308,6 +308,15 @@ def main(argv: list[str] | None = None) -> int:
             # named and skipped rather than rolled up as nothing (ADR 0011).
             print(
                 f"warning: {path.name} is a SARIF log; stigroll rolls up STIG checklists "
+                "only, skipping",
+                file=sys.stderr,
+            )
+            continue
+        if result.artifact is not None and result.artifact.parser_name == HdfAdapter.name:
+            # An HDF document's controls are not checklist rows either, and a bare .json one
+            # would otherwise be told it has no 'stigs' key (ADR 0013).
+            print(
+                f"warning: {path.name} is an HDF document; stigroll rolls up STIG checklists "
                 "only, skipping",
                 file=sys.stderr,
             )

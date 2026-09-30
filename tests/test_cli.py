@@ -1637,6 +1637,114 @@ class PersistedSarifRoundTripTests(PersistedStoreTestCase):
         self.assertIn("0.1.1", out)
 
 
+class PersistedHdfRoundTripTests(PersistedStoreTestCase):
+    """An HDF document ingested into a store reports exactly as it reports statelessly.
+
+    `inspec-linux-host.hdf.json` is native InSpec output whose results carry start times, so
+    neither path needs a detection attestation, and it carries the errored check that both
+    paths must name as an unresolved observation rather than report as a vulnerability
+    (ADR 0013).
+    """
+
+    HDF = FIXTURES / "inspec-linux-host.hdf.json"
+    INGESTED_AT = "2026-09-15T12:00:00Z"
+    OPTIONS = (
+        "--class",
+        "C",
+        "--package-uri",
+        "https://example.test/cpo",
+        "--from",
+        "2026-09-01T00:00:00Z",
+        "--to",
+        "2026-09-30T23:59:59Z",
+        "--as-of",
+        "2026-09-15T12:00:00Z",
+    )
+    UNRESOLVED = (
+        "warning: unresolved_observation: SYN-LNX-0005 on "
+        "3f0c9a2e-6d4b-4c1e-9a7b-2f1e8d5c4b3a has disposition error"
+    )
+
+    def ingest_hdf(self) -> tuple[str, str]:
+        return self.succeeds(
+            [
+                "ingest",
+                str(self.HDF),
+                "--db",
+                str(self.database),
+                "--as-of",
+                self.INGESTED_AT,
+                "--actor",
+                "golden",
+            ]
+        )
+
+    def test_a_persisted_hdf_report_matches_the_stateless_report_byte_for_byte(self) -> None:
+        out, err = self.ingest_hdf()
+
+        self.assertEqual(out, "inspec-linux-host.hdf.json: recorded 6 observation(s)\n")
+        self.assertIn("warning: control_waived", err)
+        self.assertIn("info: impact_zero_not_applicable", err)
+
+        persisted_json = self.workspace / "persisted.json"
+        persisted_markdown = self.workspace / "persisted.md"
+        _, err = self.succeeds(
+            [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                *self.OPTIONS,
+                "-o",
+                str(persisted_json),
+                "--markdown",
+                str(persisted_markdown),
+            ]
+        )
+
+        self.assertIn(self.UNRESOLVED, err)
+
+        stateless_json = self.workspace / "stateless.json"
+        stateless_markdown = self.workspace / "stateless.md"
+        _, err = self.succeeds(
+            [
+                "report",
+                "vdt",
+                str(self.HDF),
+                *self.OPTIONS,
+                "-o",
+                str(stateless_json),
+                "--markdown",
+                str(stateless_markdown),
+            ]
+        )
+
+        self.assertIn(self.UNRESOLVED, err)
+        self.assertEqual(persisted_json.read_bytes(), stateless_json.read_bytes())
+        self.assertEqual(persisted_markdown.read_bytes(), stateless_markdown.read_bytes())
+        document = json.loads(persisted_json.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [item["providerTrackingId"] for item in document["vulnerabilities"]],
+            ["case-181b4b18c88fe895"],
+        )
+        self.assertEqual(document["x-complyroll"]["parserVersions"], {"complyroll.hdf": "1"})
+        self.assertIsNone(document["x-complyroll"]["detectionTimeAttestation"])
+
+    def test_the_persisted_hdf_report_validates_against_the_official_schema(self) -> None:
+        self.ingest_hdf()
+        output = self.workspace / "report.json"
+        self.succeeds(
+            ["report", "vdt", "--db", str(self.database), *self.OPTIONS, "-o", str(output)]
+        )
+
+        code, out, err = run(["validate", str(output), "--schema", "vulnerability-detail"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        self.assertTrue(out.startswith("valid: https://fedramp.gov/schemas/"))
+        self.assertIn("0.1.1", out)
+
+
 class PersistedAcceptedSequenceTests(PersistedStoreTestCase):
     """The documented sequence with `evaluations-accepted.json` rebuilds the new goldens.
 
@@ -2933,7 +3041,7 @@ class HelpTextTests(unittest.TestCase):
     def test_both_artifact_arguments_name_every_accepted_format(self) -> None:
         # ARF has been ingested since Phase 0 and the help text never said so, so an
         # operator holding one had no way to know the command would read it. SARIF joined
-        # the list with ADR 0011.
+        # the list with ADR 0011 and HDF with ADR 0013.
         for argv in (
             ["ingest"],
             ["report", "vdt"],
@@ -2945,7 +3053,8 @@ class HelpTextTests(unittest.TestCase):
 
                 self.assertIn("ARF", text)
                 self.assertIn("SARIF", text)
-                self.assertIn("CKLB, CKL, XCCDF, ARF, or SARIF file", text)
+                self.assertIn("HDF", text)
+                self.assertIn("CKLB, CKL, XCCDF, ARF, SARIF, or HDF file", text)
 
     def test_the_report_listing_names_every_command_with_its_rule(self) -> None:
         text = unwrapped_help_text(["report"])

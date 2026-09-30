@@ -14,11 +14,23 @@ import json
 import re
 import tempfile
 import unittest
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime, timedelta, timezone
+from itertools import permutations
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+from test_replay import INGESTED_AT, RATIONALE, StoreFixture
+from test_reports import summary_counts
+from test_sarif import (
+    GOLDEN,
+    REPORT_AS_OF,
+    REPORT_DETECTED_AT,
+    REPORT_PERIOD_FROM,
+    report_options,
+)
 
 from complyroll.adapters import IngestLimits, ingest_stig_artifact
 from complyroll.adapters import hdf as hdf_module
@@ -54,9 +66,26 @@ from complyroll.adapters.hdf import (
 )
 from complyroll.cli import main
 from complyroll.correlation import tracking_id_for
+from complyroll.history import (
+    attest_detection,
+    audit_history,
+    correlate_cases,
+    fold_all_cases,
+    record_ingest,
+)
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
+from complyroll.reports import (
+    CompiledVdtReport,
+    ReportCompileError,
+    compile_avi_report,
+    compile_avi_report_from_history,
+    compile_historical_report,
+    compile_historical_report_from_history,
+    compile_vdt_report,
+    compile_vdt_report_from_history,
+)
 from complyroll.reports.kev import cve_may_be_missing
-from complyroll.store import MAX_EVENT_JSON_BYTES
+from complyroll.store import MAX_EVENT_JSON_BYTES, SQLiteEventStore
 
 # *--- Configuration ---*
 
@@ -122,6 +151,28 @@ TRIVY_TARGET = "registry.example.test/web:1.4.2"
 OVERLAY_TARGET = "7d2e4f10-3b6a-4c8d-9e1f-5a6b7c8d9e0f"
 CORNERS_TARGET = "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"
 PHOENIX = timezone(timedelta(hours=-7))
+
+# The HDF goldens: fixtures 1 to 3 compiled with test_sarif.py's `report_options` (ADR 0013).
+HDF_ARTIFACTS = (FIXTURES / LINUX, FIXTURES / TRIVY, FIXTURES / OVERLAY)
+# Tracking ids in golden order, which is source record order: the three converted Trivy
+# cases, then the native Linux and overlay cases.
+GOLDEN_TRACKING_IDS = (
+    "case-1706b7990cce1346",
+    "case-057bbe4ee9dde990",
+    "case-71446ac59461edb8",
+    "case-181b4b18c88fe895",
+    "case-db1a983f4e0a849a",
+)
+# Only the converted document is clockless, so the detection attestation reaches its three
+# cases and no other; the attested overlay control keeps the clock of its skipped result.
+CLOCKLESS_TRACKING_IDS = (
+    "case-057bbe4ee9dde990",
+    "case-1706b7990cce1346",
+    "case-71446ac59461edb8",
+)
+CLOCKED_TRACKING_IDS = ("case-181b4b18c88fe895", "case-db1a983f4e0a849a")
+# SYN-LNX-0001's five-day window closes at 2026-09-15T21:02:11Z, after the as-of.
+NOT_OVERDUE_TRACKING_ID = "case-181b4b18c88fe895"
 
 # The synthetic documents the builders below write.
 TARGET = "0b1c2d3e-4f50-4617-8829-3a4b5c6d7e8f"
@@ -549,6 +600,13 @@ def maximal_document(char: str) -> dict[str, Any]:
         ],
         "version": over,
     }
+
+
+def compile_hdf_golden(artifacts: Sequence[Path] = HDF_ARTIFACTS) -> CompiledVdtReport:
+    """Compile the HDF golden the way the documented command line does."""
+    return compile_vdt_report(
+        list(artifacts), options=report_options(detected_at=REPORT_DETECTED_AT)
+    )
 
 
 # *--- Fixture Invariants ---*
@@ -3205,6 +3263,321 @@ class HdfConverterTests(unittest.TestCase):
         self.assertEqual(
             diagnostic_codes(output), ["converted_document", "resource_identity_fallback"]
         )
+
+
+# *--- Goldens ---*
+
+
+class HdfGoldenTests(unittest.TestCase):
+    """The HDF goldens are the stateless compile of fixtures 1 to 3, byte for byte.
+
+    `tests/golden/vdt-hdf.json` and `vdt-hdf.md` were generated through the command line with
+    the options `report_options` names; the compiler reproduces them here, whatever order the
+    three fixtures arrive in.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.report = compile_hdf_golden()
+        cls.document = cls.report.document
+
+    def reported_ids(self) -> list[str]:
+        return [item["providerTrackingId"] for item in self.document["vulnerabilities"]]
+
+    def test_the_json_golden_is_reproduced_byte_for_byte(self) -> None:
+        self.assertEqual(
+            self.report.to_json().encode("utf-8"), (GOLDEN / "vdt-hdf.json").read_bytes()
+        )
+
+    def test_the_markdown_golden_is_reproduced_byte_for_byte(self) -> None:
+        self.assertEqual(
+            self.report.to_markdown().encode("utf-8"), (GOLDEN / "vdt-hdf.md").read_bytes()
+        )
+
+    def test_compiling_twice_yields_identical_bytes(self) -> None:
+        again = compile_hdf_golden()
+        self.assertEqual(again.to_json(), self.report.to_json())
+        self.assertEqual(again.to_markdown(), self.report.to_markdown())
+
+    def test_every_order_of_the_three_fixtures_yields_the_golden_bytes(self) -> None:
+        golden_json = (GOLDEN / "vdt-hdf.json").read_bytes()
+        golden_markdown = (GOLDEN / "vdt-hdf.md").read_bytes()
+        for order in permutations(HDF_ARTIFACTS):
+            with self.subTest(order=[path.name for path in order]):
+                report = compile_hdf_golden(order)
+                self.assertEqual(report.to_json().encode("utf-8"), golden_json)
+                self.assertEqual(report.to_markdown().encode("utf-8"), golden_markdown)
+
+    def test_the_golden_validates_against_the_official_schema(self) -> None:
+        self.assertTrue(self.report.validation.is_valid)
+        self.assertEqual(self.report.validation.issues, ())
+
+    def test_the_summary_totals_reconcile_with_the_vulnerabilities(self) -> None:
+        counts = summary_counts(self.report.to_markdown())
+        vulnerabilities = self.document["vulnerabilities"]
+        overdue = [
+            item["providerTrackingId"]
+            for item in vulnerabilities
+            if item["overdueStatus"]["isOverdue"]
+        ]
+        self.assertEqual(len(vulnerabilities), len(GOLDEN_TRACKING_IDS))
+        self.assertEqual(counts["Vulnerabilities reported"], len(vulnerabilities))
+        self.assertEqual(counts["Evaluated"], 0)
+        self.assertEqual(counts["Not yet evaluated"], len(vulnerabilities))
+        self.assertEqual(
+            overdue, [item for item in GOLDEN_TRACKING_IDS if item != NOT_OVERDUE_TRACKING_ID]
+        )
+        self.assertEqual(counts["Overdue"], len(overdue))
+        self.assertEqual(counts["Accepted, reported under VER-RPT-AVI"], 0)
+        self.assertEqual(counts["Excluded by report period"], 0)
+        self.assertEqual(self.document["x-complyroll"]["excludedByPeriod"], 0)
+        attestation = self.document["x-complyroll"]["detectionTimeAttestation"]
+        self.assertEqual(attestation["detectedAt"], "2026-09-01T00:00:00Z")
+        self.assertEqual(attestation["count"], len(attestation["appliedTo"]))
+        self.assertEqual(tuple(attestation["appliedTo"]), CLOCKLESS_TRACKING_IDS)
+
+    def test_detection_times_come_from_a_native_clock_or_the_attestation(self) -> None:
+        detections = {
+            item["providerTrackingId"]: (
+                item["detection"]["detectedAt"],
+                item["x-complyroll"]["detectedAtSource"],
+                item["detection"]["detectionSource"],
+            )
+            for item in self.document["vulnerabilities"]
+        }
+        attested = ("2026-09-01T00:00:00Z", "attestation", HDF_CONVERTER_TOOL)
+        self.assertEqual(
+            detections,
+            {
+                "case-1706b7990cce1346": attested,
+                "case-057bbe4ee9dde990": attested,
+                "case-71446ac59461edb8": attested,
+                "case-181b4b18c88fe895": ("2026-09-10T21:02:11Z", "artifact", HDF_NATIVE_TOOL),
+                "case-db1a983f4e0a849a": ("2026-09-08T16:01:30Z", "artifact", HDF_NATIVE_TOOL),
+            },
+        )
+        for detected_at, _, _ in detections.values():
+            with self.subTest(detected_at=detected_at):
+                instant = datetime.fromisoformat(detected_at)
+                self.assertGreaterEqual(instant, REPORT_PERIOD_FROM)
+                self.assertLessEqual(instant, REPORT_AS_OF)
+
+    def test_exactly_one_unresolved_observation_is_warned_about(self) -> None:
+        unresolved = [
+            item for item in self.report.diagnostics if item.code == "unresolved_observation"
+        ]
+        self.assertEqual(len(unresolved), 1)
+        self.assertEqual(unresolved[0].level.value, "warning")
+        self.assertEqual(unresolved[0].location, LINUX)
+        self.assertEqual(
+            unresolved[0].message,
+            f"SYN-LNX-0005 on {LINUX_TARGET} has disposition error and was not reported as a "
+            "vulnerability",
+        )
+        recorded = [
+            item
+            for item in self.document["x-complyroll"]["diagnostics"]
+            if item["code"] == "unresolved_observation"
+        ]
+        self.assertEqual(len(recorded), 1)
+
+    def test_only_the_open_observations_are_reported(self) -> None:
+        linux = by_record(ingest_fixture(LINUX))
+        overlay = by_record(ingest_fixture(OVERLAY))
+        reported = {
+            observation_id
+            for item in self.document["vulnerabilities"]
+            for observation_id in item["x-complyroll"]["observationIds"]
+        }
+        self.assertEqual(reported, {*TRIVY_IDS, LINUX_IDS[0], OVERLAY_IDS[0]})
+        # The errored native check is neither PASS nor OPEN, and it is not a vulnerability.
+        self.assertEqual(linux["SYN-LNX-0005"].disposition, ERROR)
+        self.assertNotIn(linux["SYN-LNX-0005"].observation_id, reported)
+        # The attested overlay control reads PASS from its attestation result.
+        attested = overlay["SYN-RHL-0002"]
+        self.assertEqual(attested.disposition, PASS)
+        self.assertEqual(metadata(attested)["attested"], "true")
+        self.assertNotIn(attested.observation_id, reported)
+
+    def test_no_attestation_author_or_updated_by_line_reaches_the_report(self) -> None:
+        names = {
+            control["attestation_data"]["updated_by"]
+            for profile in fixture_payload(OVERLAY)["profiles"]
+            for control in profile["controls"]
+            if control.get("attestation_data")
+        }
+        self.assertEqual(len(names), 1)
+        for rendering in (self.report.to_json(), self.report.to_markdown()):
+            for text in (*names, "Updated By", "SYN-RHL-0002"):
+                with self.subTest(text=text):
+                    self.assertNotIn(text, rendering)
+
+    def test_every_golden_tracking_id_is_a_fixture_case_in_golden_order(self) -> None:
+        self.assertEqual(self.reported_ids(), list(GOLDEN_TRACKING_IDS))
+        open_observations = sorted(
+            (
+                item
+                for name in (LINUX, TRIVY, OVERLAY)
+                for item in ingest_fixture(name).observations
+                if item.disposition is OPEN
+            ),
+            key=lambda item: (item.source_type, item.source_record_id, item.context_key),
+        )
+        self.assertEqual(
+            [tracking_id_of(item) for item in open_observations], list(GOLDEN_TRACKING_IDS)
+        )
+
+    def test_the_golden_attributes_the_hdf_parser_and_its_three_inputs(self) -> None:
+        extension = self.document["x-complyroll"]
+        self.assertEqual(extension["parserVersions"], {"complyroll.hdf": HDF_PARSER_VERSION})
+        self.assertEqual(
+            [
+                (item["name"], item["parser"], item["observationCount"])
+                for item in extension["artifacts"]
+            ],
+            [
+                (LINUX, "complyroll.hdf", len(LINUX_IDS)),
+                (OVERLAY, "complyroll.hdf", len(OVERLAY_IDS)),
+                (TRIVY, "complyroll.hdf", len(TRIVY_IDS)),
+            ],
+        )
+
+
+# *--- Path Equivalence ---*
+
+
+class HdfPathEquivalenceTests(StoreFixture):
+    """The persisted path over fixtures 1 to 3 reports the golden bytes (ADR 0010)."""
+
+    def persist(self, order: Sequence[Path] = HDF_ARTIFACTS) -> None:
+        """Record, correlate, and attest the fixtures the way the four commands would."""
+        self.ingest(order)
+        self.correlate()
+        self.attest(detected_at=REPORT_DETECTED_AT)
+
+    def assert_reports_match(self) -> None:
+        persisted_options = report_options()
+        stateless_options = report_options(detected_at=REPORT_DETECTED_AT)
+        vdt = compile_vdt_report_from_history(self.repository, options=persisted_options)
+        self.assertEqual(vdt.to_json(), (GOLDEN / "vdt-hdf.json").read_text(encoding="utf-8"))
+        self.assertEqual(vdt.to_markdown(), (GOLDEN / "vdt-hdf.md").read_text(encoding="utf-8"))
+        pairs = (
+            (vdt, compile_vdt_report(list(HDF_ARTIFACTS), options=stateless_options)),
+            (
+                compile_avi_report_from_history(self.repository, options=persisted_options),
+                compile_avi_report(list(HDF_ARTIFACTS), options=stateless_options),
+            ),
+            (
+                compile_historical_report_from_history(self.repository, options=persisted_options),
+                compile_historical_report(list(HDF_ARTIFACTS), options=stateless_options),
+            ),
+        )
+        for persisted, stateless in pairs:
+            with self.subTest(report=type(persisted).__name__):
+                self.assertTrue(persisted.validation.is_valid)
+                self.assertEqual(persisted.to_json(), stateless.to_json())
+                self.assertEqual(persisted.to_markdown(), stateless.to_markdown())
+
+    def test_history_reports_match_the_stateless_reports_and_the_goldens(self) -> None:
+        self.persist()
+        self.assert_reports_match()
+
+    def test_reversed_ingest_order_reports_the_same_bytes(self) -> None:
+        self.persist(tuple(reversed(HDF_ARTIFACTS)))
+        self.assert_reports_match()
+
+    def test_every_ingest_order_reports_the_golden_bytes_from_history(self) -> None:
+        golden_json = (GOLDEN / "vdt-hdf.json").read_text(encoding="utf-8")
+        golden_markdown = (GOLDEN / "vdt-hdf.md").read_text(encoding="utf-8")
+        for order in permutations(HDF_ARTIFACTS):
+            with self.subTest(order=[path.name for path in order]):
+                repository = self.open_repository(self.fresh_workspace())
+                for path in order:
+                    record_ingest(
+                        repository,
+                        ingest_stig_artifact(path, ingested_at=INGESTED_AT),
+                        metadata=self.metadata,
+                        ingested_at=INGESTED_AT,
+                    )
+                correlate_cases(repository, metadata=self.metadata, now=INGESTED_AT)
+                attest_detection(
+                    repository,
+                    tuple(case.tracking_id for case in fold_all_cases(repository)),
+                    detected_at=REPORT_DETECTED_AT,
+                    rationale=RATIONALE,
+                    metadata=self.metadata,
+                    now=INGESTED_AT,
+                )
+                report = compile_vdt_report_from_history(repository, options=report_options())
+                self.assertEqual(report.to_json(), golden_json)
+                self.assertEqual(report.to_markdown(), golden_markdown)
+
+    def test_the_attestation_reaches_only_the_cases_without_a_source_clock(self) -> None:
+        self.ingest(HDF_ARTIFACTS)
+        self.correlate()
+        outcome = attest_detection(
+            self.repository,
+            self.tracking_ids(),
+            detected_at=REPORT_DETECTED_AT,
+            rationale=RATIONALE,
+            metadata=self.metadata,
+            now=INGESTED_AT,
+        )
+        self.assertEqual(outcome.attested, CLOCKLESS_TRACKING_IDS)
+        self.assertEqual(outcome.not_applicable, CLOCKED_TRACKING_IDS)
+        self.assertEqual(outcome.skipped, ())
+
+    def test_without_the_attestation_both_paths_stop_on_the_converted_cases(self) -> None:
+        self.ingest(HDF_ARTIFACTS)
+        self.correlate()
+        for label, compile_report in (
+            (
+                "persisted",
+                lambda: compile_vdt_report_from_history(self.repository, options=report_options()),
+            ),
+            (
+                "stateless",
+                lambda: compile_vdt_report(list(HDF_ARTIFACTS), options=report_options()),
+            ),
+        ):
+            with self.subTest(path=label):
+                with self.assertRaises(ReportCompileError) as caught:
+                    compile_report()
+                diagnostics = caught.exception.diagnostics
+                self.assertEqual([item.code for item in diagnostics], ["detection_time_missing"])
+                for tracking_id in CLOCKLESS_TRACKING_IDS:
+                    self.assertIn(tracking_id, diagnostics[0].message)
+                for tracking_id in CLOCKED_TRACKING_IDS:
+                    self.assertNotIn(tracking_id, diagnostics[0].message)
+
+    def test_store_verify_passes_and_the_audit_finds_no_fault(self) -> None:
+        self.persist()
+        verifier = SQLiteEventStore.open_for_verification(self.database)
+        self.addCleanup(verifier.close)
+        integrity = verifier.verify_history()
+        self.assertTrue(integrity.ok, integrity.render())
+        self.assertEqual(integrity.faults, ())
+        # Three artifacts, twelve observations, five cases each created and linked once, and
+        # three detection attestations.
+        self.assertEqual(integrity.checked_events, 28)
+        self.assertEqual(audit_history(self.repository), ())
+
+    def test_every_recorded_observation_payload_validates_against_the_contract(self) -> None:
+        self.persist()
+        recorded = [
+            record
+            for record in self.repository.read_all()
+            if record.event_type == "observation.recorded"
+        ]
+        self.assertEqual(
+            sorted(record.payload["observation_id"] for record in recorded),
+            sorted(LINUX_IDS + TRIVY_IDS + OVERLAY_IDS),
+        )
+        for record in recorded:
+            with self.subTest(observation=record.payload["observation_id"]):
+                self.repository.validate_payload(
+                    record.event_type, record.payload, event_version=record.event_version
+                )
 
 
 # *--- Entry Point ---*

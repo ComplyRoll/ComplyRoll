@@ -70,6 +70,42 @@ class StigrollCompatibilityTests(unittest.TestCase):
             "error: no findings parsed from any input\n",
         )
 
+    def test_hdf_documents_are_skipped_with_a_warning_and_the_csv_is_unchanged(self) -> None:
+        # An HDF document is named and skipped like a SARIF log, whether its name ends
+        # .hdf.json or it is a bare .json the sniff sends to the HDF adapter, where it used
+        # to be told it has no 'stigs' key (ADR 0013).
+        inputs = [
+            str(FIXTURES / "windows-host.ckl"),
+            str(FIXTURES / "inspec-linux-host.hdf.json"),
+            str(FIXTURES / "ubuntu-host.cklb"),
+            str(FIXTURES / "inspec-overlay.json"),
+            str(FIXTURES / "openscap-results.xml"),
+        ]
+        result, stdout, stderr = self.run_cli([*inputs, "--format", "csv"])
+        expected = (GOLDEN / "mixed.csv").read_bytes().decode("utf-8")
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            stderr,
+            "warning: inspec-linux-host.hdf.json is an HDF document; stigroll rolls up STIG "
+            "checklists only, skipping\n"
+            "warning: inspec-overlay.json is an HDF document; stigroll rolls up STIG "
+            "checklists only, skipping\n",
+        )
+        self.assertEqual(stdout, f"{expected}\n")
+
+    def test_a_lone_hdf_document_yields_no_findings_and_exit_code_one(self) -> None:
+        for name in ("saf-trivy-image.hdf.json", "inspec-overlay.json"):
+            with self.subTest(name=name):
+                result, stdout, stderr = self.run_cli([str(FIXTURES / name)])
+                self.assertEqual(result, 1)
+                self.assertEqual(stdout, "")
+                self.assertEqual(
+                    stderr,
+                    f"warning: {name} is an HDF document; stigroll rolls up STIG checklists "
+                    "only, skipping\n"
+                    "error: no findings parsed from any input\n",
+                )
+
     def test_json_matches_original_stigroll_golden_output(self) -> None:
         inputs = [
             str(FIXTURES / "windows-host.ckl"),

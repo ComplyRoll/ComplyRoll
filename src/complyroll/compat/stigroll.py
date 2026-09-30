@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from complyroll.adapters import SarifAdapter, ingest_stig_artifact, load_cci_control_map
+from complyroll.adapters import HdfAdapter, SarifAdapter, ingest_stig_artifact, load_cci_control_map
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
 
 SEVERITY_TO_CAT = {
@@ -303,14 +303,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"warning: {path} not found, skipping", file=sys.stderr)
             continue
         result = ingest_stig_artifact(path)
+        kind = ""
         if result.artifact is not None and result.artifact.parser_name == SarifAdapter.name:
             # A SARIF log parses, but its findings are not STIG checklist rows, so it is
             # named and skipped rather than rolled up as nothing (ADR 0011).
-            print(
-                f"warning: {path.name} is a SARIF log; stigroll rolls up STIG checklists "
-                "only, skipping",
-                file=sys.stderr,
-            )
+            kind = "a SARIF log"
+        if result.artifact is not None and result.artifact.parser_name == HdfAdapter.name:
+            # An HDF document's controls are not checklist rows either, and a bare .json one
+            # would otherwise be told it has no 'stigs' key (ADR 0013).
+            kind = "an HDF document"
+        if kind:
+            # One that failed to parse says why, as a checklist does, and is never named as
+            # the log or document it could not be read as.
+            for diagnostic in result.errors:
+                print(
+                    f"warning: could not parse {path.name}: {diagnostic.message}",
+                    file=sys.stderr,
+                )
+            if not result.errors:
+                print(
+                    f"warning: {path.name} is {kind}; stigroll rolls up STIG checklists only, "
+                    "skipping",
+                    file=sys.stderr,
+                )
             continue
         for diagnostic in result.errors:
             if diagnostic.message == "JSON has no non-empty 'stigs' array":

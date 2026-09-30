@@ -10,16 +10,12 @@
 from __future__ import annotations
 
 import heapq
-import json
 import math
 import re
-import reprlib
-import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from functools import cached_property
-from itertools import islice
 from typing import Any, TypeVar
 
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
@@ -32,8 +28,44 @@ from .base import (
     IngestDiagnostic,
     ParsedDocument,
 )
-from .common import make_observation, missing_time_diagnostic, parse_timestamp, text_of
+from .common import EVIDENCE_TRUNCATED_SUMMARY as _EVIDENCE_TRUNCATED_SUMMARY
+from .common import MAX_CLOCK_YEAR as MAX_CLOCK_YEAR
+from .common import (
+    MAX_DESCRIPTION_CHARS,
+    MAX_IDENTITY_CHARS,
+    MAX_LIST_ITEM_CHARS,
+    MAX_LIST_ITEMS,
+    MAX_METADATA_VALUE_CHARS,
+    MAX_OBSERVATION_JSON_BYTES,
+    MAX_TITLE_CHARS,
+    EvidenceParse,
+    identity_problem,
+    make_observation,
+    missing_time_diagnostic,
+    observation_bytes,
+    parse_clock,
+    sanitize,
+    text_of,
+)
+from .common import MAX_DIAGNOSTIC_PATHS as MAX_DIAGNOSTIC_PATHS
+from .common import MIN_CLOCK_YEAR as MIN_CLOCK_YEAR
+from .common import SEVERITY_RANK as _SEVERITY_RANK
+from .common import TRUNCATION_MARKER as TRUNCATION_MARKER
+from .common import Cleaned as _Cleaned
+from .common import IdentityRefused as _IdentityRefused
+from .common import clean as _clean
+from .common import earliest as _earliest
+from .common import encode_list as _encode_list
+from .common import extract_identifiers as _extract_identifiers
+from .common import first_identifiers as _first_identifiers
+from .common import quoted as _quoted
+from .common import truncate as _truncate
 from .safeio import DEFAULT_LIMITS, IngestLimits, InputLimitError
+
+# The tests read these moved helpers under the private names they had before the move.
+_sanitize = sanitize
+_sarif_timestamp = parse_clock
+_identity_problem = identity_problem
 
 # *--- Configuration ---*
 
@@ -44,29 +76,15 @@ SARIF_MEDIA_TYPE = "application/sarif+json"
 SARIF_SOURCE_TYPE = "sarif"
 SARIF_VERSION = "2.1.0"
 
-MAX_IDENTITY_CHARS = 512
 MAX_URI_CHARS = 2_048
 MAX_LOCATIONS_PER_RESULT = 256
 MAX_MESSAGE_ARGUMENTS = 32
 # One expansion substitutes at most this many placeholders. An empty argument adds no text,
 # so the description budget alone would not stop a template made of placeholders.
 MAX_MESSAGE_PLACEHOLDERS = 1_024
-MAX_TITLE_CHARS = 512
-MAX_DESCRIPTION_CHARS = 4_096
-MAX_METADATA_VALUE_CHARS = 512
-MAX_LIST_ITEMS = 64
-MAX_LIST_ITEM_CHARS = 256
 # A region line or column above the signed 32-bit range is absent, so a region's text stays
 # short enough to prefix a location message inside MAX_LIST_ITEM_CHARS.
 MAX_REGION_INTEGER = 2**31 - 1
-MAX_OBSERVATION_JSON_BYTES = 512 * 1024
-TRUNCATION_MARKER = "...[truncated]"
-# A coalesced diagnostic names at most this many JSON paths.
-MAX_DIAGNOSTIC_PATHS = 5
-# SARIF clocks are kept only inside these UTC years, well clear of the year 1 and year 9999
-# edges where the UTC conversion and the deadline arithmetic overflow.
-MIN_CLOCK_YEAR = 1970
-MAX_CLOCK_YEAR = 9000
 
 RESOURCE_TYPE_IMAGE = "image"
 RESOURCE_TYPE_FILE = "file"
@@ -140,26 +158,9 @@ _DISPOSITION_RANK = {
     ObservationDisposition.PASS: 1,
     ObservationDisposition.ERROR: 0,
 }
-_SEVERITY_RANK = {
-    SourceSeverity.CRITICAL: 5,
-    SourceSeverity.HIGH: 4,
-    SourceSeverity.MEDIUM: 3,
-    SourceSeverity.LOW: 2,
-    SourceSeverity.INFORMATIONAL: 1,
-    SourceSeverity.UNKNOWN: 0,
-}
 _SUPPRESSION_ACCEPTED = "accepted"
 _SEMGREP_FINGERPRINT_PLACEHOLDER = "requires login"
-_EVIDENCE_SANITIZED_SUMMARY = (
-    "control, format, or separator characters were removed from evidence text"
-)
-_EVIDENCE_TRUNCATED_SUMMARY = (
-    "evidence text was cut at its cap; the truncated metadata key names the members"
-)
 
-_PROHIBITED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
-_LINE_BREAK_CATEGORIES = frozenset({"Zl", "Zp"})
-_KEPT_CONTROLS = frozenset({"\t", "\n"})
 _LINK_ESCAPES = frozenset({"\\", "[", "]"})
 _NO_REGION = (0, 0, 0, 0)
 
@@ -172,51 +173,15 @@ _PLACEHOLDER = re.compile(r"\{([0-9]{1,9})\}")
 _BRACE = re.compile(r"[{}]")
 _LINK_SPECIAL = re.compile(r"[\\\[\]]")
 _LINK_TARGET = re.compile(r"\]\([0-9]{1,9}\)")
-_CVE = re.compile(
-    r"(?<![A-Za-z0-9])CVE-([0-9]{4})-([0-9]{4,19})(?![0-9])", re.IGNORECASE | re.ASCII
-)
-_GHSA = re.compile(
-    r"(?<![A-Za-z0-9])GHSA(?:-[A-Za-z0-9]{4}){3}(?![A-Za-z0-9])", re.IGNORECASE | re.ASCII
-)
-_CWE = re.compile(r"(?<![A-Za-z0-9])CWE-([0-9]{1,5})(?![0-9])", re.IGNORECASE | re.ASCII)
 # A security-severity string must be an ASCII decimal: float() also reads digit-group
 # underscores, exponents, and other scripts' digits, so '0_9' would read as 9.0.
 _DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
-# The spec's end-of-day clock, 24:00 with zero seconds, and any hour 24 fromisoformat reads:
-# one of its date forms, one separator character of any kind, then the hour.
-_END_OF_DAY = re.compile(
-    r"([0-9]{4}-[0-9]{2}-[0-9]{2})T24(:00(?::00(?:\.0+)?)?)((?:[Z+-].*)?)", re.DOTALL
-)
-_HOUR_24 = re.compile(
-    r"[0-9]{4}(?:-[0-9]{2}-[0-9]{2}|[0-9]{4}|-?W[0-9]{2}(?:-?[0-9])?).24", re.DOTALL
-)
 
 # *--- Types ---*
 
 _RegionKey = tuple[int, int, int, int]
 _FoldKey = tuple[str, str, str, str, str]
 _Part = TypeVar("_Part", str, tuple[str, str])
-
-
-class _IdentityRefused(Exception):
-    """Raised once identity_input_invalid is recorded; the enclosing run or result stops."""
-
-
-@dataclass(frozen=True, slots=True)
-class _Cleaned:
-    """Evidence texts sanitized and capped once, with what every use of them reports."""
-
-    items: tuple[str, ...]
-    # How many texts lost characters to sanitizing and how many were cut at their cap, and
-    # whether the first cut came before the first sanitizing.
-    sanitized: int
-    cut: int
-    cut_first: bool
-
-    @property
-    def text(self) -> str:
-        """Return the kept text of a single evidence value, or empty text."""
-        return self.items[0] if self.items else ""
 
 
 _NOTHING = _Cleaned((), 0, 0, False)
@@ -350,74 +315,6 @@ class _Candidate:
     truncated: set[str]
 
 
-@dataclass(slots=True)
-class _DiagnosticEntry:
-    level: DiagnosticLevel
-    summary: str
-    detail: str
-    count: int = 0
-    paths: list[str] = field(default_factory=list)
-    fixed: IngestDiagnostic | None = None
-
-
-# Every code is reported once per artifact with a count, its first MAX_DIAGNOSTIC_PATHS JSON
-# paths, and its first detail, and each path and the detail are cut at
-# MAX_METADATA_VALUE_CHARS. One code's message is its summary, a frame with the count's digits,
-# the paths with their separators, and the detail, so an artifact's diagnostics come to at most
-# 55,727 characters plus the count digits, and 117 for the two fixed messages (decision 9).
-class _Diagnostics:
-    """Per-artifact diagnostic coalescer that keeps first-seen order."""
-
-    def __init__(self) -> None:
-        self._entries: dict[str, _DiagnosticEntry] = {}
-
-    def add(
-        self,
-        level: DiagnosticLevel,
-        code: str,
-        summary: str,
-        path: str,
-        detail: str = "",
-        count: int = 1,
-    ) -> None:
-        """Count occurrences of a code at a JSON path, as if each were added in turn."""
-        entry = self._entries.get(code)
-        if entry is None:
-            entry = _DiagnosticEntry(level, summary, _diagnostic_text(detail))
-            self._entries[code] = entry
-        entry.count += count
-        room = min(count, MAX_DIAGNOSTIC_PATHS - len(entry.paths))
-        if room > 0:
-            entry.paths.extend([_diagnostic_text(path)] * room)
-
-    def add_fixed(self, diagnostic: IngestDiagnostic) -> None:
-        """Record a diagnostic that is emitted verbatim, once per artifact."""
-        if diagnostic.code not in self._entries:
-            self._entries[diagnostic.code] = _DiagnosticEntry(
-                diagnostic.level, diagnostic.message, "", fixed=diagnostic
-            )
-
-    @property
-    def has_errors(self) -> bool:
-        return any(entry.level is DiagnosticLevel.ERROR for entry in self._entries.values())
-
-    def emit(self, location: str) -> tuple[IngestDiagnostic, ...]:
-        """Render every code once, in the order it was first seen."""
-        rendered: list[IngestDiagnostic] = []
-        for code, entry in self._entries.items():
-            if entry.fixed is not None:
-                rendered.append(entry.fixed)
-                continue
-            noun = "occurrence" if entry.count == 1 else "occurrences"
-            paths = ", ".join(entry.paths)
-            if entry.count > len(entry.paths):
-                paths += ", ..."
-            detail = f"; first: {entry.detail}" if entry.detail else ""
-            message = f"{entry.summary} ({entry.count} {noun}: {paths}{detail})"
-            rendered.append(IngestDiagnostic(entry.level, code, message, location))
-        return tuple(rendered)
-
-
 # *--- JSON Access ---*
 
 
@@ -453,168 +350,10 @@ def _property_texts(properties: Mapping[str, Any] | None) -> list[str]:
 # *--- Text Hygiene ---*
 
 
-# SECURITY: Identity inputs are refused, never repaired. A control, format, surrogate, or
-# line-separator code point, or an over-cap length, fails the artifact closed (decision 10).
-def _identity_problem(value: str, cap: int) -> str | None:
-    """Describe why text cannot be an identity input, or None when it can."""
-    if len(value) > cap:
-        return f"is {len(value)} characters; maximum is {cap}"
-    if value.isascii() and value.isprintable():
-        return None
-    for char in value:
-        if unicodedata.category(char) in _PROHIBITED_CATEGORIES:
-            return f"contains prohibited code point U+{ord(char):04X}"
-    return None
-
-
 # The uri is never opened, so a climbing segment is warned about and kept as written.
 def _uri_is_suspicious(uri: str) -> bool:
     """Say whether a location uri has a '..' segment or a '//' prefix."""
     return uri.startswith("//") or ".." in uri.split("/")
-
-
-def _sanitize(text: str) -> tuple[str, bool]:
-    """Strip Cc (except tab and newline), Cf, and Cs; map Zl and Zp to newline."""
-    if text.isascii() and text.isprintable():
-        return text, False
-    kept: list[str] = []
-    changed = False
-    for char in text:
-        category = unicodedata.category(char)
-        if category in _LINE_BREAK_CATEGORIES:
-            kept.append("\n")
-            changed = True
-        elif category in _PROHIBITED_CATEGORIES and char not in _KEPT_CONTROLS:
-            changed = True
-        else:
-            kept.append(char)
-    return "".join(kept), changed
-
-
-# Text shorter than the cap less the marker comes back whole with the marker after it, so the
-# result stays under the cap.
-def _truncate(text: str, cap: int) -> str:
-    """Cut text at the cap less the marker and append the marker, never passing the cap."""
-    return text[: cap - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
-
-
-def _clean(values: Iterable[object], cap: int) -> _Cleaned:
-    """Sanitize, strip, and cap each string value, counting what was removed or cut."""
-    items: list[str] = []
-    sanitized = cut = 0
-    cut_first = False
-    for value in values:
-        text = text_of(value)
-        if not text:
-            continue
-        cleaned, changed = _sanitize(text)
-        cleaned = cleaned.strip()
-        sanitized += changed
-        if len(cleaned) > cap:
-            cleaned = _truncate(cleaned, cap)
-            if not cut:
-                cut_first = not sanitized
-            cut += 1
-        if cleaned:
-            items.append(cleaned)
-    return _Cleaned(tuple(items), sanitized, cut, cut_first)
-
-
-def _encode_list(items: Iterable[Any]) -> str:
-    return json.dumps(list(items), ensure_ascii=False, separators=(",", ":"))
-
-
-# SECURITY: A path can embed a producer key and a detail quotes a producer value, so both are
-# sanitized and cut before a diagnostic stores them (decision 9).
-def _diagnostic_text(text: str) -> str:
-    """Sanitize one diagnostic path or detail and cut it at MAX_METADATA_VALUE_CHARS."""
-    cleaned, _changed = _sanitize(text)
-    if len(cleaned) > MAX_METADATA_VALUE_CHARS:
-        return _truncate(cleaned, MAX_METADATA_VALUE_CHARS)
-    return cleaned
-
-
-class _DetailRepr(reprlib.Repr):
-    """A reprlib.Repr that renders an object's first members in insertion order."""
-
-    def repr_dict(self, x: dict[Any, Any], level: int) -> str:
-        if not x:
-            return "{}"
-        if level <= 0:
-            return "{" + self.fillvalue + "}"
-        pieces = [
-            f"{self.repr1(key, level - 1)}: {self.repr1(value, level - 1)}"
-            for key, value in islice(x.items(), self.maxdict)
-        ]
-        if len(x) > self.maxdict:
-            pieces.append(self.fillvalue)
-        return "{" + ", ".join(pieces) + "}"
-
-
-# NOTE: reprlib renders a container from its first few members at a bounded depth, but its
-# own object rendering sorts every key first; this one reads only the first members, in their
-# own order. The other reprlib limits still apply, so an integer longer than 40 characters or a
-# member deeper than six levels is shortened even in a small container.
-_DETAIL_REPR = _DetailRepr()
-_DETAIL_REPR.maxstring = MAX_METADATA_VALUE_CHARS
-_DETAIL_REPR.maxother = MAX_METADATA_VALUE_CHARS
-
-
-def _quoted(value: object) -> str:
-    """Return the repr a diagnostic detail quotes, reading only a bounded part of the value."""
-    if isinstance(value, str):
-        # One past the detail cap, so an over-cap value is still cut with the marker.
-        return repr(value[: MAX_METADATA_VALUE_CHARS + 1])
-    if isinstance(value, (list, Mapping)):
-        return _DETAIL_REPR.repr(value)
-    # A JSON number carries at most the parser's integer digit limit, so its repr is bounded.
-    return repr(value)
-
-
-# *--- Timestamps ---*
-
-
-# The contract regex and the canonical round trip both refuse a seconds-bearing offset, which
-# Python's parser accepts; the check lives here so SARIF never writes an observed_at the
-# store would refuse (decision 8).
-def _sarif_timestamp(value: object) -> datetime | None:
-    """Parse an aware timestamp with a whole-minute offset inside the supported years."""
-    text = value.strip() if isinstance(value, str) else ""
-    # NOTE: Spec 3.9 lets hour 24 name the midnight that ends a day, but fromisoformat reads
-    # it only from Python 3.14, in every spelling. So the spec's 24:00 with zero seconds is
-    # read here as the next day's 00:00, and any other hour 24 is refused, on every version.
-    end_of_day = _END_OF_DAY.fullmatch(text)
-    if end_of_day is not None:
-        day, clock, zone = end_of_day.groups()
-        parsed = parse_timestamp(f"{day}T00{clock}{zone}")
-    elif _HOUR_24.match(text):
-        return None
-    else:
-        parsed = parse_timestamp(value)
-    if parsed is None:
-        return None
-    offset = parsed.utcoffset()
-    if offset is None or offset % timedelta(minutes=1):
-        return None
-    # NOTE: Only instants from 1970 through 9000 UTC are kept. Year 1 with a positive offset
-    # overflows the UTC conversion, and year 9999 overflows the later deadline arithmetic.
-    try:
-        if end_of_day is not None:
-            parsed += timedelta(days=1)
-        instant = parsed.astimezone(UTC)
-    except OverflowError:
-        return None
-    if not MIN_CLOCK_YEAR <= instant.year <= MAX_CLOCK_YEAR:
-        return None
-    return parsed
-
-
-# Two clocks can name one instant under different offsets, and min alone keeps whichever it
-# meets first, so the text breaks the tie: the kept spelling depends only on the set of clocks,
-# never on the order of results, runs, or invocations (decision 8).
-def _earliest(clocks: Iterable[datetime]) -> datetime:
-    """Return the earliest clock and, of one instant's spellings, the one whose text sorts first."""
-    return min(clocks, key=lambda clock: (clock, clock.isoformat()))
 
 
 # *--- Message Expansion ---*
@@ -746,33 +485,6 @@ def _message_string(holder: Mapping[str, Any] | None, member: str, message_id: s
     strings = _mapping(holder.get(member))
     entry = _mapping(strings.get(message_id)) if strings is not None else None
     return text_of(entry.get("text")) if entry is not None else ""
-
-
-# *--- Identifier Extraction ---*
-
-
-def _extract_identifiers(texts: Iterable[str]) -> set[str]:
-    """Pull CVE, GHSA, and CWE identifiers out of free text, normalized."""
-    found: set[str] = set()
-    for text in texts:
-        if not text:
-            continue
-        for match in _CVE.finditer(text):
-            found.add(f"CVE-{match.group(1)}-{match.group(2)}")
-        for match in _GHSA.finditer(text):
-            found.add(f"GHSA-{match.group(0)[5:].lower()}")
-        for match in _CWE.finditer(text):
-            found.add(f"CWE-{int(match.group(1))}")
-    return found
-
-
-# Each of the first MAX_LIST_ITEMS of a union has fewer than MAX_LIST_ITEMS smaller members,
-# so it is among the first MAX_LIST_ITEMS of its own part: cutting every part and then the
-# union keeps exactly what cutting the whole union keeps (decision 5).
-def _first_identifiers(found: Iterable[str]) -> tuple[tuple[str, ...], bool]:
-    """Return the first MAX_LIST_ITEMS distinct identifiers, sorted, and whether any was cut."""
-    smallest = heapq.nsmallest(MAX_LIST_ITEMS + 1, set(found))
-    return tuple(smallest[:MAX_LIST_ITEMS]), len(smallest) > MAX_LIST_ITEMS
 
 
 # *--- Regions and Scores ---*
@@ -1165,18 +877,14 @@ def _override_level(
 # *--- Artifact Parse ---*
 
 
-class _ArtifactParse:
+class _ArtifactParse(EvidenceParse):
     """One artifact's parse state: run scopes, identity folds, coalesced diagnostics."""
 
     def __init__(
         self, artifact: ArtifactProvenance, ingested_at: datetime, limits: IngestLimits
     ) -> None:
-        self.artifact = artifact
-        self.ingested_at = ingested_at
-        self.limits = limits
-        self.diagnostics = _Diagnostics()
+        super().__init__(artifact, ingested_at, limits)
         self.folds: dict[_FoldKey, list[_Candidate]] = {}
-        self.observation_bytes = 0
 
     def run(self, runs: list[Any]) -> AdapterOutput:
         """Scan every run, fold by identity, and fail closed on any error."""
@@ -1202,34 +910,6 @@ class _ArtifactParse:
 
     # Diagnostic and hygiene helpers
 
-    # A shared uri's checks are kept in its run's memo, so the text is checked once however
-    # many results or locations use it, and each use is still refused or warned at its own path.
-    def _require_identity(
-        self,
-        value: str,
-        cap: int,
-        what: str,
-        path: str,
-        memo: dict[str, str | None] | None = None,
-    ) -> None:
-        """Record identity_input_invalid and stop when text cannot be an identity input."""
-        if memo is None:
-            problem = _identity_problem(value, cap)
-        elif value in memo:
-            problem = memo[value]
-        else:
-            problem = memo[value] = _identity_problem(value, cap)
-        if problem is None:
-            return
-        self.diagnostics.add(
-            DiagnosticLevel.ERROR,
-            "identity_input_invalid",
-            "an identity input cannot be used as written",
-            path,
-            detail=f"{what} {problem}",
-        )
-        raise _IdentityRefused(what)
-
     # Uris are text that is never opened or fetched; over the cap or with a prohibited
     # code point they are refused whole, never cut (decision 10).
     def _uri(
@@ -1240,81 +920,6 @@ class _ArtifactParse:
         if uri:
             self._require_identity(uri, MAX_URI_CHARS, what, path, memo)
         return uri
-
-    def _evidence(
-        self, value: object, cap: int, member: str, path: str, truncated: set[str]
-    ) -> str:
-        """Sanitize and cap one evidence text, recording what was removed or cut."""
-        cleaned = _clean((value,), cap)
-        self._replay(cleaned, member, path, truncated)
-        return cleaned.text
-
-    def _evidence_list(
-        self, values: Iterable[Any], member: str, path: str, truncated: set[str]
-    ) -> tuple[str, ...]:
-        """Sanitize and cap every string of a list-valued member."""
-        cleaned = _clean(values, MAX_LIST_ITEM_CHARS)
-        self._replay(cleaned, member, path, truncated)
-        return cleaned.items
-
-    def _scalar(
-        self, scalars: dict[str, str], key: str, value: object, path: str, truncated: set[str]
-    ) -> None:
-        """Store one non-uri scalar metadata value when it is present."""
-        cleaned = _clean((value,), MAX_METADATA_VALUE_CHARS)
-        self._keep_scalar(scalars, key, cleaned, path, truncated)
-
-    def _keep_scalar(
-        self, scalars: dict[str, str], key: str, cleaned: _Cleaned, path: str, truncated: set[str]
-    ) -> None:
-        """Store one cleaned scalar metadata value when it is present."""
-        self._replay(cleaned, key, path, truncated)
-        if cleaned.text:
-            scalars[key] = cleaned.text
-
-    # A shared text is cleaned once, so each result that carries it reports that cleaning at
-    # its own path. Same-path reports coalesce, so the counts in first-seen order are exactly
-    # what cleaning each text again here would have added.
-    def _replay(self, cleaned: _Cleaned, member: str, path: str, truncated: set[str]) -> None:
-        """Record what cleaning removed or cut, as if the texts were cleaned at this path."""
-        if not cleaned.sanitized and not cleaned.cut:
-            return
-        reports = [
-            ("evidence_sanitized", _EVIDENCE_SANITIZED_SUMMARY, cleaned.sanitized),
-            ("evidence_truncated", _EVIDENCE_TRUNCATED_SUMMARY, cleaned.cut),
-        ]
-        if cleaned.cut_first:
-            reports.reverse()
-        for code, summary, count in reports:
-            if count:
-                self.diagnostics.add(DiagnosticLevel.WARNING, code, summary, path, count=count)
-        if cleaned.cut:
-            truncated.add(member)
-
-    def _cut(self, items: list[Any], member: str, path: str, truncated: set[str]) -> list[Any]:
-        """Cut a list-valued member at MAX_LIST_ITEMS."""
-        if len(items) <= MAX_LIST_ITEMS:
-            return items
-        truncated.add(member)
-        self.diagnostics.add(
-            DiagnosticLevel.WARNING, "evidence_truncated", _EVIDENCE_TRUNCATED_SUMMARY, path
-        )
-        return items[:MAX_LIST_ITEMS]
-
-    def _clock(self, value: object, path: str) -> datetime | None:
-        """Parse one SARIF clock; a present but unusable value is diagnosed and absent."""
-        if value is None:
-            return None
-        parsed = _sarif_timestamp(value)
-        if parsed is None:
-            self.diagnostics.add(
-                DiagnosticLevel.WARNING,
-                "source_timestamp_invalid",
-                "clock value is not an aware timestamp with a whole-minute offset in the years "
-                f"{MIN_CLOCK_YEAR} to {MAX_CLOCK_YEAR} UTC; ignored",
-                path,
-            )
-        return parsed
 
     # Run scope
 
@@ -1629,7 +1234,7 @@ class _ArtifactParse:
         observed_at = self._result_clock(scope, result, path)
         title, description = self._describe(result, rule, path, truncated)
         # The descriptor's identifiers arrive already cut; cutting a part and then the union
-        # keeps what cutting the whole union keeps (see _first_identifiers).
+        # keeps what cutting the whole union keeps (see `common.first_identifiers`).
         found = _extract_identifiers(self._identifier_sources(result, rule, record_id))
         shared_cut = False
         if rule.descriptor is not None:
@@ -2105,22 +1710,13 @@ class _ArtifactParse:
             context_key=context_key,
             metadata=metadata,
         )
-        # WARN: The caps of decision 9 count characters, not bytes. A quote or backslash in a
-        # list item is escaped twice and costs four bytes, as four-byte text does, so text at
-        # every cap can pass this ceiling, ASCII or not, and then the artifact fails closed the
-        # same way on the stateless and persisted paths (decision 9).
-        size = len(observation.to_canonical_json().encode("utf-8"))
-        if size > MAX_OBSERVATION_JSON_BYTES:
-            raise InputLimitError(
-                f"observation {observation.observation_id} is {size} bytes of canonical JSON; "
-                f"maximum is {MAX_OBSERVATION_JSON_BYTES}"
-            )
-        # SECURITY: The sum is checked as each observation is built, so the artifact fails
-        # closed before its observations hold much more than the budget (decision 9).
+        size = observation_bytes(
+            observation,
+            ceiling=MAX_OBSERVATION_JSON_BYTES,
+            budget=self.limits.max_observation_bytes_per_artifact,
+            spent=self.observation_bytes,
+        )
         self.observation_bytes += size
-        budget = self.limits.max_observation_bytes_per_artifact
-        if self.observation_bytes > budget:
-            raise InputLimitError(f"artifact yields more than {budget} bytes of observation JSON")
         return observation
 
 

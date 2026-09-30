@@ -31,6 +31,16 @@ All notable project changes will be documented here.
   JSON artifact. `parse_json_bounded` now refuses it during the walk it already does, and the
   dispatcher reports `artifact_parse_failed` with the code point named. Verified by parser tests
   in `tests/test_safeio.py`.
+- A CVE or CWE id run straight into an ASCII letter or digit was cut out of its token rather than
+  refused: `CVE-2024-1234evil` named `CVE-2024-1234`, and `CWE-79suffix` named `CWE-79`. The two
+  patterns in `adapters/common.py` ended on a digit boundary while the comment above them promised
+  a token boundary, which the GHSA pattern beside them already kept. Both now end as GHSA does, so
+  a letter or digit after the number names no identifier, and punctuation, an underscore, or a
+  character outside ASCII still ends the token. This changes the `source_identifiers` the SARIF
+  adapter reads (ADR 0011 Decision 5, recorded in its 2026-09-29 amendment), and the HDF adapter
+  shares the patterns. The KEV clock reads the same identifiers, so such a token no longer matches
+  a catalog entry either. Verified by `tests/test_sarif.py`; no fixture carries such a token, and
+  every golden is byte-identical.
 
 ### Added
 
@@ -137,6 +147,54 @@ All notable project changes will be documented here.
   existing goldens are byte-identical, which is the proof that a run without `--kev` changed
   nothing.
 
+- InSpec HDF adapter (ADR 0013). `complyroll ingest` and every `report` command read the Heimdall
+  Data Format that InSpec's `json` reporter writes and that `saf convert` writes from Nessus, Trivy,
+  and other scanners. A name ending `.hdf.json`, in any case, goes to the new adapter; a bare
+  `.json` file parses as before and goes to it only when the parsed root has no `stigs` member, a
+  `profiles` array, and a `platform` object, so every checklist keeps its dispatch and a bare
+  `.json` that fails to parse is still attributed to CKLB. A checklist saved under a `.hdf.json`
+  name is refused with a message that names its `stigs` member and says to read it under a `.cklb`
+  or `.json` name, since the name alone decides the adapter. Each control that survives overlay
+  shadowing is one observation of source type `hdf`, keyed by its id under the name of the root
+  profile it hangs under, on `target` `platform.target_id`, or on `scan` and the root profile name
+  when the document declares no target. A result reads OPEN when it failed, PASS when it passed,
+  NOT_REVIEWED when it was skipped, and ERROR when it errored or carries a backtrace whatever its
+  status, since InSpec writes a check that raised as its RSpec status plus a backtrace. A control
+  takes its highest-ranked result, OPEN first and then ERROR, so an observed failure is never hidden
+  by an errored sibling; a control with no results is ERROR, and a control with impact 0 is
+  NOT_APPLICABLE with an INFO line naming what its results would have read. That line counts only
+  copies that survive shadowing, so an overlay's empty wrapper copies add nothing to it, and each
+  copy it names yields an observation unless the artifact fails closed. Impact 0 decides before
+  the rule that reads a control under a profile that did not load as ERROR.
+  A waiver and a `saf attest apply` attestation are recorded as metadata with a warning and never
+  move a disposition by themselves; the attestation's appended result counts, but its clock and its
+  author do not. Either member counts when it is present and non-empty, whether or not it is an
+  object: a list, a string, `true`, or a number records `waived` or `attested` without the scalars
+  only an object can carry, and the warning names the member as not an object rather than reading
+  the attestation's marker result as an ordinary one. Severity comes from the `severityoverride`
+  tag, the `severity` tag, or InSpec's impact bands, and an impact that is not a number from 0 to 1
+  is warned about and ignored before any arithmetic, so a 400-digit integer cannot crash the run.
+  `observed_at` is the earliest result `start_time`, and a converted document, which writes `""`,
+  needs `--detected-at` or `cases attest-detection` like any clockless artifact. An overlay's empty
+  wrapper copies are shadowed by the copy that carries results, found by walking `parent_profile`
+  rather than `depends`; a dangling parent or a cycle refuses the artifact. A waiver or an
+  attestation on a shadowed wrapper copy passes whole to the copies that carry results when none of
+  them carries its own, the outermost wrapper first, so the warning that says it is recorded stays
+  true; a leaf result that spells the attestation marker is still read as an ordinary result,
+  because the marker rule reads only the leaf's own member. When copies fold into one observation,
+  the waiver fields come whole from the first copy in content order that carries a waiver and the
+  attestation fields whole from the first expired attestation, else the first attestation, so no
+  observation mixes two copies' fields, and `truncated` names only a cut in a value the observation
+  keeps. CCIs, CVEs, GHSA ids, and CWEs are identifiers, and NIST tags are metadata. A JSON object
+  key that repeats, in this or any other JSON artifact, is now quoted and cut in the refusal
+  message, so an untrusted key can no longer write a control character to the terminal. Four
+  synthetic fixtures (`inspec-linux-host.hdf.json`, `saf-trivy-image.hdf.json`,
+  `inspec-overlay.json`, and `hdf-spec-corners.hdf.json`) and two goldens
+  (`tests/golden/vdt-hdf.json` and `vdt-hdf.md`) hold the behavior. Verified by the 215 tests in
+  `tests/test_hdf.py`, by the goldens on the stateless path and from the store's history in all six
+  ingest orders of the three golden fixtures, and by 1,581 tests on Python 3.11, 3.13, and 3.14; the
+  twenty existing goldens are byte-identical.
+
 ### Changed
 
 - Repositioned the one-line description. "Evidence automation for continuous authorization" used
@@ -192,25 +250,52 @@ All notable project changes will be documented here.
   each, every other timeframe and PAIN matrix unchanged), by the policy golden, which gained the
   `VDR-TFR-NMV` entry under both classes, and by the six report goldens, which moved only in the
   rules provenance block and in the overdue explanations that cite the dataset commit.
-- The CLI help text for report and ingest artifacts now reads "CKLB, CKL, XCCDF, ARF, or SARIF
-  file", and the package description reads "Compiles STIG, SCAP, and SARIF output into
-  schema-valid FedRAMP 20x vulnerability reports, with every response clock read from FedRAMP's
-  published rules dataset". The PyPI summary is baked in at build time, so it carries the
-  previous line until the next release.
+- The CLI help text for report and ingest artifacts now reads "CKLB, CKL, XCCDF, ARF, SARIF, or
+  HDF file", and the package description reads "Compiles STIG, SCAP, SARIF, and InSpec HDF output
+  into schema-valid FedRAMP 20x vulnerability reports, with every response clock read from
+  FedRAMP's published rules dataset". The PyPI summary is baked in at build time, so it carries
+  the previous line until the next release.
 - The observation helpers the STIG adapters shared (`_text`, `_unique`, `_parse_timestamp`,
   `_make_observation`, and `_missing_time_diagnostic`) moved out of `adapters/stig.py` into
   `adapters/common.py` as `text_of`, `unique`, `parse_timestamp`, `make_observation`, and
   `missing_time_diagnostic`, and `make_observation` takes a `resource_type` that defaults to
   `host`. The move is the only edit on the STIG code paths in this work; every existing golden
   is byte-identical, which is the proof it changed nothing.
+- The evidence hygiene helpers, constants, and diagnostic coalescer the SARIF adapter used moved
+  from `adapters/sarif.py` into `adapters/common.py` under public names (ADR 0013), and the eight
+  evidence methods moved into a new `EvidenceParse` base class that the SARIF and HDF parsers both
+  subclass. The per-observation ceiling and per-artifact byte budget checks became
+  `common.observation_bytes`, with the same messages. `sarif.py` still binds every old private
+  name it and its tests read, five test spies were re-pointed at `common`, and with the move alone
+  every golden stayed byte-identical and 1,333 tests passed on Python 3.11, 3.13, and 3.14.
 - `IngestLimits` gained `max_results_per_run` and `max_observations_per_artifact`, both 50,000 by
   default, and `max_observation_bytes_per_artifact`, 256 MiB of canonical JSON summed over an
   artifact's observations, since a fold copies the capped lists it keeps into every observation that
   carries them; exceeding any of them refuses the artifact as `artifact_parse_failed`. Every
   existing limit keeps its value.
+- The HDF adapter reuses those limits rather than adding one: `max_results_per_run` bounds the
+  controls in one profile and the results of one control, `max_observations_per_artifact` bounds
+  the distinct observations, and the ceiling and byte budget apply as they do for SARIF. The only
+  new bound is a module constant of 64 profiles per document.
 - `stigroll` skips a SARIF log with a warning on stderr (`warning: <name> is a SARIF log; stigroll
   rolls up STIG checklists only, skipping`) instead of rolling it up; a run whose only input is a
   SARIF log ends with `error: no findings parsed from any input` and exit status 1.
+- `stigroll` skips an HDF document the same way (`warning: <name> is an HDF document; stigroll
+  rolls up STIG checklists only, skipping`). A bare `.json` HDF document that used to be told it
+  has no `stigs` key now draws this line instead, and an HDF artifact that fails to parse, such as
+  a checklist saved under a `.hdf.json` name, prints `warning: could not parse <name>: <reason>`
+  as a checklist does rather than being named an HDF document.
+- `stigroll` prints `warning: could not parse <name>: <reason>` for a SARIF artifact that fails to
+  parse, as it does for a checklist, instead of naming it a SARIF log and hiding the refusal. A
+  log that parses still draws the skip line.
+- A report's `description` no longer repeats a record id the title already leads with: a title
+  equal to the id, or one that starts with the id and `": "`, is written as it stands, and every
+  other title keeps the `<id>: <title>` form. The rule sits in the shared record compiler, so the
+  Vulnerability Detail Report, the Accepted Vulnerability Information report, and the Historical
+  VER Activity report all take it. The match is exact and case-sensitive, and the observation and
+  case titles are unchanged, since they are source facts. It moves any SARIF row whose rule text
+  leads with its own rule id as well as the converted HDF CVE rows, whose titles lead with the
+  CVE id.
 - The Vulnerability Detail Report keeps a record with an open KEV clock even when it had no
   other activity in the period, provided it is not accepted, was detected on or before the period
   end, and one of its matched catalog entries was listed on or before that date. Under

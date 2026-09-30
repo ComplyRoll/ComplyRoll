@@ -74,7 +74,9 @@ def parse_json_bounded(content: bytes, limits: IngestLimits = DEFAULT_LIMITS) ->
         value: dict[str, Any] = {}
         for key, item in pairs:
             if key in value:
-                raise ValueError(f"duplicate JSON object key is prohibited: {key}")
+                # SECURITY: The key is untrusted text bound for a terminal, so it is quoted
+                # and cut as a diagnostic detail is, and no control character reaches stderr.
+                raise ValueError(f"duplicate JSON object key is prohibited: {key[:513]!r}")
             value[key] = item
         return value
 

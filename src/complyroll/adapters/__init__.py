@@ -9,6 +9,7 @@ from .base import (
     IngestResult,
     SourceAdapter,
 )
+from .hdf import HDF_PARSER_VERSION, HdfAdapter
 from .safeio import DEFAULT_LIMITS, IngestLimits, InputLimitError, UnsafeXmlError
 from .sarif import SARIF_PARSER_VERSION, SarifAdapter
 from .stig import (
@@ -31,6 +32,8 @@ __all__ = [
     "ControlMapping",
     "DEFAULT_LIMITS",
     "DiagnosticLevel",
+    "HDF_PARSER_VERSION",
+    "HdfAdapter",
     "IngestDiagnostic",
     "IngestLimits",
     "IngestResult",

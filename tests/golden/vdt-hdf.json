@@ -1,0 +1,352 @@
+{
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "reportPeriod": {
+    "from": "2026-09-01T00:00:00Z",
+    "to": "2026-09-30T23:59:59Z"
+  },
+  "vulnerabilities": [
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T00:00:00Z",
+        "detectionSource": "heimdall-tools"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T00:00:00Z and closed 2026-09-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-1706b7990cce1346",
+      "vulnerabilityDescription": "CVE-2099-0001: synthlib: synthetic cross-site scripting in the template renderer",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-57743407f37bbeba0fbac2295ff639f12c27fd77febc41dfc01dbeba65b39519"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/web:1.4.2",
+            "resourceType": "target"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0001",
+          "CWE-79"
+        ],
+        "untimestampedObservationIds": [
+          "obs-57743407f37bbeba0fbac2295ff639f12c27fd77febc41dfc01dbeba65b39519"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T00:00:00Z",
+        "detectionSource": "heimdall-tools"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T00:00:00Z and closed 2026-09-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-057bbe4ee9dde990",
+      "vulnerabilityDescription": "CVE-2099-0102: synthcrypt: synthetic heap overflow in the record decoder",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-a339485bcdccdf6217f93567e0f573f5aae57f9c90b6470afad26f35be765547"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/web:1.4.2",
+            "resourceType": "target"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0102"
+        ],
+        "untimestampedObservationIds": [
+          "obs-a339485bcdccdf6217f93567e0f573f5aae57f9c90b6470afad26f35be765547"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T00:00:00Z",
+        "detectionSource": "heimdall-tools"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T00:00:00Z and closed 2026-09-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-71446ac59461edb8",
+      "vulnerabilityDescription": "CVE-2099-0103: synthzip: synthetic path traversal on archive extraction",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-a6049562adb7185a3ab4fcf65040462c0bcda7d85cf98ebeafa230fd34305b15"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/web:1.4.2",
+            "resourceType": "target"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0103"
+        ],
+        "untimestampedObservationIds": [
+          "obs-a6049562adb7185a3ab4fcf65040462c0bcda7d85cf98ebeafa230fd34305b15"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-10T21:02:11Z",
+        "detectionSource": "inspec"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-181b4b18c88fe895",
+      "vulnerabilityDescription": "SYN-LNX-0001: The synthd service must restrict its configuration file mode",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-15T21:02:11Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-10T21:02:11Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-2b1f8b0785e86b295f3a1f4288734b5bfff35163745c4c6f2a88638a5abd5624"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "3f0c9a2e-6d4b-4c1e-9a7b-2f1e8d5c4b3a",
+            "resourceType": "target"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CCI-000366"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-08T16:01:30Z",
+        "detectionSource": "inspec"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-08T16:01:30Z and closed 2026-09-13T16:01:30Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-db1a983f4e0a849a",
+      "vulnerabilityDescription": "SYN-RHL-0001: The synthd daemon must not run as root",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-13T16:01:30Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-08T16:01:30Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-252ca5b9898729a0934843c0d6235316123782a983190f1f6a4248ff04ec6611"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "7d2e4f10-3b6a-4c8d-9e1f-5a6b7c8d9e0f",
+            "resourceType": "target"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CCI-000048"
+        ],
+        "untimestampedObservationIds": []
+      }
+    }
+  ],
+  "x-complyroll": {
+    "artifacts": [
+      {
+        "name": "inspec-linux-host.hdf.json",
+        "observationCount": 6,
+        "parser": "complyroll.hdf",
+        "parserVersion": "1",
+        "sha256": "36e929218a49784892b0d31d65e5db4f439b28631006057f23a809e0bff3b80d",
+        "sizeBytes": 8822
+      },
+      {
+        "name": "inspec-overlay.json",
+        "observationCount": 3,
+        "parser": "complyroll.hdf",
+        "parserVersion": "1",
+        "sha256": "a965c0f733072067f1aa030f0c06c9e5dd18b7f2ec63cb5327bd5c7331228679",
+        "sizeBytes": 7842
+      },
+      {
+        "name": "saf-trivy-image.hdf.json",
+        "observationCount": 3,
+        "parser": "complyroll.hdf",
+        "parserVersion": "1",
+        "sha256": "6b36d5a302d0ad131435a18d42c135ddb1506ea05e762bb1581cea7f39b1008c",
+        "sizeBytes": 4001
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "detectionTimeAttestation": {
+      "appliedTo": [
+        "case-057bbe4ee9dde990",
+        "case-1706b7990cce1346",
+        "case-71446ac59461edb8"
+      ],
+      "count": 3,
+      "detectedAt": "2026-09-01T00:00:00Z"
+    },
+    "diagnostics": [
+      {
+        "code": "control_attested",
+        "level": "warning",
+        "location": "inspec-overlay.json",
+        "message": "control carries attestation data; the attestation is recorded as metadata and never changes the disposition (1 occurrence: profiles[1].controls[1])"
+      },
+      {
+        "code": "control_waived",
+        "level": "warning",
+        "location": "inspec-linux-host.hdf.json",
+        "message": "control carries waiver data; the waiver is recorded as metadata and never changes the disposition (1 occurrence: profiles[0].controls[5])"
+      },
+      {
+        "code": "converted_document",
+        "level": "info",
+        "location": "saf-trivy-image.hdf.json",
+        "message": "platform.name is Heimdall Tools; the source tool is heimdall-tools and the resource is the converter's target (1 occurrence: platform)"
+      },
+      {
+        "code": "impact_zero_not_applicable",
+        "level": "info",
+        "location": "inspec-linux-host.hdf.json",
+        "message": "impact is 0, so the control is not applicable whatever its results say (1 occurrence: profiles[0].controls[3]; first: results would read OPEN)"
+      },
+      {
+        "code": "profile_control_shadowed",
+        "level": "info",
+        "location": "inspec-overlay.json",
+        "message": "control has no results and the same id carries results in another profile of this run; it yields no observation (2 occurrences: profiles[0].controls[0], profiles[0].controls[1])"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "saf-trivy-image.hdf.json",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "unresolved_observation",
+        "level": "warning",
+        "location": "inspec-linux-host.hdf.json",
+        "message": "SYN-LNX-0005 on 3f0c9a2e-6d4b-4c1e-9a7b-2f1e8d5c4b3a has disposition error and was not reported as a vulnerability"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "excludedByPeriod": 0,
+    "generatedAt": "2026-09-15T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.3.0a0"
+    },
+    "parserVersions": {
+      "complyroll.hdf": "1"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "5e9499e8cb9d0367c888ce41040175270fc9f007ae4f61d0ced34cca81cfe497"
+    }
+  }
+}

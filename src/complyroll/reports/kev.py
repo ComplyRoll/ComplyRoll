@@ -229,10 +229,13 @@ def kev_clock(
     return KevClock(entries=ordered, satisfied=satisfied, past_due=past_due, status=kev_status)
 
 
-# The SARIF adapter keeps the MAX_LIST_ITEMS lexicographically smallest distinct identifiers
-# (`adapters/sarif.py` `_first_identifiers`), so every dropped identifier sorts after the
-# largest kept one. A dropped CVE is possible only while that largest one sorts at or before
-# the `CVE-` prefix. An adapter that cuts differently must be re-checked against this.
+# The SARIF and HDF adapters keep the MAX_LIST_ITEMS lexicographically smallest distinct
+# identifiers (`adapters/common.py` `first_identifiers`), so every dropped identifier sorts
+# after the largest kept one. A dropped CVE is possible only while that largest one sorts at or
+# before the `CVE-` prefix. An HDF control's CCIs also sort before `CVE-`, so once 64 CCIs fill
+# the list any further identifier is cut, and the control reports `cve_may_be_missing` whether
+# that identifier is a CCI, a CVE, a CWE, or a GHSA id. No converter produces such a control
+# today. An adapter that cuts differently must be re-checked against this.
 def cve_may_be_missing(observation: Observation) -> bool:
     """Return whether a CVE identifier may have been cut from this observation's list."""
     note = observation.metadata_value("truncated")

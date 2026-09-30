@@ -1,0 +1,264 @@
+{
+  "platform": {
+    "name": "ubuntu",
+    "release": "22.04",
+    "target_id": "3f0c9a2e-6d4b-4c1e-9a7b-2f1e8d5c4b3a"
+  },
+  "profiles": [
+    {
+      "name": "synthetic-linux-baseline",
+      "version": "1.4.0",
+      "sha256": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "title": "Synthetic Linux Baseline",
+      "maintainer": "Example Maintainer",
+      "summary": "A synthetic baseline for the ComplyRoll HDF adapter tests",
+      "license": "Apache-2.0",
+      "copyright": "Example Maintainer",
+      "copyright_email": "maintainer@example.test",
+      "supports": [
+        {
+          "platform": "linux"
+        }
+      ],
+      "attributes": [],
+      "groups": [
+        {
+          "id": "controls/synthetic.rb",
+          "controls": [
+            "SYN-LNX-0001",
+            "SYN-LNX-0002",
+            "SYN-LNX-0003",
+            "SYN-LNX-0004",
+            "SYN-LNX-0005",
+            "SYN-LNX-0006"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "SYN-LNX-0001",
+          "title": "The synthd service must restrict its configuration file mode",
+          "desc": "The synthd configuration file must not be writable by other users.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "The synthd configuration file must not be writable by other users."
+            },
+            {
+              "label": "check",
+              "data": "Verify the mode of /etc/synthd/synthd.conf is 0640 or less permissive."
+            },
+            {
+              "label": "fix",
+              "data": "Set the mode of /etc/synthd/synthd.conf to 0640."
+            }
+          ],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {
+            "severity": "medium",
+            "gid": "SYN-V-100001",
+            "rid": "SYN-V-100001r1_rule",
+            "stig_id": "SYN-LNX-0001",
+            "cci": [
+              "CCI-000366"
+            ],
+            "nist": [
+              "CM-6 b"
+            ]
+          },
+          "code": "control 'SYN-LNX-0001' do\n  impact 0.5\nend\n",
+          "source_location": {
+            "line": 1,
+            "ref": "./controls/synthetic.rb"
+          },
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "File /etc/synthd/synthd.conf is expected not to be more permissive than \"0640\"",
+              "run_time": 0.004211,
+              "start_time": "2026-09-10T14:02:11-07:00",
+              "message": "expected File /etc/synthd/synthd.conf not to be more permissive than \"0640\"",
+              "resource_class": "file",
+              "resource_params": "[\"/etc/synthd/synthd.conf\"]",
+              "resource_id": "/etc/synthd/synthd.conf"
+            }
+          ]
+        },
+        {
+          "id": "SYN-LNX-0002",
+          "title": "The synthd service must be enabled",
+          "desc": null,
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "The synthd service must start at boot."
+            }
+          ],
+          "impact": 0.7,
+          "refs": [],
+          "tags": {},
+          "code": "control 'SYN-LNX-0002' do\n  impact 0.7\nend\n",
+          "source_location": {
+            "line": 12,
+            "ref": "./controls/synthetic.rb"
+          },
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "passed",
+              "code_desc": "Service synthd is expected to be enabled",
+              "run_time": 0.012034,
+              "start_time": "2026-09-10T14:02:12-07:00",
+              "resource_class": "service",
+              "resource_params": "[\"synthd\"]",
+              "resource_id": "synthd"
+            }
+          ]
+        },
+        {
+          "id": "SYN-LNX-0003",
+          "title": "The synthd audit log must be reviewed weekly",
+          "desc": "Audit log review is a manual procedure.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "Audit log review is a manual procedure."
+            }
+          ],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {},
+          "code": "control 'SYN-LNX-0003' do\n  impact 0.5\nend\n",
+          "source_location": {
+            "line": 23,
+            "ref": "./controls/synthetic.rb"
+          },
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "skipped",
+              "code_desc": "No-op",
+              "run_time": 0.000012,
+              "start_time": "2026-09-10T14:02:13-07:00",
+              "resource": "No-op",
+              "skip_message": "Synthetic manual check; review the synthd audit log by hand."
+            }
+          ]
+        },
+        {
+          "id": "SYN-LNX-0004",
+          "title": "The synthd container runtime must be pinned",
+          "desc": "This control does not apply to a host without the synthd container runtime.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "This control does not apply to a host without the synthd container runtime."
+            }
+          ],
+          "impact": 0.0,
+          "refs": [],
+          "tags": {},
+          "code": "control 'SYN-LNX-0004' do\n  impact 0.0\nend\n",
+          "source_location": {
+            "line": 34,
+            "ref": "./controls/synthetic.rb"
+          },
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "Package synthd-runtime is expected to be installed",
+              "run_time": 0.009876,
+              "start_time": "2026-09-10T14:02:14-07:00",
+              "message": "expected that Package synthd-runtime is installed",
+              "resource_class": "package",
+              "resource_params": "[\"synthd-runtime\"]",
+              "resource_id": "synthd-runtime"
+            }
+          ]
+        },
+        {
+          "id": "SYN-LNX-0005",
+          "title": "The synthd service must reject unsigned plugins",
+          "desc": "Unsigned synthd plugins must not load.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "Unsigned synthd plugins must not load."
+            }
+          ],
+          "impact": 0.7,
+          "refs": [],
+          "tags": {},
+          "code": "control 'SYN-LNX-0005' do\n  impact 0.7\nend\n",
+          "source_location": {
+            "line": 45,
+            "ref": "./controls/synthetic.rb"
+          },
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "passed",
+              "code_desc": "Synthd plugin policy is expected to require signatures",
+              "run_time": 0.000731,
+              "start_time": "2026-09-10T14:02:15-07:00",
+              "message": "Synthetic error: undefined local variable or method `synthd_plugin_policy'",
+              "exception": "NameError",
+              "backtrace": [
+                "./controls/synthetic.rb:48:in `block (2 levels) in load_with_context'",
+                "./controls/synthetic.rb:47:in `block in load_with_context'"
+              ],
+              "resource_class": "Object",
+              "resource_params": "[]",
+              "resource_id": ""
+            }
+          ]
+        },
+        {
+          "id": "SYN-LNX-0006",
+          "title": "The synthd debug listener must be disabled",
+          "desc": "The synthd debug listener must not accept connections.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "The synthd debug listener must not accept connections."
+            }
+          ],
+          "impact": 0.3,
+          "refs": [],
+          "tags": {},
+          "code": "control 'SYN-LNX-0006' do\n  impact 0.3\nend\n",
+          "source_location": {
+            "line": 56,
+            "ref": "./controls/synthetic.rb"
+          },
+          "waiver_data": {
+            "justification": "Synthetic waiver: the debug listener is bound to loopback on this test host.",
+            "expiration_date": "2026-09-14",
+            "run": false,
+            "skipped_due_to_waiver": true,
+            "message": ""
+          },
+          "results": [
+            {
+              "status": "skipped",
+              "code_desc": "No-op",
+              "run_time": 0.000009,
+              "start_time": "2026-09-10T14:02:16-07:00",
+              "resource": "No-op",
+              "skip_message": "Skipped control due to waiver condition: Synthetic waiver: the debug listener is bound to loopback on this test host."
+            }
+          ]
+        }
+      ],
+      "status": "loaded",
+      "status_message": ""
+    }
+  ],
+  "statistics": {
+    "duration": 0.041872
+  },
+  "version": "5.22.3"
+}

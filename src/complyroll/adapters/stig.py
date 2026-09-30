@@ -1,4 +1,4 @@
-"""Hardened CKLB, CKL, XCCDF, and CCI adapters, and the SARIF-aware ingest dispatcher."""
+"""Hardened CKLB, CKL, XCCDF, and CCI adapters, and the SARIF- and HDF-aware ingest dispatcher."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from .common import (
     text_of,
     unique,
 )
+from .hdf import HDF_MEDIA_TYPE, HDF_PARSER_VERSION, HdfAdapter, looks_like_hdf
 from .safeio import (
     DEFAULT_LIMITS,
     IngestLimits,
@@ -562,7 +563,7 @@ def ingest_stig_artifact(
     ingested_at: datetime | None = None,
     limits: IngestLimits = DEFAULT_LIMITS,
 ) -> IngestResult:
-    """Ingest one CKLB, CKL, XCCDF, ARF, or SARIF artifact without network access."""
+    """Ingest one CKLB, CKL, XCCDF, ARF, SARIF, or HDF artifact without network access."""
 
     path = Path(path)
     now = ingested_at or datetime.now(UTC)
@@ -579,7 +580,7 @@ def ingest_stig_artifact(
         )
 
     suffix = path.suffix.lower()
-    adapter: CklbAdapter | CklAdapter | XccdfAdapter | SarifAdapter
+    adapter: CklbAdapter | CklAdapter | XccdfAdapter | SarifAdapter | HdfAdapter
     document: ParsedDocument
     artifact: ArtifactProvenance
     try:
@@ -594,8 +595,8 @@ def ingest_stig_artifact(
                 ingested_at=now,
             )
             document = ParsedDocument("json", parse_json_bounded(content, limits))
-        elif suffix in {".cklb", ".json"}:
-            adapter = CklbAdapter()
+        elif path.name.lower().endswith(".hdf.json"):
+            adapter = HdfAdapter(limits)
             artifact = _artifact(
                 path,
                 content,
@@ -605,6 +606,23 @@ def ingest_stig_artifact(
                 ingested_at=now,
             )
             document = ParsedDocument("json", parse_json_bounded(content, limits))
+        elif suffix in {".cklb", ".json"}:
+            value = parse_json_bounded(content, limits)
+            # SECURITY: Only a bare .json that parsed within the bounds is sniffed, never a
+            # .cklb, and a document with a stigs key stays a checklist (ADR 0013 decision 1).
+            if suffix == ".json" and looks_like_hdf(value):
+                adapter = HdfAdapter(limits)
+            else:
+                adapter = CklbAdapter()
+            artifact = _artifact(
+                path,
+                content,
+                adapter_name=adapter.name,
+                adapter_version=adapter.version,
+                media_type=adapter.media_type,
+                ingested_at=now,
+            )
+            document = ParsedDocument("json", value)
         elif suffix == ".ckl":
             adapter = CklAdapter()
             artifact = _artifact(
@@ -650,6 +668,9 @@ def ingest_stig_artifact(
         if suffix == ".sarif" or path.name.lower().endswith(".sarif.json"):
             name, version = SarifAdapter.name, SARIF_PARSER_VERSION
             media_type = SARIF_MEDIA_TYPE
+        elif path.name.lower().endswith(".hdf.json"):
+            name, version = HdfAdapter.name, HDF_PARSER_VERSION
+            media_type = HDF_MEDIA_TYPE
         elif suffix in {".cklb", ".json"}:
             name, version = CklbAdapter.name, CklbAdapter.version
             media_type = CklbAdapter.media_type

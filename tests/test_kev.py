@@ -1532,6 +1532,142 @@ class KevDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(self.codes(kev_report(kind=kind, catalog=catalog)), expected)
 
 
+# *--- HDF Documents ---*
+
+HDF_TRIVY = FIXTURES / "saf-trivy-image.hdf.json"
+HDF_LINUX = FIXTURES / "inspec-linux-host.hdf.json"
+HDF_CONTROL = "SYN-KEV-0001"
+#: Sixty-four CCIs fill the adapter's identifier list, and every one sorts before `CVE-`.
+HDF_CCIS = tuple(f"CCI-9000{index:02d}" for index in range(64))
+
+
+def hdf_control_artifact(directory: Path, tags: dict[str, object]) -> Path:
+    """Write a native exec-json document with one failed, clocked control carrying `tags`."""
+    document = {
+        "platform": {
+            "name": "synthetic",
+            "release": "1",
+            "target_id": "0b1c2d3e-4f50-4617-8829-3a4b5c6d7e8f",
+        },
+        "profiles": [
+            {
+                "name": "synthetic-kev-profile",
+                "status": "loaded",
+                "controls": [
+                    {
+                        "id": HDF_CONTROL,
+                        "title": "Synthetic control naming a CVE",
+                        "desc": "A synthetic control description.",
+                        "impact": 0.7,
+                        "tags": tags,
+                        "waiver_data": {},
+                        "results": [
+                            {
+                                "status": "failed",
+                                "code_desc": "Synthetic check",
+                                "start_time": "2026-09-05T10:00:00Z",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "version": "5.22.3",
+    }
+    path = directory / "kev-control.hdf.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def only(items: Sequence[Any]) -> Any:
+    """Return the one member of `items`."""
+    (item,) = items
+    return item
+
+
+class KevHdfTests(unittest.TestCase):
+    """An HDF observation meets the catalog through its source identifiers (ADR 0013)."""
+
+    def codes(self, report: Any) -> list[str]:
+        return [item.code for item in report.diagnostics if item.code.startswith("kev_")]
+
+    def test_a_converted_observation_matches_its_cve(self) -> None:
+        # The Trivy conversion is clockless, so the attestation supplies its detection time.
+        report = kev_report(
+            catalog=fixture_catalog(),
+            artifacts=[HDF_TRIVY],
+            evaluations=None,
+            detected_at=datetime(2026, 9, 1, tzinfo=UTC),
+        )
+        records = {item.source_record_id: item for item in report.vulnerabilities}
+        self.assertEqual(set(records), {"CVE-2099-0001", "CVE-2099-0102", "CVE-2099-0103"})
+        matched = records["CVE-2099-0001"]
+        self.assertEqual(matched.source_type, "hdf")
+        self.assertEqual(matched.kev.bound.cve_id, "CVE-2099-0001")
+        self.assertEqual(matched.kev.entries, (fixture_entry("CVE-2099-0001"),))
+        self.assertIsNone(records["CVE-2099-0102"].kev)
+        self.assertIsNone(records["CVE-2099-0103"].kev)
+        self.assertTrue(all(item.kev_checked for item in report.vulnerabilities))
+        self.assertNotIn("kev_no_matches", self.codes(report))
+        self.assertNotIn("kev_match_incomplete", self.codes(report))
+
+    def test_a_native_run_beside_a_checklist_carries_no_cve_identifier(self) -> None:
+        # The native fixture names CCIs and the checklist names STIG rules; neither carries a
+        # CVE. The catalog sits inside the stale window and adds nothing after as_of, so this
+        # is the only KEV note either run can raise.
+        catalog = parse_kev_catalog(
+            minimal_catalog(
+                [minimal_entry("CVE-2099-7777", added="2026-09-01", due="2026-09-15")],
+                released="2026-09-14T00:00:00Z",
+            ),
+            name="kev-catalog.json",
+        )
+        report = kev_report(
+            catalog=catalog,
+            artifacts=[HDF_LINUX, FIXTURES / "windows-host.ckl"],
+            evaluations=None,
+            detected_at=datetime(2026, 9, 1, tzinfo=UTC),
+        )
+        self.assertEqual({item.source_type for item in report.vulnerabilities}, {"hdf", "ckl"})
+        self.assertEqual(self.codes(report), ["kev_no_cve_identifiers"])
+        (note,) = [item for item in report.diagnostics if item.code == "kev_no_cve_identifiers"]
+        self.assertEqual(note.level.value, "info")
+        self.assertEqual(note.location, f"sha256:{catalog.sha256}")
+        self.assertTrue(all(item.kev is None for item in report.vulnerabilities))
+        self.assertTrue(all(item.kev_checked for item in report.vulnerabilities))
+
+    def test_a_cve_cut_behind_sixty_four_ccis_is_named_rather_than_missed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            alone = hdf_control_artifact(Path(directory), {"cve": ["CVE-2099-0001"]})
+            matched = kev_report(catalog=fixture_catalog(), artifacts=[alone], evaluations=None)
+            crowded = hdf_control_artifact(
+                Path(directory), {"cci": list(HDF_CCIS), "cve": ["CVE-2099-0001"]}
+            )
+            observation = only(ingest_stig_artifact(crowded).observations)
+            report = kev_report(catalog=fixture_catalog(), artifacts=[crowded], evaluations=None)
+        # The same control with the CVE as its only tag matches, so the cut is what hides it.
+        self.assertEqual(only(matched.vulnerabilities).kev.bound.cve_id, "CVE-2099-0001")
+        self.assertEqual(observation.source_identifiers, HDF_CCIS)
+        self.assertTrue(cve_may_be_missing(observation))
+        record = only(report.vulnerabilities)
+        self.assertIsNone(record.kev)
+        # No surviving identifier is a CVE, so the catalog-level note is true as far as it
+        # goes; the record-level warning is the one that says the list was cut.
+        self.assertEqual(
+            self.codes(report),
+            ["kev_entries_after_as_of", "kev_no_cve_identifiers", "kev_match_incomplete"],
+        )
+        (note,) = [item for item in report.diagnostics if item.code == "kev_match_incomplete"]
+        self.assertEqual(note.level.value, "warning")
+        self.assertEqual(note.location, HDF_CONTROL)
+        self.assertEqual(
+            note.message,
+            f"{record.tracking_id} groups an observation whose source identifiers were cut at "
+            "the adapter's limit, and a CVE may be among those dropped, so a CISA KEV entry "
+            "for it cannot be matched",
+        )
+
+
 # *--- Period Selection ---*
 
 

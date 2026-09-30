@@ -395,6 +395,122 @@ regenerate an old report, use the catalog that was current at its `--as-of`; the
 a refusal, and a run given no catalog produces exactly the bytes it produced before, with no
 `kev` key anywhere.
 
+## InSpec and HDF
+
+InSpec writes its results as HDF with `inspec exec --reporter json`, and the MITRE SAF CLI's
+`saf convert` writes the same shape from other tools' output. ComplyRoll reads both (ADR 0013).
+A file whose name ends `.hdf.json` is HDF. A bare `.json` file is HDF when its parsed root has a
+`profiles` array, a `platform` object, and no `stigs` key; anything else stays a CKLB checklist.
+A failed control is a vulnerability. A waiver or an attestation is kept as metadata and never
+changes a disposition: the results decide it, except that impact 0 reads not applicable first.
+
+The three fixtures are synthetic: a native InSpec run against a Linux host, a Trivy image scan
+converted by `saf convert`, and an overlay profile run over the baseline it wraps.
+
+```bash
+complyroll report vdt \
+  tests/fixtures/inspec-linux-host.hdf.json \
+  tests/fixtures/saf-trivy-image.hdf.json \
+  tests/fixtures/inspec-overlay.json \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-09-01T00:00:00Z \
+  --to 2026-09-30T23:59:59Z \
+  --as-of 2026-09-15T12:00:00Z \
+  --detected-at 2026-09-01T00:00:00Z \
+  -o vdt-hdf.json \
+  --markdown vdt-hdf.md
+```
+
+These are `tests/golden/vdt-hdf.json` and `tests/golden/vdt-hdf.md`, byte for byte. The native
+runs stamp a `start_time` on every result, and those clocks are the detection times. The
+converted Trivy document carries no scan time at all, so `--detected-at` supplies one for its
+three records and the report says so under "Detection time attestation". Five records are
+reported, and four of them are overdue at the `--as-of` instant.
+
+The persisted path needs one more step than the KEV section's `--db` swap. Run these four
+commands in order from the repository root:
+
+```bash
+complyroll ingest \
+  tests/fixtures/inspec-linux-host.hdf.json \
+  tests/fixtures/saf-trivy-image.hdf.json \
+  tests/fixtures/inspec-overlay.json \
+  --db hdf.db \
+  --as-of 2026-09-15T12:00:00Z
+
+complyroll cases correlate --db hdf.db
+
+complyroll cases attest-detection \
+  --db hdf.db \
+  --all-missing \
+  --detected-at 2026-09-01T00:00:00Z \
+  --rationale "The Trivy conversion declares no scan timestamp; the image was scanned on 1 September."
+
+complyroll report vdt \
+  --db hdf.db \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-09-01T00:00:00Z \
+  --to 2026-09-30T23:59:59Z \
+  --as-of 2026-09-15T12:00:00Z \
+  -o vdt-hdf.json \
+  --markdown vdt-hdf.md
+```
+
+The three commands before the report print this on standard output:
+
+```text
+inspec-linux-host.hdf.json: recorded 6 observation(s)
+saf-trivy-image.hdf.json: recorded 3 observation(s)
+inspec-overlay.json: recorded 3 observation(s)
+
+created 5 case(s), linked 5 observation(s), skipped 0 already-linked observation(s)
+
+selected 3 case(s) with no source timestamp on any observation
+attested 3 case(s), skipped 0 unchanged case(s), 0 not applicable case(s)
+```
+
+and the report is the same two golden files. The attestation step is not optional here. A
+store records attested detection times as events, so `report vdt` refuses `--detected-at` beside
+`--db` (`src/complyroll/cli.py:869`), and without the attestation the report exits 1, writes no
+file, and names the three converted records:
+
+```text
+error: detection_time_missing: no source timestamp and no --detected-at attestation for: case-057bbe4ee9dde990, case-1706b7990cce1346, case-71446ac59461edb8
+```
+
+After the four commands, `complyroll store verify --db hdf.db` prints
+`ok: 28 event(s) verified`.
+
+Each input is read by the HDF parser, including the overlay, whose name has no `.hdf`:
+
+```text
+| inspec-linux-host.hdf.json | 36e929218a49 | complyroll.hdf 1 | 6 |
+| inspec-overlay.json | a965c0f73307 | complyroll.hdf 1 | 3 |
+| saf-trivy-image.hdf.json | 6b36d5a302d0 | complyroll.hdf 1 | 3 |
+```
+
+The report also carries these diagnostics, which the stateless run prints on standard error:
+
+```text
+warning: control_attested: control carries attestation data; the attestation is recorded as metadata and never changes the disposition (1 occurrence: profiles[1].controls[1]) [inspec-overlay.json]
+warning: control_waived: control carries waiver data; the waiver is recorded as metadata and never changes the disposition (1 occurrence: profiles[0].controls[5]) [inspec-linux-host.hdf.json]
+info: converted_document: platform.name is Heimdall Tools; the source tool is heimdall-tools and the resource is the converter's target (1 occurrence: platform) [saf-trivy-image.hdf.json]
+info: impact_zero_not_applicable: impact is 0, so the control is not applicable whatever its results say (1 occurrence: profiles[0].controls[3]; first: results would read OPEN) [inspec-linux-host.hdf.json]
+info: profile_control_shadowed: control has no results and the same id carries results in another profile of this run; it yields no observation (2 occurrences: profiles[0].controls[0], profiles[0].controls[1]) [inspec-overlay.json]
+warning: source_timestamp_missing: source artifact does not declare an observation timestamp; observed_at is unknown [saf-trivy-image.hdf.json]
+warning: unresolved_observation: SYN-LNX-0005 on 3f0c9a2e-6d4b-4c1e-9a7b-2f1e8d5c4b3a has disposition error and was not reported as a vulnerability [inspec-linux-host.hdf.json]
+```
+
+Each line is a decision the report did not hide. SYN-LNX-0004 failed, but its impact is 0, so it
+is not applicable and is not reported. SYN-LNX-0006 carries a waiver, and its skipped result
+decides it, so it reads not reviewed. SYN-LNX-0005 passed with a backtrace, which InSpec writes
+when a check raised, so it reads as an error and is named rather than reported. In the overlay,
+the wrapper's copies of SYN-RHL-0001 and SYN-RHL-0002 have no results, so the baseline's copies
+decide both. SYN-RHL-0002 carries the passed result `saf attest apply` appended, so it reads PASS
+and is not reported. The attester's name appears nowhere in the report.
+
 ## Verifying the log
 
 `complyroll store verify --db complyroll.db` walks the whole log and exits non-zero on any

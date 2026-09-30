@@ -408,3 +408,18 @@ is carried in this repository. The tracking ids are the ones `tests/golden/vdt-k
   `kev_rule_unavailable` rather than inventing one.
 - Reading `VDR-CSO-AKE` from first detection: it would assert a deployment the evidence does
   not carry.
+
+## Amendment 2026-09-29: HDF conversions carry CVEs
+
+The sentence under Decision 4 that the STIG adapters yield no CVE identifiers still holds for
+the CKLB, CKL, XCCDF, and ARF adapters. ADR 0013 adds an HDF adapter, and a `saf convert`
+document from a vulnerability scanner does carry CVEs: its control ids, titles, and `cve` tags
+go through the same extractor, which now lives in `adapters/common.py` as `extract_identifiers`
+(`common.py:370`), with the `_CVE` pattern this ADR describes kept as `CVE`. A converted
+observation matches its catalog entry like a SARIF one (`test_kev.py:1594`).
+
+An HDF control can also carry CCIs, and `CCI-` sorts before `CVE-`. A control with 64 or more
+CCIs and a CVE therefore loses the CVE to the 64-smallest cut. `cve_may_be_missing`
+(`kev.py:232-239`) reads that cut, so the record is named with INFO `kev_no_cve_identifiers` and
+WARNING `kev_match_incomplete` instead of being passed over (`test_kev.py:1639`). No converter
+produces that shape today.

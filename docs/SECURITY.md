@@ -55,7 +55,24 @@ The standard-library ingestion layer currently enforces:
   JSON) refuses the artifact on the stateless and persisted paths alike, which is why no
   payload the store's `MAX_EVENT_JSON_BYTES` (1 MiB) or `MAX_EVENT_JSON_VALUES` (100,000) would
   refuse is ever built
-- SARIF diagnostics are coalesced per code per artifact, and each JSON path and detail they
+- For HDF, the same three `IngestLimits` fields apply: `max_results_per_run` bounds one
+  profile's controls and one control's results, `max_observations_per_artifact` bounds the
+  distinct folded observations, and `max_observation_bytes_per_artifact` bounds their summed
+  canonical JSON. A document lists at most 64 profiles (`MAX_PROFILES_PER_DOCUMENT`), which also
+  bounds every `parent_profile` chain. An HDF observation takes the same member caps and the same
+  512 KiB ceiling as a SARIF one. Exceeding any of them refuses the artifact
+- Exactly nine HDF tags are read (`severity`, `severityoverride`, `cci`, `nist`, `gid`, `rid`,
+  `stig_id`, `cve`, and `cwe`). Check and fix prose, `code`, `refs`, `source_location`,
+  `depends`, `statistics`, and every other tag are never read, so their size costs nothing beyond
+  the node bound. A result's `backtrace` is tested for presence and its content is never read
+- An HDF `impact` is checked before any arithmetic: an integer outside 0 to 1 is refused before
+  `float()` could overflow on it, a float must be finite and within 0 to 1, and a bool is not a
+  number. A refused impact is a warning that sets nothing. An integer of more than 4,300 digits
+  is refused inside `json.loads` by Python's `int_max_str_digits` limit and fails the artifact
+- A bare `.json` file is read as HDF only after its bounded parse has finished, and only when it
+  has no `stigs` key, a `profiles` array, and a `platform` object. A bare `.json` document that
+  exceeds the depth or node bound is never sniffed, so its failure is attributed to CKLB
+- SARIF and HDF diagnostics are coalesced per code per artifact, and each JSON path and detail they
   carry is sanitized and cut at 512 characters, so one artifact's diagnostics stay within about
   56,000 characters whatever the input's size
 - A lone surrogate code point in any JSON string or object key is refused at parse, for every
@@ -100,6 +117,15 @@ integer `security-severity` outside 0 to 10 is invalid, both checked before any 
 could overflow on them; a region line or column above 2**31 - 1 is absent, so a region's text stays
 short. A very large CodeQL log can exceed the 500,000 JSON value bound while staying under 32 MiB;
 it fails closed with a message that names the bound, and raising it is the caller's decision.
+
+The HDF adapter follows the same rule (ADR 0013 Decision 10). Every control id, every profile
+name, and `platform.target_id` is an identity input: over 512 characters, or carrying a control,
+format, surrogate, or line-separator code point, it is refused whole and the artifact yields no
+observations. Titles, descriptions, tag values, result messages, platform strings, and waiver
+and attestation texts are evidence, sanitized and cut at the shared caps with the cut members
+named. The adapter opens no path and fetches nothing: `depends` entries, profile `url` values,
+and `source_location` paths are never read. A `backtrace` or an `exception` never reaches a
+shell or an evaluator; an exception is recorded only as the text of a failure message.
 
 ## Evidence integrity
 

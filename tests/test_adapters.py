@@ -639,6 +639,38 @@ class CommonHelperMoveTests(unittest.TestCase):
         self.assertIs(stig.make_observation, common.make_observation)
         self.assertIs(stig.missing_time_diagnostic, common.missing_time_diagnostic)
 
+    def test_the_sarif_adapter_binds_the_moved_helpers_from_common(self) -> None:
+        # The names surviving sarif.py code calls, under the spelling each call site uses.
+        self.assertIs(sarif.MAX_DESCRIPTION_CHARS, common.MAX_DESCRIPTION_CHARS)
+        self.assertIs(sarif.MAX_IDENTITY_CHARS, common.MAX_IDENTITY_CHARS)
+        self.assertIs(sarif.MAX_LIST_ITEM_CHARS, common.MAX_LIST_ITEM_CHARS)
+        self.assertIs(sarif.MAX_LIST_ITEMS, common.MAX_LIST_ITEMS)
+        self.assertIs(sarif.MAX_METADATA_VALUE_CHARS, common.MAX_METADATA_VALUE_CHARS)
+        self.assertIs(sarif.MAX_OBSERVATION_JSON_BYTES, common.MAX_OBSERVATION_JSON_BYTES)
+        self.assertIs(sarif.MAX_TITLE_CHARS, common.MAX_TITLE_CHARS)
+        self.assertIs(sarif.EvidenceParse, common.EvidenceParse)
+        self.assertIs(sarif.observation_bytes, common.observation_bytes)
+        self.assertIs(sarif._EVIDENCE_TRUNCATED_SUMMARY, common.EVIDENCE_TRUNCATED_SUMMARY)
+        self.assertIs(sarif._SEVERITY_RANK, common.SEVERITY_RANK)
+        self.assertIs(sarif._Cleaned, common.Cleaned)
+        self.assertIs(sarif._IdentityRefused, common.IdentityRefused)
+        self.assertIs(sarif._clean, common.clean)
+        self.assertIs(sarif._earliest, common.earliest)
+        self.assertIs(sarif._encode_list, common.encode_list)
+        self.assertIs(sarif._extract_identifiers, common.extract_identifiers)
+        self.assertIs(sarif._first_identifiers, common.first_identifiers)
+        self.assertIs(sarif._quoted, common.quoted)
+        self.assertIs(sarif._truncate, common.truncate)
+        # The private names only the SARIF tests still read, bound by plain assignment.
+        self.assertIs(sarif._sanitize, common.sanitize)
+        self.assertIs(sarif._sarif_timestamp, common.parse_clock)
+        self.assertIs(sarif._identity_problem, common.identity_problem)
+        # The public constants other modules still import from sarif.py.
+        self.assertIs(sarif.MAX_CLOCK_YEAR, common.MAX_CLOCK_YEAR)
+        self.assertIs(sarif.MIN_CLOCK_YEAR, common.MIN_CLOCK_YEAR)
+        self.assertIs(sarif.MAX_DIAGNOSTIC_PATHS, common.MAX_DIAGNOSTIC_PATHS)
+        self.assertIs(sarif.TRUNCATION_MARKER, common.TRUNCATION_MARKER)
+
     def test_every_stig_fixture_keeps_its_observation_ids_after_the_helper_move(self) -> None:
         for name, expected in BASELINE_OBSERVATION_IDS.items():
             with self.subTest(fixture=name):

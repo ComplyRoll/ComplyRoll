@@ -28,6 +28,7 @@ from test_replay import INGESTED_AT, RATIONALE, StoreFixture
 from test_reports import summary_counts
 
 from complyroll.adapters import IngestLimits, InputLimitError, ingest_stig_artifact
+from complyroll.adapters import common as common_module
 from complyroll.adapters import sarif as sarif_module
 from complyroll.adapters.base import (
     AdapterOutput,
@@ -5500,7 +5501,7 @@ class SarifSharedWorkTests(unittest.TestCase):
         artifact = synthetic_artifact(payload)
         flatten_links = sarif_module._flatten_links
         with (
-            mock.patch.object(sarif_module, "_sanitize", wraps=_sanitize) as sanitize,
+            mock.patch.object(common_module, "sanitize", wraps=_sanitize) as sanitize,
             mock.patch.object(sarif_module, "_flatten_links", wraps=flatten_links) as flatten,
         ):
             output = parse_direct(payload, artifact)
@@ -5700,7 +5701,7 @@ class SarifSharedWorkTests(unittest.TestCase):
             "src/\u00e9.py", "file:///w\u00f6rk/", "https://example.test/\u00e9"
         )
         problem = sarif_module._identity_problem
-        with mock.patch.object(sarif_module, "_identity_problem", wraps=problem) as check:
+        with mock.patch.object(common_module, "identity_problem", wraps=problem) as check:
             output = parse_direct(payload)
         checked = Counter(call.args[0] for call in check.call_args_list)
         self.assertEqual([checked[uri] for uri in uris], [1, 1, 1])
@@ -5722,7 +5723,7 @@ class SarifSharedWorkTests(unittest.TestCase):
         problem = sarif_module._identity_problem
         extract = sarif_module._extract_identifiers
         with (
-            mock.patch.object(sarif_module, "_identity_problem", wraps=problem) as check,
+            mock.patch.object(common_module, "identity_problem", wraps=problem) as check,
             mock.patch.object(sarif_module, "_extract_identifiers", wraps=extract) as scan,
         ):
             output = parse_direct(make_log(run))
@@ -5752,7 +5753,7 @@ class SarifSharedWorkTests(unittest.TestCase):
         results = [make_result(rule_id=None, ruleIndex=0) for _ in range(SHARED_URI_RESULTS)]
         run = make_run(results, rules=[{"id": "R\u200b"}], invocations=[RUN_CLOCK])
         problem = sarif_module._identity_problem
-        with mock.patch.object(sarif_module, "_identity_problem", wraps=problem) as check:
+        with mock.patch.object(common_module, "identity_problem", wraps=problem) as check:
             output = parse_direct(make_log(run))
         self.assertEqual(Counter(call.args[0] for call in check.call_args_list)["R\u200b"], 1)
         self.assertEqual(output.observations, ())
@@ -5808,7 +5809,7 @@ class SarifSharedWorkTests(unittest.TestCase):
                 uris[position] += bad
                 payload, _uris = shared_uri_log(*uris)
                 problem = sarif_module._identity_problem
-                with mock.patch.object(sarif_module, "_identity_problem", wraps=problem) as check:
+                with mock.patch.object(common_module, "identity_problem", wraps=problem) as check:
                     output = parse_direct(payload)
                 checked = Counter(call.args[0] for call in check.call_args_list)
                 self.assertEqual(checked[uris[position]], 1)

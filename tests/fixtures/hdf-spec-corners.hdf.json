@@ -1,0 +1,334 @@
+{
+  "platform": {
+    "name": "debian",
+    "release": "12",
+    "target_id": "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"
+  },
+  "profiles": [
+    {
+      "name": "synthetic-corners",
+      "version": "0.9.0",
+      "sha256": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+      "title": "Synthetic HDF Corners",
+      "maintainer": "Example Maintainer",
+      "summary": "Synthetic spec corners for the ComplyRoll HDF adapter tests",
+      "license": "Apache-2.0",
+      "copyright": "Example Maintainer",
+      "copyright_email": "maintainer@example.test",
+      "supports": [],
+      "attributes": [],
+      "groups": [],
+      "controls": [
+        {
+          "id": "SYN-CRN-0001",
+          "title": "A result with a status outside the four known values",
+          "desc": "The result status is bogus, so the result reads unknown.",
+          "descriptions": [],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {},
+          "code": "",
+          "source_location": {},
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "bogus",
+              "code_desc": "Synthetic check with an unknown status",
+              "run_time": 0.001,
+              "start_time": "2026-09-05T10:00:00Z"
+            }
+          ]
+        },
+        {
+          "id": "SYN-CRN-0002",
+          "title": "An impact written as a string and an unknown severity word",
+          "desc": "The impact is the string 0.5 and the severity tag is urgent.",
+          "descriptions": [],
+          "impact": "0.5",
+          "refs": [],
+          "tags": {
+            "severity": "urgent"
+          },
+          "code": "",
+          "source_location": {},
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "passed",
+              "code_desc": "Synthetic check with a blank start time",
+              "run_time": 0.001,
+              "start_time": "  "
+            },
+            {
+              "status": "passed",
+              "code_desc": "Synthetic check with a usable start time",
+              "run_time": 0.001,
+              "start_time": "2026-09-05T10:01:00Z"
+            }
+          ]
+        },
+        {
+          "id": "SYN-CRN-0003",
+          "title": "An impact written as a boolean and an override over the severity tag",
+          "desc": "The impact is true, the override is critical, and the tag is low.",
+          "descriptions": [],
+          "impact": true,
+          "refs": [],
+          "tags": {
+            "severityoverride": "critical",
+            "severity": "low"
+          },
+          "code": "",
+          "source_location": {},
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "Synthetic check with a seconds-bearing offset",
+              "run_time": 0.001,
+              "start_time": "2026-09-05T10:02:00+05:30:15",
+              "message": "Synthetic failure with an unusable clock"
+            }
+          ]
+        },
+        {
+          "id": "SYN-CRN-0004",
+          "title": "A zero​width space in the title and seventy CCIs",
+          "desc": "The title carries U+200B and the cci tag lists seventy items.",
+          "descriptions": [],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {
+            "cci": [
+              "CCI-900000",
+              "CCI-900001",
+              "CCI-900002",
+              "CCI-900003",
+              "CCI-900004",
+              "CCI-900005",
+              "CCI-900006",
+              "CCI-900007",
+              "CCI-900008",
+              "CCI-900009",
+              "CCI-900010",
+              "CCI-900011",
+              "CCI-900012",
+              "CCI-900013",
+              "CCI-900014",
+              "CCI-900015",
+              "CCI-900016",
+              "CCI-900017",
+              "CCI-900018",
+              "CCI-900019",
+              "CCI-900020",
+              "CCI-900021",
+              "CCI-900022",
+              "CCI-900023",
+              "CCI-900024",
+              "CCI-900025",
+              "CCI-900026",
+              "CCI-900027",
+              "CCI-900028",
+              "CCI-900029",
+              "CCI-900030",
+              "CCI-900031",
+              "CCI-900032",
+              "CCI-900033",
+              "CCI-900034",
+              "CCI-900035",
+              "CCI-900036",
+              "CCI-900037",
+              "CCI-900038",
+              "CCI-900039",
+              "CCI-900040",
+              "CCI-900041",
+              "CCI-900042",
+              "CCI-900043",
+              "CCI-900044",
+              "CCI-900045",
+              "CCI-900046",
+              "CCI-900047",
+              "CCI-900048",
+              "CCI-900049",
+              "CCI-900050",
+              "CCI-900051",
+              "CCI-900052",
+              "CCI-900053",
+              "CCI-900054",
+              "CCI-900055",
+              "CCI-900056",
+              "CCI-900057",
+              "CCI-900058",
+              "CCI-900059",
+              "CCI-900060",
+              "CCI-900061",
+              "CCI-900062",
+              "CCI-900063",
+              "CCI-900064",
+              "CCI-900065",
+              "CCI-900066",
+              "CCI-900067",
+              "CCI-900068",
+              "CCI-900069"
+            ]
+          },
+          "code": "",
+          "source_location": {},
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "passed",
+              "code_desc": "Synthetic check with many CCIs",
+              "run_time": 0.001,
+              "start_time": "2026-09-05T10:03:00Z"
+            }
+          ]
+        },
+        {
+          "id": "SYN-CRN-0005",
+          "title": "The same control id listed twice in one profile",
+          "desc": "Both entries carry results, so they fold into one observation.",
+          "descriptions": [],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {},
+          "code": "",
+          "source_location": {},
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "Synthetic first entry fails",
+              "run_time": 0.001,
+              "start_time": "2026-09-05T10:04:00Z",
+              "message": "Synthetic failure in the first entry"
+            }
+          ]
+        },
+        {
+          "id": "SYN-CRN-0005",
+          "title": "The same control id listed twice in one profile",
+          "desc": "Both entries carry results, so they fold into one observation.",
+          "descriptions": [],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {},
+          "code": "",
+          "source_location": {},
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "passed",
+              "code_desc": "Synthetic second entry passes",
+              "run_time": 0.001,
+              "start_time": "2026-09-05T10:05:00Z"
+            }
+          ]
+        },
+        {
+          "id": "SYN-CRN-0006",
+          "title": "A control that carries both a waiver and an attestation",
+          "desc": "Neither the waiver nor the attestation moves the disposition.",
+          "descriptions": [],
+          "impact": 0.7,
+          "refs": [],
+          "tags": {},
+          "code": "",
+          "source_location": {},
+          "waiver_data": {
+            "justification": "Synthetic waiver that still runs the control.",
+            "expiration_date": "2026-12-31",
+            "run": true,
+            "skipped_due_to_waiver": false,
+            "message": ""
+          },
+          "attestation_data": {
+            "control_id": "SYN-CRN-0006",
+            "explanation": "Synthetic attestation that the control still fails.",
+            "frequency": "monthly",
+            "status": "failed",
+            "updated": "2026-09-05",
+            "updated_by": "Riley Example"
+          },
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "Synthetic check that fails under a waiver",
+              "run_time": 0.001,
+              "start_time": "2026-09-05T10:06:00Z",
+              "message": "Synthetic failure under a waiver"
+            },
+            {
+              "code_desc": "Manually verified status provided through attestation",
+              "status": "failed",
+              "message": "Attestation:\nStatus: failed\nExplanation: Synthetic attestation that the control still fails.\n\nUpdated: 2026-09-05\nUpdated By: Riley Example\nFrequency: monthly",
+              "start_time": "2026-09-05T18:00:00.000Z"
+            }
+          ]
+        },
+        {
+          "id": "SYN-CRN-0007",
+          "title": "A converter error result and a null waiver",
+          "desc": "The result status is the converter spelling error, and waiver_data is null.",
+          "descriptions": [],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {},
+          "code": "",
+          "source_location": {},
+          "waiver_data": null,
+          "results": [
+            {
+              "status": "error",
+              "code_desc": "Synthetic check the converter marked as an error",
+              "run_time": 0.001,
+              "start_time": "2026-09-05T10:07:00Z",
+              "message": "Synthetic converter error text"
+            }
+          ]
+        }
+      ],
+      "status": "loaded",
+      "status_message": ""
+    },
+    {
+      "name": "synthetic-corners-extra",
+      "version": "0.1.0",
+      "sha256": "d00dfeedd00dfeedd00dfeedd00dfeedd00dfeedd00dfeedd00dfeedd00dfeed",
+      "title": "Synthetic Skipped Profile",
+      "maintainer": "Example Maintainer",
+      "summary": "A synthetic profile the runner skipped",
+      "license": "Apache-2.0",
+      "copyright": "Example Maintainer",
+      "copyright_email": "maintainer@example.test",
+      "supports": [
+        {
+          "platform-name": "windows"
+        }
+      ],
+      "attributes": [],
+      "groups": [],
+      "controls": [
+        {
+          "id": "SYN-CRN-0100",
+          "title": "A control in a profile the runner skipped",
+          "desc": "The profile did not load, so this control has no results.",
+          "descriptions": [],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {},
+          "code": "",
+          "source_location": {},
+          "waiver_data": {},
+          "results": []
+        }
+      ],
+      "status": "skipped",
+      "status_message": "Skipping profile: 'synthetic-corners-extra' on unsupported platform: 'debian/12'."
+    }
+  ],
+  "statistics": {
+    "duration": 0.012
+  },
+  "version": "5.22.3"
+}

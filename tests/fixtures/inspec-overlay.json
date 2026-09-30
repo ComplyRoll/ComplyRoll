@@ -1,0 +1,248 @@
+{
+  "platform": {
+    "name": "redhat",
+    "release": "9.4",
+    "target_id": "7d2e4f10-3b6a-4c8d-9e1f-5a6b7c8d9e0f"
+  },
+  "profiles": [
+    {
+      "name": "synthetic-rhel-overlay",
+      "version": "2.0.0",
+      "sha256": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "title": "Synthetic RHEL Overlay",
+      "maintainer": "Example Maintainer",
+      "summary": "A synthetic overlay that tailors the synthetic RHEL baseline",
+      "license": "Apache-2.0",
+      "copyright": "Example Maintainer",
+      "copyright_email": "maintainer@example.test",
+      "supports": [
+        {
+          "platform-family": "redhat"
+        }
+      ],
+      "attributes": [],
+      "depends": [
+        {
+          "name": "synthetic-rhel-baseline",
+          "url": "https://git.example.test/synthetic-rhel-baseline/archive/v1.2.0.tar.gz",
+          "status": "loaded"
+        }
+      ],
+      "groups": [
+        {
+          "id": "controls/overlay.rb",
+          "controls": [
+            "SYN-RHL-0001",
+            "SYN-RHL-0002",
+            "SYN-RHL-0100"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "SYN-RHL-0001",
+          "title": "The synthd daemon must not run as root",
+          "desc": "The synthd daemon must drop root privileges after start.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "The synthd daemon must drop root privileges after start."
+            }
+          ],
+          "impact": 0.7,
+          "refs": [],
+          "tags": {
+            "severity": "high",
+            "cci": [
+              "CCI-000048"
+            ],
+            "nist": [
+              "AC-8 a"
+            ]
+          },
+          "code": "include_controls 'synthetic-rhel-baseline'\n",
+          "source_location": {
+            "line": 1,
+            "ref": "./controls/overlay.rb"
+          },
+          "waiver_data": {},
+          "results": []
+        },
+        {
+          "id": "SYN-RHL-0002",
+          "title": "The synthd backup keys must be rotated annually",
+          "desc": "Backup key rotation is verified by hand.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "Backup key rotation is verified by hand."
+            }
+          ],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {},
+          "code": "include_controls 'synthetic-rhel-baseline'\n",
+          "source_location": {
+            "line": 1,
+            "ref": "./controls/overlay.rb"
+          },
+          "waiver_data": {},
+          "results": []
+        },
+        {
+          "id": "SYN-RHL-0100",
+          "title": "The synthd site banner must name the example.test operator",
+          "desc": "The synthd login banner must carry the operator's site text.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "The synthd login banner must carry the operator's site text."
+            }
+          ],
+          "impact": 0.3,
+          "refs": [],
+          "tags": {},
+          "code": "control 'SYN-RHL-0100' do\n  impact 0.3\nend\n",
+          "source_location": {
+            "line": 4,
+            "ref": "./controls/overlay.rb"
+          },
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "passed",
+              "code_desc": "File /etc/synthd/banner is expected to match /example\\.test/",
+              "run_time": 0.002118,
+              "start_time": "2026-09-08T09:04:00-07:00",
+              "resource_class": "file",
+              "resource_params": "[\"/etc/synthd/banner\"]",
+              "resource_id": "/etc/synthd/banner"
+            }
+          ]
+        }
+      ],
+      "status": "loaded",
+      "status_message": ""
+    },
+    {
+      "name": "synthetic-rhel-baseline",
+      "version": "1.2.0",
+      "sha256": "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "title": "Synthetic RHEL Baseline",
+      "maintainer": "Example Maintainer",
+      "summary": "A synthetic RHEL baseline for the ComplyRoll HDF adapter tests",
+      "license": "Apache-2.0",
+      "copyright": "Example Maintainer",
+      "copyright_email": "maintainer@example.test",
+      "supports": [
+        {
+          "platform-family": "redhat"
+        }
+      ],
+      "attributes": [],
+      "parent_profile": "synthetic-rhel-overlay",
+      "depends": [],
+      "groups": [
+        {
+          "id": "controls/baseline.rb",
+          "controls": [
+            "SYN-RHL-0001",
+            "SYN-RHL-0002"
+          ]
+        }
+      ],
+      "controls": [
+        {
+          "id": "SYN-RHL-0001",
+          "title": "The synthd daemon must not run as root",
+          "desc": "The synthd daemon must drop root privileges after start.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "The synthd daemon must drop root privileges after start."
+            }
+          ],
+          "impact": 0.7,
+          "refs": [],
+          "tags": {
+            "severity": "high",
+            "cci": [
+              "CCI-000048"
+            ],
+            "nist": [
+              "AC-8 a"
+            ]
+          },
+          "code": "control 'SYN-RHL-0001' do\n  impact 0.7\nend\n",
+          "source_location": {
+            "line": 1,
+            "ref": "./controls/baseline.rb"
+          },
+          "waiver_data": {},
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "Processes synthd users is expected not to include \"root\"",
+              "run_time": 0.018402,
+              "start_time": "2026-09-08T09:01:30-07:00",
+              "message": "expected [\"root\"] not to include \"root\"",
+              "resource_class": "processes",
+              "resource_params": "[\"synthd\"]",
+              "resource_id": "synthd"
+            }
+          ]
+        },
+        {
+          "id": "SYN-RHL-0002",
+          "title": "The synthd backup keys must be rotated annually",
+          "desc": "Backup key rotation is verified by hand.",
+          "descriptions": [
+            {
+              "label": "default",
+              "data": "Backup key rotation is verified by hand."
+            }
+          ],
+          "impact": 0.5,
+          "refs": [],
+          "tags": {},
+          "code": "control 'SYN-RHL-0002' do\n  impact 0.5\nend\n",
+          "source_location": {
+            "line": 12,
+            "ref": "./controls/baseline.rb"
+          },
+          "waiver_data": {},
+          "attestation_data": {
+            "control_id": "SYN-RHL-0002",
+            "explanation": "Synthetic attestation: the backup key rotation record for this test host was reviewed.",
+            "frequency": "annually",
+            "status": "passed",
+            "updated": "2026-09-12",
+            "updated_by": "Jordan Example"
+          },
+          "results": [
+            {
+              "status": "skipped",
+              "code_desc": "No-op",
+              "run_time": 0.000011,
+              "start_time": "2026-09-08T09:02:00-07:00",
+              "resource": "No-op",
+              "skip_message": "Synthetic manual check; attest the backup key rotation."
+            },
+            {
+              "code_desc": "Manually verified status provided through attestation",
+              "status": "passed",
+              "message": "Attestation:\nStatus: passed\nExplanation: Synthetic attestation: the backup key rotation record for this test host was reviewed.\n\nUpdated: 2026-09-12\nUpdated By: Jordan Example\nFrequency: annually",
+              "start_time": "2026-09-12T16:05:00.000Z"
+            }
+          ]
+        }
+      ],
+      "status": "loaded",
+      "status_message": ""
+    }
+  ],
+  "statistics": {
+    "duration": 0.027144
+  },
+  "version": "5.22.3"
+}

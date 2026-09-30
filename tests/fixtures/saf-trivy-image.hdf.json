@@ -1,0 +1,133 @@
+{
+  "platform": {
+    "name": "Heimdall Tools",
+    "release": "heimdall_tools@2.6.0",
+    "target_id": "registry.example.test/web:1.4.2"
+  },
+  "version": "2.6.0",
+  "statistics": {},
+  "profiles": [
+    {
+      "name": "Trivy Vulnerability Scan",
+      "version": "",
+      "title": "Trivy Vulnerability Scan",
+      "maintainer": null,
+      "summary": "",
+      "license": null,
+      "copyright": null,
+      "copyright_email": null,
+      "supports": [],
+      "attributes": [],
+      "depends": [],
+      "groups": [],
+      "status": "loaded",
+      "controls": [
+        {
+          "tags": {
+            "nist": [
+              "SI-2",
+              "RA-5"
+            ],
+            "severity": "high",
+            "cve": [
+              "CVE-2099-0001"
+            ],
+            "cwe": [
+              "CWE-79"
+            ]
+          },
+          "refs": [],
+          "source_location": {},
+          "title": "CVE-2099-0001: synthlib: synthetic cross-site scripting in the template renderer",
+          "id": "CVE-2099-0001",
+          "desc": "A synthetic flaw in synthlib's template renderer lets an attacker inject script into a rendered page.",
+          "descriptions": [
+            {
+              "data": "Upgrade synthlib to 2.4.1 or later.",
+              "label": "fix"
+            }
+          ],
+          "impact": 0.7,
+          "code": "{\n  \"VulnerabilityID\": \"CVE-2099-0001\"\n}",
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "Package synthlib 2.4.0 is vulnerable; fixed in 2.4.1",
+              "message": "Installed version 2.4.0 of synthlib is affected by CVE-2099-0001",
+              "start_time": ""
+            }
+          ]
+        },
+        {
+          "tags": {
+            "nist": [
+              "SI-2",
+              "RA-5"
+            ],
+            "severity": "critical",
+            "cve": [
+              "CVE-2099-0102"
+            ],
+            "cwe": []
+          },
+          "refs": [],
+          "source_location": {},
+          "title": "CVE-2099-0102: synthcrypt: synthetic heap overflow in the record decoder",
+          "id": "CVE-2099-0102",
+          "desc": "A synthetic heap overflow in synthcrypt's record decoder allows remote code execution.",
+          "descriptions": [
+            {
+              "data": "Upgrade synthcrypt to 3.0.9 or later.",
+              "label": "fix"
+            }
+          ],
+          "impact": 0.9,
+          "code": "{\n  \"VulnerabilityID\": \"CVE-2099-0102\"\n}",
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "Package synthcrypt 3.0.8 is vulnerable; fixed in 3.0.9",
+              "message": "Installed version 3.0.8 of synthcrypt is affected by CVE-2099-0102",
+              "start_time": ""
+            }
+          ]
+        },
+        {
+          "tags": {
+            "nist": [
+              "SI-2",
+              "RA-5"
+            ],
+            "severity": "critical",
+            "cve": [
+              "CVE-2099-0103"
+            ],
+            "cwe": []
+          },
+          "refs": [],
+          "source_location": {},
+          "title": "CVE-2099-0103: synthzip: synthetic path traversal on archive extraction",
+          "id": "CVE-2099-0103",
+          "desc": "A synthetic path traversal in synthzip lets a crafted archive write outside the extraction directory.",
+          "descriptions": [
+            {
+              "data": "Upgrade synthzip to 1.2.4 or later.",
+              "label": "fix"
+            }
+          ],
+          "impact": 0.5,
+          "code": "{\n  \"VulnerabilityID\": \"CVE-2099-0103\"\n}",
+          "results": [
+            {
+              "status": "failed",
+              "code_desc": "Package synthzip 1.2.3 is vulnerable; fixed in 1.2.4",
+              "message": "Installed version 1.2.3 of synthzip is affected by CVE-2099-0103",
+              "start_time": ""
+            }
+          ]
+        }
+      ],
+      "sha256": ""
+    }
+  ]
+}

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from complyroll.adapters import IngestLimits, ingest_stig_artifact
+from complyroll.adapters.hdf import HDF_MEDIA_TYPE, HDF_PARSER_VERSION
 from complyroll.adapters.safeio import (
     DEFAULT_LIMITS,
     InputLimitError,
@@ -20,6 +21,7 @@ from complyroll.adapters.sarif import SARIF_MEDIA_TYPE, SARIF_PARSER_VERSION
 
 NOW = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)
 SARIF_FIXTURE = Path(__file__).parent / "fixtures" / "trivy-image.sarif"
+HDF_FIXTURE = Path(__file__).parent / "fixtures" / "inspec-linux-host.hdf.json"
 
 INTERNAL_DTD_DOCUMENT = (
     '<?xml version="1.0"?>\n'
@@ -440,6 +442,63 @@ class SarifIngestLimitTests(unittest.TestCase):
                 self.assertEqual(
                     [(item.code, item.message, item.location) for item in result.errors],
                     [("artifact_parse_failed", message, SARIF_FIXTURE.name)],
+                )
+
+
+class HdfIngestLimitTests(unittest.TestCase):
+    """Every bound the dispatcher is given reaches the HDF read and the HDF adapter."""
+
+    def test_an_oversized_hdf_document_is_refused_before_the_read(self) -> None:
+        size = len(HDF_FIXTURE.read_bytes())
+        result = ingest_stig_artifact(
+            HDF_FIXTURE, ingested_at=NOW, limits=IngestLimits(max_artifact_bytes=4)
+        )
+
+        self.assertFalse(result.successful)
+        self.assertIsNone(result.artifact)
+        self.assertEqual(result.observations, ())
+        self.assertEqual(
+            [(item.code, item.message, item.location) for item in result.errors],
+            [
+                (
+                    "artifact_read_failed",
+                    f"artifact is {size} bytes; maximum is 4 bytes",
+                    str(HDF_FIXTURE),
+                )
+            ],
+        )
+
+    def test_each_lowered_bound_is_a_parse_failure_attributed_to_hdf(self) -> None:
+        # inspec-linux-host.hdf.json is one profile of six controls with one result each.
+        cases = (
+            (IngestLimits(max_json_nodes=50), "JSON contains more than 50 values"),
+            (IngestLimits(max_json_depth=3), "JSON nesting exceeds 3 levels"),
+            (
+                IngestLimits(max_results_per_run=5),
+                "profiles[0] contains 6 controls; maximum is 5",
+            ),
+            (
+                IngestLimits(max_observations_per_artifact=5),
+                "artifact yields more than 5 observations",
+            ),
+            (
+                IngestLimits(max_observation_bytes_per_artifact=1_000),
+                "artifact yields more than 1000 bytes of observation JSON",
+            ),
+        )
+        for limits, message in cases:
+            with self.subTest(message=message):
+                result = ingest_stig_artifact(HDF_FIXTURE, ingested_at=NOW, limits=limits)
+
+                self.assertFalse(result.successful)
+                self.assertEqual(result.observations, ())
+                assert result.artifact is not None
+                self.assertEqual(result.artifact.parser_name, "complyroll.hdf")
+                self.assertEqual(result.artifact.parser_version, HDF_PARSER_VERSION)
+                self.assertEqual(result.artifact.media_type, HDF_MEDIA_TYPE)
+                self.assertEqual(
+                    [(item.code, item.message, item.location) for item in result.errors],
+                    [("artifact_parse_failed", message, HDF_FIXTURE.name)],
                 )
 
 

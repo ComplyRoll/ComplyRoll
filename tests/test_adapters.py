@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -10,16 +11,21 @@ from unittest import mock
 
 from complyroll import adapters
 from complyroll.adapters import (
+    HDF_PARSER_VERSION,
     SARIF_PARSER_VERSION,
     ArtifactProvenance,
+    HdfAdapter,
+    IngestLimits,
     IngestResult,
     SarifAdapter,
     common,
+    hdf,
     ingest_stig_artifact,
     load_cci_control_map,
     sarif,
     stig,
 )
+from complyroll.adapters.hdf import HDF_MEDIA_TYPE, looks_like_hdf
 from complyroll.adapters.sarif import SARIF_MEDIA_TYPE
 from complyroll.adapters.stig import (
     CCI_PARSER_VERSION,
@@ -49,6 +55,11 @@ SARIF_ATTRIBUTION = ("complyroll.sarif", SARIF_PARSER_VERSION, SARIF_MEDIA_TYPE)
 # The CKLB adapter's verdict on a SARIF log reaching it under a bare .json name. Dispatch is
 # by suffix alone (ADR 0011, decision 1), so the bytes are never sniffed toward SARIF.
 CKLB_SHAPE_MESSAGE = "JSON has no non-empty 'stigs' array"
+
+HDF_FIXTURE = FIXTURES / "inspec-linux-host.hdf.json"
+HDF_OVERLAY_FIXTURE = FIXTURES / "inspec-overlay.json"
+HDF_ATTRIBUTION = ("complyroll.hdf", HDF_PARSER_VERSION, HDF_MEDIA_TYPE)
+CKLB_ATTRIBUTION = ("complyroll.cklb", CKLB_PARSER_VERSION, "application/json")
 
 # Observation ids of every STIG fixture, recorded before the shared helpers moved from
 # stig.py to adapters/common.py (ADR 0011, decision 12). The goldens prove the move changed
@@ -535,6 +546,174 @@ class SarifDispatchTests(unittest.TestCase):
         self.assertIs(SarifAdapter, sarif.SarifAdapter)
 
 
+class HdfDispatchTests(unittest.TestCase):
+    """A .hdf.json name or a sniffed bare .json chooses HDF; every other JSON stays CKLB."""
+
+    @staticmethod
+    def attribution_of(result: IngestResult) -> tuple[str, str, str]:
+        assert result.artifact is not None
+        artifact = result.artifact
+        return (artifact.parser_name, artifact.parser_version, artifact.media_type)
+
+    @staticmethod
+    def ingest_as(name: str, content: bytes, limits: IngestLimits | None = None) -> IngestResult:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / name
+            path.write_bytes(content)
+            if limits is None:
+                return ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+            return ingest_stig_artifact(path, ingested_at=FIRST_INGEST, limits=limits)
+
+    def test_the_hdf_suffix_routes_to_the_hdf_adapter_in_any_case(self) -> None:
+        reference = ingest_stig_artifact(HDF_FIXTURE, ingested_at=FIRST_INGEST)
+        self.assertEqual(len(reference.observations), 6)
+        for name in ("scan.hdf.json", "Scan.HDF.JSON", "scan.Hdf.Json"):
+            with self.subTest(name=name):
+                result = self.ingest_as(name, HDF_FIXTURE.read_bytes())
+
+                self.assertTrue(result.successful, result.errors)
+                self.assertEqual(self.attribution_of(result), HDF_ATTRIBUTION)
+                self.assertEqual({item.source_type for item in result.observations}, {"hdf"})
+                self.assertEqual(
+                    {(item.parser_name, item.parser_version) for item in result.observations},
+                    {("complyroll.hdf", HDF_PARSER_VERSION)},
+                )
+                # The name routes the read; only the bytes carry identity.
+                self.assertEqual(
+                    [item.observation_id for item in result.observations],
+                    [item.observation_id for item in reference.observations],
+                )
+
+    def test_a_bare_json_exec_document_is_sniffed_to_hdf(self) -> None:
+        overlay = ingest_stig_artifact(HDF_OVERLAY_FIXTURE, ingested_at=FIRST_INGEST)
+        self.assertTrue(overlay.successful, overlay.errors)
+        self.assertEqual(self.attribution_of(overlay), HDF_ATTRIBUTION)
+        self.assertEqual(len(overlay.observations), 3)
+
+        reference = ingest_stig_artifact(HDF_FIXTURE, ingested_at=FIRST_INGEST)
+        for name in ("scan.json", "SCAN.JSON"):
+            with self.subTest(name=name):
+                result = self.ingest_as(name, HDF_FIXTURE.read_bytes())
+                self.assertTrue(result.successful, result.errors)
+                self.assertEqual(self.attribution_of(result), HDF_ATTRIBUTION)
+                self.assertEqual(
+                    [item.observation_id for item in result.observations],
+                    [item.observation_id for item in reference.observations],
+                )
+
+    def test_the_sniff_needs_profiles_and_a_platform_and_no_stigs(self) -> None:
+        platform = {"name": "synthetic", "target_id": "synthetic-target"}
+        self.assertTrue(looks_like_hdf({"profiles": [], "platform": platform}))
+        self.assertTrue(looks_like_hdf({"profiles": [{}], "platform": {}, "version": "1"}))
+        for value in (
+            {"stigs": [], "profiles": [], "platform": platform},
+            {"stigs": None, "profiles": [{}], "platform": platform},
+            {"profiles": [], "platform": None},
+            {"profiles": [], "platform": []},
+            {"profiles": {}, "platform": platform},
+            {"profiles": None, "platform": platform},
+            {"profiles": []},
+            {"platform": platform},
+            {"baselines": [], "platform": platform},
+            [{"profiles": [], "platform": platform}],
+            "profiles",
+            None,
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(looks_like_hdf(value))
+
+    def test_a_checklist_that_also_carries_hdf_keys_stays_cklb(self) -> None:
+        checklist = json.loads((FIXTURES / "ubuntu-host.cklb").read_text(encoding="utf-8"))
+        checklist["profiles"] = []
+        checklist["platform"] = {"name": "synthetic", "target_id": "synthetic-target"}
+        result = self.ingest_as("scan.json", json.dumps(checklist).encode("utf-8"))
+
+        self.assertTrue(result.successful, result.errors)
+        self.assertEqual(self.attribution_of(result), CKLB_ATTRIBUTION)
+        self.assertEqual({item.source_type for item in result.observations}, {"cklb"})
+
+    def test_an_exec_document_under_the_cklb_suffix_is_never_sniffed(self) -> None:
+        result = self.ingest_as("scan.cklb", HDF_FIXTURE.read_bytes())
+
+        self.assertFalse(result.successful)
+        self.assertEqual(result.observations, ())
+        self.assertEqual(self.attribution_of(result), CKLB_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [("artifact_parse_failed", CKLB_SHAPE_MESSAGE)],
+        )
+
+    def test_a_kev_catalog_under_a_bare_json_name_still_fails_as_cklb(self) -> None:
+        result = self.ingest_as("kev.json", (FIXTURES / "kev-catalog.json").read_bytes())
+
+        self.assertFalse(result.successful)
+        self.assertEqual(self.attribution_of(result), CKLB_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [("artifact_parse_failed", CKLB_SHAPE_MESSAGE)],
+        )
+
+    def test_a_checklist_under_the_hdf_suffix_is_refused_by_the_hdf_adapter(self) -> None:
+        result = self.ingest_as("checklist.hdf.json", (FIXTURES / "ubuntu-host.cklb").read_bytes())
+
+        self.assertFalse(result.successful)
+        self.assertEqual(result.observations, ())
+        self.assertEqual(self.attribution_of(result), HDF_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [("artifact_parse_failed", "HDF profiles must be a non-empty array")],
+        )
+
+    def test_malformed_hdf_is_attributed_to_the_hdf_adapter(self) -> None:
+        cases = (
+            ("brace.hdf.json", b"{", "Expecting property name"),
+            ("bytes.HDF.JSON", b"\xff", "JSON must be UTF-8"),
+        )
+        for name, content, prefix in cases:
+            with self.subTest(name=name):
+                result = self.ingest_as(name, content)
+
+                self.assertFalse(result.successful)
+                self.assertEqual(result.observations, ())
+                self.assertEqual(self.attribution_of(result), HDF_ATTRIBUTION)
+                assert result.artifact is not None
+                self.assertEqual(result.artifact.digest_sha256, hashlib.sha256(content).hexdigest())
+                self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+                self.assertTrue(result.errors[0].message.startswith(prefix), result.errors[0])
+
+    def test_malformed_bare_json_is_still_attributed_to_cklb(self) -> None:
+        result = self.ingest_as("scan.json", b"{")
+
+        self.assertFalse(result.successful)
+        self.assertEqual(self.attribution_of(result), CKLB_ATTRIBUTION)
+        self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+        self.assertTrue(
+            result.errors[0].message.startswith("Expecting property name"), result.errors[0]
+        )
+
+    def test_a_bare_json_over_a_parse_bound_is_attributed_to_cklb(self) -> None:
+        # The sniff runs only on a document that parsed within the bounds, so a bound hit
+        # before the sniff can only name the suffix's adapter.
+        result = self.ingest_as(
+            "scan.json", HDF_OVERLAY_FIXTURE.read_bytes(), IngestLimits(max_json_nodes=50)
+        )
+
+        self.assertFalse(result.successful)
+        self.assertEqual(self.attribution_of(result), CKLB_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [("artifact_parse_failed", "JSON contains more than 50 values")],
+        )
+
+    def test_the_package_exports_the_hdf_adapter_and_its_version(self) -> None:
+        self.assertIn("HdfAdapter", adapters.__all__)
+        self.assertIn("HDF_PARSER_VERSION", adapters.__all__)
+        self.assertIs(adapters.HdfAdapter, hdf.HdfAdapter)
+        self.assertIs(adapters.HDF_PARSER_VERSION, hdf.HDF_PARSER_VERSION)
+        self.assertIs(HdfAdapter, hdf.HdfAdapter)
+        self.assertIs(stig.HdfAdapter, hdf.HdfAdapter)
+
+
 class ParserVersionIndependenceTests(unittest.TestCase):
     """Each adapter owns its identity input, so one bump cannot re-mint the others."""
 
@@ -551,6 +730,7 @@ class ParserVersionIndependenceTests(unittest.TestCase):
         self.assertEqual(CklAdapter.version, CKL_PARSER_VERSION)
         self.assertEqual(XccdfAdapter.version, XCCDF_PARSER_VERSION)
         self.assertEqual(SarifAdapter.version, SARIF_PARSER_VERSION)
+        self.assertEqual(HdfAdapter.version, HDF_PARSER_VERSION)
 
     def test_artifact_provenance_uses_the_adapter_version(self) -> None:
         self.assertEqual(self._versions(FIXTURES / "ubuntu-host.cklb"), {CKLB_PARSER_VERSION})
@@ -560,6 +740,8 @@ class ParserVersionIndependenceTests(unittest.TestCase):
         )
         self.assertEqual(self._versions(ARF_FIXTURE), {XCCDF_PARSER_VERSION})
         self.assertEqual(self._versions(SARIF_FIXTURE), {SARIF_PARSER_VERSION})
+        self.assertEqual(self._versions(HDF_FIXTURE), {HDF_PARSER_VERSION})
+        self.assertEqual(self._versions(HDF_OVERLAY_FIXTURE), {HDF_PARSER_VERSION})
 
     def test_bumping_one_adapter_leaves_the_others_untouched(self) -> None:
         ckl_before = ingest_stig_artifact(
@@ -616,6 +798,59 @@ class ParserVersionIndependenceTests(unittest.TestCase):
             with self.subTest(fixture=name):
                 self.assertEqual(
                     tuple(item.observation_id for item in after[name].observations), expected
+                )
+
+    def test_bumping_the_hdf_adapter_leaves_the_others_untouched(self) -> None:
+        unbumped = ingest_stig_artifact(HDF_FIXTURE, ingested_at=FIRST_INGEST)
+        sarif_before = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=FIRST_INGEST)
+
+        with mock.patch.object(HdfAdapter, "version", "99"):
+            bumped = ingest_stig_artifact(HDF_FIXTURE, ingested_at=FIRST_INGEST)
+            sniffed = ingest_stig_artifact(HDF_OVERLAY_FIXTURE, ingested_at=FIRST_INGEST)
+            sarif_after = ingest_stig_artifact(SARIF_FIXTURE, ingested_at=FIRST_INGEST)
+            after = {
+                name: ingest_stig_artifact(FIXTURES / name, ingested_at=FIRST_INGEST)
+                for name in BASELINE_OBSERVATION_IDS
+            }
+
+        for result in (bumped, sniffed):
+            assert result.artifact is not None
+            self.assertEqual(result.artifact.parser_version, "99")
+            self.assertTrue(all(item.parser_version == "99" for item in result.observations))
+        # The parser version is an identity input, so the bump re-mints HDF and nothing else.
+        self.assertTrue(
+            {item.observation_id for item in unbumped.observations}.isdisjoint(
+                item.observation_id for item in bumped.observations
+            )
+        )
+        self.assertEqual(
+            [item.observation_id for item in sarif_before.observations],
+            [item.observation_id for item in sarif_after.observations],
+        )
+        for name, expected in BASELINE_OBSERVATION_IDS.items():
+            with self.subTest(fixture=name):
+                self.assertEqual(
+                    tuple(item.observation_id for item in after[name].observations), expected
+                )
+
+    def test_bumping_the_sarif_adapter_leaves_hdf_untouched(self) -> None:
+        before = {
+            path: ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+            for path in (HDF_FIXTURE, HDF_OVERLAY_FIXTURE)
+        }
+
+        with mock.patch.object(SarifAdapter, "version", "99"):
+            after = {path: ingest_stig_artifact(path, ingested_at=FIRST_INGEST) for path in before}
+
+        for path, result in after.items():
+            with self.subTest(fixture=path.name):
+                self.assertTrue(result.successful, result.errors)
+                self.assertEqual(
+                    {item.parser_version for item in result.observations}, {HDF_PARSER_VERSION}
+                )
+                self.assertEqual(
+                    [item.observation_id for item in result.observations],
+                    [item.observation_id for item in before[path].observations],
                 )
 
     def test_cci_loader_uses_its_own_parser_version(self) -> None:

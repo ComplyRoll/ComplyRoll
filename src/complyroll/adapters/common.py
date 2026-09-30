@@ -37,7 +37,7 @@ MAX_OBSERVATION_JSON_BYTES = 512 * 1024
 TRUNCATION_MARKER = "...[truncated]"
 # A coalesced diagnostic names at most this many JSON paths.
 MAX_DIAGNOSTIC_PATHS = 5
-# SARIF clocks are kept only inside these UTC years, well clear of the year 1 and year 9999
+# Source clocks are kept only inside these UTC years, well clear of the year 1 and year 9999
 # edges where the UTC conversion and the deadline arithmetic overflow.
 MIN_CLOCK_YEAR = 1970
 MAX_CLOCK_YEAR = 9000
@@ -320,7 +320,7 @@ def quoted(value: object) -> str:
 
 
 # The contract regex and the canonical round trip both refuse a seconds-bearing offset, which
-# Python's parser accepts; the check lives here so SARIF never writes an observed_at the
+# Python's parser accepts; the check lives here so no adapter writes an observed_at the
 # store would refuse (decision 8).
 def parse_clock(value: object) -> datetime | None:
     """Parse an aware timestamp with a whole-minute offset inside the supported years."""
@@ -569,7 +569,7 @@ class EvidenceParse:
         return items[:MAX_LIST_ITEMS]
 
     def _clock(self, value: object, path: str) -> datetime | None:
-        """Parse one SARIF clock; a present but unusable value is diagnosed and absent."""
+        """Parse one source clock; a present but unusable value is diagnosed and absent."""
         if value is None:
             return None
         parsed = parse_clock(value)

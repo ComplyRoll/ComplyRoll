@@ -32,6 +32,7 @@ Initial adapters:
 - CKL
 - XCCDF/ARF
 - SARIF 2.1.0 (Trivy, Grype, Semgrep, CodeQL, Checkov, any conforming producer)
+- InSpec HDF (exec-json), native and `saf convert` output
 - CCI mapping
 
 Planned adapters:
@@ -177,7 +178,7 @@ Candidates for later slices: `case.action_planned`, `case.action_completed`,
 
 ```text
 src/complyroll/
-  adapters/       # Phase 0 adapter contracts, safe parsing, STIG/XCCDF/CCI implementations, and sarif.py (ADR 0011)
+  adapters/       # Phase 0 adapter contracts, safe parsing, STIG/XCCDF/CCI implementations, sarif.py (ADR 0011), and common.py and hdf.py (ADR 0013)
   compat/         # predecessor-compatible stigroll CLI and renderers
   correlation/    # correlation v0: open observations grouped into vulnerabilities (ADR 0007)
   data/           # bundled immutable source manifests, rules, and official schemas

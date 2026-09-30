@@ -191,6 +191,7 @@ Target: 3–4 weeks
 - SARIF adapter. **Complete, 2026-09-20** (ADR 0011).
 - CycloneDX or SPDX adapter.
 - CISA KEV enrichment. **Complete, 2026-09-25** (ADR 0012).
+- HDF adapter (InSpec exec-json, native and `saf convert`). **Complete, 2026-09-29** (ADR 0013).
 - Initial cloud, container, or CSPM JSON adapter selected from design-partner demand.
 - Git/deployment change-event ingestion.
 - Expected-resource versus observed-resource coverage checks.

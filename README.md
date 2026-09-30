@@ -20,7 +20,7 @@ provider can publish and an independent assessor can recompute.
 
 | Surface | What it does |
 |---|---|
-| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, ARF, and SARIF files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. With `--kev`, a CISA Known Exploited Vulnerabilities catalog the operator supplies, each record also carries the KEV clock `VDR-TFR-KEV` sets from that catalog's due dates. Validated against the bundled official schema before anything is written |
+| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, ARF, SARIF, and HDF files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. With `--kev`, a CISA Known Exploited Vulnerabilities catalog the operator supplies, each record also carries the KEV clock `VDR-TFR-KEV` sets from that catalog's due dates. Validated against the bundled official schema before anything is written |
 | `complyroll report avi ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles the same artifacts into an official-format Accepted Vulnerability Information report (`VER-RPT-AVI`): every accepted vulnerability with recorded activity in the report period, each with the acceptance rationale the official item requires, and a count of the active records that belong in the detail report instead. An accepted record whose evaluation carries no rationale stops the compile |
 | `complyroll report historical ARTIFACT... --class C --package-uri URI [--evaluations FILE] [--kev FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles a Historical VER Activity snapshot (`VER-TFR-MRH`) as of `--as-of`, with no report period: every non-accepted vulnerability, disposed ones included, under `activeVulnerabilities` and every accepted one under `acceptedVulnerabilities`, each in its current state |
 | `complyroll ingest ARTIFACT... --db STORE [--as-of T] [--actor NAME]` | Records each artifact and its observations as typed events (`artifact.ingested`, `observation.recorded`) in an append-only SQLite store, validated against published contracts before they are written. Re-running over the same bytes appends nothing |
@@ -31,7 +31,7 @@ provider can publish and an independent assessor can recompute.
 | `complyroll store verify --db STORE` | Walks the whole log checking payload digests, sequence and stream-version contiguity, the sequence counter, and the schema definitions, then audits the domain (every payload against its published contract, every event against its stream kind and the artifact identity its stream names, every artifact stream for completeness in both directions and for repeated observation identifiers, every metadata envelope), and exits non-zero on any fault, including on files the normal open refuses |
 | `complyroll validate REPORT --schema vulnerability-detail\|accepted-vulnerability\|historical-activity` | Validates a report against the pinned official schema, offline, printing JSON Pointers for every failure and the exact schema provenance |
 | `stigroll <files> [--cci-list U_CCI_List.xml] [--format markdown\|csv\|json] [-o FILE]` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output byte-for-byte |
-| `complyroll.adapters.ingest_stig_artifact(path)` | CKLB, CKL, XCCDF, ARF, and SARIF files become immutable observations with artifact digest, parser identity, timestamps, and structured diagnostics |
+| `complyroll.adapters.ingest_stig_artifact(path)` | CKLB, CKL, XCCDF, ARF, SARIF, and HDF files become immutable observations with artifact digest, parser identity, timestamps, and structured diagnostics |
 | `complyroll.policy.load_bundled_policy(profile)` | Selects the 36 provider-facing VDR and VER rules for a 20x Class B or Class C profile from the pinned official dataset and calculates evaluation, PAIN response, and acceptance-threshold deadlines with full provenance, in the provider's calendar timezone |
 | `complyroll.store.SQLiteEventStore` | Append-only event log with optimistic concurrency, payload digests, schema and tail-integrity verification, and projection checkpoints. Domain events are written only through `complyroll.events.EventRepository`, which validates every payload against a published contract (ADR 0008) |
 
@@ -53,7 +53,12 @@ lands. Slice 2 is CISA KEV enrichment (ADR 0012): `--kev` takes a catalog the op
 downloads out of band, matches it to a record's `CVE-` identifiers exactly, and reports the
 due date the catalog published, which keeps running over a fully mitigated weakness because
 `VDR-TFR-KEV` says it must. Nothing is fetched, bundled, or stored, and the report pins the
-catalog by the SHA-256 of the bytes it read. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
+catalog by the SHA-256 of the bytes it read. Slice 3 is the HDF adapter (ADR 0013): InSpec runs
+and `saf convert` output in the Heimdall Data Format become observations on the declared target,
+keyed under the root profile, with a failed control OPEN, an errored one ERROR, and impact 0 not
+applicable. Waivers and attestations are recorded as metadata, and only results decide a
+disposition, the one `saf attest apply` appends included. An overlay's empty wrapper copies give
+way to the copy that ran. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
 
 ## Quick start
 
@@ -255,7 +260,7 @@ and digest. Assessors do not configure or operate ComplyRoll on a provider's beh
 - [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md): observation, case, evaluation, and evidence model
 - [`docs/FEDRAMP_2026_MAPPING.md`](docs/FEDRAMP_2026_MAPPING.md): current rule and schema mapping
 - [`docs/SECURITY.md`](docs/SECURITY.md): threat model and evidence-handling requirements
-- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0012
+- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0013
   (0007 fixes the report mappings: attested detection time, disposition table, clock semantics,
   overdue wording, the `x-complyroll` extension, and the evaluations file; 0009 adopts Common
   Definitions 0.3.0, which gives completed PAIN reductions an official slot and remediation its
@@ -264,7 +269,9 @@ and digest. Assessors do not configure or operate ComplyRoll on a provider's beh
   a periodless snapshot of the whole population; 0011 adds the SARIF adapter, keyed on the
   located resource and the driver name rather than on producer fingerprints; 0012 adds CISA
   KEV enrichment, an operator-supplied catalog that is never fetched, bundled, or stored and
-  is pinned in the report by the digest of its bytes)
+  is pinned in the report by the digest of its bytes; 0013 adds the HDF adapter, keyed on the
+  declared target and the root profile, with waivers and attestations recorded as metadata and
+  only results deciding a disposition)
 - [`examples/`](examples/): the fixture-to-report demo inputs
 - [`AGENTS.md`](AGENTS.md): repository rules and development commands
 

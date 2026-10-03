@@ -1,0 +1,770 @@
+{
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "reportPeriod": {
+    "from": "2026-08-01T00:00:00Z",
+    "to": "2026-08-31T23:59:59Z"
+  },
+  "vulnerabilities": [
+    {
+      "currentRating": 4,
+      "detection": {
+        "detectedAt": "2026-08-01T00:00:00Z",
+        "detectionSource": "stig-viewer-2"
+      },
+      "evaluationCompletedAt": "2026-08-05T16:00:00Z",
+      "isInternetReachable": true,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "explanation": "VDR-TFR-PVR (SHOULD, Class C): the response target for PAIN N4, internet reachable, likely exploitable ran from the completed evaluation 2026-08-05T16:00:00Z and passed 2026-08-09T16:00:00Z with no disposition recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "painReductionEvents": [
+        {
+          "rating": 4,
+          "reducedAt": "2026-08-12T16:00:00Z"
+        }
+      ],
+      "potentialAgencyImpact": "The Fax Server role exposes a legacy service on a Windows host inside the authorization boundary, and a successful exploit would give an attacker a foothold next to agency workloads.",
+      "projectedNextReduction": {
+        "estimatedAt": "2026-08-28T16:00:00Z",
+        "targetRating": 3
+      },
+      "providerTrackingId": "case-490f49bfdd1bd019",
+      "vulnerabilityDescription": "V-253260: Windows must remove the Fax Server role",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-08-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2026-08-09T16:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": false,
+            "startAt": "2026-08-05T16:00:00Z",
+            "timeframe": {
+              "amount": 4,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-02-13T16:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": false,
+            "startAt": "2026-08-05T16:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": "Example Provider vulnerability team (manual review, procedure VM-04)",
+        "observationIds": [
+          "obs-6e3d196cb5f895fecc7d879eac03f954de2d99f46fdd0bccc11d8f0e88a66dc4"
+        ],
+        "rationale": "The role is installed and listening on the host. Public exploit code exists for the service version in use and the host answers from the internet-facing segment, so exploitation is likely rather than theoretical.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "lab-win-01",
+            "resourceType": "host"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CCI-000366"
+        ],
+        "untimestampedObservationIds": [
+          "obs-6e3d196cb5f895fecc7d879eac03f954de2d99f46fdd0bccc11d8f0e88a66dc4"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-08-01T00:00:00Z",
+        "detectionSource": "stig-viewer-3"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-9bed0d8f88355393",
+      "vulnerabilityDescription": "V-260469: Ubuntu must display the Standard Mandatory DoD Notice",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-08-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-f841f4f0e47c5d8710658d433ee82715d679f7a5cfbd9afb4a4e216688ad3926"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "lab-ubuntu-01",
+            "resourceType": "host"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CCI-000048"
+        ],
+        "untimestampedObservationIds": [
+          "obs-f841f4f0e47c5d8710658d433ee82715d679f7a5cfbd9afb4a4e216688ad3926"
+        ]
+      }
+    },
+    {
+      "currentRating": 3,
+      "detection": {
+        "detectedAt": "2026-08-01T00:00:00Z",
+        "detectionSource": "stig-viewer-3"
+      },
+      "evaluationCompletedAt": "2026-08-04T12:00:00Z",
+      "finalDisposition": "Partially Mitigated",
+      "isInternetReachable": true,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "potentialAgencyImpact": "Dormant accounts stay usable on a host that serves agency tenant data, so a stolen credential keeps working longer than the account owner remains authorized.",
+      "providerTrackingId": "case-1f3e011db93cc89e",
+      "supplementaryRiskInformation": "A compensating conditional access rule now blocks sign-in from outside the corporate network while the account expiry policy is finished.",
+      "vulnerabilityDescription": "V-260470: Ubuntu must disable account identifiers after 35 days of inactivity",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-08-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2026-08-20T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": true,
+            "startAt": "2026-08-04T12:00:00Z",
+            "timeframe": {
+              "amount": 16,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-02-12T12:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": true,
+            "startAt": "2026-08-04T12:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": "Example Provider vulnerability team (manual review, procedure VM-04)",
+        "observationIds": [
+          "obs-6cdf3ee1f2fa3cf51ea8aac1cc05c8534ec5e56d8398edd559ef5f226b68a674"
+        ],
+        "rationale": "Inactive accounts are not disabled on the shared Ubuntu host. Session records confirm the host is reachable from the tenant-facing load balancer and that password authentication is accepted, so the weakness is both reachable and usable.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "lab-ubuntu-01",
+            "resourceType": "host"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CCI-000366",
+          "CCI-000795",
+          "CCI-003627"
+        ],
+        "untimestampedObservationIds": [
+          "obs-6cdf3ee1f2fa3cf51ea8aac1cc05c8534ec5e56d8398edd559ef5f226b68a674"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-08-01T00:00:00Z",
+        "detectionSource": "stig-viewer-3"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-621d85d6533ce6e5",
+      "vulnerabilityDescription": "V-260474: Orphan rule with no CCI reference",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-08-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-dd8f546726ab5b2cb9a096254bd3679185ca8f2cd10045dd7de289ad5553e5d6"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "lab-ubuntu-01",
+            "resourceType": "host"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": [
+          "obs-dd8f546726ab5b2cb9a096254bd3679185ca8f2cd10045dd7de289ad5553e5d6"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-08-04T10:00:00Z",
+        "detectionSource": "complyroll"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-04T10:00:00Z and closed 2026-08-09T10:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-f03af85468885cad",
+      "vulnerabilityDescription": "detection-process-failure: source artifact sha256:59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9 did not yield complete detection results (VDR-CSO-FAV)",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-09T10:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-08-04T10:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "system",
+        "evaluator": null,
+        "observationIds": [
+          "obs-984694b7e0dd037c99412208fc91e1332ddfdd2488f37c117bd26a4096e1967f"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "sha256:59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9",
+            "resourceType": "artifact"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 3,
+      "detection": {
+        "detectedAt": "2026-08-21T12:00:00Z",
+        "detectionSource": "complyroll"
+      },
+      "evaluationCompletedAt": "2026-08-21T12:00:00Z",
+      "isInternetReachable": false,
+      "isLikelyExploitable": false,
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "potentialAgencyImpact": "Findings from one ExampleScan run were never recorded, so a weakness on the hosts that run covers could go unreported to agencies until a complete scan reads them.",
+      "providerTrackingId": "case-d3bb8e4fb3b61a5f",
+      "vulnerabilityDescription": "detection-process-failure: source artifact sha256:a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8 did not yield complete detection results (VDR-CSO-FAV)",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-26T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-08-21T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2026-12-27T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": false,
+            "startAt": "2026-08-21T12:00:00Z",
+            "timeframe": {
+              "amount": 128,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-01T12:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": false,
+            "startAt": "2026-08-21T12:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "system",
+        "evaluator": "Example Provider vulnerability team (detection process review, procedure VM-07)",
+        "observationIds": [
+          "obs-6cd3787a252ee233835c1a8f81bb50a9a87d732e25a97c349c2555fc1955a47b"
+        ],
+        "rationale": "The ExampleScan log was cut off while the scanner was writing it, so none of the run's results can be read. The hosts the run covers sit on an internal segment with no internet path, and a gap in detection is not itself exploitable, so the rating reflects how long findings could stay unreported rather than an exposed weakness.",
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "sha256:a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8",
+            "resourceType": "artifact"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-08-21T12:00:00Z",
+        "detectionSource": "complyroll"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-088261de64a0133c",
+      "vulnerabilityDescription": "detection-process-failure: source artifact sha256:f51e7b7624956be0f40545639b3ee63ab7b5a27cb647ad2a3435df6bc6dcc372 did not yield complete detection results (VDR-CSO-FAV)",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-26T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-08-21T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "system",
+        "evaluator": null,
+        "observationIds": [
+          "obs-196f0c7b40dcbb75cc51810ab7b35294fd67af4f114770059b4ea9aa02b41bee"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "sha256:f51e7b7624956be0f40545639b3ee63ab7b5a27cb647ad2a3435df6bc6dcc372",
+            "resourceType": "artifact"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-08-03T10:00:00Z",
+        "detectionSource": "ExampleScan"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-03T10:00:00Z and closed 2026-08-08T10:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-77fba1630a50ca9f",
+      "vulnerabilityDescription": "EXS-0001: Synthetic finding: the example service accepts TLS 1.0",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-08T10:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-08-03T10:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-d103230fb829a973e19c4b09c0bb304e076598a9f594adc069021836e9b5cced"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "config/example-service.yaml",
+            "resourceType": "file"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-08-01T00:00:00Z",
+        "detectionSource": "xccdf"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-04efea8c137ae82f",
+      "vulnerabilityDescription": "banner_etc_issue: xccdf_org.ssgproject.content_rule_banner_etc_issue",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-08-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-c1a949d8bba45d81b6badd35b2a1c985370d60f37503e3ddf5c79e07ed45e883"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "lab-ubuntu-02",
+            "resourceType": "host"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CCI-000048"
+        ],
+        "untimestampedObservationIds": [
+          "obs-c1a949d8bba45d81b6badd35b2a1c985370d60f37503e3ddf5c79e07ed45e883"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-08-01T00:00:00Z",
+        "detectionSource": "xccdf"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-08-01T00:00:00Z and closed 2026-08-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-6719b316a5ea510b",
+      "vulnerabilityDescription": "no_cci_mapping: xccdf_org.ssgproject.content_rule_no_cci_mapping",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-08-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-08-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-9d9083ec3329bc5beea5a41c62fb26a19048cbeba1e2c7dc2c7f1e63a081fb21"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "lab-ubuntu-02",
+            "resourceType": "host"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": [
+          "obs-9d9083ec3329bc5beea5a41c62fb26a19048cbeba1e2c7dc2c7f1e63a081fb21"
+        ]
+      }
+    }
+  ],
+  "x-complyroll": {
+    "artifacts": [
+      {
+        "name": "failed-invocation.sarif",
+        "observationCount": 1,
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9",
+        "sizeBytes": 1756
+      },
+      {
+        "name": "openscap-results.xml",
+        "observationCount": 3,
+        "parser": "complyroll.xccdf",
+        "parserVersion": "1",
+        "sha256": "3f5deac4a3d94f8d1437367860ef5ea8c28eafde599500b98dfdc70415229ca3",
+        "sizeBytes": 885
+      },
+      {
+        "name": "ubuntu-host.cklb",
+        "observationCount": 6,
+        "parser": "complyroll.cklb",
+        "parserVersion": "1",
+        "sha256": "97d123900424acfc570ddd4fef6c77303c31972baa7a781f526d6b63f051db5f",
+        "sizeBytes": 1105
+      },
+      {
+        "name": "windows-host.ckl",
+        "observationCount": 2,
+        "parser": "complyroll.ckl",
+        "parserVersion": "1",
+        "sha256": "e5dfc628039ce508d5175da55b5cefd017b4dd3174b4f2488609b097024cf963",
+        "sizeBytes": 1240
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "detectionFailures": [
+      {
+        "clock": "as-of",
+        "failureClass": "content",
+        "failureCodes": [
+          "invalid_rules",
+          "no_observations"
+        ],
+        "name": "failed-invalid-rules.cklb",
+        "observedAt": "2026-08-21T12:00:00Z",
+        "parser": "complyroll.cklb",
+        "parserVersion": "1",
+        "sha256": "f51e7b7624956be0f40545639b3ee63ab7b5a27cb647ad2a3435df6bc6dcc372",
+        "sizeBytes": 349,
+        "trackingId": "case-088261de64a0133c"
+      },
+      {
+        "clock": "invocation",
+        "failureClass": "execution",
+        "failureCodes": [
+          "execution_unsuccessful"
+        ],
+        "name": "failed-invocation.sarif",
+        "observedAt": "2026-08-04T10:00:00Z",
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9",
+        "sizeBytes": 1756,
+        "trackingId": "case-f03af85468885cad"
+      },
+      {
+        "clock": "as-of",
+        "failureClass": "parse",
+        "failureCodes": [
+          "artifact_parse_failed"
+        ],
+        "name": "failed-truncated.sarif",
+        "observedAt": "2026-08-21T12:00:00Z",
+        "parser": "complyroll.sarif",
+        "parserVersion": "1",
+        "sha256": "a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8",
+        "sizeBytes": 486,
+        "trackingId": "case-d3bb8e4fb3b61a5f"
+      }
+    ],
+    "detectionTimeAttestation": {
+      "appliedTo": [
+        "case-04efea8c137ae82f",
+        "case-1f3e011db93cc89e",
+        "case-490f49bfdd1bd019",
+        "case-621d85d6533ce6e5",
+        "case-6719b316a5ea510b",
+        "case-9bed0d8f88355393"
+      ],
+      "count": 6,
+      "detectedAt": "2026-08-01T00:00:00Z"
+    },
+    "diagnostics": [
+      {
+        "code": "artifact_parse_failed",
+        "level": "warning",
+        "location": "failed-truncated.sarif",
+        "message": "Unterminated string starting at: line 18 column 21 (char 419)"
+      },
+      {
+        "code": "detection_failure_recorded",
+        "level": "warning",
+        "location": "failed-invalid-rules.cklb",
+        "message": "recorded a detection process failure of class content for source artifact sha256:f51e7b7624956be0f40545639b3ee63ab7b5a27cb647ad2a3435df6bc6dcc372 (VDR-CSO-FAV)"
+      },
+      {
+        "code": "detection_failure_recorded",
+        "level": "warning",
+        "location": "failed-invocation.sarif",
+        "message": "recorded a detection process failure of class execution for source artifact sha256:59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9 (VDR-CSO-FAV)"
+      },
+      {
+        "code": "detection_failure_recorded",
+        "level": "warning",
+        "location": "failed-truncated.sarif",
+        "message": "recorded a detection process failure of class parse for source artifact sha256:a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8 (VDR-CSO-FAV)"
+      },
+      {
+        "code": "execution_unsuccessful",
+        "level": "warning",
+        "location": "failed-invocation.sarif",
+        "message": "invocation reports executionSuccessful false; its results are still read (1 occurrence: runs[1].invocations[0])"
+      },
+      {
+        "code": "invalid_rules",
+        "level": "warning",
+        "location": "stigs[0].rules",
+        "message": "STIG entry has no rules array"
+      },
+      {
+        "code": "no_observations",
+        "level": "warning",
+        "location": "failed-invalid-rules.cklb",
+        "message": "CKLB contains no usable rules"
+      },
+      {
+        "code": "run_clean",
+        "level": "info",
+        "location": "failed-invocation.sarif",
+        "message": "run reports no results (1 occurrence: runs[1])"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "failed-invalid-rules.cklb",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "openscap-results.xml",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "ubuntu-host.cklb",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "windows-host.ckl",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "excludedByPeriod": 0,
+    "generatedAt": "2026-08-21T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.3.0a0"
+    },
+    "parserVersions": {
+      "complyroll.ckl": "1",
+      "complyroll.cklb": "1",
+      "complyroll.detection-failures": "1",
+      "complyroll.sarif": "1",
+      "complyroll.xccdf": "1"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "5e9499e8cb9d0367c888ce41040175270fc9f007ae4f61d0ced34cca81cfe497"
+    }
+  }
+}

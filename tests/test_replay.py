@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import permutations
 from pathlib import Path
 
@@ -24,9 +24,14 @@ from test_reports import (
     BANNER_CASE,
     BANNER_RATIONALE,
     EXAMPLES,
+    FAILED_ARTIFACTS,
+    FAILED_EVALUATIONS,
     FIXTURES,
     GOLDEN,
+    INVALID_RULES_CASE,
+    INVOCATION_CASE,
     REPORT_KINDS,
+    TRUNCATED_CASE,
     ReportKind,
     find_accepted,
     find_vulnerability,
@@ -34,7 +39,7 @@ from test_reports import (
     shared_benchmark_xccdf,
 )
 
-from complyroll.adapters import IngestResult, ingest_stig_artifact
+from complyroll.adapters import IngestResult, classify_ingest, ingest_stig_artifact
 from complyroll.events import (
     EventMetadata,
     EventRepository,
@@ -44,11 +49,14 @@ from complyroll.events import (
 )
 from complyroll.history import (
     apply_evaluations,
+    artifact_history,
     attest_detection,
     correlate_cases,
     fold_all_cases,
     fold_case,
+    record_failure,
     record_ingest,
+    rehydrate_observations,
 )
 from complyroll.reports import (
     CompiledAviReport,
@@ -99,6 +107,10 @@ ORPHAN_CASE = "case-00000000000000ff"
 #: exactly one attested record and an override cannot hide behind a second one.
 WINDOWS_ONLY = (FIXTURES / "windows-host.ckl",)
 
+#: Bytes the installed SARIF parser fails on, and a log of a failed invocation it reads.
+TRUNCATED = FIXTURES / "failed-truncated.sarif"
+INVOCATION = FIXTURES / "failed-invocation.sarif"
+
 #: The attestation block a `WINDOWS_ONLY` store publishes when nothing renames the case.
 SOLE_ATTESTATION = {
     "detectedAt": "2026-08-01T00:00:00Z",
@@ -146,6 +158,28 @@ def markdown_attestation_groups(markdown: str) -> list[tuple[str, tuple[str, ...
         if matched is not None:
             groups.append((matched.group(1), tuple(matched.group(2).split(", "))))
     return groups
+
+
+def bumped(result: IngestResult, parser_version: str) -> IngestResult:
+    """Return the ingest a later parser version of the same adapter would produce.
+
+    The parser version is part of an artifact-bound observation's fingerprint, so
+    every identifier moves with it; the canonical reader refuses a stored
+    observation whose recorded identifier is not the one its fields derive.
+    """
+
+    artifact = result.artifact
+    if artifact is None:
+        raise AssertionError("only a reading that named its artifact can be re-versioned")
+    observations = []
+    for observation in result.observations:
+        moved = replace(observation, parser_version=parser_version)
+        observations.append(replace(moved, observation_id=moved.derived_observation_id))
+    return replace(
+        result,
+        artifact=replace(artifact, parser_version=parser_version),
+        observations=tuple(observations),
+    )
 
 
 def compile_from_history(
@@ -1451,33 +1485,12 @@ class SupersededParserTests(StoreFixture):
     rest.
     """
 
-    def bumped(self, result: IngestResult, parser_version: str) -> IngestResult:
-        """Return the ingest a later parser version of the same adapter would produce.
-
-        The parser version is part of an artifact-bound observation's fingerprint, so
-        every identifier moves with it; the canonical reader refuses a stored
-        observation whose recorded identifier is not the one its fields derive.
-        """
-
-        artifact = result.artifact
-        self.assertIsNotNone(artifact)
-        assert artifact is not None
-        observations = []
-        for observation in result.observations:
-            moved = replace(observation, parser_version=parser_version)
-            observations.append(replace(moved, observation_id=moved.derived_observation_id))
-        return replace(
-            result,
-            artifact=replace(artifact, parser_version=parser_version),
-            observations=tuple(observations),
-        )
-
     def ingest_both_versions(self) -> tuple[IngestResult, IngestResult]:
         """Record the windows fixture under parser version 1, then under version 2."""
 
         first = ingest_stig_artifact(WINDOWS_ONLY[0], ingested_at=INGESTED_AT)
         record_ingest(self.repository, first, metadata=self.metadata, ingested_at=INGESTED_AT)
-        second = self.bumped(first, "2")
+        second = bumped(first, "2")
         record_ingest(self.repository, second, metadata=self.metadata, ingested_at=INGESTED_AT)
         self.correlate()
         self.attest()
@@ -1769,6 +1782,604 @@ class KevReplayTests(StoreFixture):
                 )
                 self.assertNotIn("kevSource", report.document["x-complyroll"])
                 self.assertNotIn("Known exploited", report.to_markdown())
+
+
+class FailureStoreFixture(StoreFixture):
+    """A store written the way `ingest --record-failed-imports` writes one (ADR 0014)."""
+
+    def record(
+        self,
+        path: Path,
+        *,
+        at: datetime = INGESTED_AT,
+        result: IngestResult | None = None,
+    ) -> list[tuple[str, bool]]:
+        """Record one reading as the flagged ingest does, returning each stream and whether it grew.
+
+        A failed reading becomes a failure stream. A reading becomes an artifact stream,
+        and a reading that also reports a failed invocation adds its side record.
+        """
+
+        if result is None:
+            result = ingest_stig_artifact(Path(path), ingested_at=at)
+        classification = classify_ingest(result)
+        written: list[tuple[str, bool]] = []
+        if not result.errors:
+            read = record_ingest(self.repository, result, metadata=self.metadata, ingested_at=at)
+            written.append((read.stream_id, read.appended))
+        if classification is not None:
+            failed = record_failure(
+                self.repository, result, classification, metadata=self.metadata, ingested_at=at
+            )
+            written.append((failed.stream_id, failed.appended))
+        return written
+
+    #: The report instant for a scenario whose streams are recorded over several minutes.
+    AS_OF = INGESTED_AT + timedelta(days=2)
+
+    def reading(
+        self, version: str, *, source: Path = TRUNCATED, parser_name: str | None = None
+    ) -> str:
+        """Record a clean reading of the source's bytes, holding no findings, as `version`.
+
+        The reading is `bumped` to its version, and moved to `parser_name` when one is
+        given, with its findings and diagnostics dropped: the installed parser cannot read
+        the truncated log at all, and a reading that reached history raised no ERROR.
+        """
+
+        bumped_reading = bumped(ingest_stig_artifact(source, ingested_at=INGESTED_AT), version)
+        artifact = bumped_reading.artifact
+        if artifact is None:
+            raise AssertionError("the source's reading named no artifact")
+        read = replace(
+            bumped_reading,
+            artifact=replace(artifact, parser_name=parser_name or artifact.parser_name),
+            observations=(),
+            diagnostics=(),
+        )
+        outcome = record_ingest(
+            self.repository, read, metadata=self.metadata, ingested_at=INGESTED_AT
+        )
+        self.assertTrue(outcome.appended)
+        return outcome.stream_id
+
+    def step(self) -> tuple[list[tuple[str, str]], list[str], list[tuple[str, str | None]]]:
+        """Correlate, then return the replayed manifest, failure versions and INFO notices."""
+
+        self.correlate()
+        report = self.replay(as_of=self.AS_OF)
+        extension = report.document["x-complyroll"]
+        return (
+            [(item["name"], item["parserVersion"]) for item in extension["artifacts"]],
+            [version for _, version, _, _ in failures(report)],
+            [
+                (item["code"], item.get("location"))
+                for item in extension["diagnostics"]
+                if item["level"] == "info"
+            ],
+        )
+
+    def failure(self, version: str, *, at: datetime, source: Path = TRUNCATED) -> str:
+        """Record the source's failed reading as parser `version` would have failed it."""
+
+        (written,) = self.record(
+            source, at=at, result=bumped(ingest_stig_artifact(source, ingested_at=at), version)
+        )
+        self.assertTrue(written[1])
+        return written[0]
+
+    def flagged(
+        self,
+        artifacts: Sequence[Path],
+        evaluations: Path | None = None,
+        *,
+        kind: ReportKind = "vdt",
+        **option_overrides: object,
+    ) -> AnyReport:
+        """Compile the same inputs the stateless way, with `--record-failed-imports`."""
+
+        parsed = None if evaluations is None else load_evaluations(evaluations)
+        compile_report = compile_historical_report if kind == "historical" else compile_vdt_report
+        return compile_report(
+            list(artifacts),
+            options=options(**option_overrides),  # type: ignore[arg-type]
+            evaluations=parsed,
+            record_failed_imports=True,
+        )
+
+    def populate_failed(self, order: Sequence[Path], evaluations: Path | None) -> None:
+        for path in order:
+            self.record(path)
+        self.correlate()
+        self.attest()
+        if evaluations is not None:
+            self.evaluate(evaluations)
+
+
+def diagnostic_codes(report: AnyReport) -> list[tuple[str, str | None]]:
+    return [
+        (item["code"], item.get("location"))
+        for item in report.document["x-complyroll"]["diagnostics"]
+    ]
+
+
+def failures(report: AnyReport) -> list[tuple[str, str, str, str]]:
+    """Return each `detectionFailures` entry as its name, parser version, instant and case."""
+
+    return [
+        (item["name"], item["parserVersion"], item["observedAt"], item["trackingId"])
+        for item in report.document["x-complyroll"].get("detectionFailures", [])
+    ]
+
+
+class FailedImportReconciliationTests(FailureStoreFixture):
+    """ADR 0008 Decision 5 as amended: under the carve-out the two paths agree byte for byte.
+
+    The documented recipe meets every condition: the same inputs and the same flag, each
+    failure observed at the report as-of or at its scanner's clock, no superseded stream
+    and no two names for one digest. History is written in several orders, so the claim
+    is about the compiler and not about one ingest order.
+    """
+
+    def test_any_ingest_order_replays_the_failed_goldens(self) -> None:
+        inputs = (*ARTIFACTS, *FAILED_ARTIFACTS)
+        orders = (
+            inputs,
+            tuple(reversed(inputs)),
+            (*FAILED_ARTIFACTS, *ARTIFACTS),
+            tuple(path for pair in zip(FAILED_ARTIFACTS, ARTIFACTS, strict=True) for path in pair),
+        )
+        for order in orders:
+            with self.subTest(order=[path.name for path in order]):
+                self.repository = self.open_repository(self.fresh_workspace())
+                self.populate_failed(order, FAILED_EVALUATIONS)
+                for kind, golden, overrides in (
+                    ("vdt", "vdt-failed", {}),
+                    ("historical", "historical-failed", {"period_from": None, "period_to": None}),
+                ):
+                    replayed = self.replay(kind=kind, **overrides)
+                    stateless = self.flagged(order, FAILED_EVALUATIONS, kind=kind, **overrides)
+
+                    self.assertEqual(
+                        replayed.to_json(), (GOLDEN / f"{golden}.json").read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        replayed.to_markdown(),
+                        (GOLDEN / f"{golden}.md").read_text(encoding="utf-8"),
+                    )
+                    self.assertEqual(replayed.to_json(), stateless.to_json())
+                    self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
+
+    def test_each_failure_is_rehydrated_as_recorded_under_the_name_its_head_stores(self) -> None:
+        self.populate_failed((*ARTIFACTS, *FAILED_ARTIFACTS), FAILED_EVALUATIONS)
+        rehydrated = {item.observation_id: item for item in rehydrate_observations(self.repository)}
+        reported = {
+            item["sha256"]: item["name"]
+            for item in self.replay().document["x-complyroll"]["detectionFailures"]
+        }
+
+        heads = [
+            record
+            for record in self.repository.read_all()
+            if record.event_type == "failure.recorded"
+        ]
+        self.assertEqual(len(heads), 3)
+        for head in heads:
+            with self.subTest(name=head.payload["name"]):
+                (stored,) = [
+                    record
+                    for record in self.repository.read_stream(head.stream_id)
+                    if record.event_type == "observation.recorded"
+                ]
+                observation = rehydrated[stored.payload["observation_id"]]
+
+                self.assertEqual(observation.to_canonical_dict(), stored.payload)
+                self.assertEqual(
+                    dict(observation.source_metadata)["artifact.name"], head.payload["name"]
+                )
+                self.assertEqual(reported[head.payload["sha256"]], head.payload["name"])
+
+    def test_a_store_without_failures_replays_unchanged_and_stays_schema_1(self) -> None:
+        # The flagged ingest of readings that all succeed writes what the plain one does.
+        self.populate_failed(ARTIFACTS, EXAMPLES / "evaluations.json")
+
+        replayed = self.replay()
+
+        self.assertEqual(
+            replayed.to_json(), (GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("detectionFailures", replayed.document["x-complyroll"])
+        self.assertEqual(artifact_history(self.repository).current_failures, ())
+        self.assertEqual(self.store.schema_version, 1)
+
+
+class FailedImportDivergenceTests(FailureStoreFixture):
+    """Each condition of the carve-out, broken alone, moves only what the amendment names."""
+
+    def test_a_report_later_than_the_ingest_moves_only_the_as_of_failures(self) -> None:
+        later = datetime(2026, 8, 25, 12, tzinfo=UTC)
+        evaluations = EXAMPLES / "evaluations.json"
+        self.populate_failed((*ARTIFACTS, *FAILED_ARTIFACTS), evaluations)
+
+        replayed = self.replay(as_of=later)
+        stateless = self.flagged((*ARTIFACTS, *FAILED_ARTIFACTS), evaluations, as_of=later)
+
+        self.assertNotEqual(replayed.to_json(), stateless.to_json())
+        # A failure observed at the as-of is observed when it was ingested on one path and
+        # when the report runs on the other; the scanner's own clock is the same on both.
+        self.assertEqual(
+            failures(replayed),
+            [
+                ("failed-invalid-rules.cklb", "1", "2026-08-21T12:00:00Z", INVALID_RULES_CASE),
+                ("failed-invocation.sarif", "1", "2026-08-04T10:00:00Z", INVOCATION_CASE),
+                ("failed-truncated.sarif", "1", "2026-08-21T12:00:00Z", TRUNCATED_CASE),
+            ],
+        )
+        self.assertEqual(
+            failures(stateless),
+            [
+                ("failed-invalid-rules.cklb", "1", "2026-08-25T12:00:00Z", INVALID_RULES_CASE),
+                ("failed-invocation.sarif", "1", "2026-08-04T10:00:00Z", INVOCATION_CASE),
+                ("failed-truncated.sarif", "1", "2026-08-25T12:00:00Z", TRUNCATED_CASE),
+            ],
+        )
+        paths = {}
+        for name, report in (("replayed", replayed), ("stateless", stateless)):
+            paths[name] = {
+                item["providerTrackingId"]: item["x-complyroll"]["observationIds"]
+                for item in report.document["vulnerabilities"]
+            }
+        for tracking_id, ids in paths["replayed"].items():
+            with self.subTest(tracking_id):
+                if tracking_id in (INVALID_RULES_CASE, TRUNCATED_CASE):
+                    self.assertNotEqual(paths["stateless"][tracking_id], ids)
+                else:
+                    self.assertEqual(paths["stateless"][tracking_id], ids)
+        self.assertEqual(diagnostic_codes(replayed), diagnostic_codes(stateless))
+
+    def test_a_superseded_stream_adds_only_its_supersession_notice(self) -> None:
+        reading = self.reading("0")
+        self.record(TRUNCATED)
+        self.correlate()
+
+        replayed = self.replay()
+        stateless = self.flagged((TRUNCATED,))
+
+        self.assertEqual(
+            sorted(set(diagnostic_codes(replayed)) - set(diagnostic_codes(stateless))),
+            [("artifact_superseded_by_failure", reading)],
+        )
+        self.assertEqual(set(diagnostic_codes(stateless)) - set(diagnostic_codes(replayed)), set())
+        self.assertEqual(failures(replayed), failures(stateless))
+        self.assertEqual(
+            replayed.document["vulnerabilities"], stateless.document["vulnerabilities"]
+        )
+
+    def test_two_names_for_one_digest_leave_the_losing_name_on_the_stateless_path_only(
+        self,
+    ) -> None:
+        first = self.workspace / "a-truncated.sarif"
+        second = self.workspace / "b-truncated.sarif"
+        for path in (first, second):
+            path.write_bytes(TRUNCATED.read_bytes())
+        self.assertEqual([appended for _, appended in self.record(first)], [True])
+        self.assertEqual([appended for _, appended in self.record(second)], [False])
+        self.correlate()
+
+        replayed = self.replay()
+        for order in ((first, second), (second, first)):
+            with self.subTest(order=[path.name for path in order]):
+                stateless = self.flagged(order)
+
+                self.assertEqual(
+                    sorted(set(diagnostic_codes(stateless)) - set(diagnostic_codes(replayed))),
+                    [("duplicate_artifact", "b-truncated.sarif")],
+                )
+                self.assertEqual(failures(replayed), failures(stateless))
+                self.assertEqual(failures(replayed)[0][0], "a-truncated.sarif")
+
+    def test_one_digest_failing_under_two_parsers_is_one_record_or_two_members(self) -> None:
+        # Stateless elects one reading by name within its run; history keeps every failure
+        # stream current (R5), so two runs leave one case with two system members.
+        copy = self.workspace / "failed-truncated.cklb"
+        copy.write_bytes(TRUNCATED.read_bytes())
+        self.record(TRUNCATED)
+        self.record(copy, at=INGESTED_AT + timedelta(hours=1))
+        self.correlate()
+        as_of = INGESTED_AT + timedelta(hours=2)
+
+        replayed = self.replay(as_of=as_of)
+        stateless = self.flagged((TRUNCATED, copy), as_of=as_of)
+
+        self.assertEqual(
+            failures(replayed),
+            [
+                ("failed-truncated.cklb", "1", "2026-08-21T13:00:00Z", TRUNCATED_CASE),
+                ("failed-truncated.sarif", "1", "2026-08-21T12:00:00Z", TRUNCATED_CASE),
+            ],
+        )
+        self.assertEqual(
+            failures(stateless),
+            [("failed-truncated.cklb", "1", "2026-08-21T14:00:00Z", TRUNCATED_CASE)],
+        )
+        self.assertEqual(
+            len(self.sole_vulnerability(replayed)["x-complyroll"]["observationIds"]), 2
+        )
+        self.assertEqual(
+            len(self.sole_vulnerability(stateless)["x-complyroll"]["observationIds"]), 1
+        )
+
+
+class FailureWorkedExampleTests(FailureStoreFixture):
+    """The ADR 0014 worked examples, with the report checked after every step."""
+
+    def test_v1_reads_v2_fails_v3_reads_v4_fails(self) -> None:
+        name = TRUNCATED.name
+        v1 = self.reading("1")
+        self.assertEqual(self.step(), ([(name, "1")], [], []))
+
+        v2 = self.failure("2", at=INGESTED_AT + timedelta(minutes=1))
+        self.assertEqual(self.step(), ([], ["2"], [("artifact_superseded_by_failure", v1)]))
+
+        v3 = self.reading("3")
+        self.assertEqual(
+            self.step(),
+            (
+                [(name, "3")],
+                [],
+                [
+                    ("artifact_superseded", v1),
+                    ("failure_superseded", v2),
+                    ("stale_case", f"case/{TRUNCATED_CASE}"),
+                ],
+            ),
+        )
+
+        # R3 counts the superseded V3, so V2 stays resolved under V4's failure.
+        self.failure("4", at=INGESTED_AT + timedelta(minutes=2))
+        self.assertEqual(
+            self.step(),
+            (
+                [],
+                ["4"],
+                [
+                    ("artifact_superseded_by_failure", v1),
+                    ("artifact_superseded_by_failure", v3),
+                    ("failure_superseded", v2),
+                ],
+            ),
+        )
+
+    def test_v1_fails_v2_reads_v3_fails(self) -> None:
+        name = TRUNCATED.name
+        v1 = self.failure("1", at=INGESTED_AT)
+        self.assertEqual(self.step(), ([], ["1"], []))
+
+        v2 = self.reading("2")
+        self.assertEqual(
+            self.step(),
+            (
+                [(name, "2")],
+                [],
+                [("failure_superseded", v1), ("stale_case", f"case/{TRUNCATED_CASE}")],
+            ),
+        )
+
+        self.failure("3", at=INGESTED_AT + timedelta(minutes=1))
+        self.assertEqual(
+            self.step(),
+            (
+                [],
+                ["3"],
+                [("artifact_superseded_by_failure", v2), ("failure_superseded", v1)],
+            ),
+        )
+
+    def upgrade(self, *, at: datetime) -> list[tuple[str, bool]]:
+        """Record the failed invocation under version 1 at the golden instant, then 2 at `at`.
+
+        The scanner's clock is dropped, so each record is observed at its own ingest as-of.
+        """
+
+        first = replace(
+            ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT), failed_execution_at=None
+        )
+        self.assertEqual(
+            [appended for _, appended in self.record(INVOCATION, result=first)], [True, True]
+        )
+        second = replace(
+            bumped(ingest_stig_artifact(INVOCATION, ingested_at=at), "2"), failed_execution_at=None
+        )
+        written = self.record(INVOCATION, at=at, result=second)
+        self.correlate()
+        self.attest()
+        return written
+
+    def test_an_execution_failure_upgraded_at_the_same_as_of_keeps_one_record(self) -> None:
+        # One digest at one instant is one system record, whichever parser recorded it.
+        written = self.upgrade(at=INGESTED_AT)
+
+        self.assertEqual([appended for _, appended in written], [True, False])
+        report = self.replay(as_of=self.AS_OF)
+        self.assertEqual(
+            failures(report), [(INVOCATION.name, "1", "2026-08-21T12:00:00Z", INVOCATION_CASE)]
+        )
+        self.assertEqual(report.document["x-complyroll"]["artifacts"][0]["parserVersion"], "2")
+        self.assertEqual(len(artifact_history(self.repository).current_failures), 1)
+
+    def test_an_execution_failure_upgraded_later_keeps_its_case_detection_time(self) -> None:
+        # R4: the newer reading still reports the failed invocation, so the older failure
+        # stays current beside the newer one, and the case keeps its first detection time.
+        written = self.upgrade(at=INGESTED_AT + timedelta(days=1))
+
+        self.assertEqual([appended for _, appended in written], [True, True])
+        report = self.replay(as_of=self.AS_OF)
+        self.assertEqual(
+            failures(report),
+            [
+                (INVOCATION.name, "1", "2026-08-21T12:00:00Z", INVOCATION_CASE),
+                (INVOCATION.name, "2", "2026-08-22T12:00:00Z", INVOCATION_CASE),
+            ],
+        )
+        (record,) = [
+            item
+            for item in report.document["vulnerabilities"]
+            if item["providerTrackingId"] == INVOCATION_CASE
+        ]
+        self.assertEqual(record["detection"]["detectedAt"], "2026-08-21T12:00:00Z")
+        self.assertEqual(len(record["x-complyroll"]["observationIds"]), 2)
+        self.assertEqual(len(artifact_history(self.repository).current_failures), 2)
+
+
+class FailureSupersessionReplayTests(FailureStoreFixture):
+    """Each of R2 to R5 seen in the report it decides; R1 is `SupersededParserTests`."""
+
+    OTHER = "complyroll.other"
+
+    def test_a_newer_failure_replaces_readings_only_when_its_parser_read_them_all(self) -> None:
+        # R2: the newer SARIF parser failing replaces its older reading, but not while
+        # another parser still reads the bytes; R3 then resolves the failure instead.
+        name = TRUNCATED.name
+        one = self.reading("1")
+        self.failure("2", at=INGESTED_AT)
+        self.assertEqual(self.step(), ([], ["2"], [("artifact_superseded_by_failure", one)]))
+
+        # The failure is never current here, so correlate opens no case to go stale.
+        self.repository = self.open_repository(self.fresh_workspace())
+        other = self.reading("1", parser_name=self.OTHER)
+        one = self.reading("1")
+        two = self.failure("2", at=INGESTED_AT)
+        self.assertEqual(
+            self.step(),
+            (
+                [(name, "1")],
+                [],
+                [("artifact_superseded", other), ("failure_superseded", two)],
+            ),
+        )
+        current = artifact_history(self.repository).current
+        self.assertIn(one, [record.stream_id for record in current])
+
+    def test_a_reading_at_the_failed_version_resolves_it_whichever_came_first(self) -> None:
+        # R3: at an equal version the reading wins, with no sequence tiebreak. Only a
+        # failure that was current first left a case behind to go stale.
+        name = TRUNCATED.name
+        for failure_first in (True, False):
+            with self.subTest(failure_first=failure_first):
+                self.repository = self.open_repository(self.fresh_workspace())
+                stale: list[tuple[str, str | None]] = []
+                if failure_first:
+                    failure = self.failure("1", at=INGESTED_AT)
+                    self.assertEqual(self.step(), ([], ["1"], []))
+                    self.reading("1")
+                    stale.append(("stale_case", f"case/{TRUNCATED_CASE}"))
+                else:
+                    self.reading("1")
+                    failure = self.failure("1", at=INGESTED_AT)
+
+                self.assertEqual(
+                    self.step(), ([(name, "1")], [], [("failure_superseded", failure), *stale])
+                )
+
+    def test_a_reading_under_another_parser_resolves_a_failure_at_any_version(self) -> None:
+        # R3: bytes another parser reads were not a failure to detect, at any version.
+        failure = self.failure("2", at=INGESTED_AT)
+        self.assertEqual(self.step(), ([], ["2"], []))
+        self.reading("1", parser_name=self.OTHER)
+
+        self.assertEqual(
+            self.step(),
+            (
+                [(TRUNCATED.name, "1")],
+                [],
+                [("failure_superseded", failure), ("stale_case", f"case/{TRUNCATED_CASE}")],
+            ),
+        )
+
+    def test_only_a_clean_reading_by_the_failed_parser_resolves_an_execution_failure(
+        self,
+    ) -> None:
+        # R4: another parser reading the log, or a newer version still reporting the
+        # failed invocation, leaves the failure current; a clean newer reading resolves it.
+        name = INVOCATION.name
+        (_, (side, appended)) = self.record(INVOCATION)
+        self.assertTrue(appended)
+        self.reading("2", source=INVOCATION, parser_name=self.OTHER)
+        self.assertEqual(self.step()[1], ["1"])
+
+        still_failing = bumped(ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT), "3")
+        self.record(INVOCATION, result=still_failing)
+        self.assertEqual(self.step()[1], ["1"])
+
+        self.reading("4", source=INVOCATION)
+        manifest, current, notices = self.step()
+        self.assertEqual((manifest, current), ([(name, "4")], []))
+        self.assertIn(("failure_superseded", side), notices)
+
+    def test_failures_never_supersede_one_another(self) -> None:
+        # R5: two failures of one digest at two instants are both current.
+        self.failure("1", at=INGESTED_AT)
+        self.failure("2", at=INGESTED_AT + timedelta(minutes=1))
+
+        self.assertEqual(self.step(), ([], ["1", "2"], []))
+
+
+def bad_rules(count: int) -> dict[str, object]:
+    """Build a CKLB whose every rule is malformed, so it fails with `count` + 1 diagnostics.
+
+    The shape of `test_failures.checklist`, which this module cannot import: that module
+    imports `test_sarif`, which imports this one.
+    """
+
+    return {
+        "target_data": {"host_name": "host-a"},
+        "completed_at": "2026-08-01T00:00:00Z",
+        "stigs": [
+            {"stig_id": "SYN_STIG", "version": "1", "release_info": "R1", "rules": [1] * count}
+        ],
+    }
+
+
+class FailureDiagnosticsCapReplayTests(FailureStoreFixture):
+    """The head keeps 62 of a failed reading's diagnostics, and replay prints what it keeps."""
+
+    def test_the_cap_holds_through_the_store_at_62_63_and_70(self) -> None:
+        for source_count, dropped in ((62, 0), (63, 1), (70, 8)):
+            with self.subTest(source_count=source_count):
+                self.workspace = self.fresh_workspace()
+                self.repository = self.open_repository(self.workspace)
+                path = self.workspace / "bad-rules.cklb"
+                path.write_text(json.dumps(bad_rules(source_count - 1)), encoding="utf-8")
+                self.record(path)
+                (head,) = [
+                    record.payload
+                    for record in self.repository.read_all()
+                    if record.event_type == "failure.recorded"
+                ]
+
+                replayed = self.replay()
+                stateless = self.flagged((path,))
+
+                self.assertEqual(len(head["diagnostics"]), 63 if dropped == 0 else 64)
+                self.assertEqual(replayed.to_json(), stateless.to_json())
+                self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
+                notices = [
+                    item["message"]
+                    for item in replayed.document["x-complyroll"]["diagnostics"]
+                    if item["code"] == "failure_diagnostics_truncated"
+                ]
+                self.assertEqual(
+                    notices,
+                    [
+                        f"{dropped} further diagnostic(s) of the failed reading were dropped; "
+                        "the first 62 are kept"
+                    ]
+                    if dropped
+                    else [],
+                )
+                self.assertEqual(
+                    len(replayed.document["x-complyroll"]["diagnostics"]), len(head["diagnostics"])
+                )
 
 
 if __name__ == "__main__":

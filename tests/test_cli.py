@@ -18,10 +18,15 @@ from unittest.mock import patch
 
 from complyroll import __version__
 from complyroll import cli as cli_module
-from complyroll.adapters import ingest_stig_artifact
+from complyroll.adapters import classify_ingest, ingest_stig_artifact
 from complyroll.cli import main
-from complyroll.events import EventRepository
-from complyroll.history import AUDIT_FAULT_CODES
+from complyroll.events import (
+    FAILURE_STREAM_SCHEMA_VERSION,
+    EventMetadata,
+    EventRepository,
+    failure_stream_id,
+)
+from complyroll.history import AUDIT_FAULT_CODES, fold_all_cases, record_failure, record_ingest
 from complyroll.models import Observation
 from complyroll.reports import vdt as vdt_module
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
@@ -1367,6 +1372,10 @@ SMUGGLED_CASE_STREAM = f"case/{UNKNOWN_CASE}"
 #: identifier and stream disagree.
 OTHER_UNKNOWN_CASE = "case-00000000000000fe"
 
+#: Two failed readings whose recorded streams the failure-stream audit tests below damage.
+TRUNCATED_FIXTURE = FIXTURES / "failed-truncated.sarif"
+INVALID_RULES_FIXTURE = FIXTURES / "failed-invalid-rules.cklb"
+
 #: The audit fault codes the `store verify` tests below cover, checked against
 #: `AUDIT_FAULT_CODES` so a new code cannot ship without one.
 COVERED_AUDIT_CODES = {
@@ -1377,6 +1386,11 @@ COVERED_AUDIT_CODES = {
     "case_tracking_id_mismatch",
     "event_metadata_invalid",
     "event_stream_mismatch",
+    "failure_duplicate_observation",
+    "failure_incomplete",
+    "failure_overfull",
+    "failure_schema_unmarked",
+    "failure_stream_mismatch",
     "payload_contract_invalid",
 }
 
@@ -2207,6 +2221,314 @@ class PersistedIngestTests(PersistedStoreTestCase):
         self.assertEqual(self.latest_sequence(), before)
 
 
+class PersistedFailedImportTests(PersistedStoreTestCase):
+    """`ingest --record-failed-imports` records each failure as a failure stream (ADR 0014)."""
+
+    def ingest_flagged(self, *artifacts: str | Path) -> tuple[int, str, str]:
+        """Run one flagged ingest at the golden instant and return its status and streams."""
+
+        return run(
+            [
+                "ingest",
+                *(str(path) for path in artifacts),
+                "--record-failed-imports",
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+                "--actor",
+                "golden",
+            ]
+        )
+
+    def schema_version(self) -> int:
+        with SQLiteEventStore(self.database) as store:
+            return store.schema_version
+
+    def failure_heads(self) -> list[dict[str, Any]]:
+        return [
+            dict(record.payload)
+            for record in self.records()
+            if record.event_type == "failure.recorded"
+        ]
+
+    def copy_of(self, source: str | Path, name: str) -> Path:
+        """Write the source's bytes under another name in this test's workspace."""
+
+        path = self.workspace / name
+        path.write_bytes(Path(source).read_bytes())
+        return path
+
+    def record_reading(self, *, parser_name: str, parser_version: str) -> str:
+        """Record a reading of the truncated log's bytes under another parser, through the writer.
+
+        The installed parser cannot read those bytes, so the reading is moved the way
+        `test_replay`'s `bumped` moves one: by replacing fields on its `IngestResult`, with
+        its findings and diagnostics dropped.
+        """
+
+        at = datetime(2026, 8, 21, 12, tzinfo=UTC)
+        result = ingest_stig_artifact(TRUNCATED_FIXTURE, ingested_at=at)
+        assert result.artifact is not None
+        artifact = replace(result.artifact, parser_name=parser_name, parser_version=parser_version)
+        moved = replace(result, artifact=artifact, observations=(), diagnostics=())
+        with SQLiteEventStore(self.database) as store:
+            outcome = record_ingest(
+                EventRepository(store),
+                moved,
+                metadata=EventMetadata(actor="golden", run_id=SMUGGLED_RUN_ID),
+                ingested_at=at,
+            )
+        return outcome.stream_id
+
+    def test_a_fresh_store_is_published_with_its_failures_and_the_run_exits_3(self) -> None:
+        code, out, err = self.ingest_flagged(*PERSISTED_ARTIFACTS, *FAILED_ARTIFACTS)
+
+        self.assertEqual(code, 3)
+        self.assertEqual(code, cli_module.EXIT_DETECTION_FAILURES)
+        self.assertTrue(self.database.is_file())
+        self.assertEqual(
+            out.splitlines(),
+            [
+                "ubuntu-host.cklb: recorded 6 observation(s)",
+                "windows-host.ckl: recorded 2 observation(s)",
+                "openscap-results.xml: recorded 3 observation(s)",
+                "failed-invocation.sarif: recorded 1 observation(s)",
+                "failed-invocation.sarif: recorded detection failure (execution)",
+                "failed-invalid-rules.cklb: recorded detection failure (content)",
+                "failed-truncated.sarif: recorded detection failure (parse)",
+            ],
+        )
+        # The failed readings' ERRORs are written demoted, so a run that exits 3 prints none.
+        self.assertNotIn("error:", err)
+        self.assertIn("warning: artifact_parse_failed", err)
+        self.assertEqual(err.count("warning: detection_failure_recorded"), 3)
+        self.assertEqual(
+            sorted(head["name"] for head in self.failure_heads()),
+            sorted(Path(path).name for path in FAILED_ARTIFACTS),
+        )
+        self.assertEqual(self.schema_version(), FAILURE_STREAM_SCHEMA_VERSION)
+        verified, _ = self.succeeds(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(verified, f"ok: {self.latest_sequence()} event(s) verified\n")
+
+    def test_a_rerun_finds_every_failure_recorded_and_still_exits_3(self) -> None:
+        self.ingest_flagged(*PERSISTED_ARTIFACTS, *FAILED_ARTIFACTS)
+        before = self.latest_sequence()
+
+        code, out, err = self.ingest_flagged(*PERSISTED_ARTIFACTS, *FAILED_ARTIFACTS)
+
+        self.assertEqual(code, 3)
+        self.assertEqual(
+            out.splitlines(),
+            [
+                "ubuntu-host.cklb: already_recorded",
+                "windows-host.ckl: already_recorded",
+                "openscap-results.xml: already_recorded",
+                "failed-invocation.sarif: already_recorded",
+                "failed-invocation.sarif: already_recorded",
+                "failed-invalid-rules.cklb: already_recorded",
+                "failed-truncated.sarif: already_recorded",
+            ],
+        )
+        self.assertNotIn("error:", err)
+        self.assertEqual(self.latest_sequence(), before)
+
+    def test_the_flag_without_a_failure_exits_0_and_leaves_the_store_at_schema_1(self) -> None:
+        code, out, _ = self.ingest_flagged(*PERSISTED_ARTIFACTS)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(out.splitlines()), 3)
+        self.assertEqual(self.failure_heads(), [])
+        self.assertEqual(self.schema_version(), 1)
+
+    def test_without_the_flag_a_failed_invocation_imports_as_it_always_has(self) -> None:
+        code, out, err = run(
+            ["ingest", str(FIXTURES / "failed-invocation.sarif"), "--db", str(self.database)]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "failed-invocation.sarif: recorded 1 observation(s)\n")
+        self.assertIn("warning: execution_unsuccessful", err)
+        self.assertNotIn("detection_failure_recorded", err)
+        self.assertEqual(self.failure_heads(), [])
+        self.assertEqual(self.schema_version(), 1)
+
+    def test_an_unmintable_failure_exits_1_and_writes_nothing(self) -> None:
+        partial = self.workspace / "partial.cklb"
+        partial.write_text(
+            json.dumps(
+                {
+                    "target_data": {"host_name": "host-partial"},
+                    "stigs": [{"stig_id": "SYN_STIG", "rules": [{"group_id": "V-000001"}, 1]}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        code, out, err = self.ingest_flagged(*FAILED_ARTIFACTS, partial)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: invalid_rule", err)
+        self.assertNotIn("detection_failure_recorded", err)
+        self.assertFalse(self.database.exists())
+        self.assertEqual(list(self.workspace.iterdir()), [partial])
+
+    def test_bytes_read_in_the_same_run_stop_their_failure_and_write_nothing(self) -> None:
+        # A misnamed copy of bytes the run reads is not a detection failure, so it stops the
+        # run with its own ERRORs, exactly as it does without the flag.
+        copy = self.copy_of(PERSISTED_ARTIFACTS[2], "openscap-copy.sarif")
+
+        code, out, err = self.ingest_flagged(PERSISTED_ARTIFACTS[2], copy)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: artifact_parse_failed", err)
+        self.assertIn("[openscap-copy.sarif]", err)
+        self.assertNotIn("detection_failure_recorded", err)
+        self.assertFalse(self.database.exists())
+
+    def test_bytes_history_reads_elsewhere_refuse_the_failure_and_append_nothing(self) -> None:
+        self.succeeds(
+            ["ingest", PERSISTED_ARTIFACTS[2], "--db", str(self.database), "--as-of", INGESTED_AT]
+        )
+        before = self.latest_sequence()
+        (reading,) = [
+            record.stream_id
+            for record in self.records()
+            if record.event_type == "artifact.ingested"
+        ]
+        copy = self.copy_of(PERSISTED_ARTIFACTS[2], "openscap-copy.sarif")
+
+        # The windows checklist reads cleanly, so a refusal that came after the first
+        # append would leave it recorded.
+        code, out, err = self.ingest_flagged(PERSISTED_ARTIFACTS[1], copy)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: failure_read_elsewhere: history reads these bytes in {reading}", err)
+        self.assertIn("[openscap-copy.sarif]", err)
+        self.assertNotIn("detection_failure_recorded", err)
+        self.assertEqual(self.latest_sequence(), before)
+        self.assertEqual(self.schema_version(), 1)
+
+    def test_only_an_older_reading_by_the_same_parser_lets_a_failure_be_recorded(self) -> None:
+        # The installed SARIF parser is version 1. A failure joins history only to replace
+        # an older reading by it, which R2 then supersedes (ADR 0014).
+        for parser_name, parser_version, expected in (
+            ("complyroll.sarif", "0", 3),
+            ("complyroll.sarif", "1", 1),
+            ("complyroll.sarif", "1.0", 1),
+            ("complyroll.sarif", "2", 1),
+            ("complyroll.other", "0", 1),
+        ):
+            with self.subTest(parser=parser_name, version=parser_version):
+                self.database = self.workspace / f"{parser_name}-{parser_version}.db"
+                reading = self.record_reading(
+                    parser_name=parser_name, parser_version=parser_version
+                )
+                before = self.latest_sequence()
+
+                code, out, err = self.ingest_flagged(TRUNCATED_FIXTURE)
+
+                self.assertEqual(code, expected)
+                if expected == 3:
+                    self.assertEqual(
+                        out, "failed-truncated.sarif: recorded detection failure (parse)\n"
+                    )
+                    report, _ = self.report()
+                    diagnostics = json.loads(report)["x-complyroll"]["diagnostics"]
+                    self.assertIn(
+                        ("artifact_superseded_by_failure", reading),
+                        [(item["code"], item.get("location")) for item in diagnostics],
+                    )
+                else:
+                    self.assertEqual(out, "")
+                    self.assertIn(
+                        f"failure_read_elsewhere: history reads these bytes in {reading}", err
+                    )
+                    self.assertEqual(self.latest_sequence(), before)
+
+    def test_failed_readings_of_one_digest_are_recorded_under_the_lowest_name(self) -> None:
+        for order in (("b", "a"), ("a", "b")):
+            with self.subTest(order=order):
+                self.database = self.workspace / f"{''.join(order)}.db"
+                copies = [
+                    self.copy_of(TRUNCATED_FIXTURE, f"{prefix}-truncated.sarif") for prefix in order
+                ]
+
+                code, out, _ = self.ingest_flagged(*copies)
+
+                self.assertEqual(code, 3)
+                self.assertEqual(
+                    out.splitlines(),
+                    [
+                        "a-truncated.sarif: recorded detection failure (parse)",
+                        "b-truncated.sarif: already_recorded",
+                    ],
+                )
+                self.assertEqual(
+                    [head["name"] for head in self.failure_heads()], ["a-truncated.sarif"]
+                )
+
+    def test_a_store_holding_failures_reports_them_and_exits_0(self) -> None:
+        # The failures were signalled with 3 when they were recorded; a report over the
+        # store is not a run that failed to read anything (ADR 0014).
+        self.ingest_flagged(*PERSISTED_ARTIFACTS, *FAILED_ARTIFACTS)
+        self.correlate()
+        self.attest_missing()
+
+        out, err = self.report()
+
+        self.assertEqual(
+            [item["name"] for item in json.loads(out)["x-complyroll"]["detectionFailures"]],
+            [Path(path).name for path in FAILED_ARTIFACTS],
+        )
+        self.assertNotIn("error:", err)
+
+    def test_the_documented_sequence_reproduces_the_failed_goldens(self) -> None:
+        code, _, _ = self.ingest_flagged(*PERSISTED_ARTIFACTS, *FAILED_ARTIFACTS)
+        self.assertEqual(code, 3)
+
+        out, _ = self.correlate()
+        self.assertEqual(
+            out,
+            "created 10 case(s), linked 10 observation(s), "
+            "skipped 0 already-linked observation(s)\n",
+        )
+
+        # A system record's detection time is its own instant, so the sweep leaves the
+        # three system cases alone and attests only the fixtures' six.
+        out, _ = self.attest_missing()
+        self.assertEqual(
+            out.splitlines()[0], "selected 6 case(s) with no source timestamp on any observation"
+        )
+        with SQLiteEventStore(self.database) as store:
+            unattested = {
+                case.source_type
+                for case in fold_all_cases(EventRepository(store))
+                if case.attestation is None
+            }
+        self.assertIn("complyroll.detection-process", unattested)
+
+        self.evaluate(EXAMPLES / "evaluations-failed.json")
+        for kind, golden in (("vdt", "vdt-failed"), ("historical", "historical-failed")):
+            with self.subTest(report=kind):
+                json_path = self.workspace / f"{kind}.json"
+                markdown_path = self.workspace / f"{kind}.md"
+
+                self.report(kind, output=json_path, markdown=markdown_path)
+
+                self.assertEqual(
+                    json_path.read_text(encoding="utf-8"),
+                    (GOLDEN / f"{golden}.json").read_text(encoding="utf-8"),
+                )
+                self.assertEqual(
+                    markdown_path.read_text(encoding="utf-8"),
+                    (GOLDEN / f"{golden}.md").read_text(encoding="utf-8"),
+                )
+
+
 class PersistedStorePublicationTests(PersistedStoreTestCase):
     """A new store is built beside its destination and linked in, and never unlinked.
 
@@ -2577,6 +2899,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         stream_id: str = SMUGGLED_ARTIFACT_STREAM,
         metadata: dict[str, str] | None = None,
         expected_version: int = 0,
+        requires_schema: int = 1,
     ) -> int:
         """Append one event straight to the store, past the contract the repository holds.
 
@@ -2587,6 +2910,8 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         has to spell the one fault it is about. `expected_version` is the version the
         stream is already at, which is zero for the unused streams above and the last
         stored version for a test that adds an event to a stream the fixtures wrote.
+        `requires_schema` is the schema the store is marked forward to, as the repository
+        marks it for a failure stream.
         """
 
         with SQLiteEventStore(self.database) as store:
@@ -2601,6 +2926,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                     )
                 ],
                 expected_version=expected_version,
+                requires_schema=requires_schema,
             )
         return appended[0].sequence
 
@@ -2930,6 +3256,165 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn(SMUGGLED_ARTIFACT_STREAM, err)
         self.assertIn(str(payload["observation_id"]), err)
         self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def failed_reading(self, path: Path) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """Return the stream id, head, and system observation one failed reading records.
+
+        The writer records them into a scratch log, so each payload is exactly what history
+        holds and a test smuggles them into the store with only its own fault added.
+        """
+
+        at = datetime(2026, 8, 21, 12, tzinfo=UTC)
+        result = ingest_stig_artifact(path, ingested_at=at)
+        classification = classify_ingest(result)
+        assert classification is not None
+        with SQLiteEventStore(":memory:") as store:
+            outcome = record_failure(
+                EventRepository(store),
+                result,
+                classification,
+                metadata=EventMetadata(actor="smuggler", run_id=SMUGGLED_RUN_ID),
+                ingested_at=at,
+            )
+            head, observation = store.read_stream(outcome.stream_id)
+        return outcome.stream_id, dict(head.payload), dict(observation.payload)
+
+    def smuggle_failure(
+        self,
+        stream_id: str,
+        events: Sequence[tuple[str, dict[str, Any]]],
+        *,
+        requires_schema: int = FAILURE_STREAM_SCHEMA_VERSION,
+    ) -> list[int]:
+        """Append events to one new failure stream past the repository, in order."""
+
+        return [
+            self.smuggle(
+                event_type,
+                payload,
+                stream_id=stream_id,
+                expected_version=version,
+                requires_schema=requires_schema,
+            )
+            for version, (event_type, payload) in enumerate(events)
+        ]
+
+    def test_a_failure_stream_in_a_store_left_at_schema_1_is_named_and_exits_one(self) -> None:
+        # Both events are exactly what the writer records. Only the store's mark is wrong:
+        # written past the repository, the stream never moved the store to schema 2, so a
+        # build that predates failure streams would open this file and misread it.
+        self.populate()
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        sequences = self.smuggle_failure(
+            stream_id,
+            [("failure.recorded", head), ("observation.recorded", observation)],
+            requires_schema=1,
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequences[0]}: failure_schema_unmarked:", err)
+        self.assertIn(stream_id, err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_a_failure_stream_holding_another_digests_record_is_named_and_exits_one(
+        self,
+    ) -> None:
+        # The observation is a well-formed system record, of other bytes: rehydrated here
+        # it would open a case for an artifact this stream never read.
+        self.populate()
+        stream_id, head, _ = self.failed_reading(TRUNCATED_FIXTURE)
+        _, _, foreign = self.failed_reading(INVALID_RULES_FIXTURE)
+        sequences = self.smuggle_failure(
+            stream_id, [("failure.recorded", head), ("observation.recorded", foreign)]
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequences[1]}: failure_stream_mismatch:", err)
+        self.assertIn("is not the system record", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_a_failure_stream_missing_its_observation_is_named_and_exits_one(self) -> None:
+        self.populate()
+        stream_id, head, _ = self.failed_reading(TRUNCATED_FIXTURE)
+        sequences = self.smuggle_failure(stream_id, [("failure.recorded", head)])
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        report_code, _, report_err = self.report_from_history()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequences[0]}: failure_incomplete:", err)
+        self.assertIn("found 1 failure record(s) and 0 observation(s)", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+        # The reader refuses what the audit names, rather than reporting half a failure.
+        self.assertEqual(report_code, 1)
+        self.assertIn("history_invalid", report_err)
+        self.assertIn("is incomplete", report_err)
+
+    def test_a_failure_stream_with_a_second_head_is_named_and_exits_one(self) -> None:
+        self.populate()
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        sequences = self.smuggle_failure(
+            stream_id,
+            [
+                ("failure.recorded", head),
+                ("observation.recorded", observation),
+                ("failure.recorded", head),
+            ],
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        report_code, _, report_err = self.report_from_history()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequences[0]}: failure_overfull:", err)
+        self.assertIn("found 2 failure record(s) and 1 observation(s)", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+        self.assertEqual(report_code, 1)
+        self.assertIn("history_invalid", report_err)
+        self.assertIn("is overfull", report_err)
+
+    def test_one_system_record_held_by_two_failure_streams_is_named_and_exits_one(
+        self,
+    ) -> None:
+        # Each stream is whole and names its own reading, so only the pair is wrong: the
+        # system record's identity is the digest and the instant, never the parser, so the
+        # second stream holding it rehydrates one failure twice.
+        self.populate()
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        newer = f"{head['parserVersion']}.1"
+        other = failure_stream_id(head["sha256"], head["parserName"], newer)
+        self.smuggle_failure(
+            stream_id, [("failure.recorded", head), ("observation.recorded", observation)]
+        )
+        sequences = self.smuggle_failure(
+            other,
+            [
+                ("failure.recorded", {**head, "parserVersion": newer}),
+                ("observation.recorded", observation),
+            ],
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        report_code, _, report_err = self.report_from_history()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequences[1]}: failure_duplicate_observation:", err)
+        self.assertIn(stream_id, err)
+        self.assertIn(other, err)
+        self.assertIn(str(observation["observation_id"]), err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+        self.assertEqual(report_code, 1)
+        self.assertIn("history_invalid", report_err)
+        self.assertIn(str(observation["observation_id"]), report_err)
 
     def test_a_case_created_naming_another_tracking_id_is_named_and_exits_one(self) -> None:
         self.populate()

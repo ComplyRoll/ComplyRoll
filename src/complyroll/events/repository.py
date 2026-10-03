@@ -21,14 +21,19 @@ from uuid import uuid4
 from jsonschema import Draft202012Validator
 
 from complyroll import __version__
-from complyroll.models import Observation
+from complyroll.adapters.failures import DETECTION_FAILURE_SOURCE_TYPE
+from complyroll.models import Observation, ObservationOrigin
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 
 from .contracts import (
     EVENT_CONTRACTS,
+    FAILURE_STREAM_PREFIX,
+    FAILURE_STREAM_SCHEMA_VERSION,
     artifact_stream_components,
     event_belongs_on_stream,
+    failure_stream_components,
     is_artifact_stream,
+    is_failure_stream,
     iso_utc,
     parse_utc,
     schema_for,
@@ -45,6 +50,9 @@ CASE_CREATED = "case.created"
 
 #: The one event type that declares how many observations its stream holds.
 ARTIFACT_INGESTED = "artifact.ingested"
+
+#: The head of a failure stream, which names the failed reading its stream is about.
+FAILURE_RECORDED = "failure.recorded"
 
 #: How each artifact-stream event names the artifact it belongs to: the digest of the
 #: bytes, the parser that read them, and that parser's version. `observation.recorded`
@@ -283,6 +291,15 @@ class EventRepository:
                 )
             )
         self._require_unseen_observations(stream_id, pending)
+        if is_failure_stream(stream_id):
+            # A failure stream needs schema 2, and the store marks itself in the same
+            # transaction as these events, so a rollback undoes both (ADR 0014).
+            return self._store.append(
+                stream_id,
+                prepared,
+                expected_version=expected_version,
+                requires_schema=FAILURE_STREAM_SCHEMA_VERSION,
+            )
         return self._store.append(stream_id, prepared, expected_version=expected_version)
 
     def _require_unseen_observations(
@@ -290,7 +307,7 @@ class EventRepository:
         stream_id: str,
         events: Sequence[PendingEvent],
     ) -> None:
-        """Refuse a batch that would store one observation identifier twice on one stream.
+        """Refuse a batch that would store one observation identifier twice.
 
         An artifact stream's observation identifiers are the findings it carries, and the
         same identifier twice is one finding counted twice. Neither existing check sees it:
@@ -304,6 +321,13 @@ class EventRepository:
         `record_ingest` resumes a half-written stream by appending the tail its head
         declared, and a legitimate tail carries identifiers the stream does not: only a
         repeat is refused.
+
+        A failure stream is held to one more rule (ADR 0014): one observation identifier per
+        digest across every failure stream. A system observation's identity is the digest
+        and the instant, never the parser, so the same bytes failing under two parsers at
+        one instant mint one observation, and storing it on both streams would rehydrate one
+        failure twice. Finding the other failure streams of a digest reads the whole log,
+        which is linear in its size and runs only for an append to a failure stream.
         """
 
         incoming = [
@@ -311,7 +335,9 @@ class EventRepository:
             for event in events
             if event.event_type == OBSERVATION_RECORDED
         ]
-        if not incoming or not is_artifact_stream(stream_id):
+        if not incoming:
+            return
+        if not is_artifact_stream(stream_id) and not is_failure_stream(stream_id):
             return
         seen: set[str] = set()
         if self.current_version(stream_id) > 0:
@@ -326,6 +352,35 @@ class EventRepository:
                     duplicate_observation_message(stream_id, observation_id)
                 )
             seen.add(observation_id)
+        if not is_failure_stream(stream_id):
+            return
+        elsewhere = self.failure_observations_of_digest(stream_id)
+        for observation_id in incoming:
+            other = elsewhere.get(observation_id)
+            if other is not None:
+                raise EventContractError(
+                    failure_duplicate_observation_message(stream_id, observation_id, other)
+                )
+
+    def failure_observations_of_digest(self, stream_id: str) -> dict[str, str]:
+        """Map each observation id on the other failure streams of one digest to its stream.
+
+        The digest is the one `stream_id` names. The stream itself is left out, so the map
+        answers "who else already holds this failure", which is the question the append
+        check and `record_failure` both ask.
+        """
+
+        digest = failure_stream_components(stream_id)[0]
+        prefix = f"{FAILURE_STREAM_PREFIX}/{digest}/"
+        found: dict[str, str] = {}
+        for record in self.read_all():
+            if (
+                record.event_type == OBSERVATION_RECORDED
+                and record.stream_id != stream_id
+                and record.stream_id.startswith(prefix)
+            ):
+                found.setdefault(str(record.payload.get(OBSERVATION_ID_KEY)), record.stream_id)
+        return found
 
     def current_version(self, stream_id: str) -> int:
         """Return the current version of one stream, or zero when it does not exist."""
@@ -514,17 +569,99 @@ def artifact_identity_breach(
     )
 
 
+def failure_identity_breach(
+    stream_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> str | None:
+    """Return why a failure-stream event is not about the failed reading its stream names.
+
+    A failure stream id names the digest of the bytes and the parser whose reading failed
+    (ADR 0014). Its head names the same three things, so the two have to agree, exactly as
+    an artifact stream's do. Its one observation is the system record that failure mints:
+    origin `system`, source type `complyroll.detection-process`, context key and resource
+    id `sha256:<digest>`, and named by its derived id. The reader accepts a system
+    observation under any identifier, so the derived id is checked here rather than
+    assumed; a payload whose fingerprint is not its own is the reader's refusal to make.
+
+    Returns None for an event no failure stream carries and for a stream of another kind,
+    which are the stream-kind check's business rather than this one's.
+    """
+
+    if not is_failure_stream(stream_id) or event_type not in (
+        FAILURE_RECORDED,
+        OBSERVATION_RECORDED,
+    ):
+        return None
+    try:
+        expected = failure_stream_components(stream_id)
+    except ValueError as exc:
+        return f"stream {stream_id!r} names no failed reading: {exc}"
+    if event_type == FAILURE_RECORDED:
+        recorded = tuple(payload.get(key) for key in ARTIFACT_IDENTITY_KEYS[ARTIFACT_INGESTED])
+        if recorded == expected:
+            return None
+        return (
+            f"{FAILURE_RECORDED} records digest {recorded[0]!r} read by {recorded[1]!r} "
+            f"version {recorded[2]!r} on stream {stream_id!r}, which names digest "
+            f"{expected[0]!r} read by {expected[1]!r} version {expected[2]!r}"
+        )
+    problem = _system_record_problem(expected[0], payload)
+    if problem is None:
+        return None
+    return (
+        f"{OBSERVATION_RECORDED} on failure stream {stream_id!r} is not the system record "
+        f"of digest {expected[0]!r}: {problem}"
+    )
+
+
+def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | None:
+    """Return the first way one observation payload is not a digest's system record."""
+
+    reference = f"sha256:{digest}"
+    resource = payload.get("resource")
+    resource_id = resource.get("resource_id") if isinstance(resource, Mapping) else None
+    derived = f"obs-{payload.get('fingerprint')}"
+    if payload.get("origin") != ObservationOrigin.SYSTEM.value:
+        return f"its origin is {payload.get('origin')!r}"
+    if payload.get("source_type") != DETECTION_FAILURE_SOURCE_TYPE:
+        return f"its source type is {payload.get('source_type')!r}"
+    if payload.get("context_key") != reference:
+        return f"its context key is {payload.get('context_key')!r}"
+    if resource_id != reference:
+        return f"its resource id is {resource_id!r}"
+    if payload.get(OBSERVATION_ID_KEY) != derived:
+        return f"its id is {payload.get(OBSERVATION_ID_KEY)!r}, not its derived id {derived!r}"
+    return None
+
+
 def duplicate_observation_message(stream_id: str, observation_id: str) -> str:
-    """Word one artifact stream holding the same observation twice, wherever it is reported.
+    """Word one stream holding the same observation twice, wherever it is reported.
 
     The same wording is used by the refusal at append, by the fold, and by
     `complyroll.history.audit_history`, so one damaged stream describes itself the same way
     whichever command an operator reaches it through.
     """
 
+    kind = "failure" if is_failure_stream(stream_id) else "artifact"
     return (
-        f"artifact stream {stream_id!r} records observation {observation_id!r} more than "
+        f"{kind} stream {stream_id!r} records observation {observation_id!r} more than "
         "once; the same finding would be rehydrated twice"
+    )
+
+
+def failure_duplicate_observation_message(
+    stream_id: str, observation_id: str, other_stream_id: str
+) -> str:
+    """Word two failure streams of one digest holding the same system observation.
+
+    Shared by the refusal at append, the fold, and the audit, like the message above.
+    """
+
+    return (
+        f"failure stream {stream_id!r} records observation {observation_id!r}, which "
+        f"failure stream {other_stream_id!r} of the same digest already records; one "
+        "failure would be rehydrated twice"
     )
 
 
@@ -540,16 +677,21 @@ def _require_stream_compatible(
     still calls the log healthy. A `case.created` also names its own stream, and one that
     names a different tracking id would fold into a case the stream is not; an
     `artifact.ingested` and an `observation.recorded` name their own stream the same way,
-    through the artifact identity the stream id spells out.
+    through the artifact identity the stream id spells out. A failure stream's head and its
+    system observation are held to the failed reading the stream id spells out (ADR 0014).
     """
 
     if not event_belongs_on_stream(event_type, stream_id):
         kind = stream_kind(stream_id)
-        described = "neither an artifact nor a case stream" if kind is None else f"a {kind} stream"
+        described = (
+            "not an artifact, case, or failure stream" if kind is None else f"a {kind} stream"
+        )
         raise EventContractError(
             f"event {event_type!r} does not belong on stream {stream_id!r}, which is {described}"
         )
     breach = artifact_identity_breach(stream_id, event_type, payload)
+    if breach is None:
+        breach = failure_identity_breach(stream_id, event_type, payload)
     if breach is not None:
         raise EventContractError(breach)
     if event_type != CASE_CREATED:
@@ -656,6 +798,8 @@ __all__ = [
     "artifact_identity_breach",
     "canonical_payload_digest",
     "duplicate_observation_message",
+    "failure_duplicate_observation_message",
+    "failure_identity_breach",
     "iso_utc",
     "metadata_breaches",
     "parse_utc",

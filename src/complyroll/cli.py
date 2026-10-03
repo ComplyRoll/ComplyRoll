@@ -16,7 +16,15 @@ from pathlib import Path
 from typing import TextIO
 
 from . import __version__
-from .adapters import DiagnosticLevel, IngestDiagnostic, IngestResult, ingest_stig_artifact
+from .adapters import (
+    ArtifactProvenance,
+    DiagnosticLevel,
+    FailureClassification,
+    IngestDiagnostic,
+    IngestResult,
+    classify_ingest,
+    ingest_stig_artifact,
+)
 from .events import EventContractError, EventMetadata, EventRepository, require_tracking_id
 from .history import (
     CaseNotFoundError,
@@ -24,11 +32,14 @@ from .history import (
     EvaluationMatchError,
     HistoryError,
     apply_evaluations,
+    artifact_history,
     attest_detection,
     audit_history,
     case_history,
     correlate_cases,
     fold_all_cases,
+    reading_elsewhere,
+    record_failure,
     record_ingest,
 )
 from .policy import CertificationClass
@@ -187,6 +198,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--as-of",
         metavar="RFC3339",
         help="instant recorded as the ingestion time (default: now, UTC)",
+    )
+    ingest.add_argument(
+        "--record-failed-imports",
+        action="store_true",
+        help=(
+            "record a detection process failure (VDR-CSO-FAV) as a system observation "
+            "instead of stopping; exits 3 when one is recorded"
+        ),
     )
     _add_actor_option(ingest)
 
@@ -445,37 +464,83 @@ def _run_ingest(args: argparse.Namespace) -> int:
         return dangling
 
     recorded: list[str] = []
+    failures_seen = False
 
     def ingest(target: Path) -> int:
+        nonlocal failures_seen
         # Every artifact is parsed before the store is opened, so a run that fails on any
         # of them records nothing at all: opening a SQLite path is what creates the file,
         # and an existing store must not gain one artifact's history from a run the next
         # artifact stopped.
-        parsed: list[tuple[Path, IngestResult]] = []
+        parsed: list[_ParsedReading] = []
+        held: list[_ParsedReading] = []
         for path in artifacts:
             result = ingest_stig_artifact(path, ingested_at=ingested_at)
+            classification = classify_ingest(result) if args.record_failed_imports else None
+            if (
+                result.errors
+                and result.artifact is not None
+                and classification is not None
+                and classification.mintable
+            ):
+                # Held, with nothing written yet: whether it writes its own ERRORs or the
+                # failure's diagnostics depends on the rest of the run (ADR 0014).
+                held.append(_ParsedReading(path, result, result.artifact, classification))
+                continue
             _write_diagnostics(stderr, _as_report_diagnostics(result.diagnostics, path.name))
             if result.errors or result.artifact is None:
                 # Fail closed: a damaged artifact stops the run before it, or any
                 # artifact after it, becomes history.
                 return 1
-            parsed.append((path, result))
+            parsed.append(_ParsedReading(path, result, result.artifact, classification))
+
+        # Bytes that read successfully under another name are a misnamed copy, not a failed
+        # detection, so the failed reading stops the run exactly as it always has.
+        read = {reading.artifact.digest_sha256 for reading in parsed}
+        elsewhere = [reading for reading in held if reading.artifact.digest_sha256 in read]
+        for reading in elsewhere:
+            _write_diagnostics(
+                stderr, _as_report_diagnostics(reading.result.diagnostics, reading.path.name)
+            )
+        if elsewhere:
+            return 1
+        # Elected by name: recording the lowest name first leaves the failure stream named
+        # for it whatever order the files were listed in, and the others find it recorded.
+        failed = sorted(held, key=lambda reading: reading.artifact.name)
 
         # One transaction around every artifact of the run. Each `record_ingest` joins it
         # rather than opening its own, so a failure on any artifact leaves the store
         # exactly as it was and the empty summary below is the truth: nothing became
         # durable (ADR 0008, second amendment).
         with _open_repository(target) as repository, repository.transaction():
-            for path, result in parsed:
+            if failed and _refuse_failures_read_elsewhere(stderr, repository, failed):
+                return 1
+            for reading in parsed:
                 outcome = record_ingest(
-                    repository, result, metadata=metadata, ingested_at=ingested_at
+                    repository, reading.result, metadata=metadata, ingested_at=ingested_at
                 )
                 if outcome.already_recorded:
-                    recorded.append(f"{path.name}: already_recorded")
+                    recorded.append(f"{reading.path.name}: already_recorded")
                 else:
                     recorded.append(
-                        f"{path.name}: recorded {outcome.observation_count} observation(s)"
+                        f"{reading.path.name}: recorded {outcome.observation_count} observation(s)"
                     )
+                if reading.classification is not None:
+                    # A side record: the artifact imported, and its failed invocation is
+                    # recorded beside it.
+                    recorded.append(
+                        _record_detection_failure(
+                            stderr, repository, reading, metadata=metadata, ingested_at=ingested_at
+                        )
+                    )
+                    failures_seen = True
+            for reading in failed:
+                recorded.append(
+                    _record_detection_failure(
+                        stderr, repository, reading, metadata=metadata, ingested_at=ingested_at
+                    )
+                )
+                failures_seen = True
         return 0
 
     # A store that is already there is opened in place; concurrent writers contend on the
@@ -492,7 +557,95 @@ def _run_ingest(args: argparse.Namespace) -> int:
     # observations it then discarded.
     for line in recorded:
         print(line)
-    return 0
+    # A rerun finds its failures already recorded and still exits 3: the store holds them,
+    # so the run's input still failed to read (ADR 0014).
+    return EXIT_DETECTION_FAILURES if failures_seen else 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedReading:
+    """One artifact `ingest` read, with its provenance and, when it failed, how."""
+
+    path: Path
+    result: IngestResult
+    artifact: ArtifactProvenance
+    classification: FailureClassification | None
+
+
+def _refuse_failures_read_elsewhere(
+    stderr: TextIO,
+    repository: EventRepository,
+    failed: Sequence[_ParsedReading],
+) -> bool:
+    """Refuse every failed reading whose bytes history already holds a current reading of.
+
+    Run inside the ingest transaction before anything is appended, so a refusal leaves the
+    store exactly as it was. A failure joins history only to replace an older reading by
+    the same parser, which its newer version can no longer read (ADR 0014, R2); any other
+    current reading means the bytes read successfully elsewhere.
+    """
+
+    history = artifact_history(repository)
+    refused = False
+    for reading in failed:
+        artifact = reading.artifact
+        current = reading_elsewhere(
+            history,
+            artifact.digest_sha256,
+            parser_name=artifact.parser_name,
+            parser_version=artifact.parser_version,
+        )
+        if current is None:
+            continue
+        refused = True
+        _write_diagnostics(
+            stderr,
+            (
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="failure_read_elsewhere",
+                    message=(
+                        f"history reads these bytes in {current.stream_id}, so their failure "
+                        f"under {artifact.parser_name} {artifact.parser_version} is not a "
+                        "detection failure; only a newer version of the parser that read "
+                        "them records one, and nothing was recorded"
+                    ),
+                    location=reading.path.name,
+                ),
+            ),
+        )
+    return refused
+
+
+def _record_detection_failure(
+    stderr: TextIO,
+    repository: EventRepository,
+    reading: _ParsedReading,
+    *,
+    metadata: EventMetadata,
+    ingested_at: datetime,
+) -> str:
+    """Record one reading's detection process failure and return its summary line.
+
+    The failure's diagnostics take the place of the reading's ERRORs, so the ERROR lines
+    a pipeline greps for appear only on a run that exits 1. A side record's are only its
+    `detection_failure_recorded` notice, because the artifact's own were written already.
+    """
+
+    classification = reading.classification
+    if classification is None:  # pragma: no cover - only classified readings reach here
+        raise AssertionError("a detection failure must carry its classification")
+    outcome = record_failure(
+        repository,
+        reading.result,
+        classification,
+        metadata=metadata,
+        ingested_at=ingested_at,
+    )
+    _write_diagnostics(stderr, _as_report_diagnostics(outcome.diagnostics, reading.path.name))
+    if not outcome.appended:
+        return f"{reading.path.name}: already_recorded"
+    return f"{reading.path.name}: recorded detection failure ({outcome.failure_class.value})"
 
 
 def _build_and_publish_store(

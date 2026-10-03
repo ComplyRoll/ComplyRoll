@@ -623,3 +623,27 @@ identifier while `CVE-2024-1234.` names one (`test_sarif.py:2209`). The CVE and 
 ended on a digit boundary, so an id run into a letter was cut out of its token; the GHSA pattern
 already ended as it started. No SARIF fixture carries such a token, and every SARIF golden
 stayed byte-identical.
+
+## Amendment 2026-09-30: failed invocations are detection process failures
+
+Decision 13 left a failed invocation as WARNING `execution_unsuccessful` and named its
+system-origin observation backlog item 9. ADR 0014 builds that half. With
+`--record-failed-imports`, a log carrying `execution_unsuccessful` mints one system observation of
+class `execution`: beside the artifact's own observations when the log still imports (a side
+record), and in place of them when the log fails, as a log whose only run failed and reported
+null results does. Without the flag nothing changes, and the WARNING and exit 0 stand.
+
+The adapter now also returns the failed invocation's own clock as `failed_execution_at`, computed
+in the same pass as the Decision 8 run clock (`_run_clock`), so no clock diagnostic is emitted
+twice: the earliest `startTimeUtc` among invocations with `executionSuccessful: false`, else the
+earliest `endTimeUtc` among them, else none. The system observation is observed at that instant
+with `failure.clock` `invocation`, and at the run's as-of with `failure.clock` `as-of` when the
+log declares neither. The run clock, every artifact observation's `observed_at`, and every SARIF
+golden are unchanged.
+
+The clean scan is still not evidence. A log whose runs are all `results: []` is INFO `run_clean`
+and ERROR `no_observations` as before, and ADR 0014 refuses to mint it (`clean_scan`), so it still
+fails ingest with or without the flag. Turning it into a coverage observation remains backlog
+item 9's work for the coverage and freshness slice. A log whose every run reports null results
+carries `results_unknown` and no `run_clean`, so it is not a clean scan; with the flag it is a
+`content` failure.

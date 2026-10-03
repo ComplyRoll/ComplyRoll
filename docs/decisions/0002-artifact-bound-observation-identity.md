@@ -88,3 +88,41 @@ today.
 already accepted mixed case but preserved it, so the same artifact recorded with an uppercase
 digest produced a different fingerprint. No shipped adapter emits uppercase, so no existing
 identifier changes.
+
+## Amendment 2026-09-30: the first production SYSTEM recipe
+
+ADR 0014 builds the first system observations in production code: one per detection process
+failure, minted by `system_observation_for` in `adapters/failures.py`. Each takes its id from
+the SYSTEM recipe above, unchanged. The observation is built by keyword with
+`origin=ObservationOrigin.SYSTEM` and then given `derived_observation_id` with `replace`,
+because `make_observation` is artifact-bound. Its recipe inputs are:
+
+| Recipe input | Value |
+|---|---|
+| `source_type` | `complyroll.detection-process` |
+| `source_tool` | `complyroll` |
+| `parser_name` | `complyroll.detection-failures` |
+| `parser_version` | `1` |
+| `source_record_id` | `detection-process-failure` |
+| `resource_type` | `artifact` |
+| `resource_id` | `sha256:<digest>` of the failed artifact |
+| `context_key` | `sha256:<digest>` of the failed artifact |
+| `observed_at` | the failed invocation's declared clock, or the instant ComplyRoll saw the failure |
+
+The 2026-08-21 amendment describes `context_key` as the identity of the producing validation or
+job. ComplyRoll has no inventory of detection jobs yet, so the first recipe uses the failed
+artifact's digest instead, the only stable handle it has (ADR 0014 Decision 5). The failed
+reading's name, its ingest time, its parser, and the failure class are metadata, never recipe
+inputs, so a rename, a re-ingest, or a parser that fails the same bytes another way at the same
+instant derives the same id.
+
+`tests/test_failures.py` pins one id. A content failure of the digest
+`0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef` observed at
+2026-09-02T00:00:00Z derives
+`obs-e3aa066d30e057ddcb8dcbbe30ce7f2b92e828dfd354027369fe7b1d1d648081` (`PINNED_RECORD_ID`),
+and `test_the_record_id_is_derived_from_the_identity_payload` recomputes it from the JSON array
+`["system","complyroll.detection-process","complyroll","complyroll.detection-failures","1",
+"detection-process-failure","artifact","sha256:<digest>","sha256:<digest>",
+"2026-09-02T00:00:00+00:00"]`.
+`test_the_id_ignores_the_ingest_time_the_name_the_parser_and_the_class` holds the id fixed
+across each of those. The ARTIFACT recipe is untouched, and no existing identifier changes.

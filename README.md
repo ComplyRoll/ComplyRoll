@@ -20,14 +20,14 @@ provider can publish and an independent assessor can recompute.
 
 | Surface | What it does |
 |---|---|
-| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, ARF, SARIF, and HDF files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. With `--kev`, a CISA Known Exploited Vulnerabilities catalog the operator supplies, each record also carries the KEV clock `VDR-TFR-KEV` sets from that catalog's due dates. Validated against the bundled official schema before anything is written |
-| `complyroll report avi ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles the same artifacts into an official-format Accepted Vulnerability Information report (`VER-RPT-AVI`): every accepted vulnerability with recorded activity in the report period, each with the acceptance rationale the official item requires, and a count of the active records that belong in the detail report instead. An accepted record whose evaluation carries no rationale stops the compile |
-| `complyroll report historical ARTIFACT... --class C --package-uri URI [--evaluations FILE] [--kev FILE] [--detected-at T] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles a Historical VER Activity snapshot (`VER-TFR-MRH`) as of `--as-of`, with no report period: every non-accepted vulnerability, disposed ones included, under `activeVulnerabilities` and every accepted one under `acceptedVulnerabilities`, each in its current state |
-| `complyroll ingest ARTIFACT... --db STORE [--as-of T] [--actor NAME]` | Records each artifact and its observations as typed events (`artifact.ingested`, `observation.recorded`) in an append-only SQLite store, validated against published contracts before they are written. Re-running over the same bytes appends nothing |
+| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--record-failed-imports] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, ARF, SARIF, and HDF files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. With `--kev`, a CISA Known Exploited Vulnerabilities catalog the operator supplies, each record also carries the KEV clock `VDR-TFR-KEV` sets from that catalog's due dates. With `--record-failed-imports`, an artifact that cannot be parsed or holds no usable content no longer stops the run: it, and any log that reports a failed scanner invocation, becomes a system observation and a vulnerability of its own (`VDR-CSO-FAV`, ADR 0014), and the command writes the report and exits 3. Validated against the bundled official schema before anything is written |
+| `complyroll report avi ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--record-failed-imports] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles the same artifacts into an official-format Accepted Vulnerability Information report (`VER-RPT-AVI`): every accepted vulnerability with recorded activity in the report period, each with the acceptance rationale the official item requires, and a count of the active records that belong in the detail report instead. An accepted record whose evaluation carries no rationale stops the compile |
+| `complyroll report historical ARTIFACT... --class C --package-uri URI [--evaluations FILE] [--kev FILE] [--detected-at T] [--record-failed-imports] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles a Historical VER Activity snapshot (`VER-TFR-MRH`) as of `--as-of`, with no report period: every non-accepted vulnerability, disposed ones included, under `activeVulnerabilities` and every accepted one under `acceptedVulnerabilities`, each in its current state |
+| `complyroll ingest ARTIFACT... --db STORE [--as-of T] [--record-failed-imports] [--actor NAME]` | Records each artifact and its observations as typed events (`artifact.ingested`, `observation.recorded`) in an append-only SQLite store, validated against published contracts before they are written. Re-running over the same bytes appends nothing. With `--record-failed-imports`, each detection process failure is recorded on its own stream as a `failure.recorded` event and a system observation, and the run exits 3; a store that records one is marked schema 2, which an earlier build's `ingest`, `cases`, and `report --db` refuse to open |
 | `complyroll cases correlate\|attest-detection\|evaluate\|list\|history --db STORE` | Opens one case per vulnerability, records attested detection times and operator evaluations as events, lists cases, and prints one case's full history. A changed evaluation appends a second `case.evaluated` event; the earlier one stays readable |
-| `complyroll report vdt --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Vulnerability Detail Report from the event log through the same record compiler as the stateless path. The output is byte-identical to the stateless report for the same inputs, and that equality is a test |
-| `complyroll report avi --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Accepted Vulnerability Information report from the same event log through the same record set. The output is byte-identical to the stateless report for the same inputs, and that equality is a test, including one that records the evaluations at two different instants and proves the recording instant never reaches the report |
-| `complyroll report historical --db STORE --class C --package-uri URI [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Historical VER Activity snapshot from the same event log; it takes no `--from` or `--to`. The output is byte-identical to the stateless snapshot for the same inputs, and that equality is a test |
+| `complyroll report vdt --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Vulnerability Detail Report from the event log through the same record compiler as the stateless path. The output is byte-identical to the stateless report for the same inputs, and that equality is a test; a store holding detection process failures matches the stateless run with `--record-failed-imports` when each failure was ingested at the report's `--as-of` or carries a scanner clock, no stream of its digest is superseded, and no two input names share a digest (ADR 0014) |
+| `complyroll report avi --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Accepted Vulnerability Information report from the same event log through the same record set. The output is byte-identical to the stateless report for the same inputs, and that equality is a test, including one that records the evaluations at two different instants and proves the recording instant never reaches the report. Detection process failures carry the same conditions as `report vdt --db` (ADR 0014) |
+| `complyroll report historical --db STORE --class C --package-uri URI [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Historical VER Activity snapshot from the same event log; it takes no `--from` or `--to`. The output is byte-identical to the stateless snapshot for the same inputs, and that equality is a test. Detection process failures carry the same conditions as `report vdt --db` (ADR 0014) |
 | `complyroll store verify --db STORE` | Walks the whole log checking payload digests, sequence and stream-version contiguity, the sequence counter, and the schema definitions, then audits the domain (every payload against its published contract, every event against its stream kind and the artifact identity its stream names, every artifact stream for completeness in both directions and for repeated observation identifiers, every metadata envelope), and exits non-zero on any fault, including on files the normal open refuses |
 | `complyroll validate REPORT --schema vulnerability-detail\|accepted-vulnerability\|historical-activity` | Validates a report against the pinned official schema, offline, printing JSON Pointers for every failure and the exact schema provenance |
 | `stigroll <files> [--cci-list U_CCI_List.xml] [--format markdown\|csv\|json] [-o FILE]` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output byte-for-byte |
@@ -59,7 +59,12 @@ keyed under the root profile, with a failed control OPEN, an errored one ERROR, 
 applicable. Waivers and attestations are recorded as metadata and never change a
 disposition: the results decide it, the one `saf attest apply` appends included, except that
 impact 0 reads not applicable first. An overlay's empty wrapper copies give way to the copy that
-ran. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
+ran. Slice 4 records detection process failures (ADR 0014, `VDR-CSO-FAV`): with
+`--record-failed-imports`, an artifact that cannot be parsed, holds no usable content, or reports
+a failed scanner invocation becomes a system observation and a vulnerability case of its own,
+evaluated like any other, and the run exits 3. Without the flag a failed import still stops the
+run, and a clean log still fails either way. Failures in the response process, stale coverage,
+and missing resources are not built yet. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
 
 ## Quick start
 
@@ -112,9 +117,10 @@ content was kept.
 Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
 key: generator and parser versions, the rules dataset and schema commits and digests, the
 compile diagnostics, every computed deadline with its rule and force, the grouped observation ids
-and affected resources, the detection-time source (`artifact`, `artifact-partial`, or
-`attestation`), and the evaluator and rationale. The JSON is the complete machine record; the
-Markdown twin renders the same records for a reader, with a per-vulnerability detail section and
+and affected resources, the detection-time source (`artifact`, `artifact-partial`, `attestation`,
+or `system` for a detection process failure), and the evaluator and rationale. The JSON is the
+complete machine record; the Markdown twin renders the same records for a reader, with a
+per-vulnerability detail section and
 a parity test proving every identifier, deadline, and artifact it prints is in the JSON. That makes the document the provider's and assessor's working record.
 It includes internal resource identifiers and provider rationale, so redact it before sharing
 with an agency; audience-specific views are a later slice.
@@ -161,6 +167,38 @@ report carries the latest one. Nothing can update or delete an event; a correcti
 event with its rationale, and `store verify` checks both the bytes (digests, contiguity, the
 sequence counter, the schema) and the domain (every payload against its contract, every event
 against its stream, every artifact stream complete, every metadata envelope well formed).
+
+Record a failed import as a vulnerability instead of stopping (ADR 0014). The three extra
+fixtures are a truncated SARIF log, a CKLB with no rules array, and a SARIF log whose second run
+reports a failed invocation:
+
+```bash
+complyroll report vdt \
+  tests/fixtures/ubuntu-host.cklb \
+  tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml \
+  tests/fixtures/failed-truncated.sarif \
+  tests/fixtures/failed-invalid-rules.cklb \
+  tests/fixtures/failed-invocation.sarif \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-31T23:59:59Z \
+  --as-of 2026-08-21T12:00:00Z \
+  --detected-at 2026-08-01T00:00:00Z \
+  --evaluations examples/evaluations-failed.json \
+  --record-failed-imports \
+  -o report-failed.json \
+  --markdown report-failed.md
+```
+
+The run writes [`tests/golden/vdt-failed.json`](tests/golden/vdt-failed.json) and
+[`tests/golden/vdt-failed.md`](tests/golden/vdt-failed.md) and exits 3, so a pipeline that
+treats any non-zero exit as a failure still stops. Each failure is one vulnerability per failed
+artifact digest, with the detection-time source `system`, a detection time from the failed
+invocation's clock or the run's `--as-of`, and PAIN only from an evaluation that names it by
+source type, record id, and digest. Without the flag the same command exits 1 and writes
+nothing. [`examples/README.md`](examples/README.md) walks through the persisted path.
 
 Roll up the synthetic fixtures with the predecessor command:
 
@@ -261,7 +299,7 @@ and digest. Assessors do not configure or operate ComplyRoll on a provider's beh
 - [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md): observation, case, evaluation, and evidence model
 - [`docs/FEDRAMP_2026_MAPPING.md`](docs/FEDRAMP_2026_MAPPING.md): current rule and schema mapping
 - [`docs/SECURITY.md`](docs/SECURITY.md): threat model and evidence-handling requirements
-- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0013
+- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0014
   (0007 fixes the report mappings: attested detection time, disposition table, clock semantics,
   overdue wording, the `x-complyroll` extension, and the evaluations file; 0009 adopts Common
   Definitions 0.3.0, which gives completed PAIN reductions an official slot and remediation its
@@ -273,7 +311,8 @@ and digest. Assessors do not configure or operate ComplyRoll on a provider's beh
   is pinned in the report by the digest of its bytes; 0013 adds the HDF adapter, keyed on the
   declared target and the root profile, with waivers and attestations recorded as metadata and
   never changing a disposition, which the results decide unless impact 0 reads not applicable
-  first)
+  first; 0014 records a detection process failure as a system observation and case, opt-in per
+  run with `--record-failed-imports`, with exit 3 and a schema 2 store)
 - [`examples/`](examples/): the fixture-to-report demo inputs
 - [`AGENTS.md`](AGENTS.md): repository rules and development commands
 

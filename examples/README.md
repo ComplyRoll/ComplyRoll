@@ -104,10 +104,11 @@ case-9bed0d8f88355393  -            V-260469                  1            0  - 
 what it did with them. A second sweep selects nothing, because a case that already carries
 an attestation is not missing a detection time; revising one takes an explicit `--case`.
 
-The report this produces is byte-identical to the stateless one. Re-running any of the
-first four commands appends nothing; edit `examples/evaluations.json` and re-run
-`cases evaluate` to see a second evaluation appear in
-`complyroll cases history <tracking-id> --db complyroll.db`.
+The report this produces is byte-identical to the stateless one. A store that records
+detection process failures matches its stateless twin under the conditions in Detection process
+failures below (ADR 0014 Decision 15). Re-running any of the first four commands appends
+nothing; edit `examples/evaluations.json` and re-run `cases evaluate` to see a second evaluation
+appear in `complyroll cases history <tracking-id> --db complyroll.db`.
 
 Only `ingest` creates a store, and it never deletes one. A store that does not exist yet is
 built at a temporary path beside the destination and linked into place once the whole run
@@ -228,10 +229,11 @@ complyroll report historical \
   --markdown historical.md
 ```
 
-Each persisted report is byte-identical to its stateless twin, JSON and Markdown alike. With
-the fixed `--as-of`, the AVI and historical outputs are `tests/golden/avi-fixtures.json`,
-`tests/golden/avi-fixtures.md`, `tests/golden/historical-fixtures.json`, and
-`tests/golden/historical-fixtures.md`.
+Each persisted report is byte-identical to its stateless twin, JSON and Markdown alike; with
+detection process failures in the store, that holds under the conditions in Detection process
+failures below. With the fixed `--as-of`, the AVI and historical outputs are
+`tests/golden/avi-fixtures.json`, `tests/golden/avi-fixtures.md`,
+`tests/golden/historical-fixtures.json`, and `tests/golden/historical-fixtures.md`.
 
 Move the start of the period past the acceptance, say `--from 2026-08-07T00:00:00Z`, and
 `report avi` publishes no accepted record, counts one as excluded by the period, and explains
@@ -510,6 +512,233 @@ when a check raised, so it reads as an error and is named rather than reported. 
 the wrapper's copies of SYN-RHL-0001 and SYN-RHL-0002 have no results, so the baseline's copies
 decide both. SYN-RHL-0002 carries the passed result `saf attest apply` appended, so it reads PASS
 and is not reported. The attester's name appears nowhere in the report.
+
+## Detection process failures
+
+`VDR-CSO-FAV` says a provider must treat problems or failures in its vulnerability detection and
+response processes as vulnerabilities. By default a scanner output ComplyRoll cannot read stops
+the run: the command prints its errors, exits 1, and writes nothing. With
+`--record-failed-imports`, an artifact that fails to parse or holds no usable content becomes a
+system observation and a vulnerability of its own instead, and so does a failed scanner
+invocation that a SARIF log reports; the command writes its output and exits 3 (ADR 0014). The
+flag is taken by `report vdt`, `report avi`, `report historical`, and `ingest`. A file that could
+not be read, an unsupported or rejected format, a duplicate observation identity, a reading that
+produced some observations beside its errors, and an error code ComplyRoll has not classified
+still stop the run with the flag.
+
+Three synthetic fixtures cover the three failure classes:
+
+- `failed-truncated.sarif` is a SARIF log cut off inside a string. It cannot be parsed, so it
+  is class `parse`.
+- `failed-invalid-rules.cklb` is a CKLB whose STIG writes `rules` as an object instead of an
+  array. It parses but holds nothing usable, so it is class `content`.
+- `failed-invocation.sarif` has two runs. The first reports one finding; the second reports
+  `executionSuccessful: false` and no results. The log still imports, and the failed invocation
+  adds a system observation of class `execution` beside the finding, observed at the
+  invocation's own `startTimeUtc`.
+
+`examples/evaluations-failed.json` is `evaluations.json` plus one entry that evaluates the parse
+failure. A failure is evaluated like any other vulnerability, and its entry matches on the source
+type, the record id, and the failed artifact's digest as the context key:
+
+```json
+{"sourceRecordId": "detection-process-failure", "sourceType": "complyroll.detection-process", "contextKey": "sha256:a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8"}
+```
+
+All three parts are needed. Every system record shares the record id and the source type, so
+the same entry without `contextKey` names all three failures, and the run stops with exit 1 and
+writes nothing:
+
+```text
+error: evaluation_ambiguous: sourceRecordId='detection-process-failure', sourceType='complyroll.detection-process' matches 3 vulnerabilities (case-f03af85468885cad, case-d3bb8e4fb3b61a5f, case-088261de64a0133c); add contextKey or sourceType [evaluations[2]]
+```
+
+Run this from the repository root. It exits 3:
+
+```bash
+complyroll report vdt \
+  tests/fixtures/ubuntu-host.cklb \
+  tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml \
+  tests/fixtures/failed-truncated.sarif \
+  tests/fixtures/failed-invalid-rules.cklb \
+  tests/fixtures/failed-invocation.sarif \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-31T23:59:59Z \
+  --as-of 2026-08-21T12:00:00Z \
+  --detected-at 2026-08-01T00:00:00Z \
+  --evaluations examples/evaluations-failed.json \
+  --record-failed-imports \
+  -o vdt-failed.json \
+  --markdown vdt-failed.md
+```
+
+The two files it writes are `tests/golden/vdt-failed.json` and `tests/golden/vdt-failed.md`,
+byte for byte. Run as `report historical`, without `--from` and `--to`, the same inputs give
+`tests/golden/historical-failed.json` and `tests/golden/historical-failed.md`, also with exit 3,
+and `report avi` exits 3 too. Without the flag the `report vdt` command exits 1, writes no file,
+and prints the three errors that stopped it:
+
+```text
+error: artifact_parse_failed: Unterminated string starting at: line 18 column 21 (char 419) [failed-truncated.sarif]
+error: invalid_rules: STIG entry has no rules array [stigs[0].rules]
+error: no_observations: CKLB contains no usable rules [failed-invalid-rules.cklb]
+```
+
+With the flag the same three print as warnings, and a `detection_failure_recorded` warning names
+each recorded failure by class and digest. These are the first seven lines of standard error;
+the rest are a `run_clean` note for the failed run's empty results and the fixtures' missing
+timestamps:
+
+```text
+warning: artifact_parse_failed: Unterminated string starting at: line 18 column 21 (char 419) [failed-truncated.sarif]
+warning: detection_failure_recorded: recorded a detection process failure of class content for source artifact sha256:f51e7b7624956be0f40545639b3ee63ab7b5a27cb647ad2a3435df6bc6dcc372 (VDR-CSO-FAV) [failed-invalid-rules.cklb]
+warning: detection_failure_recorded: recorded a detection process failure of class execution for source artifact sha256:59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9 (VDR-CSO-FAV) [failed-invocation.sarif]
+warning: detection_failure_recorded: recorded a detection process failure of class parse for source artifact sha256:a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8 (VDR-CSO-FAV) [failed-truncated.sarif]
+warning: execution_unsuccessful: invocation reports executionSuccessful false; its results are still read (1 occurrence: runs[1].invocations[0]) [failed-invocation.sarif]
+warning: invalid_rules: STIG entry has no rules array [stigs[0].rules]
+warning: no_observations: CKLB contains no usable rules [failed-invalid-rules.cklb]
+```
+
+A diagnostic keeps the location its adapter gave it, so `invalid_rules` still points at
+`stigs[0].rules` inside the checklist, in the report's diagnostics as on standard error. Only a
+diagnostic with no location of its own takes the artifact's name.
+
+The Markdown report adds a table of the failures under Inputs. The two artifacts that could not
+be read are not in the Inputs table above it; `failed-invocation.sarif` is in both, because its
+first run's finding was read:
+
+```text
+| Artifact | SHA-256 | Parser | Class | Observed at | Clock | Tracking ID |
+|---|---|---|---|---|---|---|
+| failed-invalid-rules.cklb | f51e7b762495 | complyroll.cklb 1 | content | 2026-08-21T12:00:00Z | as-of | case-088261de64a0133c |
+| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 1 | execution | 2026-08-04T10:00:00Z | invocation | case-f03af85468885cad |
+| failed-truncated.sarif | a8aca932d8fc | complyroll.sarif 1 | parse | 2026-08-21T12:00:00Z | as-of | case-d3bb8e4fb3b61a5f |
+```
+
+Each failure is one vulnerability whose detection time has the source `system`, and its
+evaluation window (VER-TFR-EVU) opens at that time. The execution failure was detected at its
+invocation's clock, 2026-08-04T10:00:00Z, so its window closed 2026-08-09T10:00:00Z and it is
+overdue. The other two have no scanner clock, so they were detected at `--as-of`. The content
+failure's window closes 2026-08-26T12:00:00Z. The parse failure was evaluated at PAIN N3, so its
+response target (VDR-TFR-PVR) is 2026-12-27T12:00:00Z. `--detected-at` never applies to a system
+record: the attestation covers the same six cases as in the first example.
+
+On the stateless path a failure detected at `--as-of` is detected again at each run's `--as-of`,
+so an evaluation file reused for a later run carries a `completedAt` before that run's detection.
+The compiler does not check that order, for this or any evaluation; that is existing behavior,
+recorded here for review. The persisted path fixes the instant once, when `ingest` records the
+failure.
+
+The persisted path takes the flag on `ingest` only. Run these commands in order from the
+repository root:
+
+```bash
+complyroll ingest \
+  tests/fixtures/ubuntu-host.cklb \
+  tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml \
+  tests/fixtures/failed-truncated.sarif \
+  tests/fixtures/failed-invalid-rules.cklb \
+  tests/fixtures/failed-invocation.sarif \
+  --record-failed-imports \
+  --db failed.db \
+  --as-of 2026-08-21T12:00:00Z
+
+complyroll cases correlate --db failed.db
+
+complyroll cases attest-detection \
+  --db failed.db \
+  --all-missing \
+  --detected-at 2026-08-01T00:00:00Z \
+  --rationale "The fixtures declare no assessment timestamp; the assessment ran on 1 August."
+
+complyroll cases evaluate --db failed.db --evaluations examples/evaluations-failed.json
+
+complyroll cases list --db failed.db
+
+complyroll report vdt \
+  --db failed.db \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-31T23:59:59Z \
+  --as-of 2026-08-21T12:00:00Z \
+  -o vdt-failed.json \
+  --markdown vdt-failed.md
+```
+
+`ingest` exits 3 after it has written the store, and the other five exit 0. The five commands
+before the report print this on standard output:
+
+```text
+ubuntu-host.cklb: recorded 6 observation(s)
+windows-host.ckl: recorded 2 observation(s)
+openscap-results.xml: recorded 3 observation(s)
+failed-invocation.sarif: recorded 1 observation(s)
+failed-invocation.sarif: recorded detection failure (execution)
+failed-invalid-rules.cklb: recorded detection failure (content)
+failed-truncated.sarif: recorded detection failure (parse)
+
+created 10 case(s), linked 10 observation(s), skipped 0 already-linked observation(s)
+
+selected 6 case(s) with no source timestamp on any observation
+attested 6 case(s), skipped 0 unchanged case(s), 0 not applicable case(s)
+
+evaluations: 3 appended, 0 skipped
+pain reductions: 1 appended, 0 skipped
+dispositions: 1 appended, 0 skipped
+identifications: 0 appended, 0 skipped
+
+TRACKING ID            PROVIDER ID  SOURCE RECORD              RESOURCES  EVALUATIONS  PAIN  DISPOSITION
+case-04efea8c137ae82f  -            banner_etc_issue                   1            0  -     active
+case-088261de64a0133c  -            detection-process-failure          1            0  -     active
+case-1f3e011db93cc89e  -            V-260470                           1            1  3     partially_mitigated
+case-490f49bfdd1bd019  -            V-253260                           1            1  4     active
+case-621d85d6533ce6e5  -            V-260474                           1            0  -     active
+case-6719b316a5ea510b  -            no_cci_mapping                     1            0  -     active
+case-77fba1630a50ca9f  -            EXS-0001                           1            0  -     active
+case-9bed0d8f88355393  -            V-260469                           1            0  -     active
+case-d3bb8e4fb3b61a5f  -            detection-process-failure          1            1  3     active
+case-f03af85468885cad  -            detection-process-failure          1            0  -     active
+```
+
+The sweep selects the same 6 cases as the persisted path above. A system observation always
+carries its own instant, so the sweep never selects a failure, and `EXS-0001` carries its
+invocation's clock. The report is the same two golden files, and `report historical --db
+failed.db` with the same class, package, and `--as-of` writes the two historical ones.
+Re-running the `ingest` command appends nothing, prints `already_recorded` for each line, and
+exits 3 again, so a pipeline that reruns it still sees the failures. `report --db` keeps exit
+codes 0 and 1, because `ingest` already signalled the failures, and refuses the flag:
+
+```text
+error: invalid_option: report vdt takes either --db or --record-failed-imports, never both
+```
+
+The two paths produce the same bytes here because `ingest` ran at the report's `--as-of`. A
+system observation without a scanner clock takes its instant from `ingest` on the persisted path
+and from the report run on the stateless one. Given the same inputs, the reports match when each
+such failure was ingested at the report's `--as-of`, no stream of a failed artifact's digest is
+superseded, and no two input names share a digest (ADR 0014 Decision 15).
+
+The first failure `ingest` records moves the store to schema version 2, and
+`complyroll store verify --db failed.db` prints `ok: 53 event(s) verified`. A store that never
+records a failure stays at version 1, even when `ingest` ran with the flag. An earlier ComplyRoll
+build cannot open a version 2 store: its `ingest`, `cases`, and `report --db` commands stop with
+
+```text
+error: store_unavailable: database schema 2 is newer than supported schema 1
+```
+
+and its `store verify` reports the failure streams as domain faults and exits 1.
+
+The clean log described under Other formats is not a detection failure: it still fails with
+`no_observations`, with or without the flag, until the coverage observation lands. A SARIF log
+that yields nothing and has a run with no `results` array, or a null one, is not a clean scan:
+that run's results are unknown (`results_unknown`), so with the flag the log is a `content`
+failure.
 
 ## Verifying the log
 

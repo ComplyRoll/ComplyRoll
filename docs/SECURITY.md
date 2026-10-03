@@ -26,7 +26,8 @@ not deployment documentation to add later.
 - Never extract an archive member outside a dedicated temporary directory.
 - Preserve the source digest before parsing.
 - Keep diagnostics separate from report data.
-- A parse error cannot become an empty successful assessment.
+- A parse error cannot become an empty successful assessment. With `--record-failed-imports` it
+  becomes a recorded vulnerability instead, never a clean result (ADR 0014).
 
 ### Phase 0 enforced bounds
 
@@ -127,6 +128,27 @@ named. The adapter opens no path and fetches nothing: `depends` entries, profile
 and `source_location` paths are never read. A `backtrace` or an `exception` never reaches a
 shell or an evaluator; an exception is recorded only as the text of a failure message.
 
+A detection process failure (ADR 0014) is built from a reading that already failed, so
+everything it records is treated as hostile. The file name and every diagnostic message and
+location pass `diagnostic_text` (sanitized, then cut at 512 characters) before they reach the
+system observation's metadata, the `failure.recorded` payload, a demoted diagnostic, or the
+report's `detectionFailures`. A diagnostic with no location takes the cleaned file name as its
+location, and an in-file location the adapter gave, such as `stigs[0].rules`, is kept. The
+failure class and `failure.codes` are decided from diagnostic
+codes in a closed vocabulary and two structured fields on the result, never from message text,
+and an ERROR code outside that vocabulary stops the run as it did before, so a new adapter error
+cannot be recorded until someone classifies it. No message text, name, or parser enters the
+observation's identity. A failed reading contributes at most `FAILURE_DIAGNOSTIC_CAP` (62) of its
+diagnostics, ordered by their own content, plus one `failure_diagnostics_truncated` notice that
+names the dropped count and the `detection_failure_recorded` notice, so the list is at most 64
+entries however many the reading produced, and the `failure.recorded` contract refuses a longer
+one. Every adapter sets its source type from a literal constant, so no input byte can produce a
+`complyroll.` source type, and `Observation` refuses that prefix on an artifact observation as
+defense in depth. The guarantee is worded for what it delivers: a reader identifies a system
+record by `detectedAtSource` `system`, resource type `artifact`, and membership in
+`detectionFailures`. A SARIF driver named `complyroll` yields an artifact record with source type
+`sarif` that none of those three match, and a test pins it.
+
 ## Evidence integrity
 
 - Use SHA-256 content digests for artifacts.
@@ -153,6 +175,15 @@ shell or an evaluator; an exception is recorded only as the text of a failure me
 - Reads verify that global sequences and stream versions are contiguous, so a deleted event is
   reported as an integrity error instead of being skipped.
 - Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
+- A failure stream (ADR 0014) is appended in the same transaction that marks the store schema
+  version 2, so the marker and the failure commit or roll back together. A build that predates
+  failure streams refuses such a store in `ingest`, `cases`, and `report --db` rather than
+  misreading it, and its `store verify` reports the failure streams as faults. `store verify`
+  reports a
+  failure stream in a store left at version 1 (`failure_schema_unmarked`), a failure stream that
+  is not exactly one head and one observation (`failure_incomplete`, `failure_overfull`), a head
+  or observation that does not match its stream (`failure_stream_mismatch`), and one system
+  observation stored on two failure streams of a digest (`failure_duplicate_observation`).
 
 These controls protect against application mistakes and detectable corruption. They do not make a
 database file tamper-proof against a user with direct filesystem write access. File permissions,

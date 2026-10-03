@@ -194,6 +194,44 @@ All notable project changes will be documented here.
   `tests/test_hdf.py`, by the goldens on the stateless path and from the store's history in all six
   ingest orders of the three golden fixtures, and by 1,581 tests on Python 3.11, 3.13, and 3.14; the
   twenty existing goldens are byte-identical.
+- System-generated observations for detection process failures (ADR 0014, `VDR-CSO-FAV`).
+  `--record-failed-imports` on `report vdt`, `report avi`, `report historical`, and `ingest` turns
+  a failed reading into one system observation and one vulnerability case per failing artifact
+  digest instead of stopping the run. The class is decided from a closed vocabulary of diagnostic
+  codes and never from message text: `parse` for truncated or corrupt bytes or an input bound
+  exceeded, `content` for a well-formed file with no usable content, such as a CKLB STIG with no
+  rules array, and `execution` for a SARIF invocation with `executionSuccessful: false`, recorded
+  beside the log's own observations when the log still imports. A file that could not be read,
+  an unsupported or rejected format, a partial reading, a duplicate observation identity, an
+  unclassified error code, and a clean scan stay fatal with the flag. The observation's id comes
+  from the ADR 0002 SYSTEM recipe over the digest and the observed instant, which is the failed
+  invocation's own clock or else the run's as-of, so a rename, a re-ingest, or another parser
+  failing the same bytes at the same instant derives the same id. The record's detection-time
+  source is `system`, `cases attest-detection` never attests it, and PAIN comes only from an
+  evaluation that names it by source type, record id, and digest; the pair without the digest
+  matches every failure and is refused as `evaluation_ambiguous`. A report gains
+  `x-complyroll.detectionFailures`, a `complyroll.detection-failures` parser version, and a
+  Markdown "Detection process failures" table only when its record set holds a failure. A run that
+  records a failure writes its report or store and then exits 3 (`EXIT_DETECTION_FAILURES`), and so
+  does an `ingest` rerun that finds it already recorded; `report --db` keeps 0 and 1 and refuses
+  the flag. On the persisted path each failure is a `failure/<sha256>/<parser>/<version>` stream
+  holding a `failure.recorded` v1 head and its observation. Rules R1 to R5 decide per digest which
+  readings and failures are current, `store verify` gains five audit codes, and reports print INFO
+  lines for a superseded reading, a superseded failure, and a stale case. The first failure stream
+  marks the store schema version 2 in the same transaction, and a store that never records a
+  failure stays at version 1. A store that recorded a failure cannot be opened by an earlier
+  build: its `ingest`, `cases`, and `report --db` exit 1 with `store_unavailable: database schema 2
+  is newer than supported schema 1`, and its `store verify` reports each failure stream as faults.
+  Stateless and persisted reports stay byte-identical under the conditions ADR 0014 Decision 15
+  names, recorded as an amendment to ADR 0008. Response-process failures, missing attestations,
+  stale coverage, missing resources, and the clean scan are not built; `docs/BUILD_PLAN.md`
+  records the scope change. Three synthetic fixtures (`failed-truncated.sarif`,
+  `failed-invalid-rules.cklb`, and `failed-invocation.sarif`), `examples/evaluations-failed.json`,
+  and four goldens (`tests/golden/vdt-failed.json`, `vdt-failed.md`, `historical-failed.json`, and
+  `historical-failed.md`) hold the behavior. Verified by 1,842 tests on Python 3.11, 3.13, and
+  3.14, by the four goldens on the stateless path and from the store's history, and by
+  recompiling all sixteen report goldens byte-identical with and without the flag; none of the 22
+  existing goldens moved.
 
 ### Changed
 

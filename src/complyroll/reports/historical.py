@@ -87,11 +87,17 @@ def compile_historical_report(
     *,
     options: ReportOptions,
     evaluations: EvaluationSet | None = None,
+    record_failed_imports: bool = False,
 ) -> CompiledHistoricalReport:
     """Compile one Historical VER Activity snapshot from artifacts and explicit inputs."""
 
     return project_historical(
-        compile_record_set_from_artifacts(artifact_paths, options=options, evaluations=evaluations)
+        compile_record_set_from_artifacts(
+            artifact_paths,
+            options=options,
+            evaluations=evaluations,
+            record_failed_imports=record_failed_imports,
+        )
     )
 
 
@@ -127,6 +133,7 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
         attestation_applied_to=attested,
         excluded_by_period=0,
         attestation_detected_at=_attested_instant(records),
+        detection_failures=record_set.detection_failures,
     )
     document = _build_historical_document(records, active, accepted, metadata, diagnostics)
     validation = _validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)

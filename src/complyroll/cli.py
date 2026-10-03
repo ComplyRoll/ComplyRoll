@@ -83,6 +83,10 @@ def _default_actor() -> str:
 #: Resolved once, so `--help` prints the name every event of a run would carry.
 DEFAULT_ACTOR = _default_actor()
 
+#: The status of a run that recorded a detection process failure and still wrote its
+#: output (ADR 0014), so a pipeline can tell it from a clean run (0) and a refusal (1).
+EXIT_DETECTION_FAILURES = 3
+
 #: The `cases list` columns, each with whether its values are right-aligned numbers.
 CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
     ("TRACKING ID", False),
@@ -369,6 +373,14 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         "--detected-at",
         metavar="RFC3339",
         help="attested detection time for vulnerabilities whose sources declare none",
+    )
+    parser.add_argument(
+        "--record-failed-imports",
+        action="store_true",
+        help=(
+            "record a detection process failure (VDR-CSO-FAV) as a system observation "
+            "instead of stopping; exits 3 when one is recorded"
+        ),
     )
     parser.add_argument(
         "--as-of",
@@ -834,14 +846,26 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
 
     def compile_report() -> CompiledReport:
         if database is None:
-            return command.stateless(artifacts, options=options, evaluations=evaluations)
+            return command.stateless(
+                artifacts,
+                options=options,
+                evaluations=evaluations,
+                record_failed_imports=args.record_failed_imports,
+            )
         with _open_repository(database) as repository:
             return command.persisted(repository, options=options)
 
-    return _persisted_run(
-        stderr,
-        lambda: _publish(stderr, compile_report(), output=output, markdown=markdown),
-    )
+    def compile_and_publish() -> int:
+        report = compile_report()
+        status = _publish(stderr, report, output=output, markdown=markdown)
+        # The output is already written: a recorded failure is reported, not refused, and
+        # the status is how a pipeline learns one was recorded. `--db` never gets here with
+        # the flag, since a store recorded or refused its failures at ingest.
+        if status == 0 and args.record_failed_imports and report.metadata.detection_failures:
+            return EXIT_DETECTION_FAILURES
+        return status
+
+    return _persisted_run(stderr, compile_and_publish)
 
 
 def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str | None:
@@ -854,6 +878,8 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
 
     `--kev` is absent from this list on purpose: no store holds a CISA KEV catalog, so a
     catalog is a per-run input on both paths and never a second source of truth.
+    `--record-failed-imports` is on it because a store already recorded or refused its
+    failures when `ingest` read them (ADR 0014).
     """
 
     named = [
@@ -862,6 +888,7 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
             ("artifacts", bool(args.artifacts)),
             ("--evaluations", args.evaluations is not None),
             ("--detected-at", args.detected_at is not None),
+            ("--record-failed-imports", args.record_failed_imports),
         )
         if present
     ]

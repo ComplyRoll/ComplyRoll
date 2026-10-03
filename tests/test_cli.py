@@ -23,6 +23,7 @@ from complyroll.cli import main
 from complyroll.events import EventRepository
 from complyroll.history import AUDIT_FAULT_CODES
 from complyroll.models import Observation
+from complyroll.reports import vdt as vdt_module
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -1090,6 +1091,149 @@ class KevReportCommandTests(unittest.TestCase):
             self.assertIn("error: kev_catalog_after_as_of", err)
             self.assertIn("supply the catalog current then", err)
             self.assertFalse(json_path.exists())
+
+
+#: One fixture per detection process failure class (ADR 0014), in name order.
+FAILED_ARTIFACTS = (
+    str(FIXTURES / "failed-invalid-rules.cklb"),
+    str(FIXTURES / "failed-invocation.sarif"),
+    str(FIXTURES / "failed-truncated.sarif"),
+)
+
+
+def with_failed_artifacts(argv: Sequence[str]) -> list[str]:
+    """Add the failed fixtures to a golden run, beside its own three artifacts."""
+
+    return [*argv[:5], *FAILED_ARTIFACTS, *argv[5:]]
+
+
+class RecordFailedImportsTests(unittest.TestCase):
+    """`--record-failed-imports` publishes the report, then exits 3 when it recorded one."""
+
+    #: Each report command's golden run, whose artifacts are argv[2:5].
+    COMMANDS = (
+        ("vdt", REPORT_ARGUMENTS),
+        ("avi", AVI_ARGUMENTS),
+        ("historical", HISTORICAL_ARGUMENTS),
+    )
+
+    def assert_failures_listed(self, text: str) -> None:
+        failures = json.loads(text)["x-complyroll"]["detectionFailures"]
+        self.assertEqual(
+            [item["name"] for item in failures],
+            [Path(path).name for path in FAILED_ARTIFACTS],
+        )
+
+    def test_a_recorded_failure_writes_both_outputs_and_exits_3(self) -> None:
+        for command, argv in self.COMMANDS:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                json_path = Path(directory) / "report.json"
+                markdown_path = Path(directory) / "report.md"
+
+                code, out, err = run(
+                    [
+                        *with_failed_artifacts(argv),
+                        "--record-failed-imports",
+                        "-o",
+                        str(json_path),
+                        "--markdown",
+                        str(markdown_path),
+                    ]
+                )
+
+                self.assertEqual(code, 3)
+                self.assertEqual(code, cli_module.EXIT_DETECTION_FAILURES)
+                self.assertEqual(out, "")
+                self.assertEqual(err.count("warning: detection_failure_recorded"), 3)
+                self.assertNotIn("error:", err)
+                self.assert_failures_listed(json_path.read_text(encoding="utf-8"))
+                self.assertIn(
+                    "### Detection process failures", markdown_path.read_text(encoding="utf-8")
+                )
+
+    def test_a_recorded_failure_writes_stdout_and_exits_3(self) -> None:
+        for command, argv in self.COMMANDS:
+            with self.subTest(command=command):
+                code, out, err = run([*with_failed_artifacts(argv), "--record-failed-imports"])
+
+                self.assertEqual(code, 3)
+                self.assertNotIn("error:", err)
+                self.assert_failures_listed(out)
+
+    def test_the_flag_without_a_failure_exits_0_with_the_golden_bytes(self) -> None:
+        for command, argv in self.COMMANDS:
+            with self.subTest(command=command):
+                code, out, _ = run([*argv, "--record-failed-imports"])
+
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    out, (GOLDEN / f"{command}-fixtures.json").read_text(encoding="utf-8")
+                )
+
+    def test_without_the_flag_a_failure_stops_the_run_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+
+            code, out, err = run([*with_failed_artifacts(REPORT_ARGUMENTS), "-o", str(json_path)])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: artifact_parse_failed", err)
+            self.assertNotIn("detection_failure_recorded", err)
+            self.assertFalse(json_path.exists())
+
+    def test_an_unmintable_failure_exits_1_and_writes_nothing(self) -> None:
+        payload = {
+            "target_data": {"host_name": "host-partial"},
+            "stigs": [{"stig_id": "SYN_STIG", "rules": [{"group_id": "V-000001"}, 1]}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            partial = Path(directory) / "partial.cklb"
+            partial.write_text(json.dumps(payload), encoding="utf-8")
+            json_path = Path(directory) / "report.json"
+            argv = with_failed_artifacts(REPORT_ARGUMENTS)
+            argv[2:2] = [str(partial)]
+
+            code, out, err = run([*argv, "--record-failed-imports", "-o", str(json_path)])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: invalid_rule", err)
+            self.assertNotIn("detection_failure_recorded", err)
+            self.assertFalse(json_path.exists())
+
+    def test_a_failed_publication_exits_1_not_3(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+
+            with patch("os.replace", ReplaceFailingOnCall(1)):
+                code, out, err = run(
+                    [
+                        *with_failed_artifacts(REPORT_ARGUMENTS),
+                        "--record-failed-imports",
+                        "-o",
+                        str(json_path),
+                    ]
+                )
+
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("error: output_write_failed", err)
+            self.assertFalse(json_path.exists())
+
+    def test_only_the_flag_turns_recorded_failures_into_exit_3(self) -> None:
+        # Until `ingest` records failures into a store, the only report that carries them
+        # without the flag is this one: the compile is made to record them regardless.
+        real = vdt_module._ingest_all
+
+        def recording(*args: Any, **kwargs: Any) -> Any:
+            return real(*args, **{**kwargs, "record_failed_imports": True})
+
+        with patch.object(vdt_module, "_ingest_all", recording):
+            code, out, _ = run(with_failed_artifacts(REPORT_ARGUMENTS))
+
+        self.assertEqual(code, 0)
+        self.assert_failures_listed(out)
 
 
 class ValidateCommandTests(unittest.TestCase):
@@ -2932,6 +3076,16 @@ class ReportSourceConflictTests(unittest.TestCase):
                     "takes either --db or --detected-at, never both",
                 )
 
+    def test_a_store_and_recorded_failed_imports_together_are_refused(self) -> None:
+        # A store already recorded or refused each failure when `ingest` read it.
+        for command, base in self.COMMANDS:
+            with self.subTest(command=command):
+                self.refuses(
+                    command,
+                    ["--db", "history.db", "--record-failed-imports", *base],
+                    "takes either --db or --record-failed-imports, never both",
+                )
+
     def test_neither_a_store_nor_an_artifact_is_refused(self) -> None:
         for command, base in self.COMMANDS:
             with self.subTest(command=command):
@@ -3093,6 +3247,20 @@ class HelpTextTests(unittest.TestCase):
                 self.assertIn("--kev FILE", text)
                 self.assertIn(
                     "CISA KEV catalog JSON feed to apply (read locally, never fetched)", text
+                )
+
+    def test_every_report_command_states_what_recording_a_failure_does(self) -> None:
+        # The exit status is part of the promise: a pipeline that treats any nonzero
+        # status as a refusal has to learn from the help text that 3 wrote a report.
+        for kind in ("vdt", "avi", "historical"):
+            with self.subTest(command=kind):
+                text = unwrapped_help_text(["report", kind])
+
+                self.assertIn(
+                    "--record-failed-imports record a detection process failure "
+                    "(VDR-CSO-FAV) as a system observation instead of stopping; exits 3 "
+                    "when one is recorded",
+                    text,
                 )
 
     def test_store_verify_names_the_sidecar_files_a_walk_can_leave(self) -> None:

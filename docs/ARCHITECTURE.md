@@ -164,6 +164,15 @@ recording timestamps, canonical JSON payload and metadata, and a payload SHA-256
 expected stream version and one `BEGIN IMMEDIATE` transaction. SQLite constraints reject duplicate
 event IDs and stream versions, while triggers reject event updates and deletions.
 
+Schema version 2 (ADR 0014) changes no schema object. It marks a store that holds a failure
+stream. New stores are still created at version 1 (`SCHEMA_VERSION`), and the first append that
+needs version 2 (`SQLiteEventStore.append` with `requires_schema=2`) inserts migration record 2
+into `complyroll_schema_migrations` and sets `user_version` to 2 inside its own transaction, so a
+rollback leaves both untouched. This build opens versions 1 and 2 (`SUPPORTED_SCHEMA_VERSION`).
+An earlier build's `ingest`, `cases`, and `report --db` refuse a version 2 store as newer than
+they support, and its `store verify` reports each failure stream as domain faults and exits 1. A
+store that never records a failure stays at version 1 and readable by an earlier build.
+
 Projection checkpoints are mutable compare-and-swap cursors over the global sequence. Projection
 rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
 will own their query tables and must update those rows and their checkpoint in one transaction.
@@ -171,14 +180,16 @@ will own their query tables and must update those rows and their checkpoint in o
 Event types with published version-1 contracts (ADR 0008): `artifact.ingested`,
 `observation.recorded`, `case.created`, `case.observation_linked`, `detection.attested`,
 `case.evaluated`, `case.pain_reduced`, `case.disposition_recorded`, `case.identified`.
-Candidates for later slices: `case.action_planned`, `case.action_completed`,
-`validation.completed`, `evidence.attached`.
+ADR 0014 adds `failure.recorded` v1 and a third stream kind beside artifact and case streams:
+`failure/<sha256>/<parser_name>/<parser_version>`, which holds one `failure.recorded` head and
+the one `observation.recorded` carrying its system observation. Candidates for later slices:
+`case.action_planned`, `case.action_completed`, `validation.completed`, `evidence.attached`.
 
 ## Package layout
 
 ```text
 src/complyroll/
-  adapters/       # Phase 0 adapter contracts, safe parsing, STIG/XCCDF/CCI implementations, sarif.py (ADR 0011), and common.py and hdf.py (ADR 0013)
+  adapters/       # Phase 0 adapter contracts, safe parsing, STIG/XCCDF/CCI implementations, sarif.py (ADR 0011), common.py and hdf.py (ADR 0013), and failures.py (ADR 0014)
   compat/         # predecessor-compatible stigroll CLI and renderers
   correlation/    # correlation v0: open observations grouped into vulnerabilities (ADR 0007)
   data/           # bundled immutable source manifests, rules, and official schemas
@@ -201,7 +212,10 @@ disposition, identifier override), and hands the result to the same compiler, so
 report is byte-identical to the stateless one for the same inputs; that equality is the
 slice's acceptance test and stays a regression test. ADR 0010 splits that compiler into a
 period-agnostic record set and three projections, so the same equality holds for the
-accepted-vulnerability and historical reports, each golden-tested on both paths. Event payloads
+accepted-vulnerability and historical reports, each golden-tested on both paths. A system
+observation takes its instant from the ingest on one path and the report on the other, so with
+detection process failures the equality holds under the conditions ADR 0014 Decision 15 names,
+recorded as a dated amendment to ADR 0008. Event payloads
 are validated against the contracts in `events/` on every append; the store itself stays a
 generic envelope log. The fold runs in memory at Phase 1 volumes; projection tables and
 checkpoints remain available for when that stops being enough. The domain model remains
@@ -209,7 +223,8 @@ independent from all of it.
 
 ## Failure semantics
 
-- Parse failure: diagnostic plus failed ingest; never a clean result.
+- Parse failure: diagnostic plus failed ingest, or, with `--record-failed-imports`, a system
+  observation and case (ADR 0014); never a clean result.
 - Missing expected resource: coverage observation.
 - Stale scanner/validation: process-health observation.
 - Policy unavailable or unverified: block deadline/report certification claims.
@@ -218,3 +233,7 @@ independent from all of it.
 
 An absent source observation timestamp is represented as `None` plus a warning diagnostic. File
 modification or ingestion time is not silently substituted for a scanner-declared timestamp.
+A system observation for a detection process failure (ADR 0014) is not a substitution: ComplyRoll
+is the detector of that failure, so its `observed_at` is the failed invocation's own clock when
+the log declares one and otherwise the instant ComplyRoll saw the failure, and `failure.clock`
+records which (`invocation` or `as-of`). It never lends that instant to an artifact observation.

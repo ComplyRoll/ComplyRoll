@@ -5,6 +5,7 @@ import unittest
 from datetime import UTC, datetime, timedelta, timezone
 
 from complyroll.models import (
+    RESERVED_SOURCE_TYPE_PREFIX,
     CaseStatus,
     Evaluation,
     EvidenceArtifact,
@@ -262,6 +263,41 @@ class SystemObservationTests(unittest.TestCase):
     def test_artifact_observation_still_requires_a_digest(self) -> None:
         with self.assertRaisesRegex(ValueError, "source_artifact_digest"):
             sample_observation(source_artifact_digest="")
+
+
+class ReservedSourceTypeTests(unittest.TestCase):
+    """ADR 0014: the complyroll. source-type prefix belongs to system observations."""
+
+    def test_the_reserved_prefix_is_complyroll_dot(self) -> None:
+        self.assertEqual(RESERVED_SOURCE_TYPE_PREFIX, "complyroll.")
+
+    def test_an_artifact_observation_under_the_prefix_is_refused(self) -> None:
+        for source_type in ("complyroll.detection-process", "complyroll.anything"):
+            with self.subTest(source_type=source_type):
+                with self.assertRaisesRegex(ValueError, "reserved for system observations"):
+                    sample_observation(source_type=source_type)
+
+    def test_a_near_miss_of_the_prefix_is_an_ordinary_source_type(self) -> None:
+        for source_type in ("complyroll", "complyroll-cklb", "cklb.complyroll."):
+            with self.subTest(source_type=source_type):
+                observation = sample_observation(source_type=source_type)
+                self.assertIs(observation.origin, ObservationOrigin.ARTIFACT)
+
+    def test_a_stored_artifact_observation_under_the_prefix_is_refused(self) -> None:
+        stored = sample_observation().to_canonical_dict()
+        stored["source_type"] = "complyroll.detection-process"
+        with self.assertRaisesRegex(ValueError, "reserved for system observations"):
+            Observation.from_canonical_dict(stored)
+
+    def test_a_system_observation_under_the_prefix_round_trips(self) -> None:
+        built = system_observation(source_type="complyroll.detection-process")
+        observation = system_observation(
+            source_type="complyroll.detection-process",
+            observation_id=built.derived_observation_id,
+        )
+        self.assertIs(observation.origin, ObservationOrigin.SYSTEM)
+        rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+        self.assertEqual(rebuilt, observation)
 
 
 class EvidenceArtifactTests(unittest.TestCase):

@@ -21,14 +21,26 @@ from uuid import uuid4
 from jsonschema import Draft202012Validator
 
 from complyroll import __version__
-from complyroll.models import Observation
+from complyroll.adapters.common import encode_list
+from complyroll.adapters.failures import (
+    DETECTION_FAILURE_RULE,
+    DETECTION_FAILURE_SOURCE_TYPE,
+    FailureClass,
+)
+from complyroll.models import Observation, ObservationOrigin
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 
 from .contracts import (
     EVENT_CONTRACTS,
+    FAILURE_CLOCK_VALUES,
+    FAILURE_CODE_VALUES,
+    FAILURE_STREAM_PREFIX,
+    FAILURE_STREAM_SCHEMA_VERSION,
     artifact_stream_components,
     event_belongs_on_stream,
+    failure_stream_components,
     is_artifact_stream,
+    is_failure_stream,
     iso_utc,
     parse_utc,
     schema_for,
@@ -46,6 +58,9 @@ CASE_CREATED = "case.created"
 #: The one event type that declares how many observations its stream holds.
 ARTIFACT_INGESTED = "artifact.ingested"
 
+#: The head of a failure stream, which names the failed reading its stream is about.
+FAILURE_RECORDED = "failure.recorded"
+
 #: How each artifact-stream event names the artifact it belongs to: the digest of the
 #: bytes, the parser that read them, and that parser's version. `observation.recorded`
 #: spells them the way `Observation.to_canonical_dict` does, in snake case.
@@ -57,6 +72,39 @@ ARTIFACT_IDENTITY_KEYS: Final[dict[str, tuple[str, str, str]]] = {
 #: The key an `observation.recorded` payload records its identifier under, spelled the way
 #: `Observation.to_canonical_dict` spells it.
 OBSERVATION_ID_KEY: Final = "observation_id"
+
+#: Exactly the source metadata keys a failure stream's system record carries, the ones
+#: `system_observation_for` writes (ADR 0014). The fingerprint covers none of them, so the
+#: derived-id check cannot see one changed, and replay renders `detectionFailures` from them.
+FAILURE_METADATA_KEYS: Final[tuple[str, ...]] = (
+    "artifact.mediaType",
+    "artifact.name",
+    "artifact.parser",
+    "artifact.parserVersion",
+    "artifact.sha256",
+    "artifact.sizeBytes",
+    "failure.class",
+    "failure.clock",
+    "failure.codes",
+    "failure.rule",
+)
+
+#: How a failure head and its system record's metadata name the same fact. The digest,
+#: parser, and version are held to the stream id instead, by each event on its own.
+_FAILURE_RECORD_PAIRS: Final[tuple[tuple[str, str], ...]] = (
+    ("name", "artifact.name"),
+    ("sizeBytes", "artifact.sizeBytes"),
+    ("mediaType", "artifact.mediaType"),
+    ("failureClass", "failure.class"),
+    ("failureCodes", "failure.codes"),
+    ("clock", "failure.clock"),
+)
+
+#: A size as `str(int)` spells it: digits only, no sign, no leading zero.
+_COUNT_TEXT: Final = re.compile(r"(?:0|[1-9][0-9]*)")
+
+#: The failure classes a system record's metadata may name.
+_FAILURE_CLASS_VALUES: Final = frozenset(member.value for member in FailureClass)
 
 #: Page size for the paged readers below. The store caps a read at 10,000 rows.
 READ_PAGE_SIZE = 500
@@ -262,7 +310,7 @@ class EventRepository:
         if len(pending) > MAX_BATCH_EVENTS:
             raise ValueError(f"events must contain at most {MAX_BATCH_EVENTS} events")
         prepared: list[NewEvent] = []
-        for event in pending:
+        for index, event in enumerate(pending):
             if not isinstance(event, PendingEvent):
                 raise TypeError("events must contain only PendingEvent instances")
             if not isinstance(event.metadata, EventMetadata):
@@ -271,6 +319,15 @@ class EventRepository:
                 event.event_type, event.payload, event_version=event.event_version
             )
             _require_stream_compatible(stream_id, event.event_type, event.payload)
+            # The store appends only at expected_version, so the first event of a batch at
+            # version 0 is the event that opens the stream (ADR 0014).
+            if (
+                index == 0
+                and expected_version == 0
+                and is_failure_stream(stream_id)
+                and event.event_type != FAILURE_RECORDED
+            ):
+                raise EventContractError(failure_head_order_message(stream_id))
             metadata = event.metadata.to_dict()
             _require_valid_metadata(metadata)
             prepared.append(
@@ -283,6 +340,15 @@ class EventRepository:
                 )
             )
         self._require_unseen_observations(stream_id, pending)
+        if is_failure_stream(stream_id):
+            # A failure stream needs schema 2, and the store marks itself in the same
+            # transaction as these events, so a rollback undoes both (ADR 0014).
+            return self._store.append(
+                stream_id,
+                prepared,
+                expected_version=expected_version,
+                requires_schema=FAILURE_STREAM_SCHEMA_VERSION,
+            )
         return self._store.append(stream_id, prepared, expected_version=expected_version)
 
     def _require_unseen_observations(
@@ -290,7 +356,7 @@ class EventRepository:
         stream_id: str,
         events: Sequence[PendingEvent],
     ) -> None:
-        """Refuse a batch that would store one observation identifier twice on one stream.
+        """Refuse a batch that would store one observation identifier twice.
 
         An artifact stream's observation identifiers are the findings it carries, and the
         same identifier twice is one finding counted twice. Neither existing check sees it:
@@ -304,6 +370,13 @@ class EventRepository:
         `record_ingest` resumes a half-written stream by appending the tail its head
         declared, and a legitimate tail carries identifiers the stream does not: only a
         repeat is refused.
+
+        A failure stream is held to one more rule (ADR 0014): one observation identifier per
+        digest across every failure stream. A system observation's identity is the digest
+        and the instant, never the parser, so the same bytes failing under two parsers at
+        one instant mint one observation, and storing it on both streams would rehydrate one
+        failure twice. Finding the other failure streams of a digest reads the whole log,
+        which is linear in its size and runs only for an append to a failure stream.
         """
 
         incoming = [
@@ -311,7 +384,9 @@ class EventRepository:
             for event in events
             if event.event_type == OBSERVATION_RECORDED
         ]
-        if not incoming or not is_artifact_stream(stream_id):
+        if not incoming:
+            return
+        if not is_artifact_stream(stream_id) and not is_failure_stream(stream_id):
             return
         seen: set[str] = set()
         if self.current_version(stream_id) > 0:
@@ -326,6 +401,35 @@ class EventRepository:
                     duplicate_observation_message(stream_id, observation_id)
                 )
             seen.add(observation_id)
+        if not is_failure_stream(stream_id):
+            return
+        elsewhere = self.failure_observations_of_digest(stream_id)
+        for observation_id in incoming:
+            other = elsewhere.get(observation_id)
+            if other is not None:
+                raise EventContractError(
+                    failure_duplicate_observation_message(stream_id, observation_id, other)
+                )
+
+    def failure_observations_of_digest(self, stream_id: str) -> dict[str, str]:
+        """Map each observation id on the other failure streams of one digest to its stream.
+
+        The digest is the one `stream_id` names. The stream itself is left out, so the map
+        answers "who else already holds this failure", which is the question the append
+        check and `record_failure` both ask.
+        """
+
+        digest = failure_stream_components(stream_id)[0]
+        prefix = f"{FAILURE_STREAM_PREFIX}/{digest}/"
+        found: dict[str, str] = {}
+        for record in self.read_all():
+            if (
+                record.event_type == OBSERVATION_RECORDED
+                and record.stream_id != stream_id
+                and record.stream_id.startswith(prefix)
+            ):
+                found.setdefault(str(record.payload.get(OBSERVATION_ID_KEY)), record.stream_id)
+        return found
 
     def current_version(self, stream_id: str) -> int:
         """Return the current version of one stream, or zero when it does not exist."""
@@ -514,17 +618,219 @@ def artifact_identity_breach(
     )
 
 
+def failure_identity_breach(
+    stream_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> str | None:
+    """Return why a failure-stream event is not about the failed reading its stream names.
+
+    A failure stream id names the digest of the bytes and the parser whose reading failed
+    (ADR 0014). Its head names the same three things, so the two have to agree, exactly as
+    an artifact stream's do. Its one observation is the system record that failure mints:
+    origin `system`, source type `complyroll.detection-process`, context key and resource
+    id `sha256:<digest>`, and named by its derived id. The reader accepts a system
+    observation under any identifier, so the derived id is checked here rather than
+    assumed; a payload whose fingerprint is not its own is the reader's refusal to make.
+
+    The record's metadata is checked too, because the fingerprint covers none of it and
+    replay renders `detectionFailures` from it: exactly `FAILURE_METADATA_KEYS`, the digest,
+    parser, and version the stream id names, a size spelled as a count, and a failure
+    class, code list, clock, and rule from their vocabularies. Whether it agrees with the
+    head takes both events, which is `failure_record_disagreement`'s business.
+
+    Returns None for an event no failure stream carries and for a stream of another kind,
+    which are the stream-kind check's business rather than this one's.
+    """
+
+    if not is_failure_stream(stream_id) or event_type not in (
+        FAILURE_RECORDED,
+        OBSERVATION_RECORDED,
+    ):
+        return None
+    try:
+        expected = failure_stream_components(stream_id)
+    except ValueError as exc:
+        return f"stream {stream_id!r} names no failed reading: {exc}"
+    if event_type == FAILURE_RECORDED:
+        recorded = tuple(payload.get(key) for key in ARTIFACT_IDENTITY_KEYS[ARTIFACT_INGESTED])
+        if recorded == expected:
+            return None
+        return (
+            f"{FAILURE_RECORDED} records digest {recorded[0]!r} read by {recorded[1]!r} "
+            f"version {recorded[2]!r} on stream {stream_id!r}, which names digest "
+            f"{expected[0]!r} read by {expected[1]!r} version {expected[2]!r}"
+        )
+    problem = _system_record_problem(expected[0], payload)
+    if problem is None:
+        problem = _failure_metadata_problem(expected, payload.get("source_metadata"))
+    if problem is None:
+        return None
+    return (
+        f"{OBSERVATION_RECORDED} on failure stream {stream_id!r} is not the system record "
+        f"of digest {expected[0]!r}: {problem}"
+    )
+
+
+def failure_record_disagreement(
+    stream_id: str,
+    head: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> str | None:
+    """Return why a failure head and its system record describe two different failures.
+
+    The writer builds both from one classification of one reading (ADR 0014), so they name
+    the same file, size, media type, failure class, codes, and clock. Each is checked
+    against the stream id alone at append, which cannot see the other, so the fold and the
+    audit, which read both, ask this. The head decides supersession and the record's
+    metadata is what `detectionFailures` renders, so a store where they differ would report
+    one failure and rank another. Both payloads are expected to have passed their own
+    contract and `failure_identity_breach` already.
+    """
+
+    raw = observation.get("source_metadata")
+    metadata: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    for head_key, metadata_key in _FAILURE_RECORD_PAIRS:
+        recorded = head.get(head_key)
+        described = metadata.get(metadata_key)
+        if head_key == "sizeBytes":
+            agrees = isinstance(recorded, int) and described == str(recorded)
+        elif head_key == "failureCodes":
+            agrees = isinstance(recorded, list) and decode_failure_codes(described) == tuple(
+                recorded
+            )
+        else:
+            agrees = described == recorded
+        if not agrees:
+            return (
+                f"failure stream {stream_id!r} records {head_key} {recorded!r} in its "
+                f"{FAILURE_RECORDED} and {metadata_key} {described!r} in its system record; "
+                "the two describe one failure"
+            )
+    return None
+
+
+def decode_failure_codes(text: Any) -> tuple[str, ...] | None:
+    """Read a system record's `failure.codes` back, or return None when it is malformed.
+
+    Well formed is exactly what the writer stores: `encode_list` of at least one code from
+    `FAILURE_CODE_VALUES`, sorted and distinct, the classification's codes. The same list
+    padded, escaped, or reordered is a spelling no writer emits, so it is refused, and a head
+    whose `failureCodes` is out of order cannot agree with a record that reads back.
+    """
+
+    if not isinstance(text, str):
+        return None
+    try:
+        decoded = json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(decoded, list) or not decoded:
+        return None
+    if not all(isinstance(code, str) and code in FAILURE_CODE_VALUES for code in decoded):
+        return None
+    if decoded != sorted(set(decoded)) or encode_list(decoded) != text:
+        return None
+    return tuple(decoded)
+
+
+def failure_head_order_message(stream_id: str) -> str:
+    """Word a failure stream whose first event is not its head, wherever it is reported.
+
+    Shared by the refusal at append, the fold, and the audit, like the messages below.
+    """
+
+    return (
+        f"failure stream {stream_id!r} does not open with its {FAILURE_RECORDED}; a failure "
+        "stream is written head first"
+    )
+
+
+def _failure_metadata_problem(
+    expected: tuple[str, str, str],
+    raw: Any,
+) -> str | None:
+    """Return the first way a system record's metadata is not what its writer stores."""
+
+    if not isinstance(raw, Mapping):
+        return "its metadata is not an object"
+    for key in FAILURE_METADATA_KEYS:
+        if key not in raw:
+            return f"its metadata has no {key!r}"
+    for key in raw:
+        if key not in FAILURE_METADATA_KEYS:
+            return f"its metadata carries {key!r}, which a system record does not"
+    for key, named in zip(
+        ("artifact.sha256", "artifact.parser", "artifact.parserVersion"), expected, strict=True
+    ):
+        if raw[key] != named:
+            return f"its metadata {key} is {raw[key]!r}, where the stream names {named!r}"
+    size = raw["artifact.sizeBytes"]
+    if not isinstance(size, str) or _COUNT_TEXT.fullmatch(size) is None:
+        return f"its metadata artifact.sizeBytes is {size!r}, not a count"
+    if raw["failure.class"] not in _FAILURE_CLASS_VALUES:
+        return f"its metadata failure.class is {raw['failure.class']!r}, not a failure class"
+    if decode_failure_codes(raw["failure.codes"]) is None:
+        return (
+            f"its metadata failure.codes is {raw['failure.codes']!r}, not the compact JSON "
+            "array of sorted, distinct failure codes its writer stores"
+        )
+    if raw["failure.clock"] not in FAILURE_CLOCK_VALUES:
+        return f"its metadata failure.clock is {raw['failure.clock']!r}, not a failure clock"
+    if raw["failure.rule"] != DETECTION_FAILURE_RULE:
+        return (
+            f"its metadata failure.rule is {raw['failure.rule']!r}, not {DETECTION_FAILURE_RULE!r}"
+        )
+    return None
+
+
+def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | None:
+    """Return the first way one observation payload is not a digest's system record."""
+
+    reference = f"sha256:{digest}"
+    resource = payload.get("resource")
+    resource_id = resource.get("resource_id") if isinstance(resource, Mapping) else None
+    derived = f"obs-{payload.get('fingerprint')}"
+    if payload.get("origin") != ObservationOrigin.SYSTEM.value:
+        return f"its origin is {payload.get('origin')!r}"
+    if payload.get("source_type") != DETECTION_FAILURE_SOURCE_TYPE:
+        return f"its source type is {payload.get('source_type')!r}"
+    if payload.get("context_key") != reference:
+        return f"its context key is {payload.get('context_key')!r}"
+    if resource_id != reference:
+        return f"its resource id is {resource_id!r}"
+    if payload.get(OBSERVATION_ID_KEY) != derived:
+        return f"its id is {payload.get(OBSERVATION_ID_KEY)!r}, not its derived id {derived!r}"
+    return None
+
+
 def duplicate_observation_message(stream_id: str, observation_id: str) -> str:
-    """Word one artifact stream holding the same observation twice, wherever it is reported.
+    """Word one stream holding the same observation twice, wherever it is reported.
 
     The same wording is used by the refusal at append, by the fold, and by
     `complyroll.history.audit_history`, so one damaged stream describes itself the same way
     whichever command an operator reaches it through.
     """
 
+    kind = "failure" if is_failure_stream(stream_id) else "artifact"
     return (
-        f"artifact stream {stream_id!r} records observation {observation_id!r} more than "
+        f"{kind} stream {stream_id!r} records observation {observation_id!r} more than "
         "once; the same finding would be rehydrated twice"
+    )
+
+
+def failure_duplicate_observation_message(
+    stream_id: str, observation_id: str, other_stream_id: str
+) -> str:
+    """Word two failure streams of one digest holding the same system observation.
+
+    Shared by the refusal at append, the fold, and the audit, like the message above.
+    """
+
+    return (
+        f"failure stream {stream_id!r} records observation {observation_id!r}, which "
+        f"failure stream {other_stream_id!r} of the same digest already records; one "
+        "failure would be rehydrated twice"
     )
 
 
@@ -540,16 +846,21 @@ def _require_stream_compatible(
     still calls the log healthy. A `case.created` also names its own stream, and one that
     names a different tracking id would fold into a case the stream is not; an
     `artifact.ingested` and an `observation.recorded` name their own stream the same way,
-    through the artifact identity the stream id spells out.
+    through the artifact identity the stream id spells out. A failure stream's head and its
+    system observation are held to the failed reading the stream id spells out (ADR 0014).
     """
 
     if not event_belongs_on_stream(event_type, stream_id):
         kind = stream_kind(stream_id)
-        described = "neither an artifact nor a case stream" if kind is None else f"a {kind} stream"
+        described = (
+            "not an artifact, case, or failure stream" if kind is None else f"a {kind} stream"
+        )
         raise EventContractError(
             f"event {event_type!r} does not belong on stream {stream_id!r}, which is {described}"
         )
     breach = artifact_identity_breach(stream_id, event_type, payload)
+    if breach is None:
+        breach = failure_identity_breach(stream_id, event_type, payload)
     if breach is not None:
         raise EventContractError(breach)
     if event_type != CASE_CREATED:
@@ -656,6 +967,8 @@ __all__ = [
     "artifact_identity_breach",
     "canonical_payload_digest",
     "duplicate_observation_message",
+    "failure_duplicate_observation_message",
+    "failure_identity_breach",
     "iso_utc",
     "metadata_breaches",
     "parse_utc",

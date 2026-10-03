@@ -18,6 +18,12 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from complyroll.adapters.failures import (
+    CLASS_CODES,
+    EXECUTION_UNSUCCESSFUL,
+    FAILURE_DIAGNOSTIC_CAP,
+    FailureClass,
+)
 from complyroll.models import (
     CaseStatus,
     ObservationDisposition,
@@ -47,6 +53,11 @@ CLOSED_DISPOSITION_VALUES: Final[tuple[str, ...]] = (
 
 ARTIFACT_STREAM_PREFIX: Final = "artifact"
 CASE_STREAM_PREFIX: Final = "case"
+FAILURE_STREAM_PREFIX: Final = "failure"
+#: The store schema a failure stream needs (ADR 0014). A store is created at schema 1 and
+#: marked 2 by the transaction that first writes a failure stream, so a store that never
+#: records a failure stays readable by a build that knows only schema 1.
+FAILURE_STREAM_SCHEMA_VERSION: Final = 2
 TRACKING_ID_PATTERN: Final = re.compile(r"^case-[0-9a-f]{16}$")
 
 #: Stream-id components may not contain the separator, so a stream id parses back.
@@ -93,6 +104,11 @@ _NULLABLE_NON_EMPTY_TEXT: Final[dict[str, Any]] = {"type": ["string", "null"], "
 _NON_BLANK_PATTERN: Final = r"\S"
 _NULLABLE_NON_BLANK_TEXT: Final[dict[str, Any]] = {
     "type": ["string", "null"],
+    "minLength": 1,
+    "pattern": _NON_BLANK_PATTERN,
+}
+_NON_BLANK_TEXT: Final[dict[str, Any]] = {
+    "type": "string",
     "minLength": 1,
     "pattern": _NON_BLANK_PATTERN,
 }
@@ -297,6 +313,46 @@ CASE_IDENTIFIED_V1: Final[dict[str, Any]] = _schema(
     {"providerTrackingId": _NON_EMPTY_TEXT},
 )
 
+#: The codes a recorded failure may name: every class code, plus the execution WARNING
+#: that alone decides the execution class (ADR 0014). A classification's codes are sorted
+#: and distinct, so the array is too and can never be longer than the vocabulary.
+FAILURE_CODE_VALUES: Final[tuple[str, ...]] = tuple(sorted(CLASS_CODES | {EXECUTION_UNSUCCESSFUL}))
+
+#: Which instant a recorded failure is observed at: the clock its scanner declared, or the
+#: caller's as-of fallback (ADR 0014).
+FAILURE_CLOCK_VALUES: Final[tuple[str, ...]] = ("invocation", "as-of")
+
+#: The head of a failure stream (ADR 0014). It carries no tracking id: that is a pure
+#: function of the system observation that follows it, and is derived at replay. Its
+#: diagnostics are what the failed reading contributes to a report, at most the cap plus
+#: the truncation notice and the recorded notice.
+FAILURE_RECORDED_V1: Final[dict[str, Any]] = _schema(
+    "failure.recorded",
+    {
+        "name": _NON_BLANK_TEXT,
+        "sha256": _SHA256,
+        "sizeBytes": _COUNT,
+        "mediaType": _NON_BLANK_TEXT,
+        "parserName": _NON_BLANK_TEXT,
+        "parserVersion": _NON_BLANK_TEXT,
+        "ingestedAt": _UTC_TIMESTAMP,
+        "failureClass": {"enum": [member.value for member in FailureClass]},
+        "failureCodes": {
+            "type": "array",
+            "items": {"enum": list(FAILURE_CODE_VALUES)},
+            "minItems": 1,
+            "uniqueItems": True,
+            "maxItems": len(FAILURE_CODE_VALUES),
+        },
+        "clock": {"enum": list(FAILURE_CLOCK_VALUES)},
+        "diagnostics": {
+            "type": "array",
+            "items": _DIAGNOSTIC,
+            "maxItems": FAILURE_DIAGNOSTIC_CAP + 2,
+        },
+    },
+)
+
 #: The one registry every writer validates against (ADR 0008 Decision 1).
 EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("artifact.ingested", 1): ARTIFACT_INGESTED_V1,
@@ -308,27 +364,64 @@ EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("case.pain_reduced", 1): CASE_PAIN_REDUCED_V1,
     ("case.disposition_recorded", 1): CASE_DISPOSITION_RECORDED_V1,
     ("case.identified", 1): CASE_IDENTIFIED_V1,
+    ("failure.recorded", 1): FAILURE_RECORDED_V1,
 }
 
 EVENT_TYPES: Final[tuple[str, ...]] = tuple(
     sorted({event_type for event_type, _ in EVENT_CONTRACTS})
 )
 
-#: The event types an artifact stream may carry, and the ones a case stream may carry
-#: (ADR 0008 Decision 2). An event stored on the other kind of stream is not history the
-#: replay can read: it would be silently ignored there while `store verify` called the log
-#: healthy, so the repository refuses the combination at append.
+#: The event types each stream kind may carry (ADR 0008 Decision 2, ADR 0014). An event
+#: stored on the wrong kind of stream is not history the replay can read: it would be
+#: silently ignored there while `store verify` called the log healthy, so the repository
+#: refuses the combination at append. `observation.recorded` is the one type two kinds
+#: share: an artifact stream records what a reading found, and a failure stream records the
+#: one system observation a failed reading mints.
 ARTIFACT_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {"artifact.ingested", "observation.recorded"}
 )
 CASE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     name for name in EVENT_TYPES if name.startswith("case.") or name == "detection.attested"
 )
+FAILURE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {"failure.recorded", "observation.recorded"}
+)
+STREAM_EVENT_TYPES: Final[Mapping[str, frozenset[str]]] = {
+    ARTIFACT_STREAM_PREFIX: ARTIFACT_STREAM_EVENT_TYPES,
+    CASE_STREAM_PREFIX: CASE_STREAM_EVENT_TYPES,
+    FAILURE_STREAM_PREFIX: FAILURE_STREAM_EVENT_TYPES,
+}
 
-if ARTIFACT_STREAM_EVENT_TYPES | CASE_STREAM_EVENT_TYPES != frozenset(EVENT_TYPES) or (
-    ARTIFACT_STREAM_EVENT_TYPES & CASE_STREAM_EVENT_TYPES
-):  # pragma: no cover - guards against a new event type nobody placed on a stream
-    raise ValueError("every published event type must belong to exactly one stream kind")
+
+def _placement_problem(
+    artifact: frozenset[str],
+    case: frozenset[str],
+    failure: frozenset[str],
+    event_types: frozenset[str],
+) -> str | None:
+    """Return why a placement table is unsound, or None when every type has its place.
+
+    Every published type must be on some kind, a case type on no other kind, and the
+    artifact and failure kinds may share `observation.recorded` and nothing else.
+    """
+
+    if artifact | case | failure != event_types:
+        return "every published event type must belong to a stream kind"
+    if case & (artifact | failure):
+        return "a case event type must belong to the case stream kind alone"
+    if artifact & failure != {"observation.recorded"}:
+        return "artifact and failure streams may share observation.recorded and nothing else"
+    return None
+
+
+_PLACEMENT_PROBLEM: Final = _placement_problem(
+    ARTIFACT_STREAM_EVENT_TYPES,
+    CASE_STREAM_EVENT_TYPES,
+    FAILURE_STREAM_EVENT_TYPES,
+    frozenset(EVENT_TYPES),
+)
+if _PLACEMENT_PROBLEM is not None:  # pragma: no cover - a new event type nobody placed
+    raise ValueError(_PLACEMENT_PROBLEM)
 
 #: The patterns that mark a property as an instant the repository parses semantically.
 #: A regular expression proves a shape, not a date: `2026-02-30T12:00:00Z` and
@@ -471,28 +564,28 @@ def timestamp_pointers_for(event_type: str, event_version: int = 1) -> tuple[str
 
 
 def stream_kind(stream_id: str) -> str | None:
-    """Return the aggregate kind one stream id names, or None when it names neither."""
+    """Return the aggregate kind one stream id names, or None when it names none."""
 
     if is_artifact_stream(stream_id):
         return ARTIFACT_STREAM_PREFIX
     if is_case_stream(stream_id):
         return CASE_STREAM_PREFIX
+    if is_failure_stream(stream_id):
+        return FAILURE_STREAM_PREFIX
     return None
 
 
 def event_belongs_on_stream(event_type: str, stream_id: str) -> bool:
     """Return True when one event type may be stored on one stream (ADR 0008 Decision 2).
 
-    A stream that is neither an artifact nor a case aggregate carries nothing: every
-    published event type belongs to one of the two kinds.
+    A stream that names none of the three aggregate kinds carries nothing: every published
+    event type belongs to at least one of them.
     """
 
     kind = stream_kind(stream_id)
-    if kind == ARTIFACT_STREAM_PREFIX:
-        return event_type in ARTIFACT_STREAM_EVENT_TYPES
-    if kind == CASE_STREAM_PREFIX:
-        return event_type in CASE_STREAM_EVENT_TYPES
-    return False
+    if kind is None:
+        return False
+    return event_type in STREAM_EVENT_TYPES[kind]
 
 
 def artifact_stream_id(sha256: str, parser_name: str, parser_version: str) -> str:
@@ -502,10 +595,7 @@ def artifact_stream_id(sha256: str, parser_name: str, parser_version: str) -> st
     rule: the same bytes read by a changed parser are new observations.
     """
 
-    digest = _require_digest(sha256, "sha256")
-    name = _require_component(parser_name, "parser_name")
-    version = _require_component(parser_version, "parser_version")
-    return _require_stream_id(f"{ARTIFACT_STREAM_PREFIX}/{digest}/{name}/{version}")
+    return _reading_stream_id(ARTIFACT_STREAM_PREFIX, sha256, parser_name, parser_version)
 
 
 def artifact_stream_components(stream_id: str) -> tuple[str, str, str]:
@@ -516,13 +606,44 @@ def artifact_stream_components(stream_id: str) -> tuple[str, str, str]:
     right one.
     """
 
-    prefix = f"{ARTIFACT_STREAM_PREFIX}/"
-    if not isinstance(stream_id, str) or not stream_id.startswith(prefix):
-        raise ValueError(f"stream_id must start with {prefix!r}, got {stream_id!r}")
-    parts = stream_id[len(prefix) :].split("/")
+    return _reading_stream_components(ARTIFACT_STREAM_PREFIX, "an artifact", stream_id)
+
+
+def failure_stream_id(sha256: str, parser_name: str, parser_version: str) -> str:
+    """Return `failure/<sha256>/<parser_name>/<parser_version>` (ADR 0014).
+
+    The stream is named for the parser whose reading failed, so the same bytes failing
+    under a changed parser are a separate stream, exactly as an artifact stream is.
+    """
+
+    return _reading_stream_id(FAILURE_STREAM_PREFIX, sha256, parser_name, parser_version)
+
+
+def failure_stream_components(stream_id: str) -> tuple[str, str, str]:
+    """Return the digest, parser name, and parser version one failure stream id names."""
+
+    return _reading_stream_components(FAILURE_STREAM_PREFIX, "a failure", stream_id)
+
+
+def _reading_stream_id(prefix: str, sha256: str, parser_name: str, parser_version: str) -> str:
+    """Return `<prefix>/<sha256>/<parser_name>/<parser_version>` for one reading's stream."""
+
+    digest = _require_digest(sha256, "sha256")
+    name = _require_component(parser_name, "parser_name")
+    version = _require_component(parser_version, "parser_version")
+    return _require_stream_id(f"{prefix}/{digest}/{name}/{version}")
+
+
+def _reading_stream_components(prefix: str, described: str, stream_id: str) -> tuple[str, str, str]:
+    """Return the digest, parser name, and parser version of one reading's stream id."""
+
+    start = f"{prefix}/"
+    if not isinstance(stream_id, str) or not stream_id.startswith(start):
+        raise ValueError(f"stream_id must start with {start!r}, got {stream_id!r}")
+    parts = stream_id[len(start) :].split("/")
     if len(parts) != 3:
         raise ValueError(
-            "an artifact stream id names a digest, a parser name, and a parser version, "
+            f"{described} stream id names a digest, a parser name, and a parser version, "
             f"got {stream_id!r}"
         )
     digest, parser_name, parser_version = parts
@@ -558,6 +679,12 @@ def is_artifact_stream(stream_id: str) -> bool:
     """Return True when a stream id names an artifact ingestion aggregate."""
 
     return isinstance(stream_id, str) and stream_id.startswith(f"{ARTIFACT_STREAM_PREFIX}/")
+
+
+def is_failure_stream(stream_id: str) -> bool:
+    """Return True when a stream id names a recorded detection process failure."""
+
+    return isinstance(stream_id, str) and stream_id.startswith(f"{FAILURE_STREAM_PREFIX}/")
 
 
 def require_tracking_id(value: str) -> str:
@@ -636,15 +763,24 @@ __all__ = [
     "EVENT_CONTRACTS",
     "EVENT_TIMESTAMP_POINTERS",
     "EVENT_TYPES",
+    "FAILURE_CODE_VALUES",
+    "FAILURE_RECORDED_V1",
+    "FAILURE_STREAM_EVENT_TYPES",
+    "FAILURE_STREAM_PREFIX",
+    "FAILURE_STREAM_SCHEMA_VERSION",
     "OBSERVATION_RECORDED_V1",
+    "STREAM_EVENT_TYPES",
     "TRACKING_ID_PATTERN",
     "UNDISPOSED_STATUSES",
     "artifact_stream_components",
     "artifact_stream_id",
     "case_stream_id",
     "event_belongs_on_stream",
+    "failure_stream_components",
+    "failure_stream_id",
     "is_artifact_stream",
     "is_case_stream",
+    "is_failure_stream",
     "iso_utc",
     "parse_utc",
     "require_tracking_id",

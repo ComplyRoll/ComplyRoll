@@ -23,6 +23,15 @@ from urllib.parse import quote
 from uuid import uuid4
 
 SCHEMA_VERSION = 1
+#: The newest schema this build opens. A store is still created at `SCHEMA_VERSION`, and
+#: an append that needs a newer schema marks the store forward inside its own transaction,
+#: so a store that never needs schema 2 stays readable by a build that knows only 1.
+#: Schema 2 adds no schema object; it marks a store that holds failure streams (ADR 0014).
+SUPPORTED_SCHEMA_VERSION = 2
+_MIGRATION_DESCRIPTIONS: Mapping[int, str] = {
+    1: "append-only event history and projection checkpoints",
+    2: "failure streams, ADR 0014",
+}
 APPLICATION_ID = 0x43524F4C  # ASCII "CROL"
 MAX_EVENTS_PER_APPEND = 1_000
 MAX_EVENT_JSON_BYTES = 1 * 1024 * 1024
@@ -477,15 +486,22 @@ class SQLiteEventStore:
         events: Sequence[NewEvent],
         *,
         expected_version: int,
+        requires_schema: int = SCHEMA_VERSION,
     ) -> tuple[EventRecord, ...]:
         """Atomically append events if the stream is at ``expected_version``.
 
         Inside a `transaction()` block the append joins that transaction, so the records it
         returns are durable only once the block commits.
+
+        ``requires_schema`` is the schema the caller's events need. A store below it is
+        marked forward, its migration records and ``user_version`` together, in the same
+        transaction as the events, so a rollback leaves the store exactly as it was. The
+        store still knows nothing about what an event means; the caller says what it needs.
         """
 
         _require_name(stream_id, "stream_id")
         _require_nonnegative_integer(expected_version, "expected_version")
+        _require_supported_schema(requires_schema)
         pending = tuple(events)
         if not pending:
             raise ValueError("events must contain at least one event")
@@ -507,6 +523,7 @@ class SQLiteEventStore:
             actual_version = self._current_stream_version(connection, stream_id)
             if actual_version != expected_version:
                 raise EventConcurrencyError(stream_id, expected_version, actual_version)
+            self._mark_schema(connection, requires_schema)
 
             recorded_text = _format_timestamp(self._clock(), "recorded_at")
             recorded_at = _parse_timestamp(recorded_text, "recorded_at")
@@ -738,18 +755,14 @@ class SQLiteEventStore:
 
         if ("table", "complyroll_schema_migrations") not in present:
             return ()
-        migration = connection.execute(
-            "SELECT version FROM complyroll_schema_migrations WHERE version = ?",
-            (SCHEMA_VERSION,),
-        ).fetchone()
-        if migration is not None:
-            return ()
-        return (
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        return tuple(
             IntegrityFault(
                 sequence=None,
                 code="migration_missing",
-                message=f"database is missing migration record {SCHEMA_VERSION}",
-            ),
+                message=f"database is missing migration record {missing}",
+            )
+            for missing in _missing_migrations(connection, version)
         )
 
     @staticmethod
@@ -913,9 +926,10 @@ class SQLiteEventStore:
 
         if application_id not in (0, APPLICATION_ID):
             raise UnsupportedSchemaError("database belongs to another application")
-        if version > SCHEMA_VERSION:
+        if version > SUPPORTED_SCHEMA_VERSION:
             raise UnsupportedSchemaError(
-                f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
+                f"database schema {version} is newer than supported schema "
+                f"{SUPPORTED_SCHEMA_VERSION}"
             )
         if version == 0:
             if present:
@@ -942,7 +956,7 @@ class SQLiteEventStore:
                         """,
                         (
                             SCHEMA_VERSION,
-                            "append-only event history and projection checkpoints",
+                            _MIGRATION_DESCRIPTIONS[SCHEMA_VERSION],
                             _format_timestamp(self._clock(), "applied_at"),
                         ),
                     )
@@ -952,9 +966,10 @@ class SQLiteEventStore:
             # A peer initialized the store first; verify its work like any reopen.
             application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
             present = self._schema_objects(connection)
-            if version > SCHEMA_VERSION:
+            if version > SUPPORTED_SCHEMA_VERSION:
                 raise UnsupportedSchemaError(
-                    f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
+                    f"database schema {version} is newer than supported schema "
+                    f"{SUPPORTED_SCHEMA_VERSION}"
                 )
 
         self._verify_existing_schema(
@@ -999,14 +1014,35 @@ class SQLiteEventStore:
                 f"database schema objects do not match their expected definitions: {listed}"
             )
 
-        migration = connection.execute(
-            "SELECT version FROM complyroll_schema_migrations WHERE version = ?",
-            (version,),
-        ).fetchone()
-        if migration is None:
-            raise UnsupportedSchemaError(f"database is missing migration record {version}")
+        missing_migrations = _missing_migrations(connection, version)
+        if missing_migrations:
+            raise UnsupportedSchemaError(
+                f"database is missing migration record {missing_migrations[0]}"
+            )
         self._require_sequence_counter_intact(connection)
         self._require_history_contiguous(connection)
+
+    def _mark_schema(self, connection: sqlite3.Connection, required: int) -> None:
+        """Mark the store at ``required`` when it is below it, inside the open transaction.
+
+        Every migration record between the current version and the required one is inserted
+        before ``user_version`` moves, and both are part of the caller's transaction:
+        SQLite journals the header page that holds ``user_version`` like any other page.
+        """
+
+        current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if current >= required:
+            return
+        applied_at = _format_timestamp(self._clock(), "applied_at")
+        for version in range(current + 1, required + 1):
+            connection.execute(
+                """
+                INSERT INTO complyroll_schema_migrations (version, description, applied_at)
+                VALUES (?, ?, ?)
+                """,
+                (version, _MIGRATION_DESCRIPTIONS[version], applied_at),
+            )
+        connection.execute(f"PRAGMA user_version = {int(required)}")
 
     @staticmethod
     def _schema_objects(connection: sqlite3.Connection) -> frozenset[tuple[str, str]]:
@@ -1600,6 +1636,38 @@ def _require_positive_integer(value: int, field_name: str) -> None:
 def _require_read_limit(limit: int) -> None:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_READ_BATCH:
         raise ValueError(f"limit must be between 1 and {MAX_READ_BATCH}")
+
+
+def _require_supported_schema(value: int) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not SCHEMA_VERSION <= value <= SUPPORTED_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            f"requires_schema must be between {SCHEMA_VERSION} and {SUPPORTED_SCHEMA_VERSION}"
+        )
+
+
+def _missing_migrations(connection: sqlite3.Connection, version: int) -> tuple[int, ...]:
+    """Return the migration records a store marked at ``version`` lacks, in order.
+
+    A store at version 1 needs record 1 and a store at version 2 needs records 1 and 2. A
+    version this build does not open is held to the records it knows, so `verify_history`
+    can still describe such a file rather than raising.
+    """
+
+    newest = max(SCHEMA_VERSION, min(version, SUPPORTED_SCHEMA_VERSION))
+    recorded = {
+        int(row[0])
+        for row in connection.execute(
+            "SELECT version FROM complyroll_schema_migrations WHERE version BETWEEN ? AND ?",
+            (SCHEMA_VERSION, newest),
+        ).fetchall()
+    }
+    return tuple(
+        required for required in range(SCHEMA_VERSION, newest + 1) if required not in recorded
+    )
 
 
 def _format_timestamp(value: datetime, field_name: str) -> str:

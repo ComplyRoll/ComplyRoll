@@ -4,7 +4,9 @@ Artifacts, observations, and ingest diagnostics are read back from `artifact.ing
 and `observation.recorded` events in recorded order; each case stream is folded into its
 current state; and the result is handed to the same record compiler the stateless path
 uses. Nothing is recomputed differently and nothing is cached, so a report rebuilt from
-the log is byte-identical to the stateless report compiled from the same inputs.
+the log is byte-identical to the stateless report compiled from the same inputs. A current
+failure stream reads back as its system observation and its head's diagnostics, which are
+what the stateless path compiled for that failure (ADR 0014 records where the two differ).
 
 Detection-time attestations are per case here rather than one flag on the command line.
 An attestation still applies only to a group where no observation declares a source
@@ -22,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from complyroll.adapters import DiagnosticLevel
 from complyroll.correlation import group_open_observations
-from complyroll.events import EventRepository
+from complyroll.events import EventRepository, is_failure_stream
 from complyroll.models import Observation
 
 from .avi import CompiledAviReport, project_avi
@@ -41,7 +43,7 @@ from .vdt import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - imported for annotations only
-    from complyroll.history import ArtifactHistory, ArtifactRecord, CaseState
+    from complyroll.history import ArtifactHistory, ArtifactRecord, CaseState, FailureRecord
 
 
 def compile_vdt_report_from_history(
@@ -110,8 +112,9 @@ def compile_record_set_from_history(
     observations = rehydrate_observations(repository)
     cases = fold_all_cases(repository)
     diagnostics = (
-        _ingest_diagnostics(history.current)
+        _ingest_diagnostics((*history.current, *history.current_failures))
         + _superseded_artifacts(history)
+        + _superseded_failures(history)
         + _stale_cases(cases, observations)
     )
     return compile_record_set(
@@ -137,7 +140,9 @@ def _compiled_artifact(record: ArtifactRecord) -> CompiledArtifact:
     )
 
 
-def _ingest_diagnostics(records: Sequence[ArtifactRecord]) -> tuple[ReportDiagnostic, ...]:
+def _ingest_diagnostics(
+    records: Sequence[ArtifactRecord | FailureRecord],
+) -> tuple[ReportDiagnostic, ...]:
     """Reproduce the ingest diagnostics the stateless path would have raised.
 
     The artifact name stands in for a diagnostic that names no location, exactly as the
@@ -145,6 +150,12 @@ def _ingest_diagnostics(records: Sequence[ArtifactRecord]) -> tuple[ReportDiagno
     on the directory layout of the machine that ingested it. An error-level diagnostic
     cannot reach history through `record_ingest`, so one found here is a damaged log and
     stops the run the same way a failed ingest does.
+
+    A current failure's head holds `failure_diagnostics`, every ERROR already demoted, and
+    a side record's holds only its `detection_failure_recorded` notice, because the
+    reading's own diagnostics are on its artifact stream (ADR 0014). Each diagnostic is
+    therefore read back once, as the stateless path emits it, and an ERROR in a head is
+    the same damaged log.
     """
 
     diagnostics: list[ReportDiagnostic] = []
@@ -167,37 +178,70 @@ def _ingest_diagnostics(records: Sequence[ArtifactRecord]) -> tuple[ReportDiagno
 
 
 def _superseded_artifacts(history: ArtifactHistory) -> tuple[ReportDiagnostic, ...]:
-    """Name every artifact stream a newer parser version replaced.
+    """Name every artifact stream a newer reading or a newer parser's failure replaced.
 
     One artifact digest read by two parser versions is two streams (ADR 0002), and the
     fold rehydrates only the newest, because reading both would report every finding
     twice under two sets of observation identifiers. Dropping the older reading in
     silence would leave the page unable to say that history holds an earlier reading of
     the same bytes, so each one is named here with the version that replaced it.
+
+    A newer version of the parser that read every stream of the digest, failing on the
+    same bytes, replaces them all with its failure (ADR 0014, R2). That reading is named
+    as `artifact_superseded_by_failure`, with the failure the report carries instead. The
+    fold records each replacement as it decides it, so there is always one to name.
     """
 
-    current = {record.sha256: record for record in history.current}
     diagnostics: list[ReportDiagnostic] = []
     for record in history.superseded:
-        newest = current.get(record.sha256)
-        if newest is None:  # pragma: no cover - a stream is superseded only by a newer one
-            raise AssertionError(
-                f"superseded stream {record.stream_id!r} has no current stream to name"
+        newest = history.replaced_by[record.stream_id]
+        if is_failure_stream(newest.stream_id):
+            code = "artifact_superseded_by_failure"
+            message = (
+                f"{record.name} was recorded by {record.parser_name} {record.parser_version} "
+                f"and failed under the newer {newest.parser_name} {newest.parser_version}; "
+                "this report carries the failure, so the older reading is in history but not "
+                "in it"
+            )
+        else:
+            code = "artifact_superseded"
+            message = (
+                f"{record.name} was recorded by {record.parser_name} "
+                f"{record.parser_version} and again by {newest.parser_name} "
+                f"{newest.parser_version}; this report reads the newest stream, so the "
+                "older reading is in history but not in it"
             )
         diagnostics.append(
             ReportDiagnostic(
                 level=DiagnosticLevel.INFO,
-                code="artifact_superseded",
-                message=(
-                    f"{record.name} was recorded by {record.parser_name} "
-                    f"{record.parser_version} and again by {newest.parser_name} "
-                    f"{newest.parser_version}; this report reads the newest stream, so the "
-                    "older reading is in history but not in it"
-                ),
+                code=code,
+                message=message,
                 location=record.stream_id or record.name,
             )
         )
     return tuple(diagnostics)
+
+
+def _superseded_failures(history: ArtifactHistory) -> tuple[ReportDiagnostic, ...]:
+    """Name every failure stream a reading of the same bytes resolved (ADR 0014, R3, R4).
+
+    A resolved failure's system observation is not rehydrated, so its case reads as
+    `stale_case`. This names the failure itself, so the page can say why.
+    """
+
+    return tuple(
+        ReportDiagnostic(
+            level=DiagnosticLevel.INFO,
+            code="failure_superseded",
+            message=(
+                f"{record.name} failed under {record.parser_name} {record.parser_version}, "
+                "and history holds a reading of the same bytes that resolves it; the failure "
+                "is in history but not in this report"
+            ),
+            location=record.stream_id or record.name,
+        )
+        for record in history.superseded_failures
+    )
 
 
 def _stale_cases(

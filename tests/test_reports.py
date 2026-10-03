@@ -10,9 +10,11 @@ from datetime import UTC, datetime
 from itertools import permutations
 from pathlib import Path
 from typing import Literal, overload
+from unittest import mock
 
 from complyroll import __version__
 from complyroll.adapters import DiagnosticLevel, IngestResult, ingest_stig_artifact
+from complyroll.adapters.common import MAX_METADATA_VALUE_CHARS, TRUNCATION_MARKER
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.models import CaseStatus
 from complyroll.policy import CertificationClass
@@ -22,6 +24,7 @@ from complyroll.reports import (
     CompiledArtifact,
     CompiledAviReport,
     CompiledDeadline,
+    CompiledDetectionFailure,
     CompiledHistoricalReport,
     CompiledRecordSet,
     CompiledReport,
@@ -44,6 +47,7 @@ from complyroll.reports import (
     project_historical,
     project_vdt,
 )
+from complyroll.reports import vdt as vdt_module
 from complyroll.reports.vdt import _describe
 from complyroll.schemas import ReportSchema, validate_bundled_report
 
@@ -94,6 +98,26 @@ ACCEPTANCE = {
 }
 
 BANNER_MATCH = {"sourceRecordId": "banner_etc_issue", "sourceType": "xccdf"}
+#: One fixture per detection process failure class: parse, content, and a failed
+#: invocation beside a successful run, which imports and adds a side record (ADR 0014).
+#: The truncated SARIF is cut inside a string, so its decode message is the stable
+#: "Unterminated string" form on every supported Python.
+FAILED_ARTIFACTS = (
+    FIXTURES / "failed-truncated.sarif",
+    FIXTURES / "failed-invalid-rules.cklb",
+    FIXTURES / "failed-invocation.sarif",
+)
+#: The example evaluations plus one that evaluates the parse failure by its triple.
+FAILED_EVALUATIONS = EXAMPLES / "evaluations-failed.json"
+#: The failed fixtures' digests. Their names and their digests sort in different
+#: orders, so a test can tell which one `detectionFailures` is sorted by.
+TRUNCATED_SHA256 = "a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8"
+INVALID_RULES_SHA256 = "f51e7b7624956be0f40545639b3ee63ab7b5a27cb647ad2a3435df6bc6dcc372"
+INVOCATION_SHA256 = "59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9"
+#: The tracking ids the three failures' records take with no evaluation override.
+TRUNCATED_CASE = "case-d3bb8e4fb3b61a5f"
+INVALID_RULES_CASE = "case-088261de64a0133c"
+INVOCATION_CASE = "case-f03af85468885cad"
 ReportKind = Literal["vdt", "avi", "historical"]
 REPORT_KINDS: tuple[ReportKind, ...] = ("vdt", "avi", "historical")
 
@@ -152,6 +176,7 @@ def compile_fixtures(
     artifacts: Sequence[Path] = ARTIFACTS,
     evaluations: EvaluationSet | None = None,
     kind: Literal["vdt"] = "vdt",
+    record_failed_imports: bool = False,
     **option_overrides: object,
 ) -> CompiledVdtReport: ...
 
@@ -162,6 +187,7 @@ def compile_fixtures(
     artifacts: Sequence[Path] = ARTIFACTS,
     evaluations: EvaluationSet | None = None,
     kind: Literal["avi"],
+    record_failed_imports: bool = False,
     **option_overrides: object,
 ) -> CompiledAviReport: ...
 
@@ -172,6 +198,7 @@ def compile_fixtures(
     artifacts: Sequence[Path] = ARTIFACTS,
     evaluations: EvaluationSet | None = None,
     kind: Literal["historical"],
+    record_failed_imports: bool = False,
     **option_overrides: object,
 ) -> CompiledHistoricalReport: ...
 
@@ -182,6 +209,7 @@ def compile_fixtures(
     artifacts: Sequence[Path] = ARTIFACTS,
     evaluations: EvaluationSet | None = None,
     kind: ReportKind,
+    record_failed_imports: bool = False,
     **option_overrides: object,
 ) -> CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport: ...
 
@@ -191,18 +219,32 @@ def compile_fixtures(
     artifacts: Sequence[Path] = ARTIFACTS,
     evaluations: EvaluationSet | None = None,
     kind: ReportKind = "vdt",
+    record_failed_imports: bool = False,
     **option_overrides: object,
 ) -> CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport:
     """Compile one report of the given kind from the fixtures with the test options."""
 
     report_options = options(**option_overrides)  # type: ignore[arg-type]
     if kind == "avi":
-        return compile_avi_report(list(artifacts), options=report_options, evaluations=evaluations)
+        return compile_avi_report(
+            list(artifacts),
+            options=report_options,
+            evaluations=evaluations,
+            record_failed_imports=record_failed_imports,
+        )
     if kind == "historical":
         return compile_historical_report(
-            list(artifacts), options=report_options, evaluations=evaluations
+            list(artifacts),
+            options=report_options,
+            evaluations=evaluations,
+            record_failed_imports=record_failed_imports,
         )
-    return compile_vdt_report(list(artifacts), options=report_options, evaluations=evaluations)
+    return compile_vdt_report(
+        list(artifacts),
+        options=report_options,
+        evaluations=evaluations,
+        record_failed_imports=record_failed_imports,
+    )
 
 
 def summary_counts(markdown: str) -> dict[str, int]:
@@ -448,6 +490,69 @@ def assert_markdown_carries_the_json(
         test.assertIsNotNone(row, f"the Inputs table omits {artifact['name']}")
         assert row is not None
         test.assertEqual(row[2], f"{artifact['parser']} {artifact['parserVersion']}")
+
+
+def detection_failures(report: CompiledReport) -> list[dict[str, object]]:
+    """Return a document's `detectionFailures`, which is absent when nothing failed."""
+
+    return list(report.document["x-complyroll"].get("detectionFailures", []))
+
+
+def failure_rows(report: CompiledReport) -> dict[str, tuple[str, ...]]:
+    """Return the Markdown twin's detection process failure rows, keyed by artifact name."""
+
+    inputs = markdown_section(report.to_markdown(), "Inputs")
+    parts = inputs.split("\n### Detection process failures\n", 1)
+    if len(parts) == 1:
+        return {}
+    return markdown_table_rows(parts[1], 7, "Artifact")
+
+
+def system_match(digest: str, *, source_type: bool = True) -> dict[str, str]:
+    """Return the documented evaluation match for one digest's detection failure.
+
+    Without `source_type` it is the pair an artifact observation can also carry.
+    """
+
+    match = {"sourceRecordId": "detection-process-failure", "contextKey": f"sha256:{digest}"}
+    if source_type:
+        match["sourceType"] = "complyroll.detection-process"
+    return match
+
+
+def hostile_checklist(digest: str) -> str:
+    """Return a CKLB whose one rule copies a detection failure's record id and context key.
+
+    Only the source type tells its record from the system record, and no adapter can
+    mint the reserved `complyroll.` source types.
+    """
+
+    return json.dumps(
+        {
+            "target_data": {"host_name": "host-hostile"},
+            "stigs": [
+                {
+                    "stig_id": f"sha256:{digest}",
+                    "rules": [
+                        {
+                            "group_id": "detection-process-failure",
+                            "status": "open",
+                            "severity": "high",
+                            "rule_title": "Synthetic rule that copies a system record's key",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def copy_artifact(source: Path, directory: Path, name: str) -> Path:
+    """Copy one fixture's bytes into `directory` under a new name."""
+
+    path = directory / name
+    path.write_bytes(source.read_bytes())
+    return path
 
 
 class GoldenReportTests(unittest.TestCase):
@@ -2869,6 +2974,1223 @@ class DuplicateBytesOrderTests(unittest.TestCase):
             ),
             ["b.xml", "c.xml"],
         )
+
+    def test_the_duplicate_diagnostic_cleans_both_names(self) -> None:
+        # Built with chr() so the control character is never a literal in this file. No
+        # file system holds a name past the cap, so that case renames each reading as the
+        # compiler receives it.
+        bell = chr(7)
+        prefix = "identical artifact bytes were supplied more than once; this report reads them as "
+        keep = MAX_METADATA_VALUE_CHARS - len(TRUNCATION_MARKER)
+        elected = "a" + "x" * MAX_METADATA_VALUE_CHARS + ".xml"
+        skipped = f"b{bell}" + "y" * MAX_METADATA_VALUE_CHARS + ".xml"
+        renames = {"a.xml": elected, "b.xml": skipped}
+
+        def renamed(path: Path, *, ingested_at: datetime) -> IngestResult:
+            result = ingest_stig_artifact(path, ingested_at=ingested_at)
+            assert result.artifact is not None
+            return replace(result, artifact=replace(result.artifact, name=renames[path.name]))
+
+        with mock.patch.object(vdt_module, "ingest_stig_artifact", renamed):
+            overlong = self.compile_named(("b.xml", "a.xml"))
+        cases = (
+            (
+                "a control character",
+                self.compile_named((f"b{bell}-copy.xml", f"a{bell}-copy.xml")),
+                "b-copy.xml",
+                "a-copy.xml",
+            ),
+            (
+                "an over-long name",
+                overlong,
+                ("b" + "y" * MAX_METADATA_VALUE_CHARS)[:keep] + TRUNCATION_MARKER,
+                elected[:keep] + TRUNCATION_MARKER,
+            ),
+        )
+        for label, report, location, name in cases:
+            with self.subTest(label):
+                self.assertEqual(
+                    [
+                        (item.location, item.message)
+                        for item in report.diagnostics
+                        if item.code == "duplicate_artifact"
+                    ],
+                    [(location, prefix + name)],
+                )
+
+
+class FailedImportsOffTests(unittest.TestCase):
+    """Without `record_failed_imports`, a failed import behaves exactly as it did before."""
+
+    def test_a_failed_artifact_stops_the_run_with_its_own_errors(self) -> None:
+        expected = {
+            "failed-truncated.sarif": [
+                (
+                    "artifact_parse_failed",
+                    "Unterminated string starting at: line 18 column 21 (char 419)",
+                    "failed-truncated.sarif",
+                ),
+            ],
+            "failed-invalid-rules.cklb": [
+                ("invalid_rules", "STIG entry has no rules array", "stigs[0].rules"),
+                ("no_observations", "CKLB contains no usable rules", "failed-invalid-rules.cklb"),
+            ],
+        }
+        for name, diagnostics in expected.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ReportCompileError) as caught:
+                    compile_fixtures(artifacts=(*ARTIFACTS, FIXTURES / name))
+
+                raised = caught.exception.diagnostics
+                self.assertEqual(
+                    [(item.code, item.message, item.location) for item in raised], diagnostics
+                )
+                self.assertTrue(all(item.level is DiagnosticLevel.ERROR for item in raised))
+
+    def test_a_failed_invocation_imports_with_no_system_record(self) -> None:
+        report = compile_fixtures(artifacts=(*ARTIFACTS, FIXTURES / "failed-invocation.sarif"))
+        extension = report.document["x-complyroll"]
+        codes = [item.code for item in report.diagnostics]
+
+        self.assertNotIn("detectionFailures", extension)
+        self.assertNotIn("complyroll.detection-failures", extension["parserVersions"])
+        self.assertEqual(report.metadata.detection_failures, ())
+        self.assertNotIn(
+            "system",
+            [
+                item["x-complyroll"]["detectedAtSource"]
+                for item in report.document["vulnerabilities"]
+            ],
+        )
+        self.assertIn("execution_unsuccessful", codes)
+        self.assertNotIn("detection_failure_recorded", codes)
+        self.assertIn("failed-invocation.sarif", [item["name"] for item in extension["artifacts"]])
+        self.assertNotIn("Detection process failures", report.to_markdown())
+
+
+class DetectionFailureRecordTests(unittest.TestCase):
+    """With `record_failed_imports`, each mintable failure is one system record (ADR 0014)."""
+
+    report: CompiledVdtReport
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.report = compile_fixtures(
+            artifacts=(*ARTIFACTS, *FAILED_ARTIFACTS), record_failed_imports=True
+        )
+
+    def record(self, tracking_id: str) -> dict[str, object]:
+        for item in self.report.document["vulnerabilities"]:
+            if item["providerTrackingId"] == tracking_id:
+                return item
+        raise AssertionError(f"no vulnerability {tracking_id}")
+
+    def test_the_entries_are_listed_in_full(self) -> None:
+        self.assertEqual(
+            detection_failures(self.report),
+            [
+                {
+                    "name": "failed-invalid-rules.cklb",
+                    "sha256": INVALID_RULES_SHA256,
+                    "sizeBytes": 349,
+                    "parser": "complyroll.cklb",
+                    "parserVersion": "1",
+                    "failureClass": "content",
+                    "failureCodes": ["invalid_rules", "no_observations"],
+                    "observedAt": "2026-08-21T12:00:00Z",
+                    "clock": "as-of",
+                    "trackingId": INVALID_RULES_CASE,
+                },
+                {
+                    "name": "failed-invocation.sarif",
+                    "sha256": INVOCATION_SHA256,
+                    "sizeBytes": 1756,
+                    "parser": "complyroll.sarif",
+                    "parserVersion": "1",
+                    "failureClass": "execution",
+                    "failureCodes": ["execution_unsuccessful"],
+                    "observedAt": "2026-08-04T10:00:00Z",
+                    "clock": "invocation",
+                    "trackingId": INVOCATION_CASE,
+                },
+                {
+                    "name": "failed-truncated.sarif",
+                    "sha256": TRUNCATED_SHA256,
+                    "sizeBytes": 486,
+                    "parser": "complyroll.sarif",
+                    "parserVersion": "1",
+                    "failureClass": "parse",
+                    "failureCodes": ["artifact_parse_failed"],
+                    "observedAt": "2026-08-21T12:00:00Z",
+                    "clock": "as-of",
+                    "trackingId": TRUNCATED_CASE,
+                },
+            ],
+        )
+
+    def test_the_entries_sort_by_name_before_digest(self) -> None:
+        entries = detection_failures(self.report)
+        names = [item["name"] for item in entries]
+        digests = [item["sha256"] for item in entries]
+
+        self.assertEqual(names, sorted(names))
+        # The fixtures were chosen so the two orders differ; otherwise this proves nothing.
+        self.assertNotEqual(digests, sorted(digests))
+
+    def test_each_failure_is_one_system_record(self) -> None:
+        for entry in detection_failures(self.report):
+            with self.subTest(name=entry["name"]):
+                record = self.record(str(entry["trackingId"]))
+                extension = record["x-complyroll"]
+
+                self.assertEqual(extension["detectedAtSource"], "system")
+                self.assertEqual(
+                    record["detection"],
+                    {"detectedAt": entry["observedAt"], "detectionSource": "complyroll"},
+                )
+                self.assertEqual(
+                    extension["resources"],
+                    [{"resourceId": f"sha256:{entry['sha256']}", "resourceType": "artifact"}],
+                )
+                self.assertEqual(len(extension["observationIds"]), 1)
+                self.assertTrue(
+                    str(record["vulnerabilityDescription"]).startswith(
+                        "detection-process-failure: "
+                    )
+                )
+
+        systems = [
+            item
+            for item in self.report.document["vulnerabilities"]
+            if item["x-complyroll"]["detectedAtSource"] == "system"
+        ]
+        self.assertEqual(len(systems), 3)
+
+    def test_the_side_record_carries_the_invocation_clock(self) -> None:
+        record = self.record(INVOCATION_CASE)
+        manifest = {
+            item["name"]: item for item in self.report.document["x-complyroll"]["artifacts"]
+        }
+
+        self.assertEqual(record["detection"]["detectedAt"], "2026-08-04T10:00:00Z")
+        # The artifact itself still imports, so its finding is reported beside the failure.
+        self.assertEqual(manifest["failed-invocation.sarif"]["observationCount"], 1)
+        self.assertEqual(
+            find_vulnerability(self.report, "EXS-0001")["x-complyroll"]["detectedAtSource"],
+            "artifact",
+        )
+        self.assertNotIn("failed-truncated.sarif", manifest)
+        self.assertNotIn("failed-invalid-rules.cklb", manifest)
+
+    def test_an_attestation_never_applies_to_a_system_record(self) -> None:
+        clean = compile_fixtures()
+        attestation = self.report.document["x-complyroll"]["detectionTimeAttestation"]
+
+        self.assertEqual(attestation, clean.document["x-complyroll"]["detectionTimeAttestation"])
+        for tracking_id in (TRUNCATED_CASE, INVALID_RULES_CASE, INVOCATION_CASE):
+            self.assertNotIn(tracking_id, attestation["appliedTo"])
+        self.assertEqual(
+            self.record(TRUNCATED_CASE)["detection"]["detectedAt"], "2026-08-21T12:00:00Z"
+        )
+
+    def test_the_parser_versions_name_the_detection_failure_recipe(self) -> None:
+        versions = self.report.document["x-complyroll"]["parserVersions"]
+
+        self.assertEqual(versions["complyroll.detection-failures"], "1")
+
+    def test_the_failure_diagnostics_replace_the_errors(self) -> None:
+        recorded = [
+            (item.level, item.code, item.message, item.location)
+            for item in self.report.diagnostics
+            if item.location
+            in {"failed-truncated.sarif", "failed-invalid-rules.cklb", "stigs[0].rules"}
+            or item.code == "detection_failure_recorded"
+        ]
+
+        self.assertEqual(
+            recorded,
+            [
+                (
+                    DiagnosticLevel.WARNING,
+                    "artifact_parse_failed",
+                    "Unterminated string starting at: line 18 column 21 (char 419)",
+                    "failed-truncated.sarif",
+                ),
+                (
+                    DiagnosticLevel.WARNING,
+                    "detection_failure_recorded",
+                    "recorded a detection process failure of class content for source "
+                    f"artifact sha256:{INVALID_RULES_SHA256} (VDR-CSO-FAV)",
+                    "failed-invalid-rules.cklb",
+                ),
+                (
+                    DiagnosticLevel.WARNING,
+                    "detection_failure_recorded",
+                    "recorded a detection process failure of class execution for source "
+                    f"artifact sha256:{INVOCATION_SHA256} (VDR-CSO-FAV)",
+                    "failed-invocation.sarif",
+                ),
+                (
+                    DiagnosticLevel.WARNING,
+                    "detection_failure_recorded",
+                    "recorded a detection process failure of class parse for source "
+                    f"artifact sha256:{TRUNCATED_SHA256} (VDR-CSO-FAV)",
+                    "failed-truncated.sarif",
+                ),
+                (
+                    DiagnosticLevel.WARNING,
+                    "invalid_rules",
+                    "STIG entry has no rules array",
+                    "stigs[0].rules",
+                ),
+                (
+                    DiagnosticLevel.WARNING,
+                    "no_observations",
+                    "CKLB contains no usable rules",
+                    "failed-invalid-rules.cklb",
+                ),
+                (
+                    DiagnosticLevel.WARNING,
+                    "source_timestamp_missing",
+                    "source artifact does not declare an observation timestamp; "
+                    "observed_at is unknown",
+                    "failed-invalid-rules.cklb",
+                ),
+            ],
+        )
+        self.assertNotIn(DiagnosticLevel.ERROR, [item.level for item in self.report.diagnostics])
+
+    def test_the_markdown_lists_each_failure_under_inputs(self) -> None:
+        inputs = markdown_section(self.report.to_markdown(), "Inputs")
+
+        self.assertIn(
+            "### Detection process failures\n"
+            "\n"
+            "| Artifact | SHA-256 | Parser | Class | Observed at | Clock | Tracking ID |\n"
+            "|---|---|---|---|---|---|---|\n"
+            "| failed-invalid-rules.cklb | f51e7b762495 | complyroll.cklb 1 | content "
+            f"| 2026-08-21T12:00:00Z | as-of | {INVALID_RULES_CASE} |\n"
+            "| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 1 | execution "
+            f"| 2026-08-04T10:00:00Z | invocation | {INVOCATION_CASE} |\n"
+            "| failed-truncated.sarif | a8aca932d8fc | complyroll.sarif 1 | parse "
+            f"| 2026-08-21T12:00:00Z | as-of | {TRUNCATED_CASE} |\n",
+            inputs,
+        )
+
+    def test_the_markdown_carries_the_json(self) -> None:
+        assert_markdown_carries_the_json(self, self.report)
+        rows = failure_rows(self.report)
+        entries = detection_failures(self.report)
+
+        self.assertEqual(len(rows), len(entries))
+        for entry in entries:
+            self.assertEqual(
+                rows[str(entry["name"])],
+                (
+                    entry["name"],
+                    str(entry["sha256"])[:12],
+                    f"{entry['parser']} {entry['parserVersion']}",
+                    entry["failureClass"],
+                    entry["observedAt"],
+                    entry["clock"],
+                    entry["trackingId"],
+                ),
+            )
+
+    def test_the_metadata_holds_the_compiled_failures(self) -> None:
+        failures = self.report.metadata.detection_failures
+
+        self.assertTrue(all(isinstance(item, CompiledDetectionFailure) for item in failures))
+        self.assertEqual([item.to_dict() for item in failures], detection_failures(self.report))
+
+    def test_every_projection_lists_the_same_failures(self) -> None:
+        artifacts = (*ARTIFACTS, *FAILED_ARTIFACTS)
+        avi = compile_fixtures(artifacts=artifacts, kind="avi", record_failed_imports=True)
+        historical = compile_fixtures(
+            artifacts=artifacts, kind="historical", record_failed_imports=True
+        )
+        expected = detection_failures(self.report)
+
+        for report in (self.report, avi, historical):
+            with self.subTest(report=type(report).__name__):
+                self.assertTrue(report.validation.is_valid)
+                self.assertEqual(detection_failures(report), expected)
+                self.assertEqual(
+                    report.document["x-complyroll"]["parserVersions"][
+                        "complyroll.detection-failures"
+                    ],
+                    "1",
+                )
+        # No evaluation accepts a failure here, so AVI counts each one and lists none.
+        self.assertEqual(avi.accepted, ())
+        self.assertEqual(avi.active_not_reported, len(self.report.document["vulnerabilities"]))
+        active = [
+            item["providerTrackingId"] for item in historical.document["activeVulnerabilities"]
+        ]
+        for tracking_id in (TRUNCATED_CASE, INVALID_RULES_CASE, INVOCATION_CASE):
+            self.assertIn(tracking_id, active)
+
+
+class DetectionFailureRefusalTests(unittest.TestCase):
+    """A failure the classifier cannot mint still stops the run with the flag given."""
+
+    def compile_with(self, files: dict[str, bytes], *extra: Path) -> CompiledVdtReport:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for name, content in files.items():
+                path = Path(directory) / name
+                path.write_bytes(content)
+                paths.append(path)
+            return compile_fixtures(artifacts=(*paths, *extra), record_failed_imports=True)
+
+    def refused(self, files: dict[str, bytes], *extra: Path) -> list[tuple[str, str | None]]:
+        with self.assertRaises(ReportCompileError) as caught:
+            self.compile_with(files, *extra)
+        raised = caught.exception.diagnostics
+        self.assertTrue(all(item.level is DiagnosticLevel.ERROR for item in raised))
+        return [(item.code, item.location) for item in raised]
+
+    def partial_checklist(self) -> bytes:
+        good = {"group_id": "V-000001", "status": "open", "severity": "high"}
+        payload = {
+            "target_data": {"host_name": "host-partial"},
+            "stigs": [{"stig_id": "SYN_STIG", "rules": [good, 1]}],
+        }
+        return json.dumps(payload).encode("utf-8")
+
+    def test_a_partial_checklist_stops_the_run(self) -> None:
+        self.assertEqual(
+            self.refused({"partial.cklb": self.partial_checklist()}),
+            [("invalid_rule", "stigs[0].rules[1]")],
+        )
+
+    def test_a_format_rejection_stops_the_run(self) -> None:
+        benchmark = b'<Benchmark id="xccdf_synthetic_benchmark"/>'
+
+        self.assertEqual(
+            [code for code, _ in self.refused({"benchmark.xml": benchmark})],
+            ["no_observations"],
+        )
+
+    def test_bytes_that_read_elsewhere_stop_the_run(self) -> None:
+        content = (FIXTURES / "openscap-results.xml").read_bytes()
+
+        # Alone, the misnamed copy is an ordinary parse failure and is recorded.
+        alone = self.compile_with({"openscap-copy.sarif": content})
+        self.assertEqual([item["failureClass"] for item in detection_failures(alone)], ["parse"])
+        # Beside the same bytes read successfully, it is a misnamed copy, not a failure.
+        refused = self.refused({"openscap-copy.sarif": content}, FIXTURES / "openscap-results.xml")
+        self.assertEqual(refused, [("artifact_parse_failed", "openscap-copy.sarif")])
+
+    def test_an_unmintable_failure_beside_a_mintable_one_stops_the_run(self) -> None:
+        refused = self.refused(
+            {"partial.cklb": self.partial_checklist()}, FIXTURES / "failed-truncated.sarif"
+        )
+
+        # Nothing is recorded, so the held failure names itself beside the refusal's errors.
+        self.assertEqual(
+            refused,
+            [
+                ("artifact_parse_failed", "failed-truncated.sarif"),
+                ("invalid_rule", "stigs[0].rules[1]"),
+            ],
+        )
+
+
+class DetectionFailureElectionTests(unittest.TestCase):
+    """Failed readings of one set of bytes record one failure, whatever the order."""
+
+    def test_duplicate_failing_readings_elect_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = FIXTURES / "failed-truncated.sarif"
+            report = compile_fixtures(
+                artifacts=(
+                    copy_artifact(source, root, "b-truncated.sarif"),
+                    copy_artifact(source, root, "a-truncated.sarif"),
+                ),
+                record_failed_imports=True,
+            )
+
+        entries = detection_failures(report)
+        self.assertEqual([item["name"] for item in entries], ["a-truncated.sarif"])
+        self.assertEqual(entries[0]["sha256"], TRUNCATED_SHA256)
+        self.assertEqual(report.document["x-complyroll"]["artifacts"], [])
+        self.assertEqual(
+            [
+                (item.code, item.location)
+                for item in report.diagnostics
+                if item.code != "source_timestamp_missing"
+            ],
+            [
+                ("artifact_parse_failed", "a-truncated.sarif"),
+                ("detection_failure_recorded", "a-truncated.sarif"),
+                ("duplicate_artifact", "b-truncated.sarif"),
+            ],
+        )
+        duplicate = [item for item in report.diagnostics if item.code == "duplicate_artifact"]
+        self.assertIn("reads them as a-truncated.sarif", duplicate[0].message)
+
+    def test_the_order_of_arguments_never_changes_a_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = copy_artifact(FIXTURES / "failed-truncated.sarif", Path(directory), "copy.sarif")
+            files = (*FAILED_ARTIFACTS, copy)
+            for kind in REPORT_KINDS:
+                expected = compile_fixtures(artifacts=files, kind=kind, record_failed_imports=True)
+                self.assertEqual(len(detection_failures(expected)), 3)
+                for order in permutations(files):
+                    with self.subTest(kind=kind, order=[path.name for path in order]):
+                        report = compile_fixtures(
+                            artifacts=order, kind=kind, record_failed_imports=True
+                        )
+
+                        self.assertEqual(report.to_json(), expected.to_json())
+                        self.assertEqual(report.to_markdown(), expected.to_markdown())
+
+
+class DetectionFailurePeriodTests(unittest.TestCase):
+    """A failure recorded after the period ends is left out of it and still listed."""
+
+    LATE = datetime(2026, 9, 2, 0, 0, tzinfo=UTC)
+
+    def test_a_failure_after_the_period_is_excluded_and_still_listed(self) -> None:
+        report = compile_fixtures(
+            artifacts=FAILED_ARTIFACTS, record_failed_imports=True, as_of=self.LATE
+        )
+        extension = report.document["x-complyroll"]
+        reported = [item["providerTrackingId"] for item in report.document["vulnerabilities"]]
+        excluded = {
+            item.message for item in report.diagnostics if item.code == "excluded_by_period"
+        }
+
+        self.assertNotIn(TRUNCATED_CASE, reported)
+        self.assertNotIn(INVALID_RULES_CASE, reported)
+        self.assertIn(INVOCATION_CASE, reported)
+        for tracking_id in (TRUNCATED_CASE, INVALID_RULES_CASE):
+            self.assertIn(
+                f"{tracking_id} was detected 2026-09-02T00:00:00Z, after the period ended "
+                "2026-08-31T23:59:59Z",
+                excluded,
+            )
+        # Never clamped into the period: the instant is when ComplyRoll saw the failure.
+        self.assertEqual(
+            {item["name"]: item["observedAt"] for item in detection_failures(report)},
+            {
+                "failed-invalid-rules.cklb": "2026-09-02T00:00:00Z",
+                "failed-invocation.sarif": "2026-08-04T10:00:00Z",
+                "failed-truncated.sarif": "2026-09-02T00:00:00Z",
+            },
+        )
+        self.assertEqual(
+            [
+                item.location
+                for item in report.diagnostics
+                if item.code == "detection_failure_recorded"
+            ],
+            ["failed-invalid-rules.cklb", "failed-invocation.sarif", "failed-truncated.sarif"],
+        )
+        self.assertEqual(extension["parserVersions"]["complyroll.detection-failures"], "1")
+        self.assertEqual(
+            set(failure_rows(report)), {item["name"] for item in detection_failures(report)}
+        )
+
+    def test_the_parser_version_is_listed_when_every_failure_is_excluded(self) -> None:
+        report = compile_fixtures(
+            artifacts=(FIXTURES / "windows-host.ckl", FIXTURES / "failed-truncated.sarif"),
+            record_failed_imports=True,
+            as_of=self.LATE,
+        )
+        reported = [
+            item["x-complyroll"]["detectedAtSource"] for item in report.document["vulnerabilities"]
+        ]
+
+        self.assertNotIn("system", reported)
+        self.assertEqual(len(detection_failures(report)), 1)
+        self.assertEqual(
+            report.document["x-complyroll"]["parserVersions"]["complyroll.detection-failures"],
+            "1",
+        )
+
+
+class DetectionFailureAttestationTests(unittest.TestCase):
+    """The attestation section names a system record's clock only when one is reported."""
+
+    REWORDED = (
+        "Every reported vulnerability carried a detection time from its source artifact or, "
+        "for a detection process failure, from the instant ComplyRoll or the scanner recorded "
+        "it. No attestation was needed."
+    )
+    UNCHANGED = (
+        "Every reported vulnerability carried a detection time from its source artifact. "
+        "No attestation was needed."
+    )
+
+    def attestation_section(self, report: CompiledReport) -> str:
+        return markdown_section(report.to_markdown(), "Detection time attestation")
+
+    def test_a_reported_system_record_rewords_the_sentence(self) -> None:
+        report = compile_fixtures(
+            artifacts=(FIXTURES / "failed-invocation.sarif", FIXTURES / "failed-truncated.sarif"),
+            record_failed_imports=True,
+            detected_at=None,
+        )
+
+        self.assertIsNone(report.document["x-complyroll"]["detectionTimeAttestation"])
+        self.assertIn(self.REWORDED, self.attestation_section(report))
+        self.assertNotIn(self.UNCHANGED, self.attestation_section(report))
+
+    def test_without_a_system_record_the_sentence_is_unchanged(self) -> None:
+        report = compile_fixtures(
+            artifacts=(FIXTURES / "failed-invocation.sarif",), detected_at=None
+        )
+
+        self.assertIn(self.UNCHANGED, self.attestation_section(report))
+        self.assertNotIn(self.REWORDED, self.attestation_section(report))
+
+    def test_an_excluded_system_record_leaves_the_sentence_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            timed = Path(directory) / "timed.sarif"
+            timed.write_text(
+                (FIXTURES / "failed-invocation.sarif")
+                .read_text(encoding="utf-8")
+                .replace('"executionSuccessful": false', '"executionSuccessful": true'),
+                encoding="utf-8",
+            )
+            report = compile_fixtures(
+                artifacts=(timed, FIXTURES / "failed-truncated.sarif"),
+                record_failed_imports=True,
+                detected_at=None,
+                as_of=DetectionFailurePeriodTests.LATE,
+            )
+
+        self.assertEqual(len(detection_failures(report)), 1)
+        self.assertIn(self.UNCHANGED, self.attestation_section(report))
+
+    def test_an_attested_run_keeps_its_attestation_text(self) -> None:
+        artifacts = (FIXTURES / "windows-host.ckl",)
+        plain = compile_fixtures(artifacts=artifacts)
+        failed = compile_fixtures(
+            artifacts=(*artifacts, FIXTURES / "failed-truncated.sarif"),
+            record_failed_imports=True,
+        )
+
+        self.assertEqual(self.attestation_section(failed), self.attestation_section(plain))
+
+
+class DetectionFailureEvaluationTests(unittest.TestCase):
+    """An evaluation finds a failure's record by the documented triple alone."""
+
+    def compile_hostile(self, evaluations: EvaluationSet) -> CompiledVdtReport:
+        with tempfile.TemporaryDirectory() as directory:
+            hostile = Path(directory) / "hostile.cklb"
+            hostile.write_text(hostile_checklist(TRUNCATED_SHA256), encoding="utf-8")
+            return compile_fixtures(
+                artifacts=(hostile, FIXTURES / "failed-truncated.sarif"),
+                evaluations=evaluations,
+                record_failed_imports=True,
+            )
+
+    def test_the_triple_matches_the_system_record_beside_a_hostile_checklist(self) -> None:
+        evaluations = evaluations_from(
+            match=system_match(TRUNCATED_SHA256), completedAt="2026-08-21T12:00:00Z"
+        )
+
+        report = self.compile_hostile(evaluations)
+
+        by_source = {
+            item["x-complyroll"]["detectedAtSource"]: item
+            for item in report.document["vulnerabilities"]
+        }
+        self.assertEqual(set(by_source), {"system", "attestation"})
+        self.assertEqual(by_source["system"]["providerTrackingId"], TRUNCATED_CASE)
+        self.assertEqual(by_source["system"]["evaluationCompletedAt"], "2026-08-21T12:00:00Z")
+        self.assertNotIn("evaluationCompletedAt", by_source["attestation"])
+        self.assertEqual(
+            by_source["attestation"]["x-complyroll"]["resources"][0]["resourceType"], "host"
+        )
+        self.assertEqual(
+            [item["trackingId"] for item in detection_failures(report)], [TRUNCATED_CASE]
+        )
+
+    def test_the_pair_alone_is_ambiguous_beside_a_hostile_checklist(self) -> None:
+        evaluations = evaluations_from(match=system_match(TRUNCATED_SHA256, source_type=False))
+
+        with self.assertRaises(ReportCompileError) as caught:
+            self.compile_hostile(evaluations)
+
+        self.assertEqual(
+            [item.code for item in caught.exception.diagnostics], ["evaluation_ambiguous"]
+        )
+
+    def test_a_lone_failure_is_not_matched_without_its_context_key(self) -> None:
+        # One failure matches the pair today, and the next failure of another digest would
+        # make the same file ambiguous, so the triple is required even when nothing else
+        # could match.
+        for label, source_type in (("with sourceType", True), ("without sourceType", False)):
+            with self.subTest(label):
+                match = system_match(TRUNCATED_SHA256, source_type=source_type)
+                del match["contextKey"]
+                evaluations = evaluations_from(match=match, completedAt="2026-08-21T12:00:00Z")
+
+                with self.assertRaises(ReportCompileError) as caught:
+                    compile_fixtures(
+                        artifacts=(FIXTURES / "failed-truncated.sarif",),
+                        evaluations=evaluations,
+                        record_failed_imports=True,
+                    )
+
+                described = evaluations.entries[0].match.describe()
+                self.assertEqual(
+                    [
+                        (item.code, item.location, item.message)
+                        for item in caught.exception.diagnostics
+                    ],
+                    [
+                        (
+                            "evaluation_context_key_required",
+                            "evaluations[0]",
+                            f"{described} matches the detection process failure "
+                            f"{TRUNCATED_CASE}; a detection process failure is matched by "
+                            "sourceRecordId, sourceType and contextKey together, so add "
+                            "contextKey",
+                        )
+                    ],
+                )
+
+    def test_an_ambiguous_match_names_only_the_keys_it_leaves_out(self) -> None:
+        # Ambiguity is checked before the lone-failure refusal, so several failures matching
+        # the pair are named together, and the remedy never asks for a key already given.
+        def compile_failed(evaluations: EvaluationSet) -> CompiledVdtReport:
+            return compile_fixtures(
+                artifacts=FAILED_ARTIFACTS, evaluations=evaluations, record_failed_imports=True
+            )
+
+        with_source_type = system_match(TRUNCATED_SHA256)
+        del with_source_type["contextKey"]
+        cases = (
+            ("sourceType given", compile_failed, with_source_type, 3, "add contextKey"),
+            (
+                "contextKey given",
+                self.compile_hostile,
+                system_match(TRUNCATED_SHA256, source_type=False),
+                2,
+                "add sourceType",
+            ),
+            (
+                "neither given",
+                compile_failed,
+                {"sourceRecordId": "detection-process-failure"},
+                3,
+                "add contextKey or sourceType",
+            ),
+        )
+        for label, compile_with, match, count, remedy in cases:
+            with self.subTest(label):
+                with self.assertRaises(ReportCompileError) as caught:
+                    compile_with(evaluations_from(match=match))
+
+                (diagnostic,) = caught.exception.diagnostics
+                self.assertEqual(diagnostic.code, "evaluation_ambiguous")
+                self.assertIn(f"matches {count} vulnerabilities", diagnostic.message)
+                self.assertTrue(diagnostic.message.endswith(f"); {remedy}"))
+
+    def test_an_override_renames_the_listed_tracking_id(self) -> None:
+        evaluations = evaluations_from(
+            match=system_match(TRUNCATED_SHA256),
+            completedAt="2026-08-21T12:00:00Z",
+            trackingId="PROVIDER-FAIL-1",
+        )
+
+        report = compile_fixtures(
+            artifacts=FAILED_ARTIFACTS, evaluations=evaluations, record_failed_imports=True
+        )
+
+        tracking_ids = {item["name"]: item["trackingId"] for item in detection_failures(report)}
+        self.assertEqual(tracking_ids["failed-truncated.sarif"], "PROVIDER-FAIL-1")
+        self.assertEqual(failure_rows(report)["failed-truncated.sarif"][6], "PROVIDER-FAIL-1")
+        self.assertIn(
+            "PROVIDER-FAIL-1",
+            [item["providerTrackingId"] for item in report.document["vulnerabilities"]],
+        )
+
+
+class DetectionFailureIdentityTests(unittest.TestCase):
+    """Only ComplyRoll's own observations are system records, whatever a scanner claims."""
+
+    def test_a_sarif_driver_named_complyroll_is_not_a_system_record(self) -> None:
+        log = json.loads((FIXTURES / "failed-invocation.sarif").read_text(encoding="utf-8"))
+        del log["runs"][1]
+        log["runs"][0]["tool"]["driver"]["name"] = "complyroll"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "impostor.sarif"
+            path.write_text(json.dumps(log), encoding="utf-8")
+            report = compile_fixtures(artifacts=(path,), record_failed_imports=True)
+
+        extension = report.document["x-complyroll"]
+        record = find_vulnerability(report, "EXS-0001")
+        self.assertEqual(record["detection"]["detectionSource"], "complyroll")
+        self.assertEqual(record["x-complyroll"]["detectedAtSource"], "artifact")
+        self.assertNotIn("detectionFailures", extension)
+        self.assertNotIn("complyroll.detection-failures", extension["parserVersions"])
+
+    def test_a_format_character_in_a_name_is_removed_from_the_listing(self) -> None:
+        # Built with chr() so the invisible character is never a literal in this file.
+        name = f"failed{chr(0x200B)}-truncated.sarif"
+        with tempfile.TemporaryDirectory() as directory:
+            path = copy_artifact(FIXTURES / "failed-truncated.sarif", Path(directory), name)
+            report = compile_fixtures(artifacts=(path,), record_failed_imports=True)
+
+        self.assertEqual(
+            [item["name"] for item in detection_failures(report)], ["failed-truncated.sarif"]
+        )
+        self.assertIn("failed-truncated.sarif", failure_rows(report))
+        self.assertNotIn(chr(0x200B), report.to_json())
+        self.assertNotIn(chr(0x200B), report.to_markdown())
+
+    def test_a_run_whose_only_artifact_failed_still_reports(self) -> None:
+        report = compile_fixtures(
+            artifacts=(FIXTURES / "failed-truncated.sarif",), record_failed_imports=True
+        )
+
+        self.assertTrue(report.validation.is_valid)
+        self.assertEqual(report.document["x-complyroll"]["artifacts"], [])
+        self.assertEqual(
+            [item["providerTrackingId"] for item in report.document["vulnerabilities"]],
+            [TRUNCATED_CASE],
+        )
+
+
+class GoldenFailedVdtReportTests(unittest.TestCase):
+    """The failed-imports VDT golden pins one system record per failure class (ADR 0014).
+
+    It compiles the VDT golden's fixtures plus `FAILED_ARTIFACTS` with
+    `record_failed_imports` and `examples/evaluations-failed.json`, whose third entry
+    evaluates the parse failure's record by the documented triple.
+    """
+
+    report: CompiledVdtReport
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.report = compile_vdt_report(
+            [*ARTIFACTS, *FAILED_ARTIFACTS],
+            options=options(),
+            evaluations=load_evaluations(FAILED_EVALUATIONS),
+            record_failed_imports=True,
+        )
+
+    def reported(self) -> dict[str, dict[str, object]]:
+        return {
+            item["providerTrackingId"]: item for item in self.report.document["vulnerabilities"]
+        }
+
+    def test_json_matches_the_golden_byte_for_byte(self) -> None:
+        expected = (GOLDEN / "vdt-failed.json").read_text(encoding="utf-8")
+
+        self.assertEqual(self.report.to_json(), expected)
+
+    def test_markdown_matches_the_golden_byte_for_byte(self) -> None:
+        expected = (GOLDEN / "vdt-failed.md").read_text(encoding="utf-8")
+
+        self.assertEqual(self.report.to_markdown(), expected)
+
+    def test_compiled_document_satisfies_the_official_schema(self) -> None:
+        self.assertTrue(self.report.validation.is_valid)
+        self.assertEqual(self.report.validation.issues, ())
+        self.assertEqual(self.report.validation.provenance.schema_version, "0.1.1")
+
+    def test_compiling_twice_produces_identical_bytes(self) -> None:
+        again = compile_vdt_report(
+            [*ARTIFACTS, *FAILED_ARTIFACTS],
+            options=options(),
+            evaluations=load_evaluations(FAILED_EVALUATIONS),
+            record_failed_imports=True,
+        )
+
+        self.assertEqual(again.to_json(), self.report.to_json())
+        self.assertEqual(again.to_markdown(), self.report.to_markdown())
+
+    def test_the_report_does_not_depend_on_how_artifacts_were_addressed(self) -> None:
+        absolute = compile_vdt_report(
+            [path.resolve() for path in (*ARTIFACTS, *FAILED_ARTIFACTS)],
+            options=options(),
+            evaluations=load_evaluations(FAILED_EVALUATIONS.resolve()),
+            record_failed_imports=True,
+        )
+
+        self.assertEqual(absolute.to_json(), self.report.to_json())
+        self.assertEqual(absolute.to_markdown(), self.report.to_markdown())
+        self.assertNotIn(str(REPO_ROOT), absolute.to_json())
+        self.assertNotIn(str(REPO_ROOT), absolute.to_markdown())
+
+    def test_one_entry_per_failure_class(self) -> None:
+        entries = detection_failures(self.report)
+
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(
+            {item["name"]: item["failureClass"] for item in entries},
+            {
+                "failed-truncated.sarif": "parse",
+                "failed-invalid-rules.cklb": "content",
+                "failed-invocation.sarif": "execution",
+            },
+        )
+
+    def test_each_entry_carries_its_own_clock(self) -> None:
+        self.assertEqual(
+            {
+                item["name"]: (item["observedAt"], item["clock"])
+                for item in detection_failures(self.report)
+            },
+            {
+                "failed-invalid-rules.cklb": ("2026-08-21T12:00:00Z", "as-of"),
+                "failed-invocation.sarif": ("2026-08-04T10:00:00Z", "invocation"),
+                "failed-truncated.sarif": ("2026-08-21T12:00:00Z", "as-of"),
+            },
+        )
+
+    def test_only_the_parse_record_carries_an_evaluation(self) -> None:
+        reported = self.reported()
+        parse = reported[TRUNCATED_CASE]
+
+        self.assertEqual(parse["currentRating"], 3)
+        self.assertEqual(parse["evaluationCompletedAt"], "2026-08-21T12:00:00Z")
+        self.assertIs(parse["isInternetReachable"], False)
+        self.assertIs(parse["isLikelyExploitable"], False)
+        for tracking_id in (INVALID_RULES_CASE, INVOCATION_CASE):
+            with self.subTest(tracking_id=tracking_id):
+                self.assertNotIn("evaluationCompletedAt", reported[tracking_id])
+                self.assertNotIn("currentRating", reported[tracking_id])
+
+    def test_every_failure_record_is_a_system_record_with_its_own_time(self) -> None:
+        reported = self.reported()
+        attestation = self.report.document["x-complyroll"]["detectionTimeAttestation"]
+        systems = [
+            tracking_id
+            for tracking_id, item in reported.items()
+            if item["x-complyroll"]["detectedAtSource"] == "system"
+        ]
+
+        self.assertEqual(len(systems), 3)
+        self.assertEqual(attestation["count"], 6)
+        for entry in detection_failures(self.report):
+            with self.subTest(name=entry["name"]):
+                record = reported[str(entry["trackingId"])]
+
+                self.assertEqual(record["x-complyroll"]["detectedAtSource"], "system")
+                self.assertEqual(record["detection"]["detectedAt"], entry["observedAt"])
+                self.assertNotEqual(record["detection"]["detectedAt"], "2026-08-01T00:00:00Z")
+                self.assertNotIn(entry["trackingId"], attestation["appliedTo"])
+
+    def test_the_detection_failures_parser_is_listed(self) -> None:
+        self.assertEqual(
+            self.report.document["x-complyroll"]["parserVersions"],
+            {
+                "complyroll.ckl": "1",
+                "complyroll.cklb": "1",
+                "complyroll.detection-failures": "1",
+                "complyroll.sarif": "1",
+                "complyroll.xccdf": "1",
+            },
+        )
+
+    def test_the_markdown_lists_each_failure_in_one_table(self) -> None:
+        markdown = self.report.to_markdown()
+        inputs = markdown_section(markdown, "Inputs")
+        table = inputs.split("\n### Detection process failures\n", 1)[-1]
+        body = [
+            line
+            for line in table.splitlines()
+            if line.startswith("| ") and not line.startswith("| Artifact |")
+        ]
+        rows = failure_rows(self.report)
+
+        self.assertEqual(markdown.count("### Detection process failures"), 1)
+        self.assertEqual(len(body), 3)
+        for entry in detection_failures(self.report):
+            with self.subTest(name=entry["name"]):
+                self.assertEqual(
+                    rows[str(entry["name"])][3:],
+                    (
+                        entry["failureClass"],
+                        entry["observedAt"],
+                        entry["clock"],
+                        entry["trackingId"],
+                    ),
+                )
+
+    def test_the_failed_invocation_still_reports_its_finding(self) -> None:
+        record = find_vulnerability(self.report, "EXS-0001")
+        manifest = {
+            item["name"]: item for item in self.report.document["x-complyroll"]["artifacts"]
+        }
+
+        self.assertEqual(record["x-complyroll"]["detectedAtSource"], "artifact")
+        self.assertEqual(
+            record["detection"],
+            {"detectedAt": "2026-08-03T10:00:00Z", "detectionSource": "ExampleScan"},
+        )
+        self.assertEqual(manifest["failed-invocation.sarif"]["observationCount"], 1)
+        self.assertNotIn("failed-truncated.sarif", manifest)
+        self.assertNotIn("failed-invalid-rules.cklb", manifest)
+
+    def test_each_failure_is_one_warning_and_none_is_an_error(self) -> None:
+        recorded = [
+            item for item in self.report.diagnostics if item.code == "detection_failure_recorded"
+        ]
+
+        self.assertEqual(
+            [item.location for item in recorded],
+            ["failed-invalid-rules.cklb", "failed-invocation.sarif", "failed-truncated.sarif"],
+        )
+        self.assertTrue(all(item.level is DiagnosticLevel.WARNING for item in recorded))
+        self.assertNotIn(DiagnosticLevel.ERROR, {item.level for item in self.report.diagnostics})
+
+    def test_the_period_reports_every_system_record(self) -> None:
+        # The invocation clock (2026-08-04) and the as-of (2026-08-21) both fall inside
+        # August, so the period keeps all three records and excludes nothing.
+        reported = self.reported()
+
+        self.assertEqual(
+            self.report.document["reportPeriod"],
+            {"from": "2026-08-01T00:00:00Z", "to": "2026-08-31T23:59:59Z"},
+        )
+        for entry in detection_failures(self.report):
+            with self.subTest(name=entry["name"]):
+                detected = datetime.fromisoformat(str(entry["observedAt"]))
+
+                self.assertTrue(PERIOD_FROM <= detected <= PERIOD_TO)
+                self.assertIn(entry["trackingId"], reported)
+        self.assertEqual(self.report.document["x-complyroll"]["excludedByPeriod"], 0)
+        self.assertNotIn("excluded_by_period", [item.code for item in self.report.diagnostics])
+
+    def test_markdown_totals_reconcile_with_the_json(self) -> None:
+        markdown = self.report.to_markdown()
+        vulnerabilities = self.report.document["vulnerabilities"]
+        summary = summary_counts(markdown)
+
+        rows = [
+            line
+            for line in markdown.splitlines()
+            if line.startswith("| case-") or line.startswith("| Tracking ID |")
+        ]
+        evaluated = sum(1 for item in vulnerabilities if "evaluationCompletedAt" in item)
+        overdue = sum(1 for item in vulnerabilities if item["overdueStatus"]["isOverdue"])
+
+        self.assertEqual(summary["Vulnerabilities reported"], len(vulnerabilities))
+        self.assertEqual(len(rows) - 1, len(vulnerabilities))
+        self.assertEqual(summary["Evaluated"], evaluated)
+        self.assertEqual(summary["Not yet evaluated"], len(vulnerabilities) - evaluated)
+        self.assertEqual(summary["Overdue"], overdue)
+        self.assertEqual(summary["Accepted, reported under VER-RPT-AVI"], len(self.report.accepted))
+        self.assertEqual(
+            summary["Excluded by report period"],
+            self.report.document["x-complyroll"]["excludedByPeriod"],
+        )
+        for rating in range(1, 6):
+            expected = sum(1 for item in vulnerabilities if item.get("currentRating") == rating)
+            self.assertEqual(summary[f"Current PAIN N{rating}"], expected)
+
+    def test_markdown_carries_the_json(self) -> None:
+        assert_markdown_carries_the_json(self, self.report)
+
+
+class GoldenFailedHistoricalReportTests(unittest.TestCase):
+    """The failed-imports historical golden lists each system record like any record."""
+
+    report: CompiledHistoricalReport
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.report = compile_historical_report(
+            [*ARTIFACTS, *FAILED_ARTIFACTS],
+            options=options(period_from=None, period_to=None),
+            evaluations=load_evaluations(FAILED_EVALUATIONS),
+            record_failed_imports=True,
+        )
+
+    def reported(self) -> dict[str, dict[str, object]]:
+        return {
+            item["providerTrackingId"]: item
+            for item in self.report.document["activeVulnerabilities"]
+        }
+
+    def test_json_matches_the_golden_byte_for_byte(self) -> None:
+        expected = (GOLDEN / "historical-failed.json").read_text(encoding="utf-8")
+
+        self.assertEqual(self.report.to_json(), expected)
+
+    def test_markdown_matches_the_golden_byte_for_byte(self) -> None:
+        expected = (GOLDEN / "historical-failed.md").read_text(encoding="utf-8")
+
+        self.assertEqual(self.report.to_markdown(), expected)
+
+    def test_compiled_document_satisfies_the_historical_activity_schema(self) -> None:
+        schema_id = self.report.metadata.schema_provenance.schema_id
+
+        self.assertTrue(self.report.validation.is_valid)
+        self.assertEqual(self.report.validation.issues, ())
+        self.assertTrue(
+            schema_id.endswith("fedramp-historical-ver-activity-schema-2026-06-24.json")
+        )
+
+    def test_compiling_twice_produces_identical_bytes(self) -> None:
+        again = compile_historical_report(
+            [*ARTIFACTS, *FAILED_ARTIFACTS],
+            options=options(period_from=None, period_to=None),
+            evaluations=load_evaluations(FAILED_EVALUATIONS),
+            record_failed_imports=True,
+        )
+
+        self.assertEqual(again.to_json(), self.report.to_json())
+        self.assertEqual(again.to_markdown(), self.report.to_markdown())
+
+    def test_the_report_does_not_depend_on_how_artifacts_were_addressed(self) -> None:
+        absolute = compile_historical_report(
+            [path.resolve() for path in (*ARTIFACTS, *FAILED_ARTIFACTS)],
+            options=options(period_from=None, period_to=None),
+            evaluations=load_evaluations(FAILED_EVALUATIONS.resolve()),
+            record_failed_imports=True,
+        )
+
+        self.assertEqual(absolute.to_json(), self.report.to_json())
+        self.assertEqual(absolute.to_markdown(), self.report.to_markdown())
+        self.assertNotIn(str(REPO_ROOT), absolute.to_json())
+        self.assertNotIn(str(REPO_ROOT), absolute.to_markdown())
+
+    def test_the_snapshot_is_taken_at_the_as_of_with_no_period(self) -> None:
+        document = self.report.document
+
+        self.assertEqual(document["generatedAt"], "2026-08-21T12:00:00Z")
+        self.assertNotIn("reportPeriod", document)
+        self.assertNotIn("excludedByPeriod", document["x-complyroll"])
+        self.assertEqual(document["acceptedVulnerabilities"], [])
+
+    def test_one_entry_per_failure_class(self) -> None:
+        entries = detection_failures(self.report)
+
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(
+            {item["name"]: item["failureClass"] for item in entries},
+            {
+                "failed-truncated.sarif": "parse",
+                "failed-invalid-rules.cklb": "content",
+                "failed-invocation.sarif": "execution",
+            },
+        )
+
+    def test_each_entry_carries_its_own_clock(self) -> None:
+        self.assertEqual(
+            {
+                item["name"]: (item["observedAt"], item["clock"])
+                for item in detection_failures(self.report)
+            },
+            {
+                "failed-invalid-rules.cklb": ("2026-08-21T12:00:00Z", "as-of"),
+                "failed-invocation.sarif": ("2026-08-04T10:00:00Z", "invocation"),
+                "failed-truncated.sarif": ("2026-08-21T12:00:00Z", "as-of"),
+            },
+        )
+
+    def test_only_the_parse_record_carries_an_evaluation(self) -> None:
+        reported = self.reported()
+        parse = reported[TRUNCATED_CASE]
+
+        self.assertEqual(parse["currentRating"], 3)
+        self.assertEqual(parse["evaluationCompletedAt"], "2026-08-21T12:00:00Z")
+        self.assertIs(parse["isInternetReachable"], False)
+        self.assertIs(parse["isLikelyExploitable"], False)
+        for tracking_id in (INVALID_RULES_CASE, INVOCATION_CASE):
+            with self.subTest(tracking_id=tracking_id):
+                self.assertNotIn("evaluationCompletedAt", reported[tracking_id])
+                self.assertNotIn("currentRating", reported[tracking_id])
+
+    def test_every_failure_record_is_a_system_record_with_its_own_time(self) -> None:
+        reported = self.reported()
+        attestation = self.report.document["x-complyroll"]["detectionTimeAttestation"]
+        systems = [
+            tracking_id
+            for tracking_id, item in reported.items()
+            if item["x-complyroll"]["detectedAtSource"] == "system"
+        ]
+
+        self.assertEqual(len(systems), 3)
+        self.assertEqual(attestation["count"], 6)
+        for entry in detection_failures(self.report):
+            with self.subTest(name=entry["name"]):
+                record = reported[str(entry["trackingId"])]
+
+                self.assertEqual(record["x-complyroll"]["detectedAtSource"], "system")
+                self.assertEqual(record["detection"]["detectedAt"], entry["observedAt"])
+                self.assertNotEqual(record["detection"]["detectedAt"], "2026-08-01T00:00:00Z")
+                self.assertNotIn(entry["trackingId"], attestation["appliedTo"])
+
+    def test_the_detection_failures_parser_is_listed(self) -> None:
+        self.assertEqual(
+            self.report.document["x-complyroll"]["parserVersions"],
+            {
+                "complyroll.ckl": "1",
+                "complyroll.cklb": "1",
+                "complyroll.detection-failures": "1",
+                "complyroll.sarif": "1",
+                "complyroll.xccdf": "1",
+            },
+        )
+
+    def test_the_markdown_lists_each_failure_in_one_table(self) -> None:
+        markdown = self.report.to_markdown()
+        inputs = markdown_section(markdown, "Inputs")
+        table = inputs.split("\n### Detection process failures\n", 1)[-1]
+        body = [
+            line
+            for line in table.splitlines()
+            if line.startswith("| ") and not line.startswith("| Artifact |")
+        ]
+        rows = failure_rows(self.report)
+
+        self.assertEqual(markdown.count("### Detection process failures"), 1)
+        self.assertEqual(len(body), 3)
+        for entry in detection_failures(self.report):
+            with self.subTest(name=entry["name"]):
+                self.assertEqual(
+                    rows[str(entry["name"])][3:],
+                    (
+                        entry["failureClass"],
+                        entry["observedAt"],
+                        entry["clock"],
+                        entry["trackingId"],
+                    ),
+                )
+
+    def test_the_failed_invocation_still_reports_its_finding(self) -> None:
+        record = find_vulnerability(self.report, "EXS-0001", key="activeVulnerabilities")
+        manifest = {
+            item["name"]: item for item in self.report.document["x-complyroll"]["artifacts"]
+        }
+
+        self.assertEqual(record["x-complyroll"]["detectedAtSource"], "artifact")
+        self.assertEqual(
+            record["detection"],
+            {"detectedAt": "2026-08-03T10:00:00Z", "detectionSource": "ExampleScan"},
+        )
+        self.assertEqual(manifest["failed-invocation.sarif"]["observationCount"], 1)
+        self.assertNotIn("failed-truncated.sarif", manifest)
+        self.assertNotIn("failed-invalid-rules.cklb", manifest)
+
+    def test_each_failure_is_one_warning_and_none_is_an_error(self) -> None:
+        recorded = [
+            item for item in self.report.diagnostics if item.code == "detection_failure_recorded"
+        ]
+
+        self.assertEqual(
+            [item.location for item in recorded],
+            ["failed-invalid-rules.cklb", "failed-invocation.sarif", "failed-truncated.sarif"],
+        )
+        self.assertTrue(all(item.level is DiagnosticLevel.WARNING for item in recorded))
+        self.assertNotIn(DiagnosticLevel.ERROR, {item.level for item in self.report.diagnostics})
+
+    def test_markdown_carries_the_json(self) -> None:
+        assert_markdown_carries_the_json(self, self.report, sections=HISTORICAL_DETAIL_SECTIONS)
 
 
 if __name__ == "__main__":

@@ -392,7 +392,11 @@ class _HdfParse(EvidenceParse):
         # SECURITY: An ERROR anywhere withholds every observation (refuse identity).
         if not self.diagnostics.has_errors:
             observations = [self._assemble(key, self.folds[key]) for key in sorted(self.folds)]
-        return AdapterOutput(tuple(observations), self.diagnostics.emit(self.artifact.name))
+        return AdapterOutput(
+            tuple(observations),
+            self.diagnostics.emit(self.artifact.name),
+            withheld=self.diagnostics.has_errors and bool(self.folds),
+        )
 
     # Document and profiles
 

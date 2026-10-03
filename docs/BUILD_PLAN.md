@@ -198,15 +198,29 @@ Target: 3–4 weeks
 - Scanner and validation freshness checks.
 - Change-triggered detection jobs.
 - CI-friendly exit criteria and a reference GitHub Actions workflow.
+- Response-process and attestation failures: a broken remediation or response workflow, and a
+  vulnerability whose detection time is never attested, each recorded as a reviewable case. Added
+  2026-09-30 as a scope change from the deliverable below, because neither is an import failure
+  and each needs inputs of its own (ADR 0014 Decision 17).
 - System-generated observations for failed imports, stale coverage, missing resources, or broken
-  response workflows.
+  response workflows. **Partially complete, 2026-09-30** (ADR 0014): detection process failures
+  shipped, so with `--record-failed-imports` an artifact that cannot be parsed, holds no usable
+  content, or reports a failed scanner invocation becomes a system observation and a case on both
+  paths, and the run exits 3. Stale coverage and missing resources belong to the coverage and
+  freshness checks above, and broken response workflows to the deliverable above.
 - Carried from Phase 1 as a scope change: information resource and response action records, the
   reporting recurrence clocks, and HTML report output. The KEV clock shipped with the KEV
   enrichment above.
 
 ### Exit criteria
 
-- A failed or stale detection process creates a reviewable vulnerability case.
+- A failed detection process creates a reviewable vulnerability case. **Met, 2026-09-30** (ADR
+  0014: with `--record-failed-imports`, a failed import or a failed invocation becomes a system
+  observation and its own case, evaluated like any other, and the stateless and persisted reports
+  carry it; an unreadable, rejected-format, partial, or unclassified reading stays fatal, ADR 0014
+  Decision 2).
+- A stale detection process creates a reviewable vulnerability case. Not started; it belongs to
+  the coverage and freshness checks.
 - New or significantly changed resources can trigger a scoped detection request.
 - A case can group equivalent observations while retaining every affected resource.
 
@@ -293,5 +307,9 @@ Target: after the local engine is stable
    reconciled against the stateless one byte for byte).
 9. A system-origin coverage observation for a clean scan, so that a SARIF log with no results
    stops failing ingest (ADR 0011 Decision 13) and a failed invocation becomes evidence of a
-   detection gap instead of an error. Not started; it is the first gap the adapter's users will
-   meet, because a clean log fails the whole `ingest` run that includes it.
+   detection gap instead of an error. **Split, 2026-09-30.** The failed invocation is complete
+   (ADR 0014: with `--record-failed-imports` it becomes a system observation and a case of class
+   `execution`, beside the `parse` and `content` classes, and the run exits 3). The clean scan is
+   not started and belongs to the coverage and freshness slice; it is the first gap the adapter's
+   users will meet, because a clean log still fails the whole `ingest` run that includes it, with
+   or without the flag.

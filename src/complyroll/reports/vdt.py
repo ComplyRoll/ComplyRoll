@@ -27,17 +27,29 @@ from urllib.parse import urlsplit
 
 from complyroll import __version__
 from complyroll.adapters import (
+    DETECTION_FAILURE_SOURCE_TYPE,
     ArtifactProvenance,
     DiagnosticLevel,
+    FailureClassification,
     IngestResult,
+    classify_ingest,
+    failure_diagnostics,
     ingest_stig_artifact,
+    system_observation_for,
 )
+from complyroll.adapters.common import diagnostic_text
 from complyroll.correlation import (
     VulnerabilityGroup,
     correlate_observations,
     group_open_observations,
 )
-from complyroll.models import CaseStatus, Observation, PainRating, ResourceRef
+from complyroll.models import (
+    CaseStatus,
+    Observation,
+    ObservationOrigin,
+    PainRating,
+    ResourceRef,
+)
 from complyroll.policy import (
     CertificationClass,
     CertificationProfile,
@@ -274,6 +286,44 @@ class CompiledArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class CompiledDetectionFailure:
+    """One detection process failure a system observation records (ADR 0014).
+
+    A failed artifact is not in the artifact manifest, which lists what was read, so
+    this is its manifest entry instead. Every field but `tracking_id` comes from the
+    system observation's own metadata, which both the stateless compile and the
+    event-sourced rebuild hold, so the two paths cannot describe a failure differently.
+    `tracking_id` is the published identifier of the record carrying the observation,
+    after any evaluation override, so a reader can find that record by it.
+    """
+
+    name: str
+    sha256: str
+    size_bytes: int
+    parser: str
+    parser_version: str
+    failure_class: str
+    failure_codes: tuple[str, ...]
+    observed_at: datetime
+    clock: str
+    tracking_id: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "sha256": self.sha256,
+            "sizeBytes": self.size_bytes,
+            "parser": self.parser,
+            "parserVersion": self.parser_version,
+            "failureClass": self.failure_class,
+            "failureCodes": list(self.failure_codes),
+            "observedAt": _iso(self.observed_at),
+            "clock": self.clock,
+            "trackingId": self.tracking_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledVulnerability:
     """The normalized record both renderers read (README non-negotiable rule 5)."""
 
@@ -437,6 +487,7 @@ class ReportMetadata:
     attestation_applied_to: tuple[str, ...] = ()
     excluded_by_period: int = 0
     attestation_detected_at: datetime | None = None
+    detection_failures: tuple[CompiledDetectionFailure, ...] = ()
 
     @property
     def attestation(self) -> datetime | None:
@@ -476,7 +527,8 @@ class CompiledReport(Protocol):
 
     The members are read-only properties rather than attributes so that the frozen
     report dataclasses satisfy the protocol structurally; a caller that only writes
-    a report out needs nothing more than these four.
+    a report out needs the four that render it, and `metadata` tells it what the run
+    recorded, such as the detection process failures behind the CLI's exit status.
     """
 
     @property
@@ -484,6 +536,9 @@ class CompiledReport(Protocol):
 
     @property
     def diagnostics(self) -> tuple[ReportDiagnostic, ...]: ...
+
+    @property
+    def metadata(self) -> ReportMetadata: ...
 
     def to_json(self, indent: int = 2) -> str: ...
 
@@ -495,11 +550,17 @@ def compile_vdt_report(
     *,
     options: ReportOptions,
     evaluations: EvaluationSet | None = None,
+    record_failed_imports: bool = False,
 ) -> CompiledVdtReport:
     """Compile one Vulnerability Detail Report from artifacts and explicit inputs."""
 
     return project_vdt(
-        compile_record_set_from_artifacts(artifact_paths, options=options, evaluations=evaluations)
+        compile_record_set_from_artifacts(
+            artifact_paths,
+            options=options,
+            evaluations=evaluations,
+            record_failed_imports=record_failed_imports,
+        )
     )
 
 
@@ -508,12 +569,15 @@ def compile_record_set_from_artifacts(
     *,
     options: ReportOptions,
     evaluations: EvaluationSet | None = None,
+    record_failed_imports: bool = False,
 ) -> CompiledRecordSet:
     """Ingest artifacts, match evaluations, and compile the record set they describe.
 
     This is the stateless path's front half. Every report the package projects from
     the same artifacts starts here, so ingest happens once per run rather than once
-    per report.
+    per report. With `record_failed_imports`, an artifact whose failure is mintable
+    becomes a system observation instead of stopping the run (ADR 0014); without it
+    every failure stops the run exactly as before.
     """
 
     if not isinstance(options, ReportOptions):
@@ -522,7 +586,12 @@ def compile_record_set_from_artifacts(
         raise TypeError("evaluations must be an EvaluationSet")
 
     ingest_diagnostics: list[ReportDiagnostic] = []
-    artifacts, observations = _ingest_all(artifact_paths, options, ingest_diagnostics)
+    artifacts, observations = _ingest_all(
+        artifact_paths,
+        options,
+        ingest_diagnostics,
+        record_failed_imports=record_failed_imports,
+    )
     groups = group_open_observations(observations)
     matches = _match_evaluations(groups, evaluations)
     return compile_record_set(
@@ -544,6 +613,8 @@ class CompiledRecordSet:
     diagnostics after the ones held here, so the diagnostics on the set are exactly
     the ones the compile itself raised: ingest diagnostics in their total order, then
     unresolved observations, then partial detection times in group order.
+    `detection_failures` lists every system observation in the set, whether or not a
+    projection's period later reports its record.
     """
 
     records: tuple[CompiledVulnerability, ...]
@@ -553,6 +624,7 @@ class CompiledRecordSet:
     parser_versions: tuple[tuple[str, str], ...]
     generator_version: str
     options: ReportOptions
+    detection_failures: tuple[CompiledDetectionFailure, ...] = ()
 
 
 def compile_records(
@@ -647,6 +719,7 @@ def compile_record_set(
     compiled: list[CompiledVulnerability] = []
     missing_detection: list[str] = []
     kev_incomplete: list[CompiledVulnerability] = []
+    detection_failures: list[CompiledDetectionFailure] = []
 
     for group in groups:
         detected_at, detected_source = _resolve_detection_time(group, attestation)
@@ -678,6 +751,11 @@ def compile_record_set(
             kev_rule=kev_rule,
         )
         compiled.append(record)
+        detection_failures.extend(
+            _detection_failure(item, record.tracking_id)
+            for item in group.observations
+            if item.origin is ObservationOrigin.SYSTEM
+        )
         if kev_rule is not None and any(cve_may_be_missing(item) for item in group.observations):
             kev_incomplete.append(record)
 
@@ -706,6 +784,7 @@ def compile_record_set(
         parser_versions=_parser_versions(observations),
         generator_version=__version__,
         options=options,
+        detection_failures=_ordered_detection_failures(detection_failures),
     )
 
 
@@ -738,6 +817,7 @@ def project_vdt(record_set: CompiledRecordSet) -> CompiledVdtReport:
         attestation_applied_to=attested,
         excluded_by_period=excluded,
         attestation_detected_at=_attested_instant(records),
+        detection_failures=record_set.detection_failures,
     )
     document = _build_document(tuple(records), metadata, tuple(diagnostics))
     validation = _validate_document(ReportSchema.VULNERABILITY_DETAIL, document)
@@ -799,10 +879,16 @@ def _unresolved_order(observation: Observation) -> tuple[str, str, str, str, str
     )
 
 
+#: One reading of an artifact and, when failed imports are recorded, how it failed.
+_Reading = tuple[IngestResult, FailureClassification | None]
+
+
 def _ingest_all(
     artifact_paths: Sequence[Path],
     options: ReportOptions,
     diagnostics: list[ReportDiagnostic],
+    *,
+    record_failed_imports: bool = False,
 ) -> tuple[list[CompiledArtifact], list[Observation]]:
     if not artifact_paths:
         raise ReportCompileError(
@@ -816,29 +902,44 @@ def _ingest_all(
         )
 
     errors: list[ReportDiagnostic] = []
-    by_digest: dict[str, list[IngestResult]] = {}
+    by_digest: dict[str, list[_Reading]] = {}
+    # Mintable failures by digest, none of whose diagnostics are appended yet: whether a
+    # failure contributes its own or `failure_diagnostics` depends on whether the same
+    # bytes read successfully elsewhere in the run, which is known only after the loop.
+    held: dict[str, list[tuple[IngestResult, FailureClassification]]] = {}
 
     for raw_path in artifact_paths:
         path = Path(raw_path)
         result = ingest_stig_artifact(path, ingested_at=options.as_of)
-        for item in result.diagnostics:
-            entry = ReportDiagnostic(
-                level=item.level,
-                code=item.code,
-                message=item.message,
-                # The artifact name, never the supplied path: diagnostics are embedded in
-                # the report, which must not depend on the caller's directory layout.
-                location=item.location or path.name,
+        classification = classify_ingest(result) if record_failed_imports else None
+        if result.errors and classification is not None and classification.mintable:
+            held.setdefault(_require_artifact(result).digest_sha256, []).append(
+                (result, classification)
             )
-            if item.level is DiagnosticLevel.ERROR:
-                errors.append(entry)
-            else:
-                diagnostics.append(entry)
+            continue
+        _collect_diagnostics(result, path.name, diagnostics, errors)
         if result.errors or result.artifact is None:
             continue
-        by_digest.setdefault(result.artifact.digest_sha256, []).append(result)
+        by_digest.setdefault(result.artifact.digest_sha256, []).append((result, classification))
+
+    failed: dict[str, list[tuple[IngestResult, FailureClassification]]] = {}
+    for digest, readings in held.items():
+        for result, classification in readings:
+            # Bytes that read successfully under another name are a misnamed copy, not a
+            # failed detection, so the reading stops the run exactly as it always has.
+            if digest in by_digest:
+                classification = classification.read_elsewhere()
+            if classification.mintable:
+                failed.setdefault(digest, []).append((result, classification))
+            else:
+                _collect_diagnostics(result, _require_artifact(result).name, diagnostics, errors)
 
     if errors:
+        # The run stops, so nothing is recorded: every held failure names itself with its
+        # own ERRORs, exactly as the run would without the flag.
+        for readings in failed.values():
+            for result, _ in readings:
+                _collect_diagnostics(result, _require_artifact(result).name, diagnostics, errors)
         raise ReportCompileError(sorted(errors, key=_diagnostic_order))
 
     artifacts: list[CompiledArtifact] = []
@@ -852,18 +953,7 @@ def _ingest_all(
         key=lambda item: (item[0].artifact.name, item[0].artifact.digest_sha256),
     )
     for read, skipped in elected:
-        for duplicate in skipped:
-            diagnostics.append(
-                ReportDiagnostic(
-                    level=DiagnosticLevel.WARNING,
-                    code="duplicate_artifact",
-                    message=(
-                        "identical artifact bytes were supplied more than once; this "
-                        f"report reads them as {read.artifact.name}"
-                    ),
-                    location=duplicate.name,
-                )
-            )
+        _warn_duplicates(read, skipped, diagnostics)
         artifacts.append(
             CompiledArtifact(
                 name=read.artifact.name,
@@ -875,20 +965,122 @@ def _ingest_all(
             )
         )
         observations.extend(read.observations)
+        # Only a side record reaches here classified: its artifact imports as it always
+        # has, and the failed invocation is recorded beside it.
+        _record_detection_failure(read, options, diagnostics, observations)
+
+    # A failed artifact is not in the manifest, which lists what was read; its system
+    # observation's metadata becomes its entry in `detectionFailures` instead.
+    for read, skipped in sorted(
+        (_elect_reading(group) for group in failed.values()),
+        key=lambda item: (item[0].artifact.name, item[0].artifact.digest_sha256),
+    ):
+        _warn_duplicates(read, skipped, diagnostics)
+        _record_detection_failure(read, options, diagnostics, observations)
 
     return artifacts, observations
 
 
+def _collect_diagnostics(
+    result: IngestResult,
+    name: str,
+    diagnostics: list[ReportDiagnostic],
+    errors: list[ReportDiagnostic],
+) -> None:
+    """Append one reading's diagnostics: ERRORs to `errors`, the rest to `diagnostics`."""
+
+    for item in result.diagnostics:
+        entry = ReportDiagnostic(
+            level=item.level,
+            code=item.code,
+            message=item.message,
+            # The artifact name, never the supplied path: diagnostics are embedded in
+            # the report, which must not depend on the caller's directory layout.
+            location=item.location or name,
+        )
+        if item.level is DiagnosticLevel.ERROR:
+            errors.append(entry)
+        else:
+            diagnostics.append(entry)
+
+
+def _warn_duplicates(
+    read: _ElectedReading,
+    skipped: Sequence[ArtifactProvenance],
+    diagnostics: list[ReportDiagnostic],
+) -> None:
+    """Note each reading of the elected reading's bytes that the report does not carry.
+
+    Both names are file names the operator supplied, so they pass through `diagnostic_text`,
+    as the adapters' diagnostic paths and the failure diagnostics do, before the report
+    embeds them.
+    """
+
+    elected = diagnostic_text(read.artifact.name)
+    for duplicate in skipped:
+        diagnostics.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.WARNING,
+                code="duplicate_artifact",
+                message=(
+                    "identical artifact bytes were supplied more than once; this "
+                    f"report reads them as {elected}"
+                ),
+                location=diagnostic_text(duplicate.name),
+            )
+        )
+
+
+def _record_detection_failure(
+    read: _ElectedReading,
+    options: ReportOptions,
+    diagnostics: list[ReportDiagnostic],
+    observations: list[Observation],
+) -> None:
+    """Mint the system observation of one elected reading's failure, if it has one.
+
+    A failed reading contributes `failure_diagnostics` in place of its own diagnostics,
+    with every ERROR demoted, and a side record contributes only its one
+    `detection_failure_recorded` WARNING. The instant is the run's as-of, the moment
+    ComplyRoll saw the failure, unless the scanner declared the failed invocation's own
+    clock. It is never clamped to the report period (ADR 0014).
+    """
+
+    classification = read.classification
+    if classification is None:
+        return
+    name = read.artifact.name
+    for item in failure_diagnostics(read.result, classification, name=name):
+        diagnostics.append(
+            ReportDiagnostic(
+                level=item.level,
+                code=item.code,
+                message=item.message,
+                location=item.location,
+            )
+        )
+    observations.append(
+        system_observation_for(read.result, classification, name=name, observed_at=options.as_of)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _ElectedReading:
-    """The one reading of a set of identical artifact bytes that the report carries."""
+    """The one reading of a set of identical artifact bytes that the report carries.
+
+    `result` and `classification` are the reading as ingested and, when failed imports
+    are recorded, how it failed; a clean reading, or any reading of a run that records
+    no failures, has no classification.
+    """
 
     artifact: ArtifactProvenance
     observations: tuple[Observation, ...]
+    result: IngestResult
+    classification: FailureClassification | None
 
 
 def _elect_reading(
-    candidates: Sequence[IngestResult],
+    candidates: Sequence[_Reading],
 ) -> tuple[_ElectedReading, tuple[ArtifactProvenance, ...]]:
     """Choose which of several readings of one artifact's bytes the report carries.
 
@@ -899,13 +1091,14 @@ def _elect_reading(
     order the operator listed the files in. Electing the lowest name instead makes the
     choice a property of the file set. Two candidates that share a name also share
     their bytes, so every field either could contribute is identical and which one is
-    elected is not observable.
+    elected is not observable. Failed readings of one digest are elected the same way,
+    so one failure is recorded however many names its bytes were supplied under.
     """
 
     readings = sorted(
         (
-            _ElectedReading(_require_artifact(item), item.observations)
-            for item in candidates
+            _ElectedReading(_require_artifact(item), item.observations, item, classification)
+            for item, classification in candidates
         ),
         key=lambda item: item.artifact.name,
     )
@@ -914,7 +1107,10 @@ def _elect_reading(
 
 
 def _require_artifact(result: IngestResult) -> ArtifactProvenance:
-    """Return one candidate's artifact, which `_ingest_all` has already checked for."""
+    """Return one candidate's artifact, which `_ingest_all` has already checked for.
+
+    A mintable failure always carries one, because a reading with no digest is refused.
+    """
 
     artifact = result.artifact
     if artifact is None:  # pragma: no cover - candidates are filtered before election
@@ -952,13 +1148,25 @@ def _match_evaluations(
                     code="evaluation_ambiguous",
                     message=(
                         f"{entry.match.describe()} matches {len(candidates)} vulnerabilities "
-                        f"({named}); add contextKey or sourceType"
+                        f"({named}); {entry.match.ambiguity_remedy()}"
                     ),
                     location=entry.location,
                 )
             )
             continue
         group = candidates[0]
+        # A lone failure would match a pair that names no digest, so the next failure of
+        # another digest would turn the same file ambiguous; the full triple is required.
+        if group.source_type == DETECTION_FAILURE_SOURCE_TYPE and entry.match.context_key is None:
+            errors.append(
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="evaluation_context_key_required",
+                    message=entry.match.context_key_required(group.tracking_id),
+                    location=entry.location,
+                )
+            )
+            continue
         previous = claimed_by.get(group.tracking_id)
         if previous is not None:
             errors.append(
@@ -998,9 +1206,14 @@ def _resolve_detection_time(
     """Resolve one group's detection time without ever guessing one.
 
     A supplied attestation applies only to groups where no observation declares a
-    source timestamp; it never overrides a known one (ADR 0007 amendment).
+    source timestamp; it never overrides a known one (ADR 0007 amendment). A detection
+    process failure is checked first: it is timed by the instant it was recorded, is
+    never attested, and never reads as a source artifact's timestamp (ADR 0014).
     """
 
+    observed_at = group.earliest_observed_at
+    if observed_at is not None and _is_system_group(group):
+        return observed_at.astimezone(UTC), "system"
     if group.earliest_observed_at is not None:
         source = "artifact-partial" if group.has_partial_timestamps else "artifact"
         return group.earliest_observed_at.astimezone(UTC), source
@@ -1008,6 +1221,97 @@ def _resolve_detection_time(
     if attested is not None:
         return attested.astimezone(UTC), "attestation"
     return None, "missing"
+
+
+def _is_system_group(group: VulnerabilityGroup) -> bool:
+    """Return True for a group of system observations, which never shares a key with others.
+
+    Only a system observation may carry the reserved detection-process source type, so a
+    group key never mixes the two origins.
+    """
+
+    return all(item.origin is ObservationOrigin.SYSTEM for item in group.observations)
+
+
+def _detection_failure(observation: Observation, tracking_id: str) -> CompiledDetectionFailure:
+    """Describe one system observation for `detectionFailures`, read from its metadata."""
+
+    metadata = dict(observation.source_metadata)
+    observed_at = observation.observed_at
+    if observed_at is None:  # pragma: no cover - a system observation is always timed
+        raise AssertionError("a system observation must carry observed_at")
+    return CompiledDetectionFailure(
+        name=metadata["artifact.name"],
+        sha256=metadata["artifact.sha256"],
+        size_bytes=int(metadata["artifact.sizeBytes"]),
+        parser=metadata["artifact.parser"],
+        parser_version=metadata["artifact.parserVersion"],
+        failure_class=metadata["failure.class"],
+        failure_codes=tuple(json.loads(metadata["failure.codes"])),
+        observed_at=observed_at.astimezone(UTC),
+        clock=metadata["failure.clock"],
+        tracking_id=tracking_id,
+    )
+
+
+def _ordered_detection_failures(
+    failures: Sequence[CompiledDetectionFailure],
+) -> tuple[CompiledDetectionFailure, ...]:
+    """Put `detectionFailures` in its total order: name, sha256, parser, version, instant.
+
+    The persisted path can hold several current failures of one digest, differing in
+    parser, version or instant, so the order must reach past the digest. Parser versions
+    compare by the rule `history.fold._newest_stream` applies, reproduced here because
+    this module cannot import the history package: when every version of a digest is
+    dot-separated ASCII digits they compare as numbers with trailing zero components
+    dropped, so 10 follows 9 and 1.0 ties 1, and otherwise the digest's versions compare
+    as text. The version as written breaks the last tie, so the order is total.
+    """
+
+    numeric: dict[str, bool] = {}
+    for item in failures:
+        numeric[item.sha256] = numeric.get(item.sha256, True) and _is_numeric_version(
+            item.parser_version
+        )
+
+    def key(
+        item: CompiledDetectionFailure,
+    ) -> tuple[str, str, str, tuple[int, ...], str, datetime, str]:
+        number: tuple[int, ...] = ()
+        text = item.parser_version
+        if numeric[item.sha256]:
+            number, text = _numeric_version(item.parser_version), ""
+        return (
+            item.name,
+            item.sha256,
+            item.parser,
+            number,
+            text,
+            item.observed_at,
+            item.parser_version,
+        )
+
+    return tuple(sorted(failures, key=key))
+
+
+def _is_numeric_version(version: str) -> bool:
+    """Return True when every dot-separated component is ASCII digits `int` can read.
+
+    The same test as `history.fold._is_numeric_version`, so U+00B2 and U+2460, which
+    `str.isdigit` accepts and `int` refuses, fall to the text comparison.
+    """
+
+    parts = version.split(".")
+    return bool(parts) and all(part.isascii() and part.isdigit() for part in parts)
+
+
+def _numeric_version(version: str) -> tuple[int, ...]:
+    """Return the tuple one numeric parser version compares as, trailing zeros dropped."""
+
+    parts = [int(part) for part in version.split(".")]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
 
 
 def _attested_instant(records: Sequence[CompiledVulnerability]) -> datetime | None:
@@ -1803,6 +2107,10 @@ def _common_extension(
         "diagnostics": [diagnostic.to_dict() for diagnostic in diagnostics],
         "disclaimer": DISCLAIMER,
     }
+    # Only a run that recorded a detection process failure carries the key, so a report
+    # compiled without one is byte-identical to one compiled before it existed.
+    if metadata.detection_failures:
+        extension["detectionFailures"] = [item.to_dict() for item in metadata.detection_failures]
     catalog = options.kev_catalog
     if catalog is not None:
         extension["kevSource"] = {
@@ -2070,7 +2378,13 @@ def _write_attestation_section(
     write("")
     attested = metadata.attestation_applied_to
     attestation = metadata.attestation
-    if not attested:
+    if not attested and any(item.detected_at_source == "system" for item in records):
+        write(
+            "Every reported vulnerability carried a detection time from its source artifact "
+            "or, for a detection process failure, from the instant ComplyRoll or the scanner "
+            "recorded it. No attestation was needed."
+        )
+    elif not attested:
         write(
             "Every reported vulnerability carried a detection time from its source artifact. "
             "No attestation was needed."
@@ -2105,6 +2419,33 @@ def _write_inputs(write: Callable[[str], None], metadata: ReportMetadata) -> Non
             f"| {_cell(artifact.name)} | {artifact.sha256[:12]} | "
             f"{_cell(artifact.parser)} {_cell(artifact.parser_version)} "
             f"| {artifact.observation_count} |"
+        )
+    write("")
+    _write_detection_failures(write, metadata.detection_failures)
+
+
+def _write_detection_failures(
+    write: Callable[[str], None],
+    failures: Sequence[CompiledDetectionFailure],
+) -> None:
+    """Write the Inputs subsection listing each detection process failure, if any.
+
+    A failed artifact is not in the Inputs table, which lists what was read, so this is
+    where a reader finds it. Nothing is written when the run recorded no failure.
+    """
+
+    if not failures:
+        return
+    write("### Detection process failures")
+    write("")
+    write("| Artifact | SHA-256 | Parser | Class | Observed at | Clock | Tracking ID |")
+    write("|---|---|---|---|---|---|---|")
+    for item in failures:
+        write(
+            f"| {_cell(item.name)} | {_cell(item.sha256[:12])} "
+            f"| {_cell(item.parser)} {_cell(item.parser_version)} "
+            f"| {_cell(item.failure_class)} | {_cell(_iso(item.observed_at))} "
+            f"| {_cell(item.clock)} | {_cell(item.tracking_id)} |"
         )
     write("")
 
@@ -2363,6 +2704,7 @@ __all__ = [
     "AcceptedVulnerability",
     "CompiledArtifact",
     "CompiledDeadline",
+    "CompiledDetectionFailure",
     "CompiledRecordSet",
     "CompiledReport",
     "CompiledVdtReport",

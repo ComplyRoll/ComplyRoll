@@ -3,6 +3,7 @@
 from .sqlite import (
     MAX_EVENT_JSON_BYTES,
     MAX_EVENTS_PER_APPEND,
+    SUPPORTED_SCHEMA_VERSION,
     EventConcurrencyError,
     EventConflictError,
     EventIntegrityError,
@@ -21,6 +22,7 @@ from .sqlite import (
 __all__ = [
     "MAX_EVENTS_PER_APPEND",
     "MAX_EVENT_JSON_BYTES",
+    "SUPPORTED_SCHEMA_VERSION",
     "EventConcurrencyError",
     "EventConflictError",
     "EventIntegrityError",

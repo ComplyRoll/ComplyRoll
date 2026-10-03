@@ -16,19 +16,38 @@ from pathlib import Path
 from typing import TextIO
 
 from . import __version__
-from .adapters import DiagnosticLevel, IngestDiagnostic, IngestResult, ingest_stig_artifact
-from .events import EventContractError, EventMetadata, EventRepository, require_tracking_id
+from .adapters import (
+    ArtifactProvenance,
+    DiagnosticLevel,
+    FailureClass,
+    FailureClassification,
+    IngestDiagnostic,
+    IngestResult,
+    classify_ingest,
+    ingest_stig_artifact,
+)
+from .events import (
+    EventContractError,
+    EventMetadata,
+    EventRepository,
+    failure_stream_id,
+    require_tracking_id,
+)
 from .history import (
     CaseNotFoundError,
     CaseState,
     EvaluationMatchError,
     HistoryError,
     apply_evaluations,
+    artifact_history,
     attest_detection,
     audit_history,
     case_history,
     correlate_cases,
     fold_all_cases,
+    held_failure_lost,
+    reading_elsewhere,
+    record_failure,
     record_ingest,
 )
 from .policy import CertificationClass
@@ -82,6 +101,10 @@ def _default_actor() -> str:
 
 #: Resolved once, so `--help` prints the name every event of a run would carry.
 DEFAULT_ACTOR = _default_actor()
+
+#: The status of a run that recorded a detection process failure and still wrote its
+#: output (ADR 0014), so a pipeline can tell it from a clean run (0) and a refusal (1).
+EXIT_DETECTION_FAILURES = 3
 
 #: The `cases list` columns, each with whether its values are right-aligned numbers.
 CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
@@ -183,6 +206,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--as-of",
         metavar="RFC3339",
         help="instant recorded as the ingestion time (default: now, UTC)",
+    )
+    ingest.add_argument(
+        "--record-failed-imports",
+        action="store_true",
+        help=(
+            "record a detection process failure (VDR-CSO-FAV) as a system observation "
+            "instead of stopping; exits 3 when one is recorded"
+        ),
     )
     _add_actor_option(ingest)
 
@@ -371,6 +402,14 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         help="attested detection time for vulnerabilities whose sources declare none",
     )
     parser.add_argument(
+        "--record-failed-imports",
+        action="store_true",
+        help=(
+            "record a detection process failure (VDR-CSO-FAV) as a system observation "
+            "instead of stopping; exits 3 when one is recorded"
+        ),
+    )
+    parser.add_argument(
         "--as-of",
         metavar="RFC3339",
         help="instant the overdue flags are calculated against (default: now, UTC)",
@@ -433,37 +472,129 @@ def _run_ingest(args: argparse.Namespace) -> int:
         return dangling
 
     recorded: list[str] = []
+    # The failures' diagnostics, written just before the lines above and only once the store
+    # is published, so a run that exits 1 never claims a recording (ADR 0014).
+    pending: list[ReportDiagnostic] = []
+    # Held with nothing written yet: whether each writes its own ERRORs or the failure's
+    # diagnostics depends on the rest of the run, including the store check after the
+    # writes (ADR 0014 Decision 13).
+    held: list[_FailedReading] = []
+    failures_seen = False
 
     def ingest(target: Path) -> int:
+        nonlocal failures_seen
         # Every artifact is parsed before the store is opened, so a run that fails on any
         # of them records nothing at all: opening a SQLite path is what creates the file,
         # and an existing store must not gain one artifact's history from a run the next
         # artifact stopped.
-        parsed: list[tuple[Path, IngestResult]] = []
+        parsed: list[_ParsedReading] = []
         for path in artifacts:
             result = ingest_stig_artifact(path, ingested_at=ingested_at)
+            classification = classify_ingest(result) if args.record_failed_imports else None
+            if (
+                result.errors
+                and result.artifact is not None
+                and classification is not None
+                and classification.mintable
+            ):
+                held.append(_FailedReading(path, result, result.artifact, classification))
+                continue
             _write_diagnostics(stderr, _as_report_diagnostics(result.diagnostics, path.name))
             if result.errors or result.artifact is None:
                 # Fail closed: a damaged artifact stops the run before it, or any
                 # artifact after it, becomes history.
                 return 1
-            parsed.append((path, result))
+            parsed.append(_ParsedReading(path, result, result.artifact, classification))
+
+        # Bytes that read successfully under another name are a misnamed copy, not a failed
+        # detection, so the failed reading stops the run exactly as it always has.
+        read = {reading.artifact.digest_sha256 for reading in parsed}
+        if any(reading.artifact.digest_sha256 in read for reading in held):
+            return 1
+        # Elected by name: recording the lowest name first leaves the failure stream named
+        # for it whatever order the files were listed in, and the others find it recorded.
+        failed = sorted(held, key=lambda reading: reading.artifact.name)
 
         # One transaction around every artifact of the run. Each `record_ingest` joins it
         # rather than opening its own, so a failure on any artifact leaves the store
         # exactly as it was and the empty summary below is the truth: nothing became
-        # durable (ADR 0008, second amendment).
-        with _open_repository(target) as repository, repository.transaction():
-            for path, result in parsed:
-                outcome = record_ingest(
-                    repository, result, metadata=metadata, ingested_at=ingested_at
-                )
-                if outcome.already_recorded:
-                    recorded.append(f"{path.name}: already_recorded")
-                else:
-                    recorded.append(
-                        f"{path.name}: recorded {outcome.observation_count} observation(s)"
+        # durable (ADR 0008, second amendment). A failure its holder would lose leaves the
+        # store exactly as it was too, because its refusal raises out of the transaction
+        # rather than returning inside it, which would commit the run's appends.
+        try:
+            with _open_repository(target) as repository, repository.transaction():
+                if failed and _refuse_failures_read_elsewhere(stderr, repository, failed):
+                    return 1
+                # Each reading's lines and diagnostics, in the slot of its place in the
+                # list, so the summary keeps listed order whatever order the side records'
+                # failures are recorded in.
+                slots: list[tuple[list[str], list[ReportDiagnostic]]] = []
+                for reading in parsed:
+                    outcome = record_ingest(
+                        repository, reading.result, metadata=metadata, ingested_at=ingested_at
                     )
+                    if outcome.already_recorded:
+                        line = f"{reading.path.name}: already_recorded"
+                    else:
+                        line = (
+                            f"{reading.path.name}: recorded {outcome.observation_count} "
+                            "observation(s)"
+                        )
+                    slots.append(([line], []))
+                holds: list[_Hold] = []
+                # Side records' failures go in once every artifact is, in name order like the
+                # held failures, so which reading meets another's hold never depends on the
+                # order the files were listed in.
+                for index, reading in sorted(
+                    enumerate(parsed), key=lambda item: item[1].artifact.name
+                ):
+                    if reading.classification is None:
+                        continue
+                    # A side record: the artifact imported, and its failed invocation is
+                    # recorded beside it.
+                    line, diagnostics, hold = _record_detection_failure(
+                        repository,
+                        reading.path,
+                        reading.result,
+                        reading.artifact,
+                        reading.classification,
+                        metadata=metadata,
+                        ingested_at=ingested_at,
+                    )
+                    slots[index][0].append(line)
+                    slots[index][1].extend(diagnostics)
+                    if hold is not None:
+                        holds.append(hold)
+                    failures_seen = True
+                for slot_lines, slot_diagnostics in slots:
+                    recorded.extend(slot_lines)
+                    pending.extend(slot_diagnostics)
+                for failure in failed:
+                    line, diagnostics, hold = _record_detection_failure(
+                        repository,
+                        failure.path,
+                        failure.result,
+                        failure.artifact,
+                        failure.classification,
+                        metadata=metadata,
+                        ingested_at=ingested_at,
+                    )
+                    recorded.append(line)
+                    pending.extend(diagnostics)
+                    if hold is not None:
+                        holds.append(hold)
+                    failures_seen = True
+                # Weighed once every write of the run is in, because the run's own artifacts
+                # can be what supersedes a holder (ADR 0014 Decision 13).
+                if holds:
+                    refused = _failures_lost_to_superseded_holders(repository, holds)
+                    if refused:
+                        raise _FailedHoldRefused(refused)
+        except _FailedHoldRefused as refusal:
+            # Written only once the rollback is done: a rollback that fails raises in place
+            # of the refusal, and no line may then say the store was left unchanged.
+            _write_diagnostics(stderr, refusal.diagnostics)
+            return 1
         return 0
 
     # A store that is already there is opened in place; concurrent writers contend on the
@@ -475,12 +606,199 @@ def _run_ingest(args: argparse.Namespace) -> int:
         else _build_and_publish_store(stderr, database, ingest)
     )
     if code != 0:
+        # Nothing was recorded, so each held reading writes the diagnostics it would have
+        # written as the run's first failure, ERRORs included, and no failure is claimed.
+        # A side record refused under ADR 0014 Decision 13 wrote its reading's diagnostics
+        # as it was read, so its refusal ERROR is the only line it adds.
+        for failure in held:
+            _write_diagnostics(
+                stderr, _as_report_diagnostics(failure.result.diagnostics, failure.path.name)
+            )
         return code
     # Reported only once the store is published, so no run ever claims to have recorded
     # observations it then discarded.
+    _write_diagnostics(stderr, pending)
     for line in recorded:
         print(line)
-    return 0
+    # A rerun finds its failures already recorded and still exits 3: the store holds them,
+    # so the run's input still failed to read (ADR 0014).
+    return EXIT_DETECTION_FAILURES if failures_seen else 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedReading:
+    """One artifact `ingest` read, with its provenance and, for a side record, its failure."""
+
+    path: Path
+    result: IngestResult
+    artifact: ArtifactProvenance
+    classification: FailureClassification | None
+
+
+@dataclass(frozen=True, slots=True)
+class _FailedReading:
+    """One reading `ingest` holds as a mintable detection failure."""
+
+    path: Path
+    result: IngestResult
+    artifact: ArtifactProvenance
+    classification: FailureClassification
+
+
+@dataclass(frozen=True, slots=True)
+class _Hold:
+    """One failure `record_failure` left unwritten because another failure stream holds it."""
+
+    path: Path
+    artifact: ArtifactProvenance
+    failure_class: FailureClass
+    holder: str
+
+
+class _FailedHoldRefused(Exception):
+    """Raised inside the ingest transaction so a run that would lose a held failure rolls back.
+
+    `diagnostics` are the refusal ERRORs, written only once the rollback is done (ADR 0014
+    Decision 13).
+    """
+
+    def __init__(self, diagnostics: tuple[ReportDiagnostic, ...]) -> None:
+        super().__init__("a held failure would reach no persisted report")
+        self.diagnostics = diagnostics
+
+
+def _refuse_failures_read_elsewhere(
+    stderr: TextIO,
+    repository: EventRepository,
+    failed: Sequence[_FailedReading],
+) -> bool:
+    """Refuse every failed reading whose bytes history holds a reading that keeps it out.
+
+    Run inside the ingest transaction before anything is appended, so a refusal leaves the
+    store exactly as it was. A failure joins history only to replace an older reading by
+    the same parser, which its newer version can no longer read (ADR 0014, R2); any other
+    current reading means the bytes read successfully elsewhere, and a superseded reading
+    that would supersede the failure at birth under R3 or R4 keeps it out too.
+    """
+
+    history = artifact_history(repository)
+    refused = False
+    for reading in failed:
+        artifact = reading.artifact
+        holder = reading_elsewhere(
+            history,
+            artifact.digest_sha256,
+            parser_name=artifact.parser_name,
+            parser_version=artifact.parser_version,
+            failure_class=reading.classification.failure_class,
+        )
+        if holder is None:
+            continue
+        refused = True
+        _write_diagnostics(
+            stderr,
+            (
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="failure_read_elsewhere",
+                    message=(
+                        f"history holds a reading of these bytes in {holder.stream_id} that "
+                        f"outranks their failure under {artifact.parser_name} "
+                        f"{artifact.parser_version}, so it is not a detection failure and "
+                        "nothing was recorded"
+                    ),
+                    location=reading.path.name,
+                ),
+            ),
+        )
+    return refused
+
+
+def _failures_lost_to_superseded_holders(
+    repository: EventRepository,
+    holds: Sequence[_Hold],
+) -> tuple[ReportDiagnostic, ...]:
+    """Return a refusal ERROR for every held failure the run's history would lose, by name.
+
+    Asked inside the ingest transaction once every write of the run is in, so the fold sees
+    the run's own artifacts. A hold is kept, with its WARNING, unless its holder ends the
+    run superseded and no reading of the digest would supersede the held failure at birth:
+    then the failure's system observation is the holder's, and no persisted report would
+    carry it (ADR 0014 Decision 13). Nothing is written here.
+    """
+
+    history = artifact_history(repository)
+    return tuple(
+        ReportDiagnostic(
+            level=DiagnosticLevel.ERROR,
+            code="failure_held_by_superseded_stream",
+            message=(
+                f"{hold.holder} holds this failure's system observation and is superseded, so "
+                f"recording the failure under {hold.artifact.parser_name} "
+                f"{hold.artifact.parser_version} would leave it in no persisted report; "
+                "nothing was recorded"
+            ),
+            location=hold.path.name,
+        )
+        for hold in sorted(holds, key=lambda hold: hold.artifact.name)
+        if held_failure_lost(
+            history,
+            hold.artifact.digest_sha256,
+            parser_name=hold.artifact.parser_name,
+            parser_version=hold.artifact.parser_version,
+            failure_class=hold.failure_class,
+            holder=hold.holder,
+        )
+    )
+
+
+def _record_detection_failure(
+    repository: EventRepository,
+    path: Path,
+    result: IngestResult,
+    artifact: ArtifactProvenance,
+    classification: FailureClassification,
+    *,
+    metadata: EventMetadata,
+    ingested_at: datetime,
+) -> tuple[str, tuple[ReportDiagnostic, ...], _Hold | None]:
+    """Record one reading's detection process failure; return its line, diagnostics and hold.
+
+    Nothing is written here. The caller writes the diagnostics, then the line, only once
+    the store is published, so a run that rolls back or loses the race to publish never
+    claims a recording. The failure's diagnostics take the place of the reading's ERRORs,
+    so the ERROR lines a pipeline greps for appear only on a run that exits 1. A side
+    record's are only its `detection_failure_recorded` notice, because the artifact's own
+    were written already.
+
+    The hold is returned when another failure stream of the digest already holds the
+    failure's system observation: `record_failure` then wrote nothing and returned that
+    stream, so its `stream_id` is not the reading's own `failure_stream_id`. A rerun finds
+    its own stream and is never a hold. On a hold the WARNING naming the holder takes the
+    place of the `detection_failure_recorded` notice, and the caller refuses the run when
+    the holder ends it superseded and this failure would not be (ADR 0014 Decision 13).
+    """
+
+    outcome = record_failure(
+        repository,
+        result,
+        classification,
+        metadata=metadata,
+        ingested_at=ingested_at,
+    )
+    diagnostics = _as_report_diagnostics(outcome.diagnostics, path.name)
+    if not outcome.appended:
+        own = failure_stream_id(
+            artifact.digest_sha256, artifact.parser_name, artifact.parser_version
+        )
+        hold = (
+            _Hold(path, artifact, outcome.failure_class, outcome.stream_id)
+            if outcome.stream_id != own
+            else None
+        )
+        return f"{path.name}: already_recorded", diagnostics, hold
+    line = f"{path.name}: recorded detection failure ({outcome.failure_class.value})"
+    return line, diagnostics, None
 
 
 def _build_and_publish_store(
@@ -834,14 +1152,26 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
 
     def compile_report() -> CompiledReport:
         if database is None:
-            return command.stateless(artifacts, options=options, evaluations=evaluations)
+            return command.stateless(
+                artifacts,
+                options=options,
+                evaluations=evaluations,
+                record_failed_imports=args.record_failed_imports,
+            )
         with _open_repository(database) as repository:
             return command.persisted(repository, options=options)
 
-    return _persisted_run(
-        stderr,
-        lambda: _publish(stderr, compile_report(), output=output, markdown=markdown),
-    )
+    def compile_and_publish() -> int:
+        report = compile_report()
+        status = _publish(stderr, report, output=output, markdown=markdown)
+        # The output is already written: a recorded failure is reported, not refused, and
+        # the status is how a pipeline learns one was recorded. `--db` never gets here with
+        # the flag, since a store recorded or refused its failures at ingest.
+        if status == 0 and args.record_failed_imports and report.metadata.detection_failures:
+            return EXIT_DETECTION_FAILURES
+        return status
+
+    return _persisted_run(stderr, compile_and_publish)
 
 
 def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str | None:
@@ -854,6 +1184,8 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
 
     `--kev` is absent from this list on purpose: no store holds a CISA KEV catalog, so a
     catalog is a per-run input on both paths and never a second source of truth.
+    `--record-failed-imports` is on it because a store already recorded or refused its
+    failures when `ingest` read them (ADR 0014).
     """
 
     named = [
@@ -862,6 +1194,7 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
             ("artifacts", bool(args.artifacts)),
             ("--evaluations", args.evaluations is not None),
             ("--detected-at", args.detected_at is not None),
+            ("--record-failed-imports", args.record_failed_imports),
         )
         if present
     ]

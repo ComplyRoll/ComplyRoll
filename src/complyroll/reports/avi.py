@@ -92,11 +92,17 @@ def compile_avi_report(
     *,
     options: ReportOptions,
     evaluations: EvaluationSet | None = None,
+    record_failed_imports: bool = False,
 ) -> CompiledAviReport:
     """Compile one Accepted Vulnerability Information report from artifacts and inputs."""
 
     return project_avi(
-        compile_record_set_from_artifacts(artifact_paths, options=options, evaluations=evaluations)
+        compile_record_set_from_artifacts(
+            artifact_paths,
+            options=options,
+            evaluations=evaluations,
+            record_failed_imports=record_failed_imports,
+        )
     )
 
 
@@ -134,6 +140,7 @@ def project_avi(record_set: CompiledRecordSet) -> CompiledAviReport:
         attestation_applied_to=attested,
         excluded_by_period=excluded,
         attestation_detected_at=_attested_instant(records),
+        detection_failures=record_set.detection_failures,
     )
     document = _build_avi_document(
         tuple(reported), metadata, tuple(diagnostics), active_not_reported=active

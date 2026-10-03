@@ -1,0 +1,8 @@
+{
+  "title": "Synthetic Linux STIG",
+  "target_data": {"host_name": "lab-synthetic-01", "ip_address": "10.0.0.41"},
+  "stigs": [{
+    "stig_name": "Synthetic Linux STIG",
+    "rules": {"group_id":"V-900001","rule_title":"Synthetic rule list written as an object instead of an array","severity":"medium","status":"open","ccis":["CCI-000366"]}
+  }]
+}

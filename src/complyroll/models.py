@@ -189,6 +189,11 @@ CANONICAL_OBSERVATION_KEYS = frozenset(
     }
 )
 
+#: The source-type prefix reserved for observations ComplyRoll records itself. Adapters set
+#: `source_type` from literal constants, so no input byte can produce it; an artifact-bound
+#: observation that carries it anyway is refused as defense in depth (ADR 0014).
+RESERVED_SOURCE_TYPE_PREFIX = "complyroll."
+
 
 def _require_exact_keys(
     value: Mapping[str, Any],
@@ -366,6 +371,11 @@ class Observation:
         )
 
         if self.origin is ObservationOrigin.ARTIFACT:
+            if self.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX):
+                raise ValueError(
+                    f"source_type prefix {RESERVED_SOURCE_TYPE_PREFIX!r} is reserved for "
+                    "system observations"
+                )
             _require_text(self.source_artifact_name, "source_artifact_name")
             object.__setattr__(
                 self,

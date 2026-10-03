@@ -3,24 +3,41 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import tempfile
 import unittest
 import uuid
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
 
 from complyroll import __version__
+from complyroll.adapters import (
+    ArtifactProvenance,
+    DiagnosticLevel,
+    IngestDiagnostic,
+    IngestResult,
+    classify_ingest,
+    system_observation_for,
+)
+from complyroll.adapters.failures import CLASS_CODES, FAILURE_DIAGNOSTIC_CAP
 from complyroll.events import (
     ARTIFACT_IDENTITY_KEYS,
     ARTIFACT_STREAM_EVENT_TYPES,
     CASE_STREAM_EVENT_TYPES,
     EVENT_CONTRACTS,
     EVENT_TYPES,
+    FAILURE_CODE_VALUES,
+    FAILURE_METADATA_KEYS,
+    FAILURE_STREAM_EVENT_TYPES,
     METHOD_VALUES,
     READ_PAGE_SIZE,
+    STREAM_EVENT_TYPES,
     TOOL_NAME,
     UNDISPOSED_STATUSES,
     ContractIssue,
@@ -28,17 +45,26 @@ from complyroll.events import (
     EventMetadata,
     EventRepository,
     PendingEvent,
+    artifact_stream_components,
     artifact_stream_id,
     canonical_payload_digest,
     case_stream_id,
     event_belongs_on_stream,
+    failure_duplicate_observation_message,
+    failure_head_order_message,
+    failure_identity_breach,
+    failure_record_disagreement,
+    failure_stream_components,
+    failure_stream_id,
     is_artifact_stream,
     is_case_stream,
+    is_failure_stream,
     iso_utc,
     metadata_breaches,
     parse_utc,
     require_tracking_id,
     schema_for,
+    stream_kind,
     timestamp_pointers_for,
     tracking_id_from_stream,
 )
@@ -46,6 +72,7 @@ from complyroll.events.contracts import (
     _MAX_STREAM_ID_LENGTH,
     _UTC_TIMESTAMP,
     _contract_timestamp_pointers,
+    _placement_problem,
     _timestamp_pointers,
 )
 from complyroll.models import (
@@ -54,13 +81,21 @@ from complyroll.models import (
     ResourceRef,
     SourceSeverity,
 )
-from complyroll.store import EventConcurrencyError, SQLiteEventStore
+from complyroll.store import (
+    SUPPORTED_SCHEMA_VERSION,
+    EventConcurrencyError,
+    EventConflictError,
+    NewEvent,
+    SQLiteEventStore,
+    UnsupportedSchemaError,
+)
 
 NOW = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 DIGEST = "a" * 64
 TRACKING_ID = "case-0123456789abcdef"
 STREAM_ID = f"case/{TRACKING_ID}"
 ARTIFACT_STREAM_ID = f"artifact/{DIGEST}/complyroll.cklb/1"
+FAILURE_STREAM_ID = f"failure/{DIGEST}/complyroll.sarif/1"
 
 #: A deterministic run identifier that is also a real one: `run-` plus a canonical
 #: version-4 UUID. A fixed word like `run-fixed` used to stand here, which is exactly the
@@ -75,7 +110,12 @@ OPEN_MAP_POINTERS = frozenset({"observation.recorded/properties/source_metadata"
 
 #: Nested objects whose optional fields are intentional, so `required` is a strict
 #: subset of `properties` rather than equal to it.
-OPTIONAL_FIELD_POINTERS = frozenset({"artifact.ingested/properties/diagnostics/items"})
+OPTIONAL_FIELD_POINTERS = frozenset(
+    {
+        "artifact.ingested/properties/diagnostics/items",
+        "failure.recorded/properties/diagnostics/items",
+    }
+)
 
 
 def observation(**overrides: object) -> Observation:
@@ -174,12 +214,39 @@ GOOD_PAYLOADS: dict[str, dict[str, Any]] = {
         "recordedAt": "2026-08-21T12:00:00Z",
     },
     "case.identified": {"providerTrackingId": "PROV-2026-0001"},
+    "failure.recorded": {
+        "name": "failed-truncated.sarif",
+        "sha256": DIGEST,
+        "sizeBytes": 486,
+        "mediaType": "application/sarif+json",
+        "parserName": "complyroll.sarif",
+        "parserVersion": "1",
+        "ingestedAt": "2026-08-21T12:00:00Z",
+        "failureClass": "parse",
+        "failureCodes": ["artifact_parse_failed"],
+        "clock": "as-of",
+        "diagnostics": [
+            {
+                "level": "warning",
+                "code": "artifact_parse_failed",
+                "message": "SARIF log is not valid JSON",
+                "location": "failed-truncated.sarif",
+            },
+            {
+                "level": "warning",
+                "code": "detection_failure_recorded",
+                "message": "recorded a detection process failure of class parse",
+                "location": "failed-truncated.sarif",
+            },
+        ],
+    },
 }
 
 #: One field per contract that the schema requires in UTC `Z` form. The two contracts
 #: that accept a source offset are asserted separately below.
 UTC_ONLY_FIELDS: dict[str, str] = {
     "artifact.ingested": "ingestedAt",
+    "failure.recorded": "ingestedAt",
     "case.created": "createdAt",
     "detection.attested": "detectedAt",
     "case.evaluated": "completedAt",
@@ -191,6 +258,7 @@ UTC_ONLY_FIELDS: dict[str, str] = {
 BAD_ENUM_VALUES: dict[str, tuple[str, Any]] = {
     "observation.recorded": ("disposition", "sideways"),
     "case.disposition_recorded": ("status", "active"),
+    "failure.recorded": ("failureClass", "network"),
 }
 
 #: The two PAIN-bearing contracts and the integer field each constrains to 1 through 5.
@@ -315,6 +383,7 @@ EXPECTED_TIMESTAMP_POINTERS: dict[str, tuple[str, ...]] = {
     "case.observation_linked": ("/observedAt",),
     "case.pain_reduced": ("/reducedAt",),
     "detection.attested": ("/attestedAt", "/detectedAt"),
+    "failure.recorded": ("/ingestedAt",),
     # The two `observation.recorded` timestamps are read back through
     # `Observation.from_canonical_dict`, which is stricter than parsing, so they are
     # deliberately absent from the parsed set.
@@ -359,6 +428,81 @@ def with_value(payload: dict[str, Any], pointer: str, value: Any) -> dict[str, A
         target = target[part]
     target[parts[-1]] = value
     return updated
+
+
+#: The name every synthetic failed reading below carries.
+FAILED_NAME = "failed-truncated.sarif"
+
+
+def failed_reading(
+    digest: str = DIGEST,
+    *,
+    parser_name: str = "complyroll.sarif",
+    parser_version: str = "1",
+) -> IngestResult:
+    """Build one failed reading of `digest`: a SARIF log that is not valid JSON."""
+
+    artifact = ArtifactProvenance(
+        artifact_id=f"artifact-sha256-{digest}",
+        name=FAILED_NAME,
+        source_path=f"/synthetic/{FAILED_NAME}",
+        digest_sha256=digest,
+        size_bytes=486,
+        media_type="application/sarif+json",
+        parser_name=parser_name,
+        parser_version=parser_version,
+        ingested_at=NOW,
+    )
+    diagnostic = IngestDiagnostic(
+        DiagnosticLevel.ERROR, "artifact_parse_failed", "SARIF log is not valid JSON", FAILED_NAME
+    )
+    return IngestResult(artifact, (), (diagnostic,))
+
+
+def system_record(
+    digest: str = DIGEST,
+    *,
+    observed_at: datetime = NOW,
+    parser_name: str = "complyroll.sarif",
+    parser_version: str = "1",
+) -> Observation:
+    """Build the system record one failed reading of `digest` mints, under its derived id."""
+
+    result = failed_reading(digest, parser_name=parser_name, parser_version=parser_version)
+    classification = classify_ingest(result)
+    assert classification is not None
+    return system_observation_for(result, classification, name=FAILED_NAME, observed_at=observed_at)
+
+
+def failure_head(
+    digest: str = DIGEST,
+    *,
+    parser_name: str = "complyroll.sarif",
+    parser_version: str = "1",
+) -> dict[str, Any]:
+    """Return a `failure.recorded` payload naming one failed reading."""
+
+    return {
+        **GOOD_PAYLOADS["failure.recorded"],
+        "sha256": digest,
+        "parserName": parser_name,
+        "parserVersion": parser_version,
+    }
+
+
+def pending_event(event_type: str, payload: dict[str, Any]) -> PendingEvent:
+    return PendingEvent(
+        event_type=event_type, payload=payload, occurred_at=NOW, metadata=metadata()
+    )
+
+
+def failure_batch(head: dict[str, Any], record: Observation) -> tuple[PendingEvent, ...]:
+    """Return the two events one failure stream holds: its head, then its system record."""
+
+    return (
+        pending_event("failure.recorded", head),
+        pending_event("observation.recorded", record.to_canonical_dict()),
+    )
 
 
 def object_subschemas(
@@ -711,6 +855,113 @@ class PayloadValidationTests(unittest.TestCase):
         self.assertEqual(pointers, sorted(pointers))
         self.assertIn("/pain", pointers)
         self.assertIn("/evaluator", pointers)
+
+
+class FailureRecordedContractTests(unittest.TestCase):
+    """The head of a failure stream: bounded, closed over the vocabulary, untracked."""
+
+    def setUp(self) -> None:
+        self.store = SQLiteEventStore(":memory:")
+        self.addCleanup(self.store.close)
+        self.repository = EventRepository(self.store)
+
+    def payload(self, **overrides: Any) -> dict[str, Any]:
+        return {**deepcopy(GOOD_PAYLOADS["failure.recorded"]), **overrides}
+
+    def diagnostics(self, count: int) -> list[dict[str, str]]:
+        return [
+            {
+                "level": "warning",
+                "code": "invalid_rule",
+                "message": f"rule {index} is not an object",
+                "location": "failed-invalid-rules.cklb",
+            }
+            for index in range(count)
+        ]
+
+    def test_the_diagnostics_hold_at_most_the_cap_plus_two(self) -> None:
+        schema = schema_for("failure.recorded")
+        assert schema is not None
+        self.assertEqual(
+            schema["properties"]["diagnostics"]["maxItems"], FAILURE_DIAGNOSTIC_CAP + 2
+        )
+        self.repository.validate_payload(
+            "failure.recorded", self.payload(diagnostics=self.diagnostics(64))
+        )
+        self.repository.validate_payload(
+            "failure.recorded", self.payload(diagnostics=self.diagnostics(0))
+        )
+
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload(
+                "failure.recorded", self.payload(diagnostics=self.diagnostics(65))
+            )
+
+        self.assertIn("/diagnostics", [issue.instance_pointer for issue in caught.exception.issues])
+        self.assertIn("maxItems", [issue.validator for issue in caught.exception.issues])
+
+    def test_the_codes_are_the_class_vocabulary_and_the_execution_warning(self) -> None:
+        self.assertEqual(set(FAILURE_CODE_VALUES), set(CLASS_CODES) | {"execution_unsuccessful"})
+        self.assertEqual(list(FAILURE_CODE_VALUES), sorted(FAILURE_CODE_VALUES))
+        schema = schema_for("failure.recorded")
+        assert schema is not None
+        self.assertEqual(schema["properties"]["failureCodes"]["maxItems"], len(FAILURE_CODE_VALUES))
+        self.repository.validate_payload(
+            "failure.recorded", self.payload(failureCodes=list(FAILURE_CODE_VALUES))
+        )
+
+    def test_a_code_outside_the_vocabulary_is_refused(self) -> None:
+        for label, codes in (
+            ("an unmintable code", ["artifact_read_failed"]),
+            ("a code no adapter emits", ["artifact_parse_failed", "made_up"]),
+            ("no code at all", []),
+            ("one code twice", ["artifact_parse_failed", "artifact_parse_failed"]),
+        ):
+            with self.subTest(shape=label):
+                with self.assertRaises(EventContractError) as caught:
+                    self.repository.validate_payload(
+                        "failure.recorded", self.payload(failureCodes=codes)
+                    )
+                self.assertTrue(
+                    any(
+                        issue.instance_pointer.startswith("/failureCodes")
+                        for issue in caught.exception.issues
+                    )
+                )
+
+    def test_the_clock_and_the_class_are_closed(self) -> None:
+        for clock in ("invocation", "as-of"):
+            with self.subTest(clock=clock):
+                self.repository.validate_payload("failure.recorded", self.payload(clock=clock))
+        for failure_class in ("execution", "parse", "content"):
+            with self.subTest(failure_class=failure_class):
+                self.repository.validate_payload(
+                    "failure.recorded", self.payload(failureClass=failure_class)
+                )
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("failure.recorded", self.payload(clock="scanner"))
+        self.assertIn("/clock", str(caught.exception))
+
+    def test_blank_text_is_refused_where_the_contract_wants_text(self) -> None:
+        for field_name in ("name", "mediaType", "parserName", "parserVersion"):
+            for blank in ("", "   "):
+                with self.subTest(field=field_name, value=blank):
+                    with self.assertRaises(EventContractError) as caught:
+                        self.repository.validate_payload(
+                            "failure.recorded", self.payload(**{field_name: blank})
+                        )
+                    self.assertIn(f"/{field_name}", str(caught.exception))
+
+    def test_the_head_carries_no_tracking_id(self) -> None:
+        # The tracking id is a pure function of the system observation that follows the
+        # head, so storing it would be a second copy that could disagree.
+        schema = schema_for("failure.recorded")
+        assert schema is not None
+        self.assertNotIn("trackingId", schema["properties"])
+        with self.assertRaises(EventContractError):
+            self.repository.validate_payload(
+                "failure.recorded", self.payload(trackingId=TRACKING_ID)
+            )
 
 
 class TimestampSemanticsTests(unittest.TestCase):
@@ -1164,14 +1415,70 @@ class StreamCompatibilityTests(unittest.TestCase):
             expected_version=self.repository.current_version(stream_id),
         )
 
-    def test_the_two_stream_kinds_partition_the_published_types(self) -> None:
+    def test_the_three_stream_kinds_place_every_published_type(self) -> None:
         self.assertEqual(
-            ARTIFACT_STREAM_EVENT_TYPES | CASE_STREAM_EVENT_TYPES, set(EVENT_TYPES)
+            ARTIFACT_STREAM_EVENT_TYPES | CASE_STREAM_EVENT_TYPES | FAILURE_STREAM_EVENT_TYPES,
+            set(EVENT_TYPES),
         )
-        self.assertEqual(ARTIFACT_STREAM_EVENT_TYPES & CASE_STREAM_EVENT_TYPES, set())
+        self.assertEqual(
+            CASE_STREAM_EVENT_TYPES & (ARTIFACT_STREAM_EVENT_TYPES | FAILURE_STREAM_EVENT_TYPES),
+            set(),
+        )
+        self.assertEqual(
+            ARTIFACT_STREAM_EVENT_TYPES & FAILURE_STREAM_EVENT_TYPES, {"observation.recorded"}
+        )
         self.assertEqual(
             ARTIFACT_STREAM_EVENT_TYPES, {"artifact.ingested", "observation.recorded"}
         )
+        self.assertEqual(FAILURE_STREAM_EVENT_TYPES, {"failure.recorded", "observation.recorded"})
+        self.assertEqual(
+            STREAM_EVENT_TYPES,
+            {
+                "artifact": ARTIFACT_STREAM_EVENT_TYPES,
+                "case": CASE_STREAM_EVENT_TYPES,
+                "failure": FAILURE_STREAM_EVENT_TYPES,
+            },
+        )
+
+    def test_the_placement_guard_names_each_unsound_table(self) -> None:
+        # The import guard runs once, on the real table, where it can never fire. The
+        # function behind it is checked here against each way a table can be wrong.
+        artifact = frozenset(ARTIFACT_STREAM_EVENT_TYPES)
+        case = frozenset(CASE_STREAM_EVENT_TYPES)
+        failure = frozenset(FAILURE_STREAM_EVENT_TYPES)
+        published = frozenset(EVENT_TYPES)
+        self.assertIsNone(_placement_problem(artifact, case, failure, published))
+        for label, tables, expected in (
+            (
+                "an unplaced type",
+                (artifact, case, failure - {"failure.recorded"}),
+                "must belong to a stream kind",
+            ),
+            (
+                "a case type on an artifact stream",
+                (artifact | {"case.created"}, case, failure),
+                "case stream kind alone",
+            ),
+            (
+                "a case type on a failure stream",
+                (artifact, case, failure | {"case.identified"}),
+                "case stream kind alone",
+            ),
+            (
+                "a head shared by artifact and failure streams",
+                (artifact | {"failure.recorded"}, case, failure),
+                "may share observation.recorded and nothing else",
+            ),
+            (
+                "an observation on one reading kind only",
+                (artifact, case, failure - {"observation.recorded"}),
+                "may share observation.recorded and nothing else",
+            ),
+        ):
+            with self.subTest(shape=label):
+                problem = _placement_problem(*tables, published)
+                self.assertIsNotNone(problem)
+                self.assertIn(expected, str(problem))
 
     def test_every_type_is_accepted_on_the_stream_it_belongs_on(self) -> None:
         for event_type in sorted(ARTIFACT_STREAM_EVENT_TYPES):
@@ -1216,7 +1523,7 @@ class StreamCompatibilityTests(unittest.TestCase):
                 with self.assertRaises(EventContractError) as caught:
                     self.append("projection/case-list", event_type)
 
-                self.assertIn("neither an artifact nor a case stream", str(caught.exception))
+                self.assertIn("not an artifact, case, or failure stream", str(caught.exception))
 
     def test_a_case_created_naming_another_case_is_refused(self) -> None:
         other = "case-ffffffffffffffff"
@@ -1613,6 +1920,54 @@ class StreamIdentifierTests(unittest.TestCase):
     def test_require_tracking_id_returns_the_value_it_accepts(self) -> None:
         self.assertEqual(require_tracking_id(TRACKING_ID), TRACKING_ID)
 
+    def test_failure_stream_id_round_trips_through_its_components(self) -> None:
+        stream_id = failure_stream_id(DIGEST, "complyroll.sarif", "1")
+
+        self.assertEqual(stream_id, FAILURE_STREAM_ID)
+        self.assertTrue(is_failure_stream(stream_id))
+        self.assertFalse(is_artifact_stream(stream_id))
+        self.assertFalse(is_case_stream(stream_id))
+        self.assertEqual(stream_kind(stream_id), "failure")
+        self.assertEqual(failure_stream_components(stream_id), (DIGEST, "complyroll.sarif", "1"))
+
+    def test_each_kind_answers_only_to_its_own_prefix(self) -> None:
+        for stream_id, kind in (
+            (ARTIFACT_STREAM_ID, "artifact"),
+            (STREAM_ID, "case"),
+            (FAILURE_STREAM_ID, "failure"),
+            ("projection/case-list", None),
+            (f"failures/{DIGEST}/complyroll.sarif/1", None),
+        ):
+            with self.subTest(stream_id=stream_id):
+                self.assertEqual(stream_kind(stream_id), kind)
+                self.assertEqual(is_failure_stream(stream_id), kind == "failure")
+
+    def test_failure_stream_id_rejects_what_an_artifact_stream_id_rejects(self) -> None:
+        for digest, name, version in (
+            ("A" * 64, "complyroll.sarif", "1"),
+            (DIGEST, "complyroll/sarif", "1"),
+            (DIGEST, "complyroll.sarif", "1/2"),
+            (DIGEST, "complyroll.sarif", "v" * _MAX_STREAM_ID_LENGTH),
+        ):
+            with self.subTest(digest=digest[:4], parser_name=name, parser_version=version[:8]):
+                with self.assertRaises(ValueError):
+                    failure_stream_id(digest, name, version)
+
+    def test_failure_stream_components_refuse_a_stream_of_another_shape(self) -> None:
+        for stream_id, expected in (
+            (ARTIFACT_STREAM_ID, "must start with 'failure/'"),
+            (f"failure/{DIGEST}/complyroll.sarif", "a failure stream id names a digest"),
+            (f"failure/{DIGEST}/complyroll.sarif/1/2", "a failure stream id names a digest"),
+            ("failure/" + "A" * 64 + "/complyroll.sarif/1", "SHA-256"),
+        ):
+            with self.subTest(stream_id=stream_id):
+                with self.assertRaises(ValueError) as caught:
+                    failure_stream_components(stream_id)
+                self.assertIn(expected, str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            artifact_stream_components(f"artifact/{DIGEST}/complyroll.cklb")
+        self.assertIn("an artifact stream id names a digest", str(caught.exception))
+
 
 class TimestampTests(unittest.TestCase):
     def test_iso_utc_normalizes_an_offset_to_the_z_form(self) -> None:
@@ -1810,6 +2165,523 @@ class RepositoryAppendTests(unittest.TestCase):
     def test_the_repository_refuses_something_that_is_not_a_store(self) -> None:
         with self.assertRaises(TypeError):
             EventRepository(object())  # type: ignore[arg-type]
+
+
+class FailureStreamIdentityTests(unittest.TestCase):
+    """A failure stream holds the failed reading its id names and nothing else (ADR 0014).
+
+    Its head names the digest, the parser, and the parser version, like an artifact
+    stream's head, and comes first. Its one observation is the system record that failure
+    mints, and the reader accepts a system observation under any identifier, so the
+    repository is the one place the derived id is held. The fingerprint covers none of the
+    record's metadata, so the repository holds that too.
+    """
+
+    def setUp(self) -> None:
+        self.store = SQLiteEventStore(":memory:")
+        self.addCleanup(self.store.close)
+        self.repository = EventRepository(self.store)
+
+    def test_a_failed_reading_lands_on_the_stream_it_names(self) -> None:
+        records = self.repository.append_batch(
+            FAILURE_STREAM_ID, failure_batch(failure_head(), system_record()), expected_version=0
+        )
+
+        self.assertEqual(
+            [record.event_type for record in records],
+            ["failure.recorded", "observation.recorded"],
+        )
+
+    def test_a_failure_head_naming_another_reading_is_refused(self) -> None:
+        for label, overrides in (
+            ("another digest", {"sha256": "b" * 64}),
+            ("another parser", {"parserName": "complyroll.cklb"}),
+            ("another parser version", {"parserVersion": "2"}),
+        ):
+            with self.subTest(shape=label):
+                with self.assertRaises(EventContractError) as caught:
+                    self.repository.append(
+                        FAILURE_STREAM_ID,
+                        "failure.recorded",
+                        {**failure_head(), **overrides},
+                        occurred_at=NOW,
+                        metadata=metadata(),
+                        expected_version=0,
+                    )
+
+                message = str(caught.exception)
+                self.assertIn("failure.recorded records digest", message)
+                self.assertIn(FAILURE_STREAM_ID, message)
+        self.assertEqual(self.store.latest_sequence, 0)
+
+    def test_each_clause_of_the_system_record_is_held(self) -> None:
+        # Each shape changes exactly one field of a good record, so dropping any one
+        # clause lets exactly one of them through.
+        good = system_record().to_canonical_dict()
+        other = f"sha256:{'b' * 64}"
+        self.assertIsNone(failure_identity_breach(FAILURE_STREAM_ID, "observation.recorded", good))
+        for label, pointer, value, expected in (
+            ("an artifact origin", "/origin", "artifact", "its origin is 'artifact'"),
+            ("another source type", "/source_type", "sarif", "its source type is 'sarif'"),
+            ("another context key", "/context_key", other, "its context key is"),
+            ("another resource id", "/resource/resource_id", other, "its resource id is"),
+            (
+                "an id that is not the derived one",
+                "/observation_id",
+                "obs-chosen",
+                "its id is 'obs-chosen', not its derived id",
+            ),
+        ):
+            with self.subTest(shape=label):
+                breach = failure_identity_breach(
+                    FAILURE_STREAM_ID, "observation.recorded", with_value(good, pointer, value)
+                )
+
+                self.assertIsNotNone(breach)
+                self.assertIn(f"is not the system record of digest {DIGEST!r}", str(breach))
+                self.assertIn(expected, str(breach))
+
+    def test_an_observation_that_is_not_the_digest_system_record_is_refused(self) -> None:
+        chosen = with_value(system_record().to_canonical_dict(), "/observation_id", "obs-chosen")
+        for label, payload, expected in (
+            ("an artifact finding", observation().to_canonical_dict(), "its origin is"),
+            (
+                "the record of another digest",
+                system_record("b" * 64).to_canonical_dict(),
+                "its context key is",
+            ),
+            ("the record under a chosen id", chosen, "not its derived id"),
+        ):
+            with self.subTest(shape=label):
+                with self.assertRaises(EventContractError) as caught:
+                    self.repository.append(
+                        FAILURE_STREAM_ID,
+                        "observation.recorded",
+                        payload,
+                        occurred_at=NOW,
+                        metadata=metadata(),
+                        expected_version=0,
+                    )
+
+                self.assertIn(expected, str(caught.exception))
+        self.assertEqual(self.store.latest_sequence, 0)
+
+    def test_the_check_answers_only_for_failure_stream_events(self) -> None:
+        self.assertIsNone(
+            failure_identity_breach(
+                ARTIFACT_STREAM_ID, "observation.recorded", observation().to_canonical_dict()
+            )
+        )
+        self.assertIsNone(
+            failure_identity_breach(
+                FAILURE_STREAM_ID, "case.created", GOOD_PAYLOADS["case.created"]
+            )
+        )
+        breach = failure_identity_breach(
+            "failure/not-a-digest/complyroll.sarif/1", "failure.recorded", failure_head()
+        )
+        self.assertIn("names no failed reading", str(breach))
+
+    def test_the_metadata_keys_are_exactly_the_ones_the_writer_stores(self) -> None:
+        self.assertEqual(
+            tuple(sorted(dict(system_record().source_metadata))), FAILURE_METADATA_KEYS
+        )
+
+    def test_each_clause_of_the_record_metadata_is_held(self) -> None:
+        # The fingerprint covers none of the metadata, so every shape below keeps its derived
+        # id and only the metadata clause can refuse it.
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        missing = {key: value for key, value in stored.items() if key != "failure.clock"}
+        not_codes = "not the compact JSON array of sorted, distinct failure codes its writer stores"
+        for label, value, expected in (
+            ("no object", "artifact.name=x", "its metadata is not an object"),
+            ("a missing key", missing, "its metadata has no 'failure.clock'"),
+            (
+                "a key no writer stores",
+                {**stored, "failure.note": "x"},
+                "its metadata carries 'failure.note', which a system record does not",
+            ),
+            (
+                "another digest",
+                {**stored, "artifact.sha256": "b" * 64},
+                f"its metadata artifact.sha256 is {'b' * 64!r}, where the stream names {DIGEST!r}",
+            ),
+            (
+                "another parser",
+                {**stored, "artifact.parser": "complyroll.cklb"},
+                "artifact.parser is 'complyroll.cklb', where the stream names 'complyroll.sarif'",
+            ),
+            (
+                "another version",
+                {**stored, "artifact.parserVersion": "2"},
+                "artifact.parserVersion is '2', where the stream names '1'",
+            ),
+            ("a signed size", {**stored, "artifact.sizeBytes": "-1"}, "is '-1', not a count"),
+            ("a padded size", {**stored, "artifact.sizeBytes": "0486"}, "is '0486', not a count"),
+            ("a wide digit", {**stored, "artifact.sizeBytes": "\u0664"}, "not a count"),
+            ("a class", {**stored, "failure.class": "fatal"}, "'fatal', not a failure class"),
+            ("codes not JSON", {**stored, "failure.codes": "no_observations"}, not_codes),
+            ("codes not a list", {**stored, "failure.codes": '"no_observations"'}, not_codes),
+            ("no codes", {**stored, "failure.codes": "[]"}, not_codes),
+            ("an unknown code", {**stored, "failure.codes": '["no_such_code"]'}, not_codes),
+            ("a code not text", {**stored, "failure.codes": "[1]"}, not_codes),
+            (
+                "a code twice",
+                {**stored, "failure.codes": '["no_observations","no_observations"]'},
+                not_codes,
+            ),
+            ("codes nested deep", {**stored, "failure.codes": "[" * 100_000}, not_codes),
+            # The same list in a spelling the writer never emits: `encode_list` is compact,
+            # writes no escape for an ASCII code, and the classification sorts its codes.
+            ("codes padded", {**stored, "failure.codes": '[ "no_observations" ]'}, not_codes),
+            ("codes escaped", {**stored, "failure.codes": '["no_observ\\u0061tions"]'}, not_codes),
+            (
+                "codes out of order",
+                {**stored, "failure.codes": '["no_observations","execution_unsuccessful"]'},
+                not_codes,
+            ),
+            ("a clock", {**stored, "failure.clock": "later"}, "'later', not a failure clock"),
+            (
+                "another rule",
+                {**stored, "failure.rule": "VDR-TFR-OTHER"},
+                "failure.rule is 'VDR-TFR-OTHER', not 'VDR-CSO-FAV'",
+            ),
+        ):
+            with self.subTest(shape=label):
+                payload = {**good, "source_metadata": value}
+                breach = failure_identity_breach(FAILURE_STREAM_ID, "observation.recorded", payload)
+
+                self.assertIsNotNone(breach)
+                self.assertIn(f"is not the system record of digest {DIGEST!r}", str(breach))
+                self.assertIn(expected, str(breach))
+                self.assertEqual(payload["observation_id"], good["observation_id"])
+
+    def test_a_record_naming_another_reading_in_its_metadata_is_refused(self) -> None:
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        moved = {**good, "source_metadata": {**stored, "artifact.parserVersion": "2"}}
+
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.append_batch(
+                FAILURE_STREAM_ID,
+                (
+                    pending_event("failure.recorded", failure_head()),
+                    pending_event("observation.recorded", moved),
+                ),
+                expected_version=0,
+            )
+
+        self.assertIn("artifact.parserVersion is '2'", str(caught.exception))
+        self.assertEqual(self.store.latest_sequence, 0)
+
+    def test_a_head_and_its_record_agree_on_the_failure_they_describe(self) -> None:
+        head = failure_head()
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        self.assertIsNone(failure_record_disagreement(FAILURE_STREAM_ID, head, good))
+        for key, value, head_key in (
+            ("artifact.name", "other.sarif", "name"),
+            ("artifact.sizeBytes", "487", "sizeBytes"),
+            ("artifact.mediaType", "application/json", "mediaType"),
+            ("failure.class", "content", "failureClass"),
+            ("failure.codes", '["no_observations"]', "failureCodes"),
+            ("failure.clock", "invocation", "clock"),
+        ):
+            with self.subTest(key=key):
+                record = {**good, "source_metadata": {**stored, key: value}}
+                disagreement = failure_record_disagreement(FAILURE_STREAM_ID, head, record)
+
+                self.assertEqual(
+                    disagreement,
+                    f"failure stream {FAILURE_STREAM_ID!r} records {head_key} "
+                    f"{head[head_key]!r} in its failure.recorded and {key} {value!r} in its "
+                    "system record; the two describe one failure",
+                )
+
+    def test_a_failure_stream_is_opened_by_its_head(self) -> None:
+        head = pending_event("failure.recorded", failure_head())
+        record = pending_event("observation.recorded", system_record().to_canonical_dict())
+        for label, batch in (
+            ("the record alone", (record,)),
+            ("the record before its head", (record, head)),
+        ):
+            with self.subTest(shape=label):
+                with self.assertRaises(EventContractError) as caught:
+                    self.repository.append_batch(FAILURE_STREAM_ID, batch, expected_version=0)
+
+                self.assertEqual(
+                    str(caught.exception), failure_head_order_message(FAILURE_STREAM_ID)
+                )
+        self.assertEqual(self.store.latest_sequence, 0)
+        # The writer's order, head first, still appends.
+        self.repository.append_batch(FAILURE_STREAM_ID, (head, record), expected_version=0)
+        self.assertEqual(self.store.latest_sequence, 2)
+
+
+class FailureDuplicateObservationTests(unittest.TestCase):
+    """One failure is one system record, held once per digest across failure streams.
+
+    A system record's identity is the digest and the instant, never the parser, so the same
+    bytes failing under two parsers at one instant mint one record. Storing it on both
+    streams would rehydrate one failure twice, so the second append is refused.
+    """
+
+    def setUp(self) -> None:
+        self.store = SQLiteEventStore(":memory:")
+        self.addCleanup(self.store.close)
+        self.repository = EventRepository(self.store)
+
+    def record(self, stream_id: str, head: dict[str, Any], record: Observation) -> None:
+        self.repository.append_batch(
+            stream_id,
+            failure_batch(head, record),
+            expected_version=self.repository.current_version(stream_id),
+        )
+
+    def test_a_batch_holding_its_record_twice_is_refused(self) -> None:
+        record = system_record()
+        batch = (
+            *failure_batch(failure_head(), record),
+            pending_event("observation.recorded", record.to_canonical_dict()),
+        )
+
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.append_batch(FAILURE_STREAM_ID, batch, expected_version=0)
+
+        message = str(caught.exception)
+        self.assertIn(f"failure stream {FAILURE_STREAM_ID!r} records observation", message)
+        self.assertIn("more than once", message)
+        self.assertEqual(self.store.latest_sequence, 0)
+
+    def test_a_record_the_stream_already_holds_is_refused(self) -> None:
+        record = system_record()
+        self.record(FAILURE_STREAM_ID, failure_head(), record)
+
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.append(
+                FAILURE_STREAM_ID,
+                "observation.recorded",
+                record.to_canonical_dict(),
+                occurred_at=NOW,
+                metadata=metadata(),
+                expected_version=2,
+            )
+
+        self.assertIn("more than once", str(caught.exception))
+        self.assertEqual(self.repository.current_version(FAILURE_STREAM_ID), 2)
+
+    def test_one_record_per_digest_across_failure_streams(self) -> None:
+        first = system_record()
+        second = system_record(parser_name="complyroll.cklb")
+        other_stream = failure_stream_id(DIGEST, "complyroll.cklb", "1")
+        self.assertEqual(first.observation_id, second.observation_id)
+        self.record(FAILURE_STREAM_ID, failure_head(), first)
+
+        with self.assertRaises(EventContractError) as caught:
+            self.record(other_stream, failure_head(parser_name="complyroll.cklb"), second)
+
+        self.assertEqual(
+            str(caught.exception),
+            failure_duplicate_observation_message(
+                other_stream, first.observation_id, FAILURE_STREAM_ID
+            ),
+        )
+        self.assertEqual(self.store.latest_sequence, 2)
+        self.assertEqual(self.repository.current_version(other_stream), 0)
+
+    def test_another_instant_or_another_digest_is_another_record(self) -> None:
+        first = system_record()
+        later = system_record(parser_version="2", observed_at=NOW + timedelta(hours=1))
+        later_stream = failure_stream_id(DIGEST, "complyroll.sarif", "2")
+        elsewhere = failure_stream_id("b" * 64, "complyroll.sarif", "1")
+        self.record(FAILURE_STREAM_ID, failure_head(), first)
+        self.record(later_stream, failure_head(parser_version="2"), later)
+        self.record(elsewhere, failure_head("b" * 64), system_record("b" * 64))
+
+        self.assertEqual(self.store.latest_sequence, 6)
+        self.assertEqual(
+            self.repository.failure_observations_of_digest(FAILURE_STREAM_ID),
+            {later.observation_id: later_stream},
+        )
+        self.assertEqual(
+            self.repository.failure_observations_of_digest(later_stream),
+            {first.observation_id: FAILURE_STREAM_ID},
+        )
+        self.assertEqual(self.repository.failure_observations_of_digest(elsewhere), {})
+
+
+class FailureSchemaMarkingTests(unittest.TestCase):
+    """A store holding a failure stream is marked schema 2 in the same transaction.
+
+    A build that knows only schema 1 reads a failure stream as a stream of no kind, so a
+    store holding one says so before such a build can open it. A store that never holds one
+    stays at schema 1 and stays readable by that build (ADR 0014).
+    """
+
+    FIRST = (1, "append-only event history and projection checkpoints")
+    SECOND = (2, "failure streams, ADR 0014")
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "history.sqlite"
+        self.store = SQLiteEventStore(self.path)
+        self.addCleanup(self.store.close)
+        self.repository = EventRepository(self.store)
+
+    def migrations(self) -> list[tuple[int, str]]:
+        with closing(sqlite3.connect(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT version, description FROM complyroll_schema_migrations ORDER BY version"
+            ).fetchall()
+        return [(int(version), str(description)) for version, description in rows]
+
+    def record_failure(self, digest: str = DIGEST) -> None:
+        self.repository.append_batch(
+            failure_stream_id(digest, "complyroll.sarif", "1"),
+            failure_batch(failure_head(digest), system_record(digest)),
+            expected_version=0,
+        )
+
+    def damage(self, statement: str) -> None:
+        self.store.close()
+        with closing(sqlite3.connect(self.path, isolation_level=None)) as connection:
+            connection.execute(statement)
+
+    def test_a_new_store_is_created_at_schema_1(self) -> None:
+        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 2)
+        self.assertEqual(self.store.schema_version, 1)
+        self.assertEqual(self.migrations(), [self.FIRST])
+
+    def test_artifact_and_case_appends_leave_the_store_at_schema_1(self) -> None:
+        for stream_id, event_type in (
+            (STREAM_ID, "case.created"),
+            (ARTIFACT_STREAM_ID, "artifact.ingested"),
+            (ARTIFACT_STREAM_ID, "observation.recorded"),
+        ):
+            self.repository.append(
+                stream_id,
+                event_type,
+                GOOD_PAYLOADS[event_type],
+                occurred_at=NOW,
+                metadata=metadata(),
+                expected_version=self.repository.current_version(stream_id),
+            )
+
+        self.assertEqual(self.store.schema_version, 1)
+        self.assertEqual(self.migrations(), [self.FIRST])
+
+    def test_the_first_failure_append_marks_schema_2_with_its_record(self) -> None:
+        self.record_failure()
+
+        self.assertEqual(self.store.schema_version, 2)
+        self.assertEqual(self.migrations(), [self.FIRST, self.SECOND])
+        self.store.close()
+        reopened = SQLiteEventStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.schema_version, 2)
+        self.assertTrue(reopened.verify_history().ok)
+
+    def test_a_later_failure_append_marks_nothing_again(self) -> None:
+        self.record_failure()
+        self.record_failure("b" * 64)
+
+        self.assertEqual(self.store.schema_version, 2)
+        self.assertEqual(self.migrations(), [self.FIRST, self.SECOND])
+
+    def test_a_rolled_back_failure_append_leaves_the_store_unmarked(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with self.repository.transaction():
+                self.record_failure()
+                self.assertEqual(self.store.schema_version, 2)
+                raise RuntimeError("abandon the batch")
+
+        self.assertEqual(self.store.schema_version, 1)
+        self.assertEqual(self.migrations(), [self.FIRST])
+        self.assertEqual(self.store.latest_sequence, 0)
+
+    def test_an_append_refused_after_the_marking_undoes_it(self) -> None:
+        # The marking runs after the concurrency check and before the inserts, so an
+        # insert refused on its own is the case that proves the two share a transaction.
+        self.store.append(
+            STREAM_ID,
+            (NewEvent("case.created", NOW, GOOD_PAYLOADS["case.created"], event_id="evt-taken"),),
+            expected_version=0,
+        )
+
+        with self.assertRaises(EventConflictError):
+            self.store.append(
+                FAILURE_STREAM_ID,
+                (NewEvent("failure.recorded", NOW, failure_head(), event_id="evt-taken"),),
+                expected_version=0,
+                requires_schema=2,
+            )
+
+        self.assertEqual(self.store.schema_version, 1)
+        self.assertEqual(self.migrations(), [self.FIRST])
+
+    def test_a_failure_append_refused_at_the_concurrency_check_marks_nothing(self) -> None:
+        with self.assertRaises(EventConcurrencyError):
+            self.repository.append_batch(
+                FAILURE_STREAM_ID,
+                failure_batch(failure_head(), system_record()),
+                expected_version=1,
+            )
+
+        self.assertEqual(self.store.schema_version, 1)
+        self.assertEqual(self.migrations(), [self.FIRST])
+
+    def test_schema_2_needs_both_migration_records(self) -> None:
+        for missing in (1, 2):
+            with self.subTest(missing=missing):
+                self.setUp()
+                self.record_failure()
+                self.damage(f"DELETE FROM complyroll_schema_migrations WHERE version = {missing}")
+
+                with self.assertRaises(UnsupportedSchemaError) as caught:
+                    SQLiteEventStore(self.path)
+
+                self.assertIn(f"missing migration record {missing}", str(caught.exception))
+                verifier = SQLiteEventStore.open_for_verification(self.path)
+                self.addCleanup(verifier.close)
+                faults = verifier.verify_history().faults
+                self.assertEqual(
+                    [(fault.code, fault.message) for fault in faults],
+                    [("migration_missing", f"database is missing migration record {missing}")],
+                )
+
+    def test_schema_1_needs_only_its_own_record(self) -> None:
+        self.store.close()
+        reopened = SQLiteEventStore(self.path)
+        self.addCleanup(reopened.close)
+
+        self.assertEqual(reopened.schema_version, 1)
+        self.assertTrue(reopened.verify_history().ok)
+
+    def test_a_store_newer_than_schema_2_is_refused(self) -> None:
+        self.record_failure()
+        self.damage("PRAGMA user_version = 3")
+
+        with self.assertRaises(UnsupportedSchemaError) as caught:
+            SQLiteEventStore(self.path)
+
+        self.assertIn("database schema 3 is newer than supported schema 2", str(caught.exception))
+
+    def test_the_required_schema_must_be_one_this_build_knows(self) -> None:
+        event = NewEvent("failure.recorded", NOW, failure_head())
+        for value in (0, 3, True, "2"):
+            with self.subTest(requires_schema=value):
+                with self.assertRaises(ValueError) as caught:
+                    self.store.append(
+                        FAILURE_STREAM_ID,
+                        (event,),
+                        expected_version=0,
+                        requires_schema=value,  # type: ignore[arg-type]
+                    )
+
+                self.assertIn("requires_schema must be between 1 and 2", str(caught.exception))
+        self.assertEqual(self.store.latest_sequence, 0)
 
 
 if __name__ == "__main__":

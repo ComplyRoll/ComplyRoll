@@ -126,6 +126,30 @@ ComplyRoll: it is recorded as metadata and never changes the control's dispositi
 results decide unless impact 0 reads not applicable first, and acceptance remains an operator's
 evaluation. An InSpec impact or severity tag is evidence too, and never sets PAIN.
 
+Failures in the detection or response process are `VDR-CSO-FAV`, "Failures Are
+Vulnerabilities": "Providers MUST treat problems or failures with their vulnerability detection
+and response processes as vulnerabilities." ComplyRoll covers the detection half, and only the
+failures an import can see (ADR 0014). With `--record-failed-imports`, an artifact that cannot
+be parsed, an artifact with no usable content, and a scanner log that reports its own failed
+invocation each become a system observation and a vulnerability case, on the stateless and
+persisted paths alike, with the detection-time source `system`. PAIN, reachability, and
+exploitability come only from an operator evaluation that names the case by source type, record
+id, and digest, never from the failure class or its codes, and the evaluation clock runs from the
+detection time like any other record's. The command writes its report or store and then exits 3,
+so automation that stops on a non-zero exit still stops while the failure is on the record.
+Without the flag a failed import exits 1 and writes nothing, and a failed invocation stays a
+warning, as before.
+
+The response half is not covered: a broken remediation or response workflow, and a vulnerability
+whose detection time is never attested, are the Phase 2 deliverable "Response-process and
+attestation failures". Stale coverage, missing resources, and a clean scan as coverage evidence
+belong to the coverage and freshness checks. Some detection failures still stop the run with the
+flag, because no honest record can be built for them: a file that could not be read, an
+unsupported or rejected format, a reading that repeats an observation identity, a reading that
+found some usable results beside its errors (kept or withheld), and an error code ComplyRoll has
+not classified. A recorded failure is evidence that the provider's process noticed it. It is not
+a determination that the provider meets `VDR-CSO-FAV`.
+
 ## Class C operational mapping
 
 These values describe the current rules for planning and tests. Application code must select them

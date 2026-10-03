@@ -76,6 +76,34 @@ class EvaluationMatch:
             parts.append(f"contextKey={self.context_key!r}")
         return ", ".join(parts)
 
+    def ambiguity_remedy(self) -> str:
+        """Name the match keys this entry leaves out, for a match that selects several records.
+
+        `reports.vdt` and `history.writers` both end an ambiguity with it. Records and cases
+        are keyed by the full triple, so an entry stating all three keys selects at most one
+        and at least one key is always missing here.
+        """
+
+        missing = [
+            key
+            for key, value in (("contextKey", self.context_key), ("sourceType", self.source_type))
+            if value is None
+        ]
+        return f"add {' or '.join(missing)}"
+
+    def context_key_required(self, tracking_id: str) -> str:
+        """Explain why this match, naming no `contextKey`, cannot select a system record.
+
+        `reports.vdt` and `history.writers` both refuse it with this text, so the stateless
+        and persisted paths name the refusal the same way (ADR 0014 Decision 10).
+        """
+
+        return (
+            f"{self.describe()} matches the detection process failure {tracking_id}; a "
+            "detection process failure is matched by sourceRecordId, sourceType and "
+            "contextKey together, so add contextKey"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class PainReductionEvent:

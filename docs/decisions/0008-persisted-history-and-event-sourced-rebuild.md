@@ -284,3 +284,59 @@ because it would duplicate correlation logic in the fold and could drift from th
 path. Mutable "current state" tables as the source of truth were rejected in ADR 0004 and remain
 rejected. Deriving the actor from the evaluations file's `evaluator` was rejected because the
 evaluator is who made the judgement and the actor is who recorded it; both are kept.
+
+## Amendment 2026-09-30: failure streams and the equivalence carve-out
+
+ADR 0014 records a detection process failure as a system observation on both paths when the
+operator passes `--record-failed-imports`. The persisted half adds a third stream kind and a new
+event, and the stateless and persisted paths can no longer promise identical bytes for every
+store. These rules bind from this date.
+
+- **Decision 5 has a carve-out for system observations.** A system observation takes its instant
+  from the ingest `--as-of` on the persisted path and from the report as-of on the stateless
+  path, unless the scanner declared the failed invocation's clock. The fields that may differ
+  are `observedAt` of a system observation and so its `observationIds`, the record's
+  `detected_at` and EVU due date, period inclusion, `detectionFailures[].observedAt`, and the
+  INFOs `failure_superseded`, `artifact_superseded_by_failure`, and `stale_case`. The two paths
+  are byte-identical when all of these hold: the same inputs and the same flag; every failure's
+  `observed_at` equals the report as-of or comes from a declared scanner clock; no stream of the
+  digest is superseded; no two input names share a digest; and no ingest reported
+  `failure_held_by_another_stream`, which `record_failure` adds when another failure stream of
+  the digest already holds the reading's system observation. No failure stream is then written
+  under the reading's parser and version, and the failure stays recorded under the holder's
+  parser, version, and codes, where a stateless run reports the reading's own. Without the flag,
+  and for a store that holds no failure stream, Decision 5 holds exactly as amended above.
+  `FailedImportDivergenceTests` in `tests/test_replay.py` pins each divergence.
+- **A third stream kind, `failure/<sha256>/<parser_name>/<parser_version>`.** It is named for the
+  parser whose reading failed and holds exactly one `failure.recorded` head and one
+  `observation.recorded` carrying the system observation, written in one transaction by
+  `record_failure`; a half-written stream is refused rather than resumed. `observation.recorded`
+  is accepted on artifact and failure streams, `failure.recorded` on failure streams only, and
+  every case event on case streams only. One system observation id is stored once per digest
+  across failure streams. The audit gains `failure_incomplete`, `failure_overfull`,
+  `failure_stream_mismatch`, `failure_duplicate_observation`, and `failure_schema_unmarked`.
+- **`failure.recorded` v1.** The payload is `name` (through `diagnostic_text`), `sha256`,
+  `sizeBytes`, `mediaType`, `parserName`, `parserVersion`, `ingestedAt`, `failureClass`
+  (`execution`, `parse`, or `content`), `failureCodes` (at least one, unique, from the closed
+  vocabulary), `clock` (`invocation` or `as-of`), and `diagnostics` (at most 64 entries). There
+  is no `trackingId`; the replay derives it from the stored observation, as the stateless path
+  does.
+- **The newest parser stream wins, across kinds.** The rule above still picks the artifact winner
+  W per digest (R1), and failure streams join it under ADR 0014 Decision 13: W is replaced by a
+  failure under W's parser name at a strictly newer version when every artifact stream of the
+  digest is under that parser name (R2), reported as `artifact_superseded_by_failure`; a parse
+  or content failure is superseded by any artifact stream of the digest, current or superseded,
+  under another parser name or under its parser at a version of at least its own (R3); an
+  execution failure only by a reading under its parser at such a version whose head carries no
+  `execution_unsuccessful` (R4); and failures never supersede one another (R5). A superseded
+  failure is reported as `failure_superseded`. Whether a digest's versions compare numerically
+  is decided once over every artifact and failure version of that digest. A digest with no
+  failure stream is split exactly as before.
+- **A store that records a failure is schema 2.** New stores are still created at `user_version`
+  1. The first `failure.recorded` append inserts migration row 2 ("failure streams, ADR 0014")
+  and sets `user_version` to 2 in the same transaction. This build opens 1 and 2; a build before
+  ADR 0014 refuses a schema 2 store at open with `database schema 2 is newer than supported
+  schema 1`, and its `store verify`, which opens without that check, reports each failure
+  stream's events as `event_stream_mismatch` and `payload_contract_invalid` faults (ADR 0014,
+  Consequences). A store that never records a failure stays at schema 1 and stays readable by
+  earlier builds.

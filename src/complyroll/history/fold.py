@@ -14,12 +14,14 @@ into a plausible-looking case.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Final, TypeGuard
+from typing import Any, Final, TypeGuard, TypeVar
 
-from complyroll.adapters import DiagnosticLevel, IngestDiagnostic
+from complyroll.adapters import DiagnosticLevel, FailureClass, IngestDiagnostic
+from complyroll.adapters.failures import EXECUTION_UNSUCCESSFUL
 from complyroll.events import (
+    FAILURE_STREAM_SCHEMA_VERSION,
     OBSERVATION_ID_KEY,
     EventContractError,
     EventRepository,
@@ -27,8 +29,14 @@ from complyroll.events import (
     case_stream_id,
     duplicate_observation_message,
     event_belongs_on_stream,
+    failure_duplicate_observation_message,
+    failure_head_order_message,
+    failure_identity_breach,
+    failure_record_disagreement,
+    failure_stream_components,
     is_artifact_stream,
     is_case_stream,
+    is_failure_stream,
     metadata_breaches,
     parse_utc,
     tracking_id_from_stream,
@@ -39,6 +47,7 @@ from complyroll.store import EventRecord
 
 ARTIFACT_INGESTED = "artifact.ingested"
 OBSERVATION_RECORDED = "observation.recorded"
+FAILURE_RECORDED = "failure.recorded"
 CASE_CREATED = "case.created"
 CASE_OBSERVATION_LINKED = "case.observation_linked"
 DETECTION_ATTESTED = "detection.attested"
@@ -57,6 +66,11 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "case_tracking_id_mismatch",
     "event_metadata_invalid",
     "event_stream_mismatch",
+    "failure_duplicate_observation",
+    "failure_incomplete",
+    "failure_overfull",
+    "failure_schema_unmarked",
+    "failure_stream_mismatch",
     "payload_contract_invalid",
 )
 
@@ -92,17 +106,51 @@ class ArtifactRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class ArtifactHistory:
-    """Every artifact stream in the log, split by ADR 0008's parser-version rule.
+class FailureRecord:
+    """One `failure.recorded` event, read back as a recorded detection process failure.
 
-    `current` is the stream the fold reads for each artifact digest, in recorded order.
-    `superseded` is every older-parser stream for a digest that also has a newer one; those
-    observations are not rehydrated, and the replay reports each as `artifact_superseded`
-    so a report never silently drops or doubles an artifact's findings.
+    The head of a failure stream (ADR 0014): the reading that failed, named the way the
+    stream names it, and the diagnostics the failure contributes to a report. `stream_id`
+    and `sequence` locate the event, as they do on `ArtifactRecord`.
+    """
+
+    name: str
+    sha256: str
+    size_bytes: int
+    media_type: str
+    parser_name: str
+    parser_version: str
+    ingested_at: datetime
+    failure_class: FailureClass
+    failure_codes: tuple[str, ...]
+    clock: str
+    diagnostics: tuple[IngestDiagnostic, ...]
+    stream_id: str = ""
+    sequence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactHistory:
+    """Every artifact and failure stream in the log, split by the supersession rules.
+
+    `current` is the artifact stream the fold reads for each artifact digest, in recorded
+    order. `superseded` is every artifact stream a newer reading of the same bytes replaced;
+    those observations are not rehydrated, and the replay names each one so a report never
+    silently drops or doubles an artifact's findings. `current_failures` and
+    `superseded_failures` split the failure streams the same way (ADR 0014), and
+    `replaced_by` maps each superseded artifact stream to the record that replaced it: the
+    digest's current artifact stream, or the failure stream R2 superseded it with.
     """
 
     current: tuple[ArtifactRecord, ...]
     superseded: tuple[ArtifactRecord, ...]
+    current_failures: tuple[FailureRecord, ...] = ()
+    superseded_failures: tuple[FailureRecord, ...] = ()
+    # Derived from the streams above, so it adds nothing to equality, and a mapping cannot
+    # be hashed.
+    replaced_by: Mapping[str, ArtifactRecord | FailureRecord] = field(
+        default_factory=dict, compare=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,16 +341,20 @@ def rehydrate_observations(repository: EventRepository) -> tuple[Observation, ..
     Order is the order the events were recorded, which is the order the parsers produced
     them, so correlation sees exactly what the stateless path sees.
 
-    Only the newest parser stream for each artifact digest is read (see `artifact_history`).
+    Only the current streams for each artifact digest are read (see `artifact_history`).
     Replay used to read every historical stream for the same bytes while the stateless path
     ran only the installed parser, so re-ingesting an artifact under a newer parser broke
-    byte identity and reported every finding twice.
+    byte identity and reported every finding twice. A current failure stream contributes its
+    one system observation, so `cases correlate` creates and links a system case exactly as
+    it does any other (ADR 0014).
     """
 
-    views = _read_artifact_streams(repository)
-    current, _ = _split_by_parser_version(views)
+    split = _split_streams(_read_artifact_streams(repository), _read_failure_streams(repository))
     events = sorted(
-        (event for view in current for event in view.observations),
+        (
+            *(event for view in split.current for event in view.observations),
+            *(view.observation for view in split.current_failures),
+        ),
         key=lambda event: event.sequence,
     )
     observations: list[Observation] = []
@@ -349,18 +401,141 @@ def artifact_history(repository: EventRepository) -> ArtifactHistory:
     A stream holding fewer observations than its `artifact.ingested` event declares is
     incomplete and raises: it is a half-written ingest from a version that wrote artifacts
     in batches, and reporting from its prefix would understate the artifact while the
-    event still claimed the full count.
+    event still claimed the full count. A failure stream that is not exactly one head and
+    one observation raises for the same reason.
 
-    Both tuples are ordered by the sequence of the `artifact.ingested` event, which is the
+    Failure streams of the same digest join the split under rules R1 to R5 (ADR 0014; see
+    `_split_streams`), so a newer parser that can no longer read the bytes replaces the
+    older reading, and a reading of the bytes replaces a failure it resolved. Every version
+    of a digest, artifact and failure streams alike, decides together whether that digest
+    compares numerically, so one comparison orders all of its streams.
+
+    Every tuple is ordered by the sequence of the stream's head event, which is the
     recorded order the report lists artifacts in.
     """
 
-    views = _read_artifact_streams(repository)
-    current, superseded = _split_by_parser_version(views)
+    split = _split_streams(_read_artifact_streams(repository), _read_failure_streams(repository))
     return ArtifactHistory(
-        current=_records_in_recorded_order(current),
-        superseded=_records_in_recorded_order(superseded),
+        current=_records_in_recorded_order(split.current),
+        superseded=_records_in_recorded_order(split.superseded),
+        current_failures=_failures_in_recorded_order(split.current_failures),
+        superseded_failures=_failures_in_recorded_order(split.superseded_failures),
+        replaced_by=split.replaced_by,
     )
+
+
+def reading_elsewhere(
+    history: ArtifactHistory,
+    sha256: str,
+    *,
+    parser_name: str,
+    parser_version: str,
+    failure_class: FailureClass | None = None,
+) -> ArtifactRecord | None:
+    """Return a reading of these bytes that keeps a failure under this parser out of history.
+
+    A failed reading joins history only to replace the digest's current reading under R2:
+    one under the same parser name at a lower version, which the newer version can no
+    longer read. A current reading under another parser name, or under this one at the
+    failed version or later, means the bytes read successfully elsewhere, so `ingest`
+    refuses the failure rather than recording it (ADR 0014).
+
+    Given the failure's class, any reading of the digest, current or superseded, that
+    would supersede the failure under R3 or R4 is returned as well, so `ingest` never
+    records a failure the fold would supersede at birth. The current readings are asked
+    first, so every reading refused without the class is refused, and named, the same way
+    with it. Versions compare as the fold compares them: every version of the digest, the
+    failed one included, decides together whether the comparison is numeric.
+    """
+
+    numeric = _digest_compares_numerically(history, sha256, parser_version)
+    failed = _version_key(parser_version, numeric)
+    for record in history.current:
+        if record.sha256 == sha256 and (
+            record.parser_name != parser_name
+            or _version_key(record.parser_version, numeric) >= failed
+        ):
+            return record
+    if failure_class is None:
+        return None
+    failure = _PendingFailure(failure_class, parser_name, parser_version)
+    return _failure_superseded_at_birth(history, sha256, failure, numeric=numeric)
+
+
+def held_failure_lost(
+    history: ArtifactHistory,
+    sha256: str,
+    *,
+    parser_name: str,
+    parser_version: str,
+    failure_class: FailureClass,
+    holder: str,
+) -> bool:
+    """Return whether a failure another failure stream holds would reach no persisted report.
+
+    A system observation's identity is the digest and the instant, never the parser, so
+    `record_failure` writes nothing for a failure whose observation `holder` already holds.
+    The failure is lost when the holder is superseded and no reading of the digest, current
+    or superseded, would supersede the failure at birth under R3 or R4: recorded, it would
+    be current, but its observation is the holder's. `reading_elsewhere`'s R2 check is not
+    asked, because a side record's own artifact stream would match it. `ingest` asks this
+    once its writes are in and refuses the run when it holds (ADR 0014 Decision 13).
+    """
+
+    if all(record.stream_id != holder for record in history.superseded_failures):
+        return False
+    numeric = _digest_compares_numerically(history, sha256, parser_version)
+    failure = _PendingFailure(failure_class, parser_name, parser_version)
+    return _failure_superseded_at_birth(history, sha256, failure, numeric=numeric) is None
+
+
+def _failure_superseded_at_birth(
+    history: ArtifactHistory,
+    sha256: str,
+    failure: _PendingFailure,
+    *,
+    numeric: bool,
+) -> ArtifactRecord | None:
+    """Return the first reading of the digest that would supersede a failure at birth.
+
+    R3 and R4 as the fold applies them (`_failure_is_superseded`), one reading at a time,
+    the current readings before the superseded ones.
+    """
+
+    for record in (*history.current, *history.superseded):
+        if record.sha256 == sha256 and _failure_is_superseded(failure, (record,), numeric=numeric):
+            return record
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingFailure:
+    """A failure weighed without being recorded: what R3 and R4 read of it."""
+
+    failure_class: FailureClass
+    parser_name: str
+    parser_version: str
+
+
+def _digest_compares_numerically(history: ArtifactHistory, sha256: str, version: str) -> bool:
+    """Return whether one digest's versions, and one not yet in history, compare numerically.
+
+    Artifact and failure streams count alike, current or superseded, as `_split_streams`
+    counts them.
+    """
+
+    versions = [
+        record.parser_version
+        for record in (*history.current, *history.superseded)
+        if record.sha256 == sha256
+    ]
+    versions.extend(
+        record.parser_version
+        for record in (*history.current_failures, *history.superseded_failures)
+        if record.sha256 == sha256
+    )
+    versions.append(version)
+    return all(_is_numeric_version(item) for item in versions)
 
 
 def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
@@ -387,6 +562,19 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       stream names, and still rehydrates one finding five times.
     - `event_metadata_invalid`: a metadata envelope outside the rules `EventMetadata` keeps.
 
+    Failure streams (ADR 0014) have five of their own:
+
+    - `failure_stream_mismatch`: a failure head naming a reading its stream does not; an
+      observation on a failure stream that is not its digest's system record, metadata
+      included; a stream that does not open with its head; or a head and a system record
+      that describe two different failures.
+    - `failure_incomplete` and `failure_overfull`: a failure stream that is not exactly one
+      `failure.recorded` and one observation.
+    - `failure_duplicate_observation`: two failure streams of one digest holding the same
+      system observation, which would rehydrate one failure twice.
+    - `failure_schema_unmarked`: a failure stream in a store still at schema 1, which a
+      build that predates failure streams would open and misread.
+
     Faults are ordered by sequence and then by code, so one damaged file always describes
     itself the same way. A store-level failure (an unreadable file, a hole in history) is
     still raised: this walk is for a log the store has already called intact.
@@ -396,15 +584,34 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     declared: dict[str, tuple[int, int]] = {}
     observed: dict[str, int] = {}
     identifiers: dict[str, set[str]] = {}
+    holders: dict[tuple[str, str], str] = {}
+    # Per failure stream: the first event's sequence, its heads, and its observations.
+    failure_shapes: dict[str, list[int]] = {}
+    # Per failure stream: the first head or observation, and each one whose payload reads.
+    failure_openers: dict[str, EventRecord] = {}
+    failure_pairs: dict[str, dict[str, EventRecord]] = {}
     for record in repository.read_all():
         contract_faults = _contract_faults(repository, record)
         faults.extend(contract_faults)
         faults.extend(_placement_faults(record))
         faults.extend(_metadata_faults(record))
+        identity_faults: tuple[HistoryFault, ...] = ()
         if not contract_faults:
             # A payload its own contract already refused says nothing dependable about the
             # artifact it came from, so its identity is read only once the payload reads.
-            faults.extend(_identity_faults(record))
+            identity_faults = _identity_faults(record)
+            faults.extend(identity_faults)
+        if is_failure_stream(record.stream_id):
+            shape = failure_shapes.setdefault(record.stream_id, [record.sequence, 0, 0])
+            if record.event_type == FAILURE_RECORDED:
+                shape[1] += 1
+            elif record.event_type == OBSERVATION_RECORDED:
+                shape[2] += 1
+            if record.event_type in (FAILURE_RECORDED, OBSERVATION_RECORDED):
+                failure_openers.setdefault(record.stream_id, record)
+                if not contract_faults and not identity_faults:
+                    pair = failure_pairs.setdefault(record.stream_id, {})
+                    pair.setdefault(record.event_type, record)
         if record.event_type == ARTIFACT_INGESTED:
             count = record.payload.get("observationCount")
             if record.stream_id not in declared and _is_whole_number(count):
@@ -412,7 +619,20 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
         elif record.event_type == OBSERVATION_RECORDED:
             observed[record.stream_id] = observed.get(record.stream_id, 0) + 1
             if not contract_faults:
-                faults.extend(_duplicate_faults(record, identifiers))
+                faults.extend(_duplicate_faults(record, identifiers, holders))
+    for stream_id, (first, heads, observations) in failure_shapes.items():
+        problem = _failure_stream_problem(stream_id, heads, observations)
+        if problem is not None:
+            faults.append(HistoryFault(sequence=first, code=problem[0], message=problem[1]))
+        faults.extend(
+            _failure_pair_faults(
+                stream_id,
+                heads,
+                failure_openers.get(stream_id),
+                None if problem is not None else failure_pairs.get(stream_id, {}),
+            )
+        )
+    faults.extend(_schema_faults(repository, failure_shapes))
     for stream_id, (sequence, count) in declared.items():
         found = observed.get(stream_id, 0)
         if found == count:
@@ -675,6 +895,11 @@ def _read_artifact_streams(repository: EventRepository) -> tuple[_ArtifactStream
     missing `parser_version` names version None, and describing that as an event on the
     wrong stream points the operator at the stream when the payload is what is wrong.
     `audit_history` orders the same two checks the same way.
+
+    Only artifact streams are read here. A failure stream also carries an
+    `observation.recorded`, and reading it here would make it a headless artifact stream
+    that is always current, outside every supersession rule; `_read_failure_streams` reads
+    it instead (ADR 0014).
     """
 
     heads: dict[str, EventRecord] = {}
@@ -683,6 +908,8 @@ def _read_artifact_streams(repository: EventRepository) -> tuple[_ArtifactStream
     order: list[str] = []
     for record in repository.read_all():
         if record.event_type not in (ARTIFACT_INGESTED, OBSERVATION_RECORDED):
+            continue
+        if not is_artifact_stream(record.stream_id):
             continue
         _require_readable_artifact_event(repository, record)
         breach = artifact_identity_breach(record.stream_id, record.event_type, record.payload)
@@ -718,9 +945,85 @@ def _read_artifact_streams(repository: EventRepository) -> tuple[_ArtifactStream
     return tuple(views)
 
 
-#: What an unreadable artifact-stream event is called in the message the fold raises.
+@dataclass(frozen=True, slots=True)
+class _FailureStreamView:
+    """One failure stream: its head, read back, and its one system observation event."""
+
+    stream_id: str
+    record: FailureRecord
+    observation: EventRecord
+
+
+def _read_failure_streams(repository: EventRepository) -> tuple[_FailureStreamView, ...]:
+    """Read every failure stream back, in the order the streams were opened (ADR 0014).
+
+    A failure stream is one `failure.recorded` and the one system observation it mints,
+    written whole in one transaction and head first, so anything else raises: a missing
+    half is incomplete, a second head or observation is overfull, an observation ahead of
+    its head is out of order, and a head and a record that describe two failures disagree.
+    The reader refuses each rather than reporting from a stream no writer produced. Each
+    event is checked the way `_read_artifact_streams` checks its own, contract first and
+    then identity, which for the record includes its metadata.
+
+    One system observation is stored once per digest. Its identity is the digest and the
+    instant, never the parser, so two failure streams of one digest holding it would
+    rehydrate one failure twice, and the second one read raises.
+    """
+
+    heads: dict[str, list[EventRecord]] = {}
+    observations: dict[str, list[EventRecord]] = {}
+    holders: dict[tuple[str, str], str] = {}
+    opened_by: dict[str, str] = {}
+    for record in repository.read_all():
+        if record.event_type not in (FAILURE_RECORDED, OBSERVATION_RECORDED):
+            continue
+        if not is_failure_stream(record.stream_id):
+            continue
+        _require_readable_artifact_event(repository, record)
+        breach = failure_identity_breach(record.stream_id, record.event_type, record.payload)
+        if breach is not None:
+            raise HistoryError(f"event {record.sequence} is on the wrong stream: {breach}")
+        opened_by.setdefault(record.stream_id, record.event_type)
+        heads.setdefault(record.stream_id, [])
+        found = observations.setdefault(record.stream_id, [])
+        if record.event_type == FAILURE_RECORDED:
+            heads[record.stream_id].append(record)
+            continue
+        digest = failure_stream_components(record.stream_id)[0]
+        observation_id = str(record.payload.get(OBSERVATION_ID_KEY))
+        holder = holders.setdefault((digest, observation_id), record.stream_id)
+        if holder != record.stream_id:
+            raise HistoryError(
+                failure_duplicate_observation_message(record.stream_id, observation_id, holder)
+            )
+        found.append(record)
+
+    views: list[_FailureStreamView] = []
+    for stream_id, found in observations.items():
+        problem = _failure_stream_problem(stream_id, len(heads[stream_id]), len(found))
+        if problem is not None:
+            raise HistoryError(problem[1])
+        if opened_by[stream_id] != FAILURE_RECORDED:
+            raise HistoryError(failure_head_order_message(stream_id))
+        head = heads[stream_id][0]
+        disagreement = failure_record_disagreement(stream_id, head.payload, found[0].payload)
+        if disagreement is not None:
+            raise HistoryError(disagreement)
+        views.append(
+            _FailureStreamView(
+                stream_id=stream_id,
+                record=_failure_record(repository, head),
+                observation=found[0],
+            )
+        )
+    return tuple(views)
+
+
+#: What an unreadable artifact- or failure-stream event is called in the message the fold
+#: raises.
 _ARTIFACT_EVENT_NAMES: Final[dict[str, str]] = {
     ARTIFACT_INGESTED: "artifact record",
+    FAILURE_RECORDED: "failure record",
     OBSERVATION_RECORDED: "observation",
 }
 
@@ -783,31 +1086,165 @@ def _artifact_record(repository: EventRepository, event: EventRecord) -> Artifac
     )
 
 
-def _split_by_parser_version(
-    views: Sequence[_ArtifactStreamView],
-) -> tuple[tuple[_ArtifactStreamView, ...], tuple[_ArtifactStreamView, ...]]:
-    """Keep the newest parser stream for each digest and hand back the rest as superseded.
+def _failure_record(repository: EventRepository, event: EventRecord) -> FailureRecord:
+    """Read one validated `failure.recorded` event back as a recorded failure."""
 
-    See `artifact_history` for the comparison rule. A stream carrying no artifact event
-    belongs to no digest and is always current.
+    repository.validate_payload(event.event_type, event.payload, event_version=event.event_version)
+    payload = event.payload
+    return FailureRecord(
+        name=_text(payload, "name"),
+        sha256=_text(payload, "sha256"),
+        size_bytes=_count(payload, "sizeBytes"),
+        media_type=_text(payload, "mediaType"),
+        parser_name=_text(payload, "parserName"),
+        parser_version=_text(payload, "parserVersion"),
+        ingested_at=_timestamp(payload, "ingestedAt"),
+        failure_class=FailureClass(_text(payload, "failureClass")),
+        failure_codes=_text_list(payload, "failureCodes"),
+        clock=_text(payload, "clock"),
+        diagnostics=_diagnostics(payload.get("diagnostics")),
+        stream_id=event.stream_id,
+        sequence=event.sequence,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamSplit:
+    """Every artifact and failure stream, split into what replay reads and what it names."""
+
+    current: tuple[_ArtifactStreamView, ...]
+    superseded: tuple[_ArtifactStreamView, ...]
+    current_failures: tuple[_FailureStreamView, ...]
+    superseded_failures: tuple[_FailureStreamView, ...]
+    replaced_by: dict[str, ArtifactRecord | FailureRecord]
+
+
+def _split_streams(
+    artifacts: Sequence[_ArtifactStreamView],
+    failures: Sequence[_FailureStreamView],
+) -> _StreamSplit:
+    """Split one log's artifact and failure streams by digest under R1 to R5 (ADR 0014).
+
+    The one split both `artifact_history` and `rehydrate_observations` read, so a report
+    and `cases correlate` can never disagree about which streams are current. Per digest:
+
+    - R1: the artifact winner W is the newest artifact stream, by `_newest_stream`.
+    - R2: W is superseded by a failure stream under W's parser name at a strictly newer
+      version, but only when every artifact stream of the digest is under that parser name:
+      a newer parser that can no longer read bytes an older one read.
+    - R3 and R4 decide each failure stream against every artifact stream of the digest,
+      current or superseded (`_failure_is_superseded`).
+    - R5: failure streams never supersede one another.
+
+    Every version of the digest, artifact and failure streams alike, decides whether the
+    digest compares numerically, so each comparison above is made one way. Deciding it per
+    rule could let R2 retire W in favour of a failure that R3, comparing the other way,
+    retires too, leaving the digest with nothing current to report. A stream carrying no
+    artifact event belongs to no digest and is always current.
     """
 
-    by_digest: dict[str, list[_ArtifactStreamView]] = {}
-    for view in views:
+    readings: dict[str, list[_ArtifactStreamView]] = {}
+    heads: dict[str, ArtifactRecord] = {}
+    for view in artifacts:
         if view.record is not None:
-            by_digest.setdefault(view.record.sha256, []).append(view)
+            readings.setdefault(view.record.sha256, []).append(view)
+            heads[view.stream_id] = view.record
+    failed: dict[str, list[_FailureStreamView]] = {}
+    for failure in failures:
+        failed.setdefault(failure.record.sha256, []).append(failure)
 
+    replaced_by: dict[str, ArtifactRecord | FailureRecord] = {}
     superseded: set[str] = set()
-    for candidates in by_digest.values():
-        if len(candidates) == 1:
-            continue
-        winner = _newest_stream(candidates)
+    for digest in sorted(readings.keys() | failed.keys()):
+        digest_readings = readings.get(digest, [])
+        digest_failures = failed.get(digest, [])
+        records = [heads[view.stream_id] for view in digest_readings]
+        versions = [record.parser_version for record in records]
+        versions.extend(failure.record.parser_version for failure in digest_failures)
+        numeric = all(_is_numeric_version(version) for version in versions)
+        if digest_readings:
+            replaced_by.update(
+                _replaced_readings(digest_readings, digest_failures, heads, numeric=numeric)
+            )
         superseded.update(
-            view.stream_id for view in candidates if view.stream_id != winner.stream_id
+            failure.stream_id
+            for failure in digest_failures
+            if _failure_is_superseded(failure.record, records, numeric=numeric)
         )
-    current = tuple(view for view in views if view.stream_id not in superseded)
-    older = tuple(view for view in views if view.stream_id in superseded)
-    return current, older
+    superseded.update(replaced_by)
+    return _StreamSplit(
+        current=tuple(view for view in artifacts if view.stream_id not in superseded),
+        superseded=tuple(view for view in artifacts if view.stream_id in superseded),
+        current_failures=tuple(view for view in failures if view.stream_id not in superseded),
+        superseded_failures=tuple(view for view in failures if view.stream_id in superseded),
+        replaced_by=replaced_by,
+    )
+
+
+def _replaced_readings(
+    readings: Sequence[_ArtifactStreamView],
+    failures: Sequence[_FailureStreamView],
+    heads: Mapping[str, ArtifactRecord],
+    *,
+    numeric: bool,
+) -> dict[str, ArtifactRecord | FailureRecord]:
+    """Map each superseded artifact stream of one digest to the record replacing it (R1, R2).
+
+    Under R1 the replacement is W. Under R2 it is the newest failure stream under W's parser
+    at a version newer than W's, which is always current: R3 and R4 retire a failure only
+    for an artifact stream under another parser name or at a version of at least its own,
+    and R2 applies only when there is neither. When R2 applies, W is replaced as well.
+    """
+
+    winner = heads[_newest_stream(readings, numeric=numeric).stream_id]
+    newest = _version_key(winner.parser_version, numeric)
+    newer = [
+        failure
+        for failure in failures
+        if failure.record.parser_name == winner.parser_name
+        and _version_key(failure.record.parser_version, numeric) > newest
+    ]
+    if newer and all(heads[view.stream_id].parser_name == winner.parser_name for view in readings):
+        replacement = _newest_stream(newer, numeric=numeric).record
+        return {view.stream_id: replacement for view in readings}
+    return {view.stream_id: winner for view in readings if view.stream_id != winner.stream_id}
+
+
+def _failure_is_superseded(
+    failure: FailureRecord | _PendingFailure,
+    readings: Sequence[ArtifactRecord],
+    *,
+    numeric: bool,
+) -> bool:
+    """Return whether an artifact stream of the digest supersedes one failure stream.
+
+    `readings` is every artifact stream of the digest, current or superseded, so a failure
+    a newer parser resolved stays resolved when a still newer parser fails in turn. No
+    other failure stream is consulted (R5), and no sequence breaks a tie: at equal versions
+    the artifact stream wins. `reading_elsewhere` and `held_failure_lost` ask the same of a
+    failure that is not recorded, one reading at a time.
+
+    - R3: a parse or content failure under parser P at version v is superseded by an
+      artifact stream under another parser name, or under P at a version of at least v.
+    - R4: an execution failure is superseded only by an artifact stream under P at a version
+      of at least v whose head carries no `execution_unsuccessful`. A parser upgrade that
+      reads the same failed invocation keeps the failure current, so its case keeps its
+      detection time, and a side record never supersedes itself.
+    """
+
+    version = _version_key(failure.parser_version, numeric)
+    if failure.failure_class is FailureClass.EXECUTION:
+        return any(
+            reading.parser_name == failure.parser_name
+            and _version_key(reading.parser_version, numeric) >= version
+            and all(item.code != EXECUTION_UNSUCCESSFUL for item in reading.diagnostics)
+            for reading in readings
+        )
+    return any(
+        reading.parser_name != failure.parser_name
+        or _version_key(reading.parser_version, numeric) >= version
+        for reading in readings
+    )
 
 
 def _records_in_recorded_order(
@@ -819,29 +1256,54 @@ def _records_in_recorded_order(
     return tuple(sorted(records, key=lambda record: record.sequence))
 
 
-def _newest_stream(candidates: Sequence[_ArtifactStreamView]) -> _ArtifactStreamView:
+def _failures_in_recorded_order(
+    views: Sequence[_FailureStreamView],
+) -> tuple[FailureRecord, ...]:
+    """Return one group's failure records ordered by the event that recorded them."""
+
+    return tuple(sorted((view.record for view in views), key=lambda record: record.sequence))
+
+
+_Stream = TypeVar("_Stream", _ArtifactStreamView, _FailureStreamView)
+
+
+def _newest_stream(candidates: Sequence[_Stream], *, numeric: bool | None = None) -> _Stream:
     """Return one digest's newest parser stream.
 
     Every candidate numeric means a numeric comparison, so parser version 10 follows 9. One
     candidate that is not makes the whole group compare as text, because there is no
     meaningful order between `2` and `2.0-rc1` beyond the one the strings give. The stream's
     own sequence breaks a tie, leaving the later-recorded stream current, and two spellings
-    of one number tie rather than one of them winning on how it was written.
+    of one number tie rather than one of them winning on how it was written. `numeric`
+    overrides the candidates' own answer with the one their whole digest gives.
     """
 
-    if all(_is_numeric_version(_version_of(view)) for view in candidates):
-        return max(
-            candidates,
-            key=lambda view: (_numeric_version(_version_of(view)), _sequence_of(view)),
-        )
-    return max(candidates, key=lambda view: (_version_of(view), _sequence_of(view)))
+    if numeric is None:
+        numeric = all(_is_numeric_version(_version_of(view)) for view in candidates)
+    mode = numeric
+    return max(
+        candidates,
+        key=lambda view: (_version_key(_version_of(view), mode), _sequence_of(view)),
+    )
 
 
-def _version_of(view: _ArtifactStreamView) -> str:
+def _version_key(version: str, numeric: bool) -> tuple[tuple[int, ...], str]:
+    """Return what one parser version compares as, numerically or as text.
+
+    One shape for both modes, so a comparison never mixes a number with a string: within a
+    digest every version takes the same mode, and the unused half is the same everywhere.
+    """
+
+    if numeric:
+        return (_numeric_version(version), "")
+    return ((), version)
+
+
+def _version_of(view: _ArtifactStreamView | _FailureStreamView) -> str:
     return "" if view.record is None else view.record.parser_version
 
 
-def _sequence_of(view: _ArtifactStreamView) -> int:
+def _sequence_of(view: _ArtifactStreamView | _FailureStreamView) -> int:
     return 0 if view.record is None else view.record.sequence
 
 
@@ -908,22 +1370,132 @@ def _overfull_message(stream_id: str, declared: int, found: int) -> str:
     )
 
 
+def _failure_stream_problem(
+    stream_id: str,
+    heads: int,
+    observations: int,
+) -> tuple[str, str] | None:
+    """Return the fault code and message for a failure stream that is not whole, else None.
+
+    A failure stream is one `failure.recorded` and the one system observation it mints,
+    written in one transaction (ADR 0014), so it declares no count: the shape is the
+    declaration. A second head or a second observation is overfull, and a missing one is
+    incomplete. The reader raises with this message, the audit reports it under this code,
+    and the writer refuses to resume such a stream, so all three describe it one way.
+    """
+
+    found = f"found {heads} failure record(s) and {observations} observation(s)"
+    if heads > 1 or observations > 1:
+        return (
+            "failure_overfull",
+            f"failure stream {stream_id!r} is overfull: a failure stream holds one failure "
+            f"record and one observation, {found}",
+        )
+    if heads < 1 or observations < 1:
+        return (
+            "failure_incomplete",
+            f"failure stream {stream_id!r} is incomplete: a failure stream holds one failure "
+            f"record and one observation, {found}",
+        )
+    return None
+
+
+def _failure_pair_faults(
+    stream_id: str,
+    heads: int,
+    opener: EventRecord | None,
+    pair: Mapping[str, EventRecord] | None,
+) -> tuple[HistoryFault, ...]:
+    """Report a failure stream out of order, or whose two events describe two failures.
+
+    The audit's half of the two checks `_read_failure_streams` makes on a whole stream
+    (ADR 0014). A stream with no head is already incomplete, so only one that holds a head
+    is out of order when its observation opens it, and the fault is at that observation.
+    `pair` is None for a stream that is not whole; otherwise it holds each event whose
+    payload and identity read, and the two are compared only when both did, because an
+    event that did not is already a fault of its own. The fault is at the record, which is
+    what `detectionFailures` renders.
+    """
+
+    faults: list[HistoryFault] = []
+    if heads and opener is not None and opener.event_type != FAILURE_RECORDED:
+        faults.append(
+            HistoryFault(
+                sequence=opener.sequence,
+                code="failure_stream_mismatch",
+                message=failure_head_order_message(stream_id),
+            )
+        )
+    if pair is not None and FAILURE_RECORDED in pair and OBSERVATION_RECORDED in pair:
+        observation = pair[OBSERVATION_RECORDED]
+        disagreement = failure_record_disagreement(
+            stream_id, pair[FAILURE_RECORDED].payload, observation.payload
+        )
+        if disagreement is not None:
+            faults.append(
+                HistoryFault(
+                    sequence=observation.sequence,
+                    code="failure_stream_mismatch",
+                    message=disagreement,
+                )
+            )
+    return tuple(faults)
+
+
 def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
-    """Report one artifact-stream event naming an artifact its stream does not.
+    """Report one artifact- or failure-stream event naming a reading its stream does not.
 
     The artifact-stream analogue of the `case.created` tracking-id check in
     `_placement_faults`: an artifact stream id is an artifact's identity, so both events
-    it carries have to name that identity in their payload as well.
+    it carries have to name that identity in their payload as well. A failure stream id is
+    a failed reading's identity, and its observation has to be that digest's system record
+    (ADR 0014).
     """
 
     breach = artifact_identity_breach(record.stream_id, record.event_type, record.payload)
+    code = "artifact_stream_mismatch"
+    if breach is None:
+        breach = failure_identity_breach(record.stream_id, record.event_type, record.payload)
+        code = "failure_stream_mismatch"
     if breach is None:
         return ()
     return (
         HistoryFault(
             sequence=record.sequence,
-            code="artifact_stream_mismatch",
+            code=code,
             message=breach,
+        ),
+    )
+
+
+def _schema_faults(
+    repository: EventRepository,
+    failure_streams: Mapping[str, Sequence[int]],
+) -> tuple[HistoryFault, ...]:
+    """Report failure streams in a store that never marked itself schema 2 (ADR 0014).
+
+    The first failure append marks the store in the same transaction, so a schema 1 store
+    holding a failure stream was written past the repository, and a build that predates
+    failure streams would open it and misread them instead of refusing it. One fault, at
+    the first failure stream's first event, names the store's condition once rather than
+    once per stream. `failure_streams` maps each failure stream to its first sequence first.
+    """
+
+    if not failure_streams:
+        return ()
+    version = repository.store.schema_version
+    if version >= FAILURE_STREAM_SCHEMA_VERSION:
+        return ()
+    stream_id, shape = min(failure_streams.items(), key=lambda item: item[1][0])
+    return (
+        HistoryFault(
+            sequence=shape[0],
+            code="failure_schema_unmarked",
+            message=(
+                f"failure stream {stream_id!r} is in a store at schema {version}; a store "
+                f"holding failure streams is marked schema {FAILURE_STREAM_SCHEMA_VERSION}, "
+                "so a build that cannot read them refuses it rather than misreading it"
+            ),
         ),
     )
 
@@ -931,15 +1503,22 @@ def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
 def _duplicate_faults(
     record: EventRecord,
     identifiers: dict[str, set[str]],
+    holders: dict[tuple[str, str], str],
 ) -> tuple[HistoryFault, ...]:
-    """Report one observation identifier stored twice on the same artifact stream.
+    """Report one observation identifier stored twice where one copy is all there may be.
 
-    `identifiers` carries the identifiers already seen per stream and is updated here, so
-    the walk reports the repeat rather than the first copy: the first copy is history, the
-    second is the one that puts a finding in the report twice. An observation on a stream
-    of another kind is the placement check's business, so it is not counted here.
+    `identifiers` carries the identifiers already seen per artifact stream and is updated
+    here, so the walk reports the repeat rather than the first copy: the first copy is
+    history, the second is the one that puts a finding in the report twice. `holders` does
+    the same for failure streams per digest, because a system observation's identity is the
+    digest and the instant, never the parser, and two failure streams of one digest holding
+    it would rehydrate one failure twice (ADR 0014). A repeat on one failure stream is that
+    stream's overfull shape instead. An observation on a stream of another kind is the
+    placement check's business, so it is not counted here.
     """
 
+    if is_failure_stream(record.stream_id):
+        return _failure_duplicate_faults(record, holders)
     if not is_artifact_stream(record.stream_id):
         return ()
     observation_id = str(record.payload.get(OBSERVATION_ID_KEY))
@@ -954,6 +1533,30 @@ def _duplicate_faults(
         )
     seen.add(observation_id)
     return ()
+
+
+def _failure_duplicate_faults(
+    record: EventRecord,
+    holders: dict[tuple[str, str], str],
+) -> tuple[HistoryFault, ...]:
+    """Report one system observation another failure stream of its digest already holds."""
+
+    try:
+        digest = failure_stream_components(record.stream_id)[0]
+    except ValueError:
+        # A failure stream id that names no reading is the identity check's to report.
+        return ()
+    observation_id = str(record.payload.get(OBSERVATION_ID_KEY))
+    holder = holders.setdefault((digest, observation_id), record.stream_id)
+    if holder == record.stream_id:
+        return ()
+    return (
+        HistoryFault(
+            sequence=record.sequence,
+            code="failure_duplicate_observation",
+            message=failure_duplicate_observation_message(record.stream_id, observation_id, holder),
+        ),
+    )
 
 
 def _contract_faults(
@@ -1139,6 +1742,7 @@ __all__ = [
     "CASE_OBSERVATION_LINKED",
     "CASE_PAIN_REDUCED",
     "DETECTION_ATTESTED",
+    "FAILURE_RECORDED",
     "OBSERVATION_RECORDED",
     "ArtifactHistory",
     "ArtifactRecord",
@@ -1147,6 +1751,7 @@ __all__ = [
     "CaseState",
     "DispositionRecord",
     "EvaluationRecord",
+    "FailureRecord",
     "HistoryEntry",
     "HistoryError",
     "HistoryFault",
@@ -1159,7 +1764,9 @@ __all__ = [
     "fold_all_cases",
     "fold_case",
     "fold_case_records",
+    "held_failure_lost",
     "history_entries",
+    "reading_elsewhere",
     "rehydrate_observations",
     "summarize",
     "superseded_artifact_records",

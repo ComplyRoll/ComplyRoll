@@ -34,9 +34,10 @@ Stale coverage, unseen resources, and the clean scan belong to the coverage and 
 
 `classify_ingest` in `adapters/failures.py` takes one `IngestResult` and returns None for a
 reading with no ERROR and no failed invocation, or a `FailureClassification` that names exactly
-one of a `FailureClass` and an `UnmintableReason`. It reads diagnostic codes, levels, and two
-structured fields on the result, `format_rejected` and `failed_execution_at`, and never message
-text. A mintable failure is exactly one class, checked in this order, first match wins:
+one of a `FailureClass` and an `UnmintableReason`. It reads diagnostic codes, levels, and three
+structured fields on the result, `format_rejected`, `failed_execution_at`, and `withheld`, and
+never message text. A mintable failure is exactly one class, checked in this order, first match
+wins:
 
 1. `execution`: any `execution_unsuccessful` diagnostic. A SARIF log whose only run failed and
    reported null results carries `execution_unsuccessful`, `results_unknown`, and
@@ -47,7 +48,7 @@ text. A mintable failure is exactly one class, checked in this order, first matc
 3. `content`: every ERROR code is in `CONTENT_CODES` (`invalid_stig`, `invalid_rules`,
    `invalid_rule`, `invalid_run`, `invalid_result`, `rule_id_missing`,
    `identity_input_invalid`, `invalid_profile`, `invalid_control`, `no_observations`), and the
-   reading has no observations.
+   reading neither has observations nor withheld any it read (`result.withheld`).
 
 A sole `no_observations` is `content`. A CKLB STIG with `rules: []`, a CKL with no VULN, an
 XCCDF TestResult with no rule-result, an HDF document with no control observations, and a SARIF
@@ -67,7 +68,21 @@ the test.
 
 A reading with an ERROR is checked for an unmintable reason first, in this order
 (`_unmintable_reason`), and a refused reading behaves exactly as it did before this ADR: its
-ERRORs are printed, the report or the ingest exits 1, and nothing is written.
+ERRORs are printed, the report or the ingest exits 1, and nothing is written. On the stateless
+report the mintable failures read in the same run print their own ERRORs too, so the run names
+every failed file exactly as it would without the flag. `ingest` stops reading at the first reading
+it refuses while reading it, which is every reason but `read_elsewhere`. It names that reading and
+then every mintable failure read before it, and a file listed after it is not read. `read_elsewhere`
+is decided only once every file is read. A run refused for it names every mintable failure it read
+in listed order, the refused reading included. When the store decides the refusal (Decision 13),
+those lines come after one ERROR `failure_read_elsewhere` per refused reading, in name order.
+Without the flag `ingest` names only the first failed file. One more refusal comes after the writes
+and is not an unmintable reason: a mintable failure, side records included, whose system observation
+a superseded failure stream holds and that no reading of the digest would supersede at birth
+(Decision 13). That run writes one ERROR `failure_held_by_superseded_stream` per refused reading, in
+name order, between the diagnostics each reading wrote as it was read and every held failure's own
+diagnostics in listed order. It exits 1 with nothing written, so with the flag a side record can
+stop a run that would exit 0 without it.
 
 | Reason | Condition | Why |
 |---|---|---|
@@ -75,25 +90,39 @@ ERRORs are printed, the report or the ingest exits 1, and nothing is written.
 | `unsupported` | an ERROR `unsupported_artifact` | operator input |
 | `format_rejected` | `result.format_rejected` | operator input |
 | `duplicate_identity` | an ERROR `duplicate_observation_identity` | the reading has findings |
-| `partial_reading` | `result.observations` is not empty | minting would drop findings |
+| `partial_reading` | `result.observations` is not empty, or the adapter withheld observations it read; SARIF and HDF fail closed | minting would drop findings |
 | `unknown_code` | any ERROR code outside `CLASS_CODES` | fail closed |
 | `clean_scan` | see below | coverage slice |
 | `read_elsewhere` | assigned by the caller, see below | no double report |
 
 `format_rejected` is a structured flag, so the classifier never reads message text to tell a
-wrong kind of file from a broken one. The dispatcher sets it for an `AdapterParseError` only (a
-CKLB root that is not an object or has no non-empty `stigs` array, an XML root that is not the
-claimed format), and `XccdfAdapter.parse` sets it for a Benchmark with no TestResult. A bound
-exceeded, or any other `ValueError` or `TypeError`, is a parse failure.
+wrong kind of file from a broken one. The dispatcher sets it for an `AdapterParseError` only,
+and `XccdfAdapter.parse` sets it for a Benchmark with no TestResult. The adapters raise one for
+a CKLB root that is not an object or has no non-empty `stigs` array; an XML root that is not the
+claimed format; a SARIF root that is not an object, a `version` other than `2.1.0`, or `runs`
+that is not an array; and an HDF root that is not an object, one that carries `stigs`, a
+`baselines` or `controls` root, `profiles` that is not a non-empty array, a `platform` that is
+not an object, or no non-empty `version` string. `test_every_parse_error_site_is_a_case` pins
+one case per raise site, and each reachable case reads as a format rejection through the
+dispatcher. The emptiness checks differ: HDF `profiles: []` is rejected, while profiles that
+carry no controls, or a SARIF log with `runs: []`, is a reading with no observations and the
+content class. A bound exceeded, or any other `ValueError` or `TypeError`, is a parse failure.
+
+`withheld` is a structured flag too. The SARIF and HDF adapters withhold every observation once
+a reading has an ERROR, so a log with one good run and one broken run returns none. Each sets
+`withheld` when it read at least one observation and withheld it (`_ArtifactParse.run`,
+`_HdfParse.run`), and the dispatcher passes it through, so that log is a `partial_reading` and
+never `content`.
 
 `clean_scan` holds when the ERROR codes are exactly `{no_observations}`, at least one INFO
 `run_clean` is present, and neither `execution_unsuccessful` nor `results_unknown` is. That is
 backlog item 9's clean scan, which the coverage slice owns.
 
 `read_elsewhere` is not decided by `classify_ingest`, which sees one result.
-`FailureClassification.read_elsewhere` assigns it. The stateless path assigns it when the same
-bytes read successfully under another name in the same run; `ingest` assigns it for the same
-condition within the run, and against the store as Decision 13 describes.
+`FailureClassification.read_elsewhere` assigns it, and only the stateless path calls it, when the
+same bytes read successfully under another name in the same run. `ingest` refuses the same condition
+without assigning the reason: within the run it exits 1 with the failed reading's own ERRORs, and
+against the store it writes ERROR `failure_read_elsewhere` (Decision 13).
 
 ## Decision 3: opt-in per run
 
@@ -102,7 +131,11 @@ a mintable failure into a system observation. Its help text is "record a detecti
 failure (VDR-CSO-FAV) as a system observation instead of stopping; exits 3 when one is
 recorded". Without the flag every path behaves as it did before this ADR: a fatal class exits 1
 with nothing written, and an execution failure stays a non-fatal WARNING with exit 0 and the
-report or store written. The compiler takes a keyword, `record_failed_imports: bool = False`, on
+report or store written. With the flag, a failure stops `ingest` only for the reasons Decision 2
+lists, and in one more case: a failure whose system observation a superseded failure stream holds,
+and that no reading of its bytes would supersede at birth, exits 1 with nothing written, a side
+record included (Decision 13). The help text keeps its wording, and this ADR and the README carry
+the exception. The compiler takes a keyword, `record_failed_imports: bool = False`, on
 `compile_record_set_from_artifacts`, `compile_vdt_report`, `compile_avi_report`, and
 `compile_historical_report`; `ReportOptions` is untouched, because replay shares it and the flag
 means nothing there.
@@ -176,10 +209,12 @@ the case can move to it by a tracking-id override, with no change to this recipe
 
 An execution failure takes the failed invocation's own clock when the scanner declared one, and
 its `failure.clock` is `invocation`. The SARIF adapter collects it in the same pass as the run
-clock (`_run_clock` in `adapters/sarif.py`), so no clock diagnostic is emitted twice: the
-earliest `startTimeUtc` among invocations with `executionSuccessful: false`, else the earliest
-`endTimeUtc` among them. `_ArtifactParse.run` returns it as `failed_execution_at`, and the clock
-is used as declared, exactly as an artifact observation's source timestamp is.
+clock (`_run_clock` in `adapters/sarif.py`), so no clock diagnostic is emitted twice, and runs
+that pass right after the `execution_unsuccessful` WARNING, before any later identity check can
+refuse the run: the earliest `startTimeUtc` among invocations with `executionSuccessful: false`,
+else the earliest `endTimeUtc` among them. `_ArtifactParse.run` returns it as
+`failed_execution_at`, and the clock is used as declared, exactly as an artifact observation's
+source timestamp is.
 
 Every other failure, and an execution failure with no declared clock, takes the instant
 ComplyRoll saw the failure, and its `failure.clock` is `as-of`. On the stateless path that is
@@ -257,10 +292,23 @@ The documented evaluation match is the full triple `{"sourceRecordId":
 "detection-process-failure", "sourceType": "complyroll.detection-process", "contextKey":
 "sha256:<digest>"}`. A hostile CKLB can mint an ARTIFACT observation with the same record id and
 context key (group id `detection-process-failure`, STIG id `sha256:<digest>`), but it can never
-carry the source type (Decision 14), so the triple matches the system record alone. The pair
-without `contextKey` matches every system record and is refused with `evaluation_ambiguous`,
-whose message names each matching tracking id and says "add contextKey or sourceType". Both are
-tested.
+carry the source type (Decision 14), so the triple matches the system record alone. An entry
+without `contextKey`, with or without `sourceType`, matches every system record and is refused
+in one of two ways, ambiguity first. On the stateless report two or more matches are refused with
+`evaluation_ambiguous`, whose message names each matching tracking id and then the match keys the
+entry leaves out: "add contextKey" when it gives `sourceType`, and "add contextKey or sourceType"
+when it gives neither (`EvaluationMatch.ambiguity_remedy`). An entry that gives `contextKey` but
+not `sourceType` matches a hostile record beside the system one and is told "add sourceType". A
+single system record matched without `contextKey`, as in a run with one failure, is refused there
+with `evaluation_context_key_required`, whose message names the tracking id and says a detection
+process failure is matched by `sourceRecordId`, `sourceType` and `contextKey` together.
+Accepting it would let a file that applies today turn ambiguous once a failure of another digest
+is recorded. `reports.vdt` and `cases evaluate` apply both refusals in the same order and share
+the remedy and the context-key text (`EvaluationMatch.ambiguity_remedy` and
+`EvaluationMatch.context_key_required`). `cases evaluate` prints both under
+`evaluation_unmatched`, as it prints every match it cannot apply, and its ambiguity message says
+"cases" where the report's says "vulnerabilities" and orders the tracking ids differently. Both
+are tested on both paths.
 
 On the stateless path a failure observed at the as-of is detected again at every run's as-of,
 so an evaluation file reused across runs predates the later runs' detection. The compiler does
@@ -273,8 +321,17 @@ review. The persisted path fixes the instant at ingest.
 report was published, and `metadata.detection_failures` is not empty; the output is still
 written. `ingest` returns 3 when it recorded a failure or found one already recorded, after it
 has published the store and printed its lines, so a rerun of the same inputs prints
-`already_recorded` and still exits 3. Exit 0 would turn a loud failure quiet, and exit 1 already
-means nothing was written.
+`already_recorded` and still exits 3. A failure another failure stream holds prints
+`already_recorded` too, with WARNING `failure_held_by_another_stream` in place of
+`detection_failure_recorded` (Decision 12). One rerun exits 1 instead. If the first run's failure
+was held by another stream and a later ingest has superseded that holder, the rerun meets the hold
+again and is refused (Decision 13). A side record keeps the WARNING and exit 3 instead when a
+reading of the digest, current or superseded, would supersede its failure at birth under R4; a pure
+failure in that position is refused before the writes with `failure_read_elsewhere` (Decision 13),
+so it exits 1 either way. Exit 0 would turn a loud failure quiet, and exit 1 already means nothing
+was written. The failures' diagnostics wait for the publish too, and a run that exits 1 instead
+writes each held reading's own diagnostics, ERRORs included, so it names every failed file it read
+(Decision 2) and never claims a recording it then discarded.
 
 `report ... --db` keeps 0 and 1 even when the store holds failures: the failure was signalled
 with 3 when `ingest` recorded it. `report ... --db --record-failed-imports` is refused by
@@ -318,17 +375,49 @@ the three sets cover the event types, that case types share nothing with the oth
 `record_failure` in `history/writers.py` writes the head and the observation in one transaction.
 An existing stream holding both is `already_recorded`; a half-written stream is refused rather
 than resumed. One observation id is stored once per digest across failure streams: when another
-failure stream of the digest already holds it (the same bytes under two parsers at one instant,
-or an execution failure with a declared clock read again after a parser upgrade), the writer
-reports `already_recorded`, writes nothing, and names that stream. The rule is enforced at
-append (`failure_identity_breach` and `failure_duplicate_observation_message` in
-`events/repository.py`), at read (`_read_failure_streams` raises unless each stream is one head
-and one observation), and in the audit, which gains `failure_incomplete`, `failure_overfull`,
-`failure_stream_mismatch`, `failure_duplicate_observation`, and `failure_schema_unmarked`.
-`failure_identity_breach` requires the head's `sha256`, `parserName`, and `parserVersion` to
-match the stream id, and the observation to be SYSTEM, carry the source type
-`complyroll.detection-process`, carry `sha256:<digest>` as its context key and resource id, and
-carry its derived id.
+failure stream of the digest already holds it (the same bytes under two parsers at one instant, or
+an execution failure with a declared clock read again by another parser or version), the writer
+reports `already_recorded`, writes nothing, drops the `detection_failure_recorded` notice, and adds
+WARNING `failure_held_by_another_stream` naming that stream (`_held_by_another_stream`), whether it
+is an older or a newer version, the same version spelled another way, or another parser. A rerun
+finds the reading's own stream and stays silent. The WARNING says no failure was recorded under the
+reading's parser and version and it stays recorded under the holder's. For a held failure nothing of
+the reading reaches history. For a side record the reading's artifact stream is recorded as usual,
+and R1 to R4 then decide over every stream of the digest, the holder's failure stream included.
+Usually the reading is current by R1 and only the `detectionFailures` entry is the holder's. When
+the holder is a held failure under the same parser at a newer version and every artifact stream of
+the digest is under that parser, R2 supersedes the reading's artifact, so the persisted report
+carries the holder's failure and none of the reading (INFO `artifact_superseded_by_failure`). A hold
+is not kept when the holder ends the run superseded and the reading's failure would not be
+superseded at birth. Recording the failure would then leave its system observation in no persisted
+report, so `ingest` refuses the run (Decision 13). One such hold is a parse or content holder that
+the side record's own artifact outranks under R3. A held failure whose holder an earlier reading
+already superseded is refused the same way. The holder is found by the digest's prefix alone, so the
+writer folds the store (`artifact_history`) before it parses the holder's id, and a failure stream
+id that names no reading is refused there with a `HistoryError`, which `ingest` reports as
+`history_invalid`.
+
+The once-per-digest rule is enforced at append (`failure_identity_breach` and
+`failure_duplicate_observation_message` in `events/repository.py`), at read (`_read_failure_streams`
+raises unless each stream is one head and one observation), and in the audit, which gains
+`failure_incomplete`, `failure_overfull`, `failure_stream_mismatch`,
+`failure_duplicate_observation`, and `failure_schema_unmarked`. `failure_identity_breach` requires
+the head's `sha256`, `parserName`, and `parserVersion` to match the stream id, and the observation
+to be SYSTEM, carry the source type `complyroll.detection-process`, carry `sha256:<digest>` as its
+context key and resource id, and carry its derived id. The fingerprint covers none of the
+observation's metadata and replay renders `detectionFailures` from it, so it also requires exactly
+the ten keys `system_observation_for` writes (`FAILURE_METADATA_KEYS`): `artifact.sha256`,
+`artifact.parser`, and `artifact.parserVersion` equal to the stream id's, `artifact.sizeBytes`
+spelled as a count, `failure.class` and `failure.clock` from their vocabularies, `failure.codes`
+spelled exactly as the writer stores it, the compact JSON array (`encode_list`) of at least one
+code from `FAILURE_CODE_VALUES`, sorted and distinct, and `failure.rule` equal to `VDR-CSO-FAV`.
+The writer appends the head first, and the append refuses a failure stream that an observation
+opens. `_read_failure_streams` and the audit see both events, so they also require the head to
+come before the stream's observation, and the head's `name`, `sizeBytes`, `mediaType`,
+`failureClass`, `failureCodes`, and `clock` to equal the observation's `artifact.name`,
+`artifact.sizeBytes`, `artifact.mediaType`, `failure.class`, `failure.codes`, and `failure.clock`
+(`failure_record_disagreement`), so a head that lists its codes in another order is refused too.
+The reader raises on either, and the audit reports each as `failure_stream_mismatch`.
 
 ## Decision 13: supersession across kinds, rules R1 to R5
 
@@ -368,16 +457,58 @@ correlate` ran while the failure was current; a failure superseded before any co
 no system case to go stale.
 
 `ingest` checks the store before the first append. Inside the run's one transaction,
-`_refuse_failures_read_elsewhere` in `cli.py` asks `reading_elsewhere` in `history/fold.py`
-whether the store holds a current reading of the failed bytes that R2 could not replace: one
-under another parser name, or under the same parser at the failed version or later. If it does,
-`ingest` writes ERROR `failure_read_elsewhere` naming that stream and returns 1 with nothing
-appended. `reading_elsewhere` considers current readings only. A failure whose digest has only a
+`_refuse_failures_read_elsewhere` in `cli.py` asks `reading_elsewhere` in `history/fold.py`,
+passing the held failure's class, whether the store holds a reading of the failed bytes that
+keeps the failure out. That is either of two things. The first is a current reading R2 could not
+replace: one under another parser name, or under the same parser at the failed version or later,
+whatever the failure's class. The second is any reading of the digest, current or superseded,
+that would supersede the failure at birth: `_failure_is_superseded` itself, so R3 for a parse or
+content failure and R4 for an execution failure, compared the way the fold compares the digest
+once the failure's version joins it. The current readings are asked first, so every failure the
+first check refused is still refused and named the same way. If either holds, `ingest` writes
+ERROR `failure_read_elsewhere` naming that stream and returns 1 with nothing appended. `ingest`
+therefore never records a held failure that the fold supersedes at birth. Before this rule a
 superseded reading under another parser, or under the same parser at the failed version or
-later, is therefore recorded and superseded at birth by R3, so the run exits 3 while every
-report shows only INFO `failure_superseded`. That corner is recorded for review. Within one run,
+later, let such a failure through: the run exited 3 while every report showed only INFO
+`failure_superseded`. A side record is not weighed before the writes, because it is recorded with
+the reading it sits beside. R4 supersedes one at birth only when the store already holds a newer
+reading of the same bytes by the same parser that reports no failed invocation, which is a parser
+downgrade. Both kinds are weighed again after the writes when the writer met a hold. Within one run,
 a failed reading whose bytes another artifact read successfully keeps its raw ERRORs and exits 1,
 exactly as without the flag.
+
+`ingest` checks the store again after the run's writes when `record_failure` met a hold (Decision
+12). Still inside the one transaction, it folds the store once (`artifact_history`, which sees the
+run's own appends). For each held reading in name order, pure failure or side record, it asks
+`held_failure_lost` in `history/fold.py` whether two things are true. The first is that the holder
+is superseded. The second is that no reading of the digest, current or superseded, would supersede
+the reading's failure at birth under R3 or R4, compared the way the fold compares the digest once
+the failure's version joins it. That is the second check above without the first. The R2 join is not
+asked, because a side record's own artifact would match it. Recording such a failure loses it: its
+id is the holder's, so its system observation, parser, version, and instant reach no persisted
+report. When the holder was the digest's only failure, no failure for these bytes reaches one, while
+a stateless run reports the reading's own. If any reading qualifies, `ingest` raises inside the
+transaction, so the run's appends roll back, artifact streams included. It then writes one ERROR
+`failure_held_by_superseded_stream` per refused reading, in name order, naming the holder, and
+returns 1. The ERRORs are written only after the rollback, so a rollback that fails reports
+`store_unavailable` in place of the refusal ERRORs; the diagnostics each reading wrote as it was
+read, and each pure failure's own diagnostics, still appear as on any failed run, and no line claims
+the store was left unchanged. A hold whose holder stays current keeps the WARNING, and so does a
+side record whose failure a reading supersedes at birth, which no report would carry anyway.
+
+The remedy depends on the instant. A failure with no declared clock records on its own stream when
+ingested at another `--as-of`. A side record whose scanner declared its clock can only be ingested
+without the flag, which records its artifact and accepts the loss, and every later version that
+meets the same hold is refused the same way, unless a clean reading under the same parser at that
+version or later supersedes its failure at birth. A held failure whose scanner declared its clock
+has no recording path: without the flag its ERRORs exit 1, so it is dropped from the run. Until the
+refused file is removed or ingested another way, no other file of that run is recorded. The check
+sees only holds met in the run. When a later ingest supersedes the holder of a failure held earlier,
+that later run meets no hold, so the earlier failure stays in no persisted report (Decision 15), and
+a rerun of the held reading is refused, unless the rerun is a side record whose failure a reading of
+the digest, current or superseded, supersedes at birth under R4, in which case the rerun keeps the
+WARNING and exits 3; a pure failure in that position is refused before the writes with
+`failure_read_elsewhere`.
 
 ## Decision 14: the source type guarantee lives in the adapters
 
@@ -421,10 +552,31 @@ the INFOs `failure_superseded`, `artifact_superseded_by_failure`, and `stale_cas
 
 The two paths are byte-identical when all of these hold: the same inputs and the same flag;
 every failure's `observed_at` equals the report as-of or comes from a declared scanner clock; no
-stream of the digest is superseded; and no two input names share a digest. The documented
-recipes meet them, and `FailedImportDivergenceTests` in `tests/test_replay.py` pins each
-divergence: a later ingest as-of, a superseded stream, two names for one digest, and one digest
-failing under two parsers (one stateless record, two persisted members of one case, R5).
+stream of the digest is superseded; no two input names share a digest; and no ingest reported
+`failure_held_by_another_stream`. When one did, no failure was recorded under the reading's parser
+and version, and the failure stays recorded under the holder's parser, version, and codes, where a
+stateless run reports the reading's own. For a held failure nothing of the reading reaches history,
+so the persisted report keeps whatever the digest's streams held before, such as an older reading's
+artifact, findings, and diagnostics. For a side record the reading's artifact stream is recorded as
+usual, and R1 to R4 then decide over every stream of the digest, the holder's failure stream
+included. Usually the reading is current by R1 and only the `detectionFailures` entry is the
+holder's. When the holder is a held failure under the same parser at a newer version and every
+artifact stream of the digest is under that parser, R2 supersedes the reading's artifact, so the
+persisted report carries the holder's failure and none of the reading (INFO
+`artifact_superseded_by_failure`). A hold is not kept when the holder ends the run superseded and
+the reading's failure would not be superseded at birth: `ingest` refuses the run (Decision 13), so a
+side record whose holder the run itself supersedes never reaches a store, and neither does a held
+failure whose holder an earlier reading already superseded.
+
+A failure held earlier whose holder a later ingest supersedes is still lost. The later run met no
+hold, so nothing refuses it, and the persisted report carries no failure of the reading (INFO
+`failure_superseded` for the holder) where a stateless run reports the reading's own. The condition
+above already excludes it, because the run that met the hold warned. The documented recipes meet
+every condition, and `FailedImportDivergenceTests` in `tests/test_replay.py` pins each divergence: a
+later ingest as-of, a superseded stream, two names for one digest, one digest failing under two
+parsers (one stateless record, two persisted members of one case, R5), and another failure stream
+holding the failure, for a held failure and for a side record, a side record whose artifact a newer
+held failure supersedes (R2), and a holder that a later ingest supersedes.
 
 ## Decision 16: a store that records a failure is schema 2
 
@@ -548,7 +700,8 @@ bytes:
   pre-existing raw-name surfaces, and the `_cell` gap they share.
 - Four goldens hold the behavior (`tests/golden/vdt-failed.json`, `vdt-failed.md`,
   `historical-failed.json`, `historical-failed.md`), and the 22 goldens that existed before are
-  byte-identical; all 16 report goldens recompile byte-identical with and without the flag.
+  byte-identical. The 16 report goldens of runs without a failure recompile byte-identical with
+  the flag on, which `test_every_report_golden_recompiles_byte_identical_with_the_flag` pins.
 
 ## Rejected alternatives
 
@@ -580,3 +733,14 @@ bytes:
   never be misread quietly.
 - A `--failure-observed-at` flag that would let a stateless run pin the instant: deferred, not
   refused. The persisted path already fixes the instant at ingest.
+- Keeping, documented and pinned, the hold of a side record whose own artifact outranks a parse or
+  content holder under R3: the run would exit 3 for a failure that no persisted report carries,
+  which is a loud failure turned quiet one step later.
+- Keeping the WARNING when the scanner declared the failure's clock, since no other `--as-of` can
+  change its id: the refusal stays uniform, and an operator who accepts the loss says so by
+  ingesting without the flag.
+- A new unmintable reason `held_by_superseded`: the refusal is decided against the store after the
+  writes, not from the reading, and `ingest` assigns no reason for `read_elsewhere` either. The
+  ERROR code identifies it.
+- Deciding before the writes, beside the `failure_read_elsewhere` check: when a side record's own
+  artifact supersedes the holder, that artifact exists only once the run has written it.

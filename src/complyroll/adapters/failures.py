@@ -186,8 +186,9 @@ def _unmintable_reason(
         return UnmintableReason.FORMAT_REJECTED
     if _DUPLICATE_IDENTITY in errors:
         return UnmintableReason.DUPLICATE_IDENTITY
-    # Minting beside real findings would drop them from the report.
-    if result.observations:
+    # Minting beside real findings would drop them from the report, and SARIF and HDF
+    # withhold every finding they read once the reading has an ERROR.
+    if result.observations or result.withheld:
         return UnmintableReason.PARTIAL_READING
     # SECURITY: A code no class accounts for fails closed. An unmintable code that no
     # earlier reason caught counts here too, so it can never fall into a class.

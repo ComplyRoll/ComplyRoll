@@ -423,10 +423,12 @@ def report_options(*, detected_at: datetime | None = None) -> ReportOptions:
     )
 
 
-def compile_sarif_golden() -> CompiledVdtReport:
+def compile_sarif_golden(*, record_failed_imports: bool = False) -> CompiledVdtReport:
     """Compile the SARIF golden the way the documented command line does."""
     return compile_vdt_report(
-        list(SARIF_ARTIFACTS), options=report_options(detected_at=REPORT_DETECTED_AT)
+        list(SARIF_ARTIFACTS),
+        options=report_options(detected_at=REPORT_DETECTED_AT),
+        record_failed_imports=record_failed_imports,
     )
 
 

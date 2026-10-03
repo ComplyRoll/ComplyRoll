@@ -523,8 +523,9 @@ system observation and a vulnerability of its own instead, and so does a failed 
 invocation that a SARIF log reports; the command writes its output and exits 3 (ADR 0014). The
 flag is taken by `report vdt`, `report avi`, `report historical`, and `ingest`. A file that could
 not be read, an unsupported or rejected format, a duplicate observation identity, a reading that
-produced some observations beside its errors, and an error code ComplyRoll has not classified
-still stop the run with the flag.
+found some usable results beside its errors, whether it kept them (a checklist) or withheld them
+all (SARIF and HDF fail closed), and an error code ComplyRoll has not classified still stop the
+run with the flag.
 
 Three synthetic fixtures cover the three failure classes:
 
@@ -550,8 +551,13 @@ the same entry without `contextKey` names all three failures, and the run stops 
 writes nothing:
 
 ```text
-error: evaluation_ambiguous: sourceRecordId='detection-process-failure', sourceType='complyroll.detection-process' matches 3 vulnerabilities (case-f03af85468885cad, case-d3bb8e4fb3b61a5f, case-088261de64a0133c); add contextKey or sourceType [evaluations[2]]
+error: evaluation_ambiguous: sourceRecordId='detection-process-failure', sourceType='complyroll.detection-process' matches 3 vulnerabilities (case-f03af85468885cad, case-d3bb8e4fb3b61a5f, case-088261de64a0133c); add contextKey [evaluations[2]]
 ```
+
+A run holding a single failure refuses that entry too, with `evaluation_context_key_required`, so
+an evaluation file that applies today still applies when a failure of another digest is recorded
+beside it. `cases evaluate` refuses it with the same message, printed under
+`evaluation_unmatched`.
 
 Run this from the repository root. It exits 3:
 
@@ -709,9 +715,12 @@ The sweep selects the same 6 cases as the persisted path above. A system observa
 carries its own instant, so the sweep never selects a failure, and `EXS-0001` carries its
 invocation's clock. The report is the same two golden files, and `report historical --db
 failed.db` with the same class, package, and `--as-of` writes the two historical ones.
-Re-running the `ingest` command appends nothing, prints `already_recorded` for each line, and
-exits 3 again, so a pipeline that reruns it still sees the failures. `report --db` keeps exit
-codes 0 and 1, because `ingest` already signalled the failures, and refuses the flag:
+Re-running the `ingest` command appends nothing, prints `already_recorded` for each line on
+standard output, and exits 3 again, so a pipeline that reruns it still sees the failures. Its
+standard error repeats the first run's word for word, each `detection_failure_recorded` warning
+included: the failures are already in the store, and the rerun reports their diagnostics again
+without recording anything. `report --db` keeps exit codes 0 and 1, because `ingest` already
+signalled the failures, and refuses the flag:
 
 ```text
 error: invalid_option: report vdt takes either --db or --record-failed-imports, never both
@@ -721,7 +730,8 @@ The two paths produce the same bytes here because `ingest` ran at the report's `
 system observation without a scanner clock takes its instant from `ingest` on the persisted path
 and from the report run on the stateless one. Given the same inputs, the reports match when each
 such failure was ingested at the report's `--as-of`, no stream of a failed artifact's digest is
-superseded, and no two input names share a digest (ADR 0014 Decision 15).
+superseded, no two input names share a digest, and no `ingest` reported
+`failure_held_by_another_stream` (ADR 0014 Decision 15).
 
 The first failure `ingest` records moves the store to schema version 2, and
 `complyroll store verify --db failed.db` prints `ok: 53 event(s) verified`. A store that never

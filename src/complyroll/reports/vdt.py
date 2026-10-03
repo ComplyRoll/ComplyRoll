@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 from complyroll import __version__
 from complyroll.adapters import (
+    DETECTION_FAILURE_SOURCE_TYPE,
     ArtifactProvenance,
     DiagnosticLevel,
     FailureClassification,
@@ -36,6 +37,7 @@ from complyroll.adapters import (
     ingest_stig_artifact,
     system_observation_for,
 )
+from complyroll.adapters.common import diagnostic_text
 from complyroll.correlation import (
     VulnerabilityGroup,
     correlate_observations,
@@ -933,6 +935,11 @@ def _ingest_all(
                 _collect_diagnostics(result, _require_artifact(result).name, diagnostics, errors)
 
     if errors:
+        # The run stops, so nothing is recorded: every held failure names itself with its
+        # own ERRORs, exactly as the run would without the flag.
+        for readings in failed.values():
+            for result, _ in readings:
+                _collect_diagnostics(result, _require_artifact(result).name, diagnostics, errors)
         raise ReportCompileError(sorted(errors, key=_diagnostic_order))
 
     artifacts: list[CompiledArtifact] = []
@@ -1002,8 +1009,14 @@ def _warn_duplicates(
     skipped: Sequence[ArtifactProvenance],
     diagnostics: list[ReportDiagnostic],
 ) -> None:
-    """Note each reading of the elected reading's bytes that the report does not carry."""
+    """Note each reading of the elected reading's bytes that the report does not carry.
 
+    Both names are file names the operator supplied, so they pass through `diagnostic_text`,
+    as the adapters' diagnostic paths and the failure diagnostics do, before the report
+    embeds them.
+    """
+
+    elected = diagnostic_text(read.artifact.name)
     for duplicate in skipped:
         diagnostics.append(
             ReportDiagnostic(
@@ -1011,9 +1024,9 @@ def _warn_duplicates(
                 code="duplicate_artifact",
                 message=(
                     "identical artifact bytes were supplied more than once; this "
-                    f"report reads them as {read.artifact.name}"
+                    f"report reads them as {elected}"
                 ),
-                location=duplicate.name,
+                location=diagnostic_text(duplicate.name),
             )
         )
 
@@ -1135,13 +1148,25 @@ def _match_evaluations(
                     code="evaluation_ambiguous",
                     message=(
                         f"{entry.match.describe()} matches {len(candidates)} vulnerabilities "
-                        f"({named}); add contextKey or sourceType"
+                        f"({named}); {entry.match.ambiguity_remedy()}"
                     ),
                     location=entry.location,
                 )
             )
             continue
         group = candidates[0]
+        # A lone failure would match a pair that names no digest, so the next failure of
+        # another digest would turn the same file ambiguous; the full triple is required.
+        if group.source_type == DETECTION_FAILURE_SOURCE_TYPE and entry.match.context_key is None:
+            errors.append(
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="evaluation_context_key_required",
+                    message=entry.match.context_key_required(group.tracking_id),
+                    location=entry.location,
+                )
+            )
+            continue
         previous = claimed_by.get(group.tracking_id)
         if previous is not None:
             errors.append(

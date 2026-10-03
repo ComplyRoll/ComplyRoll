@@ -608,10 +608,14 @@ def maximal_document(char: str) -> dict[str, Any]:
     }
 
 
-def compile_hdf_golden(artifacts: Sequence[Path] = HDF_ARTIFACTS) -> CompiledVdtReport:
+def compile_hdf_golden(
+    artifacts: Sequence[Path] = HDF_ARTIFACTS, *, record_failed_imports: bool = False
+) -> CompiledVdtReport:
     """Compile the HDF golden the way the documented command line does."""
     return compile_vdt_report(
-        list(artifacts), options=report_options(detected_at=REPORT_DETECTED_AT)
+        list(artifacts),
+        options=report_options(detected_at=REPORT_DETECTED_AT),
+        record_failed_imports=record_failed_imports,
     )
 
 

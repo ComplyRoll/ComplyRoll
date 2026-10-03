@@ -920,6 +920,7 @@ class _ArtifactParse(EvidenceParse):
             tuple(observations),
             self.diagnostics.emit(self.artifact.name),
             failed_execution_at=failed_execution_at,
+            withheld=self.diagnostics.has_errors and bool(self.folds),
         )
 
     # Diagnostic and hygiene helpers
@@ -1016,6 +1017,9 @@ class _ArtifactParse(EvidenceParse):
                     "invocation reports executionSuccessful false; its results are still read",
                     f"{path}.invocations[{position}]",
                 )
+        # Read before any identity check below can refuse the run, so a failed invocation
+        # keeps its declared clock when its run is refused too (ADR 0014).
+        clock = self._run_clock(path, invocations)
 
         truncated: set[str] = set()
         scalars: dict[str, str] = {}
@@ -1091,7 +1095,7 @@ class _ArtifactParse(EvidenceParse):
             context_key=context_key,
             image_name=image_name,
             repository_uri=repository_uri,
-            clock=self._run_clock(path, invocations),
+            clock=clock,
             scalars=scalars,
             lists=lists,
             truncated=truncated,

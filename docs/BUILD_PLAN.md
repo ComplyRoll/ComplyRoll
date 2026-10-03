@@ -215,8 +215,10 @@ Target: 3–4 weeks
 ### Exit criteria
 
 - A failed detection process creates a reviewable vulnerability case. **Met, 2026-09-30** (ADR
-  0014: a failed import or a failed invocation becomes a system observation and its own case,
-  evaluated like any other, and the stateless and persisted reports carry it).
+  0014: with `--record-failed-imports`, a failed import or a failed invocation becomes a system
+  observation and its own case, evaluated like any other, and the stateless and persisted reports
+  carry it; an unreadable, rejected-format, partial, or unclassified reading stays fatal, ADR 0014
+  Decision 2).
 - A stale detection process creates a reviewable vulnerability case. Not started; it belongs to
   the coverage and freshness checks.
 - New or significantly changed resources can trigger a scoped detection request.

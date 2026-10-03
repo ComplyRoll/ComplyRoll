@@ -30,7 +30,9 @@ from complyroll.events import (
     duplicate_observation_message,
     event_belongs_on_stream,
     failure_duplicate_observation_message,
+    failure_head_order_message,
     failure_identity_breach,
+    failure_record_disagreement,
     failure_stream_components,
     is_artifact_stream,
     is_case_stream,
@@ -428,16 +430,98 @@ def reading_elsewhere(
     *,
     parser_name: str,
     parser_version: str,
+    failure_class: FailureClass | None = None,
 ) -> ArtifactRecord | None:
-    """Return the current reading of these bytes that a failure under this parser cannot replace.
+    """Return a reading of these bytes that keeps a failure under this parser out of history.
 
     A failed reading joins history only to replace the digest's current reading under R2:
     one under the same parser name at a lower version, which the newer version can no
     longer read. A current reading under another parser name, or under this one at the
     failed version or later, means the bytes read successfully elsewhere, so `ingest`
-    refuses the failure rather than recording it (ADR 0014). Versions compare as the fold
-    compares them: every version of the digest, the failed one included, decides together
-    whether the comparison is numeric.
+    refuses the failure rather than recording it (ADR 0014).
+
+    Given the failure's class, any reading of the digest, current or superseded, that
+    would supersede the failure under R3 or R4 is returned as well, so `ingest` never
+    records a failure the fold would supersede at birth. The current readings are asked
+    first, so every reading refused without the class is refused, and named, the same way
+    with it. Versions compare as the fold compares them: every version of the digest, the
+    failed one included, decides together whether the comparison is numeric.
+    """
+
+    numeric = _digest_compares_numerically(history, sha256, parser_version)
+    failed = _version_key(parser_version, numeric)
+    for record in history.current:
+        if record.sha256 == sha256 and (
+            record.parser_name != parser_name
+            or _version_key(record.parser_version, numeric) >= failed
+        ):
+            return record
+    if failure_class is None:
+        return None
+    failure = _PendingFailure(failure_class, parser_name, parser_version)
+    return _failure_superseded_at_birth(history, sha256, failure, numeric=numeric)
+
+
+def held_failure_lost(
+    history: ArtifactHistory,
+    sha256: str,
+    *,
+    parser_name: str,
+    parser_version: str,
+    failure_class: FailureClass,
+    holder: str,
+) -> bool:
+    """Return whether a failure another failure stream holds would reach no persisted report.
+
+    A system observation's identity is the digest and the instant, never the parser, so
+    `record_failure` writes nothing for a failure whose observation `holder` already holds.
+    The failure is lost when the holder is superseded and no reading of the digest, current
+    or superseded, would supersede the failure at birth under R3 or R4: recorded, it would
+    be current, but its observation is the holder's. `reading_elsewhere`'s R2 check is not
+    asked, because a side record's own artifact stream would match it. `ingest` asks this
+    once its writes are in and refuses the run when it holds (ADR 0014 Decision 13).
+    """
+
+    if all(record.stream_id != holder for record in history.superseded_failures):
+        return False
+    numeric = _digest_compares_numerically(history, sha256, parser_version)
+    failure = _PendingFailure(failure_class, parser_name, parser_version)
+    return _failure_superseded_at_birth(history, sha256, failure, numeric=numeric) is None
+
+
+def _failure_superseded_at_birth(
+    history: ArtifactHistory,
+    sha256: str,
+    failure: _PendingFailure,
+    *,
+    numeric: bool,
+) -> ArtifactRecord | None:
+    """Return the first reading of the digest that would supersede a failure at birth.
+
+    R3 and R4 as the fold applies them (`_failure_is_superseded`), one reading at a time,
+    the current readings before the superseded ones.
+    """
+
+    for record in (*history.current, *history.superseded):
+        if record.sha256 == sha256 and _failure_is_superseded(failure, (record,), numeric=numeric):
+            return record
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingFailure:
+    """A failure weighed without being recorded: what R3 and R4 read of it."""
+
+    failure_class: FailureClass
+    parser_name: str
+    parser_version: str
+
+
+def _digest_compares_numerically(history: ArtifactHistory, sha256: str, version: str) -> bool:
+    """Return whether one digest's versions, and one not yet in history, compare numerically.
+
+    Artifact and failure streams count alike, current or superseded, as `_split_streams`
+    counts them.
     """
 
     versions = [
@@ -450,16 +534,8 @@ def reading_elsewhere(
         for record in (*history.current_failures, *history.superseded_failures)
         if record.sha256 == sha256
     )
-    versions.append(parser_version)
-    numeric = all(_is_numeric_version(version) for version in versions)
-    failed = _version_key(parser_version, numeric)
-    for record in history.current:
-        if record.sha256 == sha256 and (
-            record.parser_name != parser_name
-            or _version_key(record.parser_version, numeric) >= failed
-        ):
-            return record
-    return None
+    versions.append(version)
+    return all(_is_numeric_version(item) for item in versions)
 
 
 def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
@@ -488,8 +564,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
 
     Failure streams (ADR 0014) have five of their own:
 
-    - `failure_stream_mismatch`: a failure head naming a reading its stream does not, or an
-      observation on a failure stream that is not its digest's system record.
+    - `failure_stream_mismatch`: a failure head naming a reading its stream does not; an
+      observation on a failure stream that is not its digest's system record, metadata
+      included; a stream that does not open with its head; or a head and a system record
+      that describe two different failures.
     - `failure_incomplete` and `failure_overfull`: a failure stream that is not exactly one
       `failure.recorded` and one observation.
     - `failure_duplicate_observation`: two failure streams of one digest holding the same
@@ -509,21 +587,31 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     holders: dict[tuple[str, str], str] = {}
     # Per failure stream: the first event's sequence, its heads, and its observations.
     failure_shapes: dict[str, list[int]] = {}
+    # Per failure stream: the first head or observation, and each one whose payload reads.
+    failure_openers: dict[str, EventRecord] = {}
+    failure_pairs: dict[str, dict[str, EventRecord]] = {}
     for record in repository.read_all():
         contract_faults = _contract_faults(repository, record)
         faults.extend(contract_faults)
         faults.extend(_placement_faults(record))
         faults.extend(_metadata_faults(record))
+        identity_faults: tuple[HistoryFault, ...] = ()
         if not contract_faults:
             # A payload its own contract already refused says nothing dependable about the
             # artifact it came from, so its identity is read only once the payload reads.
-            faults.extend(_identity_faults(record))
+            identity_faults = _identity_faults(record)
+            faults.extend(identity_faults)
         if is_failure_stream(record.stream_id):
             shape = failure_shapes.setdefault(record.stream_id, [record.sequence, 0, 0])
             if record.event_type == FAILURE_RECORDED:
                 shape[1] += 1
             elif record.event_type == OBSERVATION_RECORDED:
                 shape[2] += 1
+            if record.event_type in (FAILURE_RECORDED, OBSERVATION_RECORDED):
+                failure_openers.setdefault(record.stream_id, record)
+                if not contract_faults and not identity_faults:
+                    pair = failure_pairs.setdefault(record.stream_id, {})
+                    pair.setdefault(record.event_type, record)
         if record.event_type == ARTIFACT_INGESTED:
             count = record.payload.get("observationCount")
             if record.stream_id not in declared and _is_whole_number(count):
@@ -536,6 +624,14 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
         problem = _failure_stream_problem(stream_id, heads, observations)
         if problem is not None:
             faults.append(HistoryFault(sequence=first, code=problem[0], message=problem[1]))
+        faults.extend(
+            _failure_pair_faults(
+                stream_id,
+                heads,
+                failure_openers.get(stream_id),
+                None if problem is not None else failure_pairs.get(stream_id, {}),
+            )
+        )
     faults.extend(_schema_faults(repository, failure_shapes))
     for stream_id, (sequence, count) in declared.items():
         found = observed.get(stream_id, 0)
@@ -862,10 +958,12 @@ def _read_failure_streams(repository: EventRepository) -> tuple[_FailureStreamVi
     """Read every failure stream back, in the order the streams were opened (ADR 0014).
 
     A failure stream is one `failure.recorded` and the one system observation it mints,
-    written whole in one transaction, so anything else raises: a missing half is
-    incomplete, a second head or observation is overfull, and the reader refuses both
-    rather than reporting from a stream no writer produced. Each event is checked the way
-    `_read_artifact_streams` checks its own, contract first and then identity.
+    written whole in one transaction and head first, so anything else raises: a missing
+    half is incomplete, a second head or observation is overfull, an observation ahead of
+    its head is out of order, and a head and a record that describe two failures disagree.
+    The reader refuses each rather than reporting from a stream no writer produced. Each
+    event is checked the way `_read_artifact_streams` checks its own, contract first and
+    then identity, which for the record includes its metadata.
 
     One system observation is stored once per digest. Its identity is the digest and the
     instant, never the parser, so two failure streams of one digest holding it would
@@ -875,6 +973,7 @@ def _read_failure_streams(repository: EventRepository) -> tuple[_FailureStreamVi
     heads: dict[str, list[EventRecord]] = {}
     observations: dict[str, list[EventRecord]] = {}
     holders: dict[tuple[str, str], str] = {}
+    opened_by: dict[str, str] = {}
     for record in repository.read_all():
         if record.event_type not in (FAILURE_RECORDED, OBSERVATION_RECORDED):
             continue
@@ -884,6 +983,7 @@ def _read_failure_streams(repository: EventRepository) -> tuple[_FailureStreamVi
         breach = failure_identity_breach(record.stream_id, record.event_type, record.payload)
         if breach is not None:
             raise HistoryError(f"event {record.sequence} is on the wrong stream: {breach}")
+        opened_by.setdefault(record.stream_id, record.event_type)
         heads.setdefault(record.stream_id, [])
         found = observations.setdefault(record.stream_id, [])
         if record.event_type == FAILURE_RECORDED:
@@ -903,10 +1003,16 @@ def _read_failure_streams(repository: EventRepository) -> tuple[_FailureStreamVi
         problem = _failure_stream_problem(stream_id, len(heads[stream_id]), len(found))
         if problem is not None:
             raise HistoryError(problem[1])
+        if opened_by[stream_id] != FAILURE_RECORDED:
+            raise HistoryError(failure_head_order_message(stream_id))
+        head = heads[stream_id][0]
+        disagreement = failure_record_disagreement(stream_id, head.payload, found[0].payload)
+        if disagreement is not None:
+            raise HistoryError(disagreement)
         views.append(
             _FailureStreamView(
                 stream_id=stream_id,
-                record=_failure_record(repository, heads[stream_id][0]),
+                record=_failure_record(repository, head),
                 observation=found[0],
             )
         )
@@ -1105,7 +1211,7 @@ def _replaced_readings(
 
 
 def _failure_is_superseded(
-    failure: FailureRecord,
+    failure: FailureRecord | _PendingFailure,
     readings: Sequence[ArtifactRecord],
     *,
     numeric: bool,
@@ -1115,7 +1221,8 @@ def _failure_is_superseded(
     `readings` is every artifact stream of the digest, current or superseded, so a failure
     a newer parser resolved stays resolved when a still newer parser fails in turn. No
     other failure stream is consulted (R5), and no sequence breaks a tie: at equal versions
-    the artifact stream wins.
+    the artifact stream wins. `reading_elsewhere` and `held_failure_lost` ask the same of a
+    failure that is not recorded, one reading at a time.
 
     - R3: a parse or content failure under parser P at version v is superseded by an
       artifact stream under another parser name, or under P at a version of at least v.
@@ -1291,6 +1398,48 @@ def _failure_stream_problem(
             f"record and one observation, {found}",
         )
     return None
+
+
+def _failure_pair_faults(
+    stream_id: str,
+    heads: int,
+    opener: EventRecord | None,
+    pair: Mapping[str, EventRecord] | None,
+) -> tuple[HistoryFault, ...]:
+    """Report a failure stream out of order, or whose two events describe two failures.
+
+    The audit's half of the two checks `_read_failure_streams` makes on a whole stream
+    (ADR 0014). A stream with no head is already incomplete, so only one that holds a head
+    is out of order when its observation opens it, and the fault is at that observation.
+    `pair` is None for a stream that is not whole; otherwise it holds each event whose
+    payload and identity read, and the two are compared only when both did, because an
+    event that did not is already a fault of its own. The fault is at the record, which is
+    what `detectionFailures` renders.
+    """
+
+    faults: list[HistoryFault] = []
+    if heads and opener is not None and opener.event_type != FAILURE_RECORDED:
+        faults.append(
+            HistoryFault(
+                sequence=opener.sequence,
+                code="failure_stream_mismatch",
+                message=failure_head_order_message(stream_id),
+            )
+        )
+    if pair is not None and FAILURE_RECORDED in pair and OBSERVATION_RECORDED in pair:
+        observation = pair[OBSERVATION_RECORDED]
+        disagreement = failure_record_disagreement(
+            stream_id, pair[FAILURE_RECORDED].payload, observation.payload
+        )
+        if disagreement is not None:
+            faults.append(
+                HistoryFault(
+                    sequence=observation.sequence,
+                    code="failure_stream_mismatch",
+                    message=disagreement,
+                )
+            )
+    return tuple(faults)
 
 
 def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
@@ -1615,6 +1764,7 @@ __all__ = [
     "fold_all_cases",
     "fold_case",
     "fold_case_records",
+    "held_failure_lost",
     "history_entries",
     "reading_elsewhere",
     "rehydrate_observations",

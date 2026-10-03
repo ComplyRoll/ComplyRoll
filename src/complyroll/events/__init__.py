@@ -10,6 +10,7 @@ from .contracts import (
     EVENT_CONTRACTS,
     EVENT_TIMESTAMP_POINTERS,
     EVENT_TYPES,
+    FAILURE_CLOCK_VALUES,
     FAILURE_CODE_VALUES,
     FAILURE_STREAM_EVENT_TYPES,
     FAILURE_STREAM_PREFIX,
@@ -35,6 +36,7 @@ from .contracts import (
 )
 from .repository import (
     ARTIFACT_IDENTITY_KEYS,
+    FAILURE_METADATA_KEYS,
     MAX_BATCH_EVENTS,
     METADATA_KEYS,
     METHOD_VALUES,
@@ -51,7 +53,9 @@ from .repository import (
     canonical_payload_digest,
     duplicate_observation_message,
     failure_duplicate_observation_message,
+    failure_head_order_message,
     failure_identity_breach,
+    failure_record_disagreement,
     metadata_breaches,
 )
 
@@ -66,7 +70,9 @@ __all__ = [
     "EVENT_CONTRACTS",
     "EVENT_TIMESTAMP_POINTERS",
     "EVENT_TYPES",
+    "FAILURE_CLOCK_VALUES",
     "FAILURE_CODE_VALUES",
+    "FAILURE_METADATA_KEYS",
     "FAILURE_STREAM_EVENT_TYPES",
     "FAILURE_STREAM_PREFIX",
     "FAILURE_STREAM_SCHEMA_VERSION",
@@ -92,7 +98,9 @@ __all__ = [
     "duplicate_observation_message",
     "event_belongs_on_stream",
     "failure_duplicate_observation_message",
+    "failure_head_order_message",
     "failure_identity_breach",
+    "failure_record_disagreement",
     "failure_stream_components",
     "failure_stream_id",
     "is_artifact_stream",

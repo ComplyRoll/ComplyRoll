@@ -21,12 +21,19 @@ from uuid import uuid4
 from jsonschema import Draft202012Validator
 
 from complyroll import __version__
-from complyroll.adapters.failures import DETECTION_FAILURE_SOURCE_TYPE
+from complyroll.adapters.common import encode_list
+from complyroll.adapters.failures import (
+    DETECTION_FAILURE_RULE,
+    DETECTION_FAILURE_SOURCE_TYPE,
+    FailureClass,
+)
 from complyroll.models import Observation, ObservationOrigin
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 
 from .contracts import (
     EVENT_CONTRACTS,
+    FAILURE_CLOCK_VALUES,
+    FAILURE_CODE_VALUES,
     FAILURE_STREAM_PREFIX,
     FAILURE_STREAM_SCHEMA_VERSION,
     artifact_stream_components,
@@ -65,6 +72,39 @@ ARTIFACT_IDENTITY_KEYS: Final[dict[str, tuple[str, str, str]]] = {
 #: The key an `observation.recorded` payload records its identifier under, spelled the way
 #: `Observation.to_canonical_dict` spells it.
 OBSERVATION_ID_KEY: Final = "observation_id"
+
+#: Exactly the source metadata keys a failure stream's system record carries, the ones
+#: `system_observation_for` writes (ADR 0014). The fingerprint covers none of them, so the
+#: derived-id check cannot see one changed, and replay renders `detectionFailures` from them.
+FAILURE_METADATA_KEYS: Final[tuple[str, ...]] = (
+    "artifact.mediaType",
+    "artifact.name",
+    "artifact.parser",
+    "artifact.parserVersion",
+    "artifact.sha256",
+    "artifact.sizeBytes",
+    "failure.class",
+    "failure.clock",
+    "failure.codes",
+    "failure.rule",
+)
+
+#: How a failure head and its system record's metadata name the same fact. The digest,
+#: parser, and version are held to the stream id instead, by each event on its own.
+_FAILURE_RECORD_PAIRS: Final[tuple[tuple[str, str], ...]] = (
+    ("name", "artifact.name"),
+    ("sizeBytes", "artifact.sizeBytes"),
+    ("mediaType", "artifact.mediaType"),
+    ("failureClass", "failure.class"),
+    ("failureCodes", "failure.codes"),
+    ("clock", "failure.clock"),
+)
+
+#: A size as `str(int)` spells it: digits only, no sign, no leading zero.
+_COUNT_TEXT: Final = re.compile(r"(?:0|[1-9][0-9]*)")
+
+#: The failure classes a system record's metadata may name.
+_FAILURE_CLASS_VALUES: Final = frozenset(member.value for member in FailureClass)
 
 #: Page size for the paged readers below. The store caps a read at 10,000 rows.
 READ_PAGE_SIZE = 500
@@ -270,7 +310,7 @@ class EventRepository:
         if len(pending) > MAX_BATCH_EVENTS:
             raise ValueError(f"events must contain at most {MAX_BATCH_EVENTS} events")
         prepared: list[NewEvent] = []
-        for event in pending:
+        for index, event in enumerate(pending):
             if not isinstance(event, PendingEvent):
                 raise TypeError("events must contain only PendingEvent instances")
             if not isinstance(event.metadata, EventMetadata):
@@ -279,6 +319,15 @@ class EventRepository:
                 event.event_type, event.payload, event_version=event.event_version
             )
             _require_stream_compatible(stream_id, event.event_type, event.payload)
+            # The store appends only at expected_version, so the first event of a batch at
+            # version 0 is the event that opens the stream (ADR 0014).
+            if (
+                index == 0
+                and expected_version == 0
+                and is_failure_stream(stream_id)
+                and event.event_type != FAILURE_RECORDED
+            ):
+                raise EventContractError(failure_head_order_message(stream_id))
             metadata = event.metadata.to_dict()
             _require_valid_metadata(metadata)
             prepared.append(
@@ -584,6 +633,12 @@ def failure_identity_breach(
     observation under any identifier, so the derived id is checked here rather than
     assumed; a payload whose fingerprint is not its own is the reader's refusal to make.
 
+    The record's metadata is checked too, because the fingerprint covers none of it and
+    replay renders `detectionFailures` from it: exactly `FAILURE_METADATA_KEYS`, the digest,
+    parser, and version the stream id names, a size spelled as a count, and a failure
+    class, code list, clock, and rule from their vocabularies. Whether it agrees with the
+    head takes both events, which is `failure_record_disagreement`'s business.
+
     Returns None for an event no failure stream carries and for a stream of another kind,
     which are the stream-kind check's business rather than this one's.
     """
@@ -608,11 +663,125 @@ def failure_identity_breach(
         )
     problem = _system_record_problem(expected[0], payload)
     if problem is None:
+        problem = _failure_metadata_problem(expected, payload.get("source_metadata"))
+    if problem is None:
         return None
     return (
         f"{OBSERVATION_RECORDED} on failure stream {stream_id!r} is not the system record "
         f"of digest {expected[0]!r}: {problem}"
     )
+
+
+def failure_record_disagreement(
+    stream_id: str,
+    head: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> str | None:
+    """Return why a failure head and its system record describe two different failures.
+
+    The writer builds both from one classification of one reading (ADR 0014), so they name
+    the same file, size, media type, failure class, codes, and clock. Each is checked
+    against the stream id alone at append, which cannot see the other, so the fold and the
+    audit, which read both, ask this. The head decides supersession and the record's
+    metadata is what `detectionFailures` renders, so a store where they differ would report
+    one failure and rank another. Both payloads are expected to have passed their own
+    contract and `failure_identity_breach` already.
+    """
+
+    raw = observation.get("source_metadata")
+    metadata: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    for head_key, metadata_key in _FAILURE_RECORD_PAIRS:
+        recorded = head.get(head_key)
+        described = metadata.get(metadata_key)
+        if head_key == "sizeBytes":
+            agrees = isinstance(recorded, int) and described == str(recorded)
+        elif head_key == "failureCodes":
+            agrees = isinstance(recorded, list) and decode_failure_codes(described) == tuple(
+                recorded
+            )
+        else:
+            agrees = described == recorded
+        if not agrees:
+            return (
+                f"failure stream {stream_id!r} records {head_key} {recorded!r} in its "
+                f"{FAILURE_RECORDED} and {metadata_key} {described!r} in its system record; "
+                "the two describe one failure"
+            )
+    return None
+
+
+def decode_failure_codes(text: Any) -> tuple[str, ...] | None:
+    """Read a system record's `failure.codes` back, or return None when it is malformed.
+
+    Well formed is exactly what the writer stores: `encode_list` of at least one code from
+    `FAILURE_CODE_VALUES`, sorted and distinct, the classification's codes. The same list
+    padded, escaped, or reordered is a spelling no writer emits, so it is refused, and a head
+    whose `failureCodes` is out of order cannot agree with a record that reads back.
+    """
+
+    if not isinstance(text, str):
+        return None
+    try:
+        decoded = json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(decoded, list) or not decoded:
+        return None
+    if not all(isinstance(code, str) and code in FAILURE_CODE_VALUES for code in decoded):
+        return None
+    if decoded != sorted(set(decoded)) or encode_list(decoded) != text:
+        return None
+    return tuple(decoded)
+
+
+def failure_head_order_message(stream_id: str) -> str:
+    """Word a failure stream whose first event is not its head, wherever it is reported.
+
+    Shared by the refusal at append, the fold, and the audit, like the messages below.
+    """
+
+    return (
+        f"failure stream {stream_id!r} does not open with its {FAILURE_RECORDED}; a failure "
+        "stream is written head first"
+    )
+
+
+def _failure_metadata_problem(
+    expected: tuple[str, str, str],
+    raw: Any,
+) -> str | None:
+    """Return the first way a system record's metadata is not what its writer stores."""
+
+    if not isinstance(raw, Mapping):
+        return "its metadata is not an object"
+    for key in FAILURE_METADATA_KEYS:
+        if key not in raw:
+            return f"its metadata has no {key!r}"
+    for key in raw:
+        if key not in FAILURE_METADATA_KEYS:
+            return f"its metadata carries {key!r}, which a system record does not"
+    for key, named in zip(
+        ("artifact.sha256", "artifact.parser", "artifact.parserVersion"), expected, strict=True
+    ):
+        if raw[key] != named:
+            return f"its metadata {key} is {raw[key]!r}, where the stream names {named!r}"
+    size = raw["artifact.sizeBytes"]
+    if not isinstance(size, str) or _COUNT_TEXT.fullmatch(size) is None:
+        return f"its metadata artifact.sizeBytes is {size!r}, not a count"
+    if raw["failure.class"] not in _FAILURE_CLASS_VALUES:
+        return f"its metadata failure.class is {raw['failure.class']!r}, not a failure class"
+    if decode_failure_codes(raw["failure.codes"]) is None:
+        return (
+            f"its metadata failure.codes is {raw['failure.codes']!r}, not the compact JSON "
+            "array of sorted, distinct failure codes its writer stores"
+        )
+    if raw["failure.clock"] not in FAILURE_CLOCK_VALUES:
+        return f"its metadata failure.clock is {raw['failure.clock']!r}, not a failure clock"
+    if raw["failure.rule"] != DETECTION_FAILURE_RULE:
+        return (
+            f"its metadata failure.rule is {raw['failure.rule']!r}, not {DETECTION_FAILURE_RULE!r}"
+        )
+    return None
 
 
 def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | None:

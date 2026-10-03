@@ -300,8 +300,12 @@ store. These rules bind from this date.
   INFOs `failure_superseded`, `artifact_superseded_by_failure`, and `stale_case`. The two paths
   are byte-identical when all of these hold: the same inputs and the same flag; every failure's
   `observed_at` equals the report as-of or comes from a declared scanner clock; no stream of the
-  digest is superseded; and no two input names share a digest. Without the flag, and for a store
-  that holds no failure stream, Decision 5 holds exactly as amended above.
+  digest is superseded; no two input names share a digest; and no ingest reported
+  `failure_held_by_another_stream`, which `record_failure` adds when another failure stream of
+  the digest already holds the reading's system observation. No failure stream is then written
+  under the reading's parser and version, and the failure stays recorded under the holder's
+  parser, version, and codes, where a stateless run reports the reading's own. Without the flag,
+  and for a store that holds no failure stream, Decision 5 holds exactly as amended above.
   `FailedImportDivergenceTests` in `tests/test_replay.py` pins each divergence.
 - **A third stream kind, `failure/<sha256>/<parser_name>/<parser_version>`.** It is named for the
   parser whose reading failed and holds exactly one `failure.recorded` head and one

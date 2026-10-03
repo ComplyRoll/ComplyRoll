@@ -95,6 +95,7 @@ OTHER_DIGEST = "fedcba9876543210" * 4
 REFERENCE = f"sha256:{DIGEST}"
 NAME = "synthetic.cklb"
 ADAPTERS = Path(failures_module.__file__).resolve().parent
+FIXTURES = Path(__file__).parent / "fixtures"
 SOURCE_ROOT = Path(complyroll.__file__).resolve().parents[1]
 
 ERROR = DiagnosticLevel.ERROR
@@ -176,6 +177,7 @@ def reading(
     observations: tuple[Observation, ...] = (),
     format_rejected: bool = False,
     failed_execution_at: datetime | None = None,
+    withheld: bool = False,
 ) -> IngestResult:
     """Build one reading by hand, with the artifact unless it is digestless."""
     return IngestResult(
@@ -184,6 +186,7 @@ def reading(
         diagnostics,
         format_rejected=format_rejected,
         failed_execution_at=failed_execution_at,
+        withheld=withheld,
     )
 
 
@@ -257,6 +260,14 @@ def checklist(
         "completed_at": "2026-08-01T00:00:00Z",
         "stigs": [{**entry, "rules": list(rules)}],
     }
+
+
+def hdf_document() -> dict[str, Any]:
+    """Load the synthetic InSpec fixture, which imports cleanly, for a test to damage."""
+    document: dict[str, Any] = json.loads(
+        (FIXTURES / "inspec-linux-host.hdf.json").read_text(encoding="utf-8")
+    )
+    return document
 
 
 def failed_log(invocations: list[dict[str, Any]], *, findings: int = 1) -> dict[str, Any]:
@@ -709,18 +720,83 @@ class PrecedenceTests(unittest.TestCase):
             FailureClassification(PARSE, None, ("artifact_parse_failed", "invalid_rule")),
         )
 
-    def test_every_reason_takes_precedence_over_every_class(self) -> None:
+    def test_a_partial_reading_takes_precedence_over_execution(self) -> None:
         result = reading(
-            error("artifact_parse_failed"),
+            error("invalid_rule"),
             warning(EXECUTION_UNSUCCESSFUL),
-            format_rejected=True,
             failed_execution_at=INVOKED,
+            observations=(artifact_observation(),),
         )
         self.assertEqual(
             classify_ingest(result),
-            FailureClassification.unmintable(
-                UnmintableReason.FORMAT_REJECTED, ["artifact_parse_failed"]
+            FailureClassification.unmintable(UnmintableReason.PARTIAL_READING, ["invalid_rule"]),
+        )
+
+    def test_every_unmintable_reason_takes_precedence_over_execution(self) -> None:
+        # Each reading also reports a failed invocation with its clock, which would make it
+        # the execution class if no reason applied first. A clean scan is absent because a
+        # failed invocation is itself what keeps a reading from being one.
+        failed = (warning(EXECUTION_UNSUCCESSFUL),)
+        cases = (
+            (
+                reading(error("artifact_parse_failed"), *failed, digestless=True),
+                UnmintableReason.NO_DIGEST,
+                "artifact_parse_failed",
             ),
+            (
+                reading(error("unsupported_artifact"), *failed),
+                UnmintableReason.UNSUPPORTED,
+                "unsupported_artifact",
+            ),
+            (
+                reading(error("artifact_parse_failed"), *failed, format_rejected=True),
+                UnmintableReason.FORMAT_REJECTED,
+                "artifact_parse_failed",
+            ),
+            (
+                reading(
+                    error("duplicate_observation_identity"),
+                    *failed,
+                    observations=(artifact_observation(),),
+                ),
+                UnmintableReason.DUPLICATE_IDENTITY,
+                "duplicate_observation_identity",
+            ),
+            (
+                reading(error("invalid_rule"), *failed, observations=(artifact_observation(),)),
+                UnmintableReason.PARTIAL_READING,
+                "invalid_rule",
+            ),
+            (
+                reading(error("invalid_result"), *failed, withheld=True),
+                UnmintableReason.PARTIAL_READING,
+                "invalid_result",
+            ),
+            (
+                reading(error("synthetic_unknown"), *failed),
+                UnmintableReason.UNKNOWN_CODE,
+                "synthetic_unknown",
+            ),
+        )
+        for result, reason, code in cases:
+            with self.subTest(reason=reason.value, withheld=result.withheld):
+                executed = replace(result, failed_execution_at=INVOKED)
+                self.assertEqual(
+                    classify_ingest(executed), FailureClassification.unmintable(reason, [code])
+                )
+
+    def test_a_sarif_log_withholding_findings_beside_a_failed_invocation_is_partial(
+        self,
+    ) -> None:
+        invocation = {"executionSuccessful": False, "startTimeUtc": "2026-08-31T09:30:00Z"}
+        log = make_log(make_run([make_result()], invocations=[invocation]), make_run([7]))
+        result = ingest_json("synthetic.sarif", log)
+        self.assertEqual(result.observations, ())
+        self.assertTrue(result.withheld)
+        self.assertEqual(result.failed_execution_at, INVOKED)
+        self.assertEqual(
+            classify_ingest(result),
+            FailureClassification.unmintable(UnmintableReason.PARTIAL_READING, ["invalid_result"]),
         )
 
 
@@ -979,6 +1055,64 @@ class DispatcherClassificationTests(unittest.TestCase):
             self.classify(result),
             FailureClassification(None, UnmintableReason.PARTIAL_READING, ("invalid_rule",)),
         )
+
+    def test_a_sarif_log_with_one_unusable_result_is_a_partial_reading(self) -> None:
+        log = make_log(make_run([make_result()]), make_run([7]))
+        result = ingest_json("synthetic.sarif", log)
+        self.assertEqual(result.observations, ())
+        self.assertTrue(result.withheld)
+        self.assertEqual(
+            self.classify(result),
+            FailureClassification(None, UnmintableReason.PARTIAL_READING, ("invalid_result",)),
+        )
+
+    def test_an_hdf_document_with_one_unusable_control_is_a_partial_reading(self) -> None:
+        document = hdf_document()
+        document["profiles"][0]["controls"].append(7)
+        result = ingest_json("synthetic.hdf.json", document)
+        self.assertEqual(result.observations, ())
+        self.assertTrue(result.withheld)
+        self.assertEqual(
+            self.classify(result),
+            FailureClassification(None, UnmintableReason.PARTIAL_READING, ("invalid_control",)),
+        )
+
+    def test_a_reading_with_nothing_to_withhold_is_not_withheld(self) -> None:
+        unusable = hdf_document()
+        unusable["profiles"][0]["controls"] = [7]
+        cases = {
+            "sarif without a usable result": ("synthetic.sarif", make_log(make_run([7]))),
+            "hdf without a usable control": ("synthetic.hdf.json", unusable),
+            "a successful sarif log": ("synthetic.sarif", make_log(make_run([make_result()]))),
+            "a successful hdf document": ("synthetic.hdf.json", hdf_document()),
+        }
+        for label, (name, payload) in cases.items():
+            with self.subTest(label):
+                result = ingest_json(name, payload)
+                self.assertFalse(result.withheld)
+                if result.errors:
+                    self.assertIsNot(self.classify(result).reason, UnmintableReason.PARTIAL_READING)
+
+    def test_an_empty_container_array_is_rejected_only_where_the_adapter_requires_it(self) -> None:
+        no_profiles = hdf_document()
+        no_profiles["profiles"] = []
+        no_controls = hdf_document()
+        for profile in no_controls["profiles"]:
+            profile["controls"] = []
+        content = FailureClassification(CONTENT, None, ("no_observations",))
+        cases = {
+            "hdf with no profiles": ("synthetic.hdf.json", no_profiles, None),
+            "hdf profiles with no controls": ("synthetic.hdf.json", no_controls, content),
+            "sarif with no runs": ("synthetic.sarif", make_log(), content),
+        }
+        for label, (name, payload, expected) in cases.items():
+            with self.subTest(label):
+                result = ingest_json(name, payload)
+                self.assertIs(result.format_rejected, expected is None)
+                if expected is None:
+                    self.assertIs(self.classify(result).reason, UnmintableReason.FORMAT_REJECTED)
+                else:
+                    self.assertEqual(self.classify(result), expected)
 
     def test_a_clean_sarif_run_is_a_clean_scan(self) -> None:
         result = ingest_json("synthetic.sarif", make_log(make_run([])))
@@ -1279,6 +1413,45 @@ class FailedInvocationClockTests(unittest.TestCase):
             ),
         )
 
+    def test_the_clock_is_kept_when_the_run_identity_is_refused(self) -> None:
+        for refused in ("scan/\u200b", "scan/\u0007"):
+            with self.subTest(automation_id=refused):
+                run = make_run(
+                    [],
+                    invocations=[
+                        {"executionSuccessful": False, "startTimeUtc": "2026-08-31T09:30:00Z"}
+                    ],
+                    automationDetails={"id": refused},
+                )
+                result = ingest_json("synthetic.sarif", make_log(run))
+                self.assertIn("identity_input_invalid", [item.code for item in result.errors])
+                self.assertEqual(result.failed_execution_at, INVOKED)
+                classification = classify_ingest(result)
+                self.assertEqual(
+                    classification,
+                    FailureClassification(
+                        EXECUTION,
+                        None,
+                        ("execution_unsuccessful", "identity_input_invalid", "no_observations"),
+                        clock=INVOKED,
+                    ),
+                )
+                self.assertEqual(mint(result).observed_at, INVOKED)
+
+    def test_a_refused_run_still_reports_an_unusable_clock(self) -> None:
+        # The clock is read before the identity checks, so a refused run's unusable clock is
+        # named once, as an accepted run's is.
+        run = make_run(
+            [],
+            invocations=[{"executionSuccessful": False, "startTimeUtc": "not a clock"}],
+            automationDetails={"id": "scan/\u200b"},
+        )
+        result = ingest_json("synthetic.sarif", make_log(run))
+        self.assertIsNone(result.failed_execution_at)
+        self.assertEqual(
+            [item.code for item in result.diagnostics].count("source_timestamp_invalid"), 1
+        )
+
     def test_collecting_the_failed_clock_adds_no_diagnostic(self) -> None:
         invocation = {
             "executionSuccessful": False,
@@ -1554,13 +1727,20 @@ class FailureDiagnosticsTests(unittest.TestCase):
         )
 
     def test_the_raw_level_breaks_the_last_tie(self) -> None:
-        result = reading(
-            warning("invalid_rule", "stigs[0]", "same"),
+        # The raw ERROR sorts before the INFO ("error" < "info") and only then is demoted,
+        # so a sort on the demoted level, or on no level, would put the INFO first in at
+        # least one input order.
+        tied = (
+            info("invalid_rule", "stigs[0]", "same"),
             error("invalid_rule", "stigs[0]", "same"),
         )
-        rendered = self.render(result)
-        self.assertEqual([item.level for item in rendered[:2]], [WARNING, WARNING])
-        self.assertEqual(sorted(result.diagnostics, key=raw_order)[0].level, ERROR)
+        for order in (tied, tied[::-1]):
+            with self.subTest([item.level.value for item in order]):
+                rendered = self.render(reading(*order))
+                self.assertEqual(
+                    [(item.level, item.code) for item in rendered[:2]],
+                    [(WARNING, "invalid_rule"), (INFO, "invalid_rule")],
+                )
 
     def test_every_error_is_demoted_to_a_warning_under_the_same_code(self) -> None:
         result = ingest_json(NAME, checklist(1, "rule", None))

@@ -33,6 +33,7 @@ from complyroll.events import (
     EVENT_CONTRACTS,
     EVENT_TYPES,
     FAILURE_CODE_VALUES,
+    FAILURE_METADATA_KEYS,
     FAILURE_STREAM_EVENT_TYPES,
     METHOD_VALUES,
     READ_PAGE_SIZE,
@@ -50,7 +51,9 @@ from complyroll.events import (
     case_stream_id,
     event_belongs_on_stream,
     failure_duplicate_observation_message,
+    failure_head_order_message,
     failure_identity_breach,
+    failure_record_disagreement,
     failure_stream_components,
     failure_stream_id,
     is_artifact_stream,
@@ -2168,9 +2171,10 @@ class FailureStreamIdentityTests(unittest.TestCase):
     """A failure stream holds the failed reading its id names and nothing else (ADR 0014).
 
     Its head names the digest, the parser, and the parser version, like an artifact
-    stream's head. Its one observation is the system record that failure mints, and the
-    reader accepts a system observation under any identifier, so the repository is the
-    one place the derived id is held.
+    stream's head, and comes first. Its one observation is the system record that failure
+    mints, and the reader accepts a system observation under any identifier, so the
+    repository is the one place the derived id is held. The fingerprint covers none of the
+    record's metadata, so the repository holds that too.
     """
 
     def setUp(self) -> None:
@@ -2277,6 +2281,142 @@ class FailureStreamIdentityTests(unittest.TestCase):
             "failure/not-a-digest/complyroll.sarif/1", "failure.recorded", failure_head()
         )
         self.assertIn("names no failed reading", str(breach))
+
+    def test_the_metadata_keys_are_exactly_the_ones_the_writer_stores(self) -> None:
+        self.assertEqual(
+            tuple(sorted(dict(system_record().source_metadata))), FAILURE_METADATA_KEYS
+        )
+
+    def test_each_clause_of_the_record_metadata_is_held(self) -> None:
+        # The fingerprint covers none of the metadata, so every shape below keeps its derived
+        # id and only the metadata clause can refuse it.
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        missing = {key: value for key, value in stored.items() if key != "failure.clock"}
+        not_codes = "not the compact JSON array of sorted, distinct failure codes its writer stores"
+        for label, value, expected in (
+            ("no object", "artifact.name=x", "its metadata is not an object"),
+            ("a missing key", missing, "its metadata has no 'failure.clock'"),
+            (
+                "a key no writer stores",
+                {**stored, "failure.note": "x"},
+                "its metadata carries 'failure.note', which a system record does not",
+            ),
+            (
+                "another digest",
+                {**stored, "artifact.sha256": "b" * 64},
+                f"its metadata artifact.sha256 is {'b' * 64!r}, where the stream names {DIGEST!r}",
+            ),
+            (
+                "another parser",
+                {**stored, "artifact.parser": "complyroll.cklb"},
+                "artifact.parser is 'complyroll.cklb', where the stream names 'complyroll.sarif'",
+            ),
+            (
+                "another version",
+                {**stored, "artifact.parserVersion": "2"},
+                "artifact.parserVersion is '2', where the stream names '1'",
+            ),
+            ("a signed size", {**stored, "artifact.sizeBytes": "-1"}, "is '-1', not a count"),
+            ("a padded size", {**stored, "artifact.sizeBytes": "0486"}, "is '0486', not a count"),
+            ("a wide digit", {**stored, "artifact.sizeBytes": "\u0664"}, "not a count"),
+            ("a class", {**stored, "failure.class": "fatal"}, "'fatal', not a failure class"),
+            ("codes not JSON", {**stored, "failure.codes": "no_observations"}, not_codes),
+            ("codes not a list", {**stored, "failure.codes": '"no_observations"'}, not_codes),
+            ("no codes", {**stored, "failure.codes": "[]"}, not_codes),
+            ("an unknown code", {**stored, "failure.codes": '["no_such_code"]'}, not_codes),
+            ("a code not text", {**stored, "failure.codes": "[1]"}, not_codes),
+            (
+                "a code twice",
+                {**stored, "failure.codes": '["no_observations","no_observations"]'},
+                not_codes,
+            ),
+            ("codes nested deep", {**stored, "failure.codes": "[" * 100_000}, not_codes),
+            # The same list in a spelling the writer never emits: `encode_list` is compact,
+            # writes no escape for an ASCII code, and the classification sorts its codes.
+            ("codes padded", {**stored, "failure.codes": '[ "no_observations" ]'}, not_codes),
+            ("codes escaped", {**stored, "failure.codes": '["no_observ\\u0061tions"]'}, not_codes),
+            (
+                "codes out of order",
+                {**stored, "failure.codes": '["no_observations","execution_unsuccessful"]'},
+                not_codes,
+            ),
+            ("a clock", {**stored, "failure.clock": "later"}, "'later', not a failure clock"),
+            (
+                "another rule",
+                {**stored, "failure.rule": "VDR-TFR-OTHER"},
+                "failure.rule is 'VDR-TFR-OTHER', not 'VDR-CSO-FAV'",
+            ),
+        ):
+            with self.subTest(shape=label):
+                payload = {**good, "source_metadata": value}
+                breach = failure_identity_breach(FAILURE_STREAM_ID, "observation.recorded", payload)
+
+                self.assertIsNotNone(breach)
+                self.assertIn(f"is not the system record of digest {DIGEST!r}", str(breach))
+                self.assertIn(expected, str(breach))
+                self.assertEqual(payload["observation_id"], good["observation_id"])
+
+    def test_a_record_naming_another_reading_in_its_metadata_is_refused(self) -> None:
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        moved = {**good, "source_metadata": {**stored, "artifact.parserVersion": "2"}}
+
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.append_batch(
+                FAILURE_STREAM_ID,
+                (
+                    pending_event("failure.recorded", failure_head()),
+                    pending_event("observation.recorded", moved),
+                ),
+                expected_version=0,
+            )
+
+        self.assertIn("artifact.parserVersion is '2'", str(caught.exception))
+        self.assertEqual(self.store.latest_sequence, 0)
+
+    def test_a_head_and_its_record_agree_on_the_failure_they_describe(self) -> None:
+        head = failure_head()
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        self.assertIsNone(failure_record_disagreement(FAILURE_STREAM_ID, head, good))
+        for key, value, head_key in (
+            ("artifact.name", "other.sarif", "name"),
+            ("artifact.sizeBytes", "487", "sizeBytes"),
+            ("artifact.mediaType", "application/json", "mediaType"),
+            ("failure.class", "content", "failureClass"),
+            ("failure.codes", '["no_observations"]', "failureCodes"),
+            ("failure.clock", "invocation", "clock"),
+        ):
+            with self.subTest(key=key):
+                record = {**good, "source_metadata": {**stored, key: value}}
+                disagreement = failure_record_disagreement(FAILURE_STREAM_ID, head, record)
+
+                self.assertEqual(
+                    disagreement,
+                    f"failure stream {FAILURE_STREAM_ID!r} records {head_key} "
+                    f"{head[head_key]!r} in its failure.recorded and {key} {value!r} in its "
+                    "system record; the two describe one failure",
+                )
+
+    def test_a_failure_stream_is_opened_by_its_head(self) -> None:
+        head = pending_event("failure.recorded", failure_head())
+        record = pending_event("observation.recorded", system_record().to_canonical_dict())
+        for label, batch in (
+            ("the record alone", (record,)),
+            ("the record before its head", (record, head)),
+        ):
+            with self.subTest(shape=label):
+                with self.assertRaises(EventContractError) as caught:
+                    self.repository.append_batch(FAILURE_STREAM_ID, batch, expected_version=0)
+
+                self.assertEqual(
+                    str(caught.exception), failure_head_order_message(FAILURE_STREAM_ID)
+                )
+        self.assertEqual(self.store.latest_sequence, 0)
+        # The writer's order, head first, still appends.
+        self.repository.append_batch(FAILURE_STREAM_ID, (head, record), expected_version=0)
+        self.assertEqual(self.store.latest_sequence, 2)
 
 
 class FailureDuplicateObservationTests(unittest.TestCase):

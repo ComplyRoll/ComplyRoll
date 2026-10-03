@@ -20,7 +20,11 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from test_replay import bad_rules
+from test_reports import TRUNCATED_SHA256, hostile_checklist
+
 from complyroll.adapters import (
+    DiagnosticLevel,
     FailureClass,
     FailureClassification,
     IngestDiagnostic,
@@ -71,6 +75,7 @@ from complyroll.history import (
     correlate_cases,
     fold_all_cases,
     fold_case,
+    reading_elsewhere,
     record_failure,
     record_ingest,
     rehydrate_observations,
@@ -2950,21 +2955,63 @@ class NumericVersionPredicateTests(unittest.TestCase):
         self.assertTrue(_is_numeric_version("10"))
         self.assertEqual(self.version_of(winner), "10")
 
-    def compiled_failure(self, parser_version: str) -> vdt_module.CompiledDetectionFailure:
-        """Build one report failure entry differing from its siblings only in version."""
+    def compiled_failure(
+        self,
+        parser_version: str,
+        *,
+        sha256: str = "a" * 64,
+        observed_at: datetime = INGESTED_AT,
+    ) -> vdt_module.CompiledDetectionFailure:
+        """Build one report failure entry differing from its siblings only as asked."""
 
         return vdt_module.CompiledDetectionFailure(
             name="host.sarif",
-            sha256="a" * 64,
+            sha256=sha256,
             size_bytes=1,
             parser="complyroll.sarif",
             parser_version=parser_version,
             failure_class="parse",
             failure_codes=("artifact_parse_failed",),
-            observed_at=INGESTED_AT,
+            observed_at=observed_at,
             clock="as-of",
             tracking_id=SPARE_CASE,
         )
+
+    def listed_versions(self, failures: Sequence[vdt_module.CompiledDetectionFailure]) -> list[str]:
+        """Return the versions in the order the report lists these failures."""
+
+        return [item.parser_version for item in vdt_module._ordered_detection_failures(failures)]
+
+    def test_the_report_decides_numeric_versions_per_digest(self) -> None:
+        # One text version under another digest must not turn this digest's versions into
+        # text, where 10 would sort before 9.
+        failures = (
+            self.compiled_failure("10"),
+            self.compiled_failure("9"),
+            self.compiled_failure("2.0-rc1", sha256="b" * 64),
+        )
+
+        self.assertEqual(self.listed_versions(failures), ["9", "10", "2.0-rc1"])
+
+    def test_the_instant_breaks_a_numeric_tie_before_the_version_as_written(self) -> None:
+        # 01 and 1 are one number; the earlier instant goes first although "01" < "1".
+        later = INGESTED_AT + timedelta(hours=1)
+        failures = (
+            self.compiled_failure("01", observed_at=later),
+            self.compiled_failure("1"),
+        )
+
+        self.assertEqual(self.listed_versions(failures), ["1", "01"])
+
+    def test_the_report_compares_versions_with_trailing_zeros_dropped(self) -> None:
+        # 1 and 1.0 are one number, so the instant decides and the later 1 goes last.
+        later = INGESTED_AT + timedelta(hours=1)
+        failures = (
+            self.compiled_failure("1", observed_at=later),
+            self.compiled_failure("1.0"),
+        )
+
+        self.assertEqual(self.listed_versions(failures), ["1.0", "1"])
 
     def test_the_report_lists_last_the_version_the_fold_elects(self) -> None:
         # The report reproduces the fold's rule because it cannot import the history
@@ -3189,6 +3236,129 @@ class RecordFailureTests(WriterFixture):
         )
         self.assertNotEqual(outcome.observation_id, first.observation_id)
 
+    def test_a_failure_another_failure_stream_holds_is_named_with_a_warning(self) -> None:
+        # Nothing is written, so the failure stays recorded under the holder's parser and
+        # version however the two differ, and the WARNING says so in place of the
+        # `detection_failure_recorded` notice. Neither the digest's order nor the parser
+        # decides it: only a rerun of the same stream stays silent.
+        result, classification = self.read(TRUNCATED)
+        artifact = result.artifact
+        assert artifact is not None
+        cases = {
+            "an older version": ("1", None, artifact.parser_name, "2"),
+            "a newer version": ("2", None, artifact.parser_name, "1"),
+            "numerically older": ("9", None, artifact.parser_name, "10"),
+            "older as text": ("10", "2.0-rc1", artifact.parser_name, "9"),
+            "the same version spelled another way": ("1.0", None, artifact.parser_name, "1"),
+            "another parser": ("1", None, "complyroll.other", "2"),
+        }
+        for label, (held, prior, parser_name, version) in cases.items():
+            with self.subTest(label):
+                self.fresh_repository()
+                if prior is not None:
+                    self.record(
+                        replace(result, artifact=replace(artifact, parser_version=prior)),
+                        classification,
+                        ingested_at=INGESTED_AT - timedelta(days=1),
+                    )
+                first = self.record(
+                    replace(result, artifact=replace(artifact, parser_version=held)),
+                    classification,
+                )
+                sequence = self.latest_sequence
+                reading = replace(
+                    result,
+                    artifact=replace(artifact, parser_name=parser_name, parser_version=version),
+                )
+
+                outcome = self.record(reading, classification)
+
+                self.assertTrue(outcome.already_recorded)
+                self.assertEqual(outcome.stream_id, first.stream_id)
+                self.assertEqual(self.latest_sequence, sequence)
+                diagnostics = failure_diagnostics(reading, classification, name=artifact.name)
+                self.assertEqual(diagnostics[-1].code, "detection_failure_recorded")
+                self.assertEqual(
+                    outcome.diagnostics,
+                    (
+                        *diagnostics[:-1],
+                        IngestDiagnostic(
+                            level=DiagnosticLevel.WARNING,
+                            code=history_writers.FAILURE_HELD_BY_ANOTHER_STREAM,
+                            message=(
+                                f"{first.stream_id} already holds this failure, so no failure "
+                                f"was recorded under {parser_name} {version} and it stays "
+                                f"recorded under {artifact.parser_name} {held}"
+                            ),
+                        ),
+                    ),
+                )
+
+    def test_a_hold_keeps_the_truncation_notice(self) -> None:
+        # 70 diagnostics, 62 kept, then the truncation notice. On the hold path only the
+        # recorded notice gives way to the WARNING (ADR 0014 Decision 12).
+        path = self.workspace / "bad-rules.cklb"
+        path.write_text(json.dumps(bad_rules(69)), encoding="utf-8")
+        result, classification = self.read(path)
+        artifact = result.artifact
+        assert artifact is not None
+        first = self.record(
+            replace(result, artifact=replace(artifact, parser_version="0")), classification
+        )
+
+        outcome = self.record(result, classification)
+
+        self.assertTrue(outcome.already_recorded)
+        self.assertEqual(outcome.stream_id, first.stream_id)
+        diagnostics = failure_diagnostics(result, classification, name=artifact.name)
+        self.assertEqual(
+            [item.code for item in diagnostics[-2:]],
+            ["failure_diagnostics_truncated", "detection_failure_recorded"],
+        )
+        self.assertEqual(
+            [item.code for item in outcome.diagnostics[-2:]],
+            ["failure_diagnostics_truncated", "failure_held_by_another_stream"],
+        )
+        self.assertEqual(outcome.diagnostics[:-1], diagnostics[:-1])
+
+    def test_a_rerun_of_the_same_stream_carries_no_holder_warning(self) -> None:
+        result, classification = self.read(TRUNCATED)
+        first = self.record(result, classification)
+
+        again = self.record(result, classification)
+
+        self.assertTrue(again.already_recorded)
+        self.assertEqual(again.stream_id, first.stream_id)
+        self.assertEqual(again.diagnostics, first.diagnostics)
+        self.assertNotIn(
+            history_writers.FAILURE_HELD_BY_ANOTHER_STREAM,
+            [item.code for item in again.diagnostics],
+        )
+
+    def test_a_holder_whose_stream_id_names_no_reading_is_refused_as_history(self) -> None:
+        # The holder is found by the digest's prefix alone. The writer folds the store before
+        # it parses the holder's id, so a malformed one is a HistoryError, not a ValueError.
+        result, classification = self.read(TRUNCATED)
+        artifact = result.artifact
+        assert artifact is not None
+        self.record(result, classification)
+        stream_id = self.repository.read_all()[0].stream_id
+        events = self.events_of(stream_id)
+        prefix = f"failure/{artifact.digest_sha256}/{artifact.parser_name}"
+        for holder in (prefix, f"{prefix}/1/extra"):
+            with self.subTest(holder=holder):
+                self.fresh_repository()
+                for version, (event_type, payload) in enumerate(events):
+                    self.append_unchecked(holder, event_type, payload, expected_version=version)
+                sequence = self.latest_sequence
+                bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+
+                with self.assertRaises(HistoryError) as caught:
+                    self.record(bumped, classification)
+
+                self.assertIn(f"stream {holder!r} names no failed reading", str(caught.exception))
+                self.assertEqual(self.latest_sequence, sequence)
+
     def test_record_ingest_still_refuses_a_failed_reading(self) -> None:
         for path in (TRUNCATED, INVALID_RULES):
             with self.subTest(path=path.name):
@@ -3303,8 +3473,8 @@ class FailureHistoryTests(WriterFixture):
         for version, (event_type, payload) in enumerate(events):
             self.append_unchecked(stream_id, event_type, payload, expected_version=version)
 
-    def recorded_pair(self) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        """Record the truncated log's failure in a scratch log and return its stream.
+    def recorded_pair(self, path: Path = TRUNCATED) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """Record one failed log's failure in a scratch log and return its stream.
 
         The fixture's own store stays empty, so a test stages exactly the shape it is
         about from payloads the writer really produces.
@@ -3314,7 +3484,7 @@ class FailureHistoryTests(WriterFixture):
         self.addCleanup(store.close)
         scratch, self.repository = self.repository, EventRepository(store)
         try:
-            outcome = self.record_failed(TRUNCATED)
+            outcome = self.record_failed(path)
             head, observation = self.repository.read_stream(outcome.stream_id)
         finally:
             self.repository = scratch
@@ -3397,18 +3567,107 @@ class FailureHistoryTests(WriterFixture):
                     self.assertIn(message, str(caught.exception))
                     self.assertIn(stream_id, str(caught.exception))
 
+    def test_a_whole_failure_stream_out_of_order_or_at_odds_with_itself_is_refused(
+        self,
+    ) -> None:
+        # One head and one observation, each well formed and naming its own reading, so
+        # only the order of the two or what they say about each other is wrong. The writer
+        # stores codes sorted, so a head listing them in another order describes a failure
+        # its record, read back only in the writer's spelling, cannot.
+        stream_id, head, observation = self.recorded_pair()
+        two_codes, two_head, two_observation = self.recorded_pair(INVALID_RULES)
+        self.assertEqual(two_head["failureCodes"], ["invalid_rules", "no_observations"])
+        shapes: dict[str, tuple[str, list[tuple[str, Mapping[str, Any]]], int, str]] = {
+            "observation first": (
+                stream_id,
+                [(OBSERVATION_RECORDED, observation), (FAILURE_RECORDED, head)],
+                1,
+                f"failure stream {stream_id!r} does not open with its failure.recorded",
+            ),
+            "another clock in the head": (
+                stream_id,
+                [
+                    (FAILURE_RECORDED, {**head, "clock": "invocation"}),
+                    (OBSERVATION_RECORDED, observation),
+                ],
+                2,
+                "records clock 'invocation' in its failure.recorded and failure.clock 'as-of'",
+            ),
+            "codes out of order in the head": (
+                two_codes,
+                [
+                    (
+                        FAILURE_RECORDED,
+                        {**two_head, "failureCodes": ["no_observations", "invalid_rules"]},
+                    ),
+                    (OBSERVATION_RECORDED, two_observation),
+                ],
+                2,
+                "records failureCodes ['no_observations', 'invalid_rules'] in its failure.recorded",
+            ),
+            "codes out of order in both": (
+                two_codes,
+                [
+                    (
+                        FAILURE_RECORDED,
+                        {**two_head, "failureCodes": ["no_observations", "invalid_rules"]},
+                    ),
+                    (
+                        OBSERVATION_RECORDED,
+                        {
+                            **two_observation,
+                            "source_metadata": {
+                                **two_observation["source_metadata"],
+                                "failure.codes": '["no_observations","invalid_rules"]',
+                            },
+                        },
+                    ),
+                ],
+                2,
+                'failure.codes is \'["no_observations","invalid_rules"]\', not the compact',
+            ),
+        }
+        for label, (stream, events, sequence, message) in shapes.items():
+            with self.subTest(label):
+                store = SQLiteEventStore(":memory:")
+                self.addCleanup(store.close)
+                self.repository = EventRepository(store)
+                self.stage(stream, events)
+
+                for read in (artifact_history, rehydrate_observations):
+                    with self.assertRaises(HistoryError) as caught:
+                        read(self.repository)
+
+                    self.assertIn(message, str(caught.exception))
+                # Staged underneath the repository, the store was never marked schema 2.
+                faults = [
+                    fault
+                    for fault in audit_history(self.repository)
+                    if fault.code != "failure_schema_unmarked"
+                ]
+                self.assertEqual(
+                    [(fault.sequence, fault.code) for fault in faults],
+                    [(sequence, "failure_stream_mismatch")],
+                )
+                self.assertIn(message, faults[0].message)
+
     def test_one_system_observation_on_two_failure_streams_is_refused(self) -> None:
         # Each stream is whole and names its own reading. Only the pair is wrong: the system
         # record's identity is the digest and the instant, never the parser, so reading both
-        # would rehydrate one failure twice.
+        # would rehydrate one failure twice. The copy's metadata names its own stream's
+        # version, which the fingerprint does not cover, so its identity is the original's.
         stream_id, head, observation = self.recorded_pair()
         other = failure_stream_id(head["sha256"], head["parserName"], "2")
+        copied = {
+            **observation,
+            "source_metadata": {**observation["source_metadata"], "artifact.parserVersion": "2"},
+        }
         self.stage(stream_id, [(FAILURE_RECORDED, head), (OBSERVATION_RECORDED, observation)])
         self.stage(
             other,
             [
                 (FAILURE_RECORDED, {**head, "parserVersion": "2"}),
-                (OBSERVATION_RECORDED, observation),
+                (OBSERVATION_RECORDED, copied),
             ],
         )
 
@@ -3453,6 +3712,33 @@ class FailureHistoryTests(WriterFixture):
         self.assertEqual(faults[0].sequence, 1)
         self.assertIn(stream_id, faults[0].message)
 
+    def test_a_failure_stream_holding_only_its_observation_is_one_fault(self) -> None:
+        # Written through the store at the failure schema, since the repository refuses it,
+        # so the missing head is the only thing wrong. The observation opens a stream that
+        # holds no head, and that stream is incomplete, not out of order as well.
+        stream_id, _, observation = self.recorded_pair()
+        (record,) = self.repository.store.append(
+            stream_id,
+            [
+                NewEvent(
+                    event_type=OBSERVATION_RECORDED,
+                    occurred_at=INGESTED_AT,
+                    payload=observation,
+                    metadata=self.metadata.to_dict(),
+                )
+            ],
+            expected_version=0,
+            requires_schema=FAILURE_STREAM_SCHEMA_VERSION,
+        )
+
+        faults = audit_history(self.repository)
+
+        self.assertEqual(
+            [(fault.sequence, fault.code) for fault in faults],
+            [(record.sequence, "failure_incomplete")],
+        )
+        self.assertIn("found 0 failure record(s) and 1 observation(s)", faults[0].message)
+
     def test_correlate_opens_one_system_case_per_current_failure_and_attest_skips_it(
         self,
     ) -> None:
@@ -3475,6 +3761,69 @@ class FailureHistoryTests(WriterFixture):
         invocation = fold_case(self.repository, INVOCATION_CASE)
         self.assertEqual(len(invocation.links), 1)
 
+    def failure_evaluation(self, *dropped: str) -> EvaluationSet:
+        """Return the shipped evaluation of the truncated log's failure less some match keys."""
+
+        payload = json.loads((EXAMPLES / "evaluations-failed.json").read_text(encoding="utf-8"))
+        entry = payload["evaluations"][2]
+        entry["match"] = {key: value for key, value in entry["match"].items() if key not in dropped}
+        return evaluations_of({"evaluations": [entry]})
+
+    def test_cases_evaluate_refuses_a_lone_failure_matched_without_its_context_key(
+        self,
+    ) -> None:
+        # The same refusal, with the same text, as the stateless compile: one failure
+        # matches the pair now, and the next failure of another digest would make the same
+        # file ambiguous.
+        self.record_failed(TRUNCATED)
+        self.correlate()
+
+        for label, dropped in (
+            ("with sourceType", ("contextKey",)),
+            ("without sourceType", ("contextKey", "sourceType")),
+        ):
+            with self.subTest(label):
+                evaluations = self.failure_evaluation(*dropped)
+                before = self.latest_sequence
+
+                with self.assertRaises(EvaluationMatchError) as caught:
+                    self.evaluate(evaluations)
+
+                self.assertEqual(self.latest_sequence, before)
+                described = evaluations.entries[0].match.describe()
+                self.assertEqual(
+                    caught.exception.problems,
+                    (
+                        f"evaluations[0]: {described} matches the detection process failure "
+                        f"{TRUNCATED_CASE}; a detection process failure is matched by "
+                        "sourceRecordId, sourceType and contextKey together, so add contextKey",
+                    ),
+                )
+        outcome = self.evaluate(self.failure_evaluation())
+        self.assertEqual(outcome.evaluations_appended, 1)
+
+    def test_cases_evaluate_names_only_the_keys_an_ambiguous_match_leaves_out(self) -> None:
+        # Ambiguity is checked before the lone-failure refusal, exactly as the stateless
+        # compile checks it, and the remedy never asks for a key already given.
+        hostile = self.write_artifact("hostile.cklb", hostile_checklist(TRUNCATED_SHA256))
+        self.ingest([hostile])
+        for path in (TRUNCATED, INVALID_RULES):
+            self.record_failed(path)
+        self.correlate()
+
+        cases = (
+            ("sourceType given", ("contextKey",), 2, "add contextKey"),
+            ("contextKey given", ("sourceType",), 2, "add sourceType"),
+            ("neither given", ("contextKey", "sourceType"), 3, "add contextKey or sourceType"),
+        )
+        for label, dropped, count, remedy in cases:
+            with self.subTest(label):
+                with self.assertRaises(EvaluationMatchError) as caught:
+                    self.evaluate(self.failure_evaluation(*dropped))
+
+                (problem,) = caught.exception.problems
+                self.assertIn(f"matches {count} cases", problem)
+                self.assertTrue(problem.endswith(f"); {remedy}"))
 
 class FailureSupersessionTests(WriterFixture):
     """One digest's artifact and failure streams, split by rules R1 to R5 (ADR 0014).
@@ -3695,6 +4044,89 @@ class FailureSupersessionTests(WriterFixture):
                     self.assertEqual(sorted(replacements), sorted(superseded))
                     for replacement in replacements.values():
                         self.assertIn(replacement, [*current, *current_failures])
+
+    def elsewhere(self, version: str, failure_class: FailureClass | None) -> str | None:
+        """Return the stream `reading_elsewhere` names against the truncated log failing."""
+
+        holder = reading_elsewhere(
+            artifact_history(self.repository),
+            TRUNCATED_SHA256,
+            parser_name="complyroll.sarif",
+            parser_version=version,
+            failure_class=failure_class,
+        )
+        return None if holder is None else holder.stream_id
+
+    def test_ingest_refuses_exactly_the_failures_the_fold_supersedes_at_birth(self) -> None:
+        # Given the class, a parse failure is refused exactly when R3 would supersede it
+        # once recorded, over every order of up to two earlier reads and failures under
+        # two parser names and numeric and text versions. Without the class, some of those
+        # failures are recorded and superseded at birth.
+        steps = [
+            *(("read", name, version) for name in (None, "complyroll.other") for version in "12"),
+            ("read", None, "1x"),
+            *(("fail", None, version) for version in ("1", "2", "1x")),
+        ]
+        missed = 0
+        for size in range(3):
+            for scenario in itertools.permutations(steps, size):
+                for candidate in ("1", "2", "1x"):
+                    if ("fail", None, candidate) in scenario:
+                        continue
+                    with self.subTest(scenario=scenario, candidate=candidate):
+                        self.fresh_repository()
+                        for kind, name, version in scenario:
+                            if kind == "read":
+                                self.reading(version, parser_name=name)
+                            else:
+                                self.failure(version)
+                        refused = self.elsewhere(candidate, FailureClass.PARSE)
+                        unclassed = self.elsewhere(candidate, None)
+
+                        failure = self.failure(candidate)
+
+                        superseded_at_birth = failure in self.split()[3]
+                        self.assertEqual(refused is not None, superseded_at_birth)
+                        missed += superseded_at_birth and unclassed is None
+        self.assertGreater(missed, 0)
+
+    def test_a_version_that_turns_the_digest_to_text_order_is_weighed_in_that_order(
+        self,
+    ) -> None:
+        # Version 10 is current while every version compares as a number. A failure at 10a
+        # turns the digest to text order, where 9 follows it, so 9 would supersede it at
+        # birth and become current again in place of 10.
+        nine = self.reading("9")
+        ten = self.reading("10")
+        self.assertEqual(self.split(), ([ten], [nine], [], []))
+
+        self.assertIsNone(self.elsewhere("10a", None))
+        self.assertEqual(self.elsewhere("10a", FailureClass.PARSE), nine)
+
+        failure = self.failure("10a")
+        self.assertEqual(self.split(), ([nine], [ten], [], [failure]))
+
+    def test_a_superseded_reading_decides_how_the_refusal_compares(self) -> None:
+        # 10-rc is superseded, yet it turns the digest to text order, where the current 9
+        # follows a failure at 10. Comparing the current readings alone would be numeric.
+        nine = self.reading("9")
+        rc = self.reading("10-rc")
+        self.assertEqual(self.split(), ([nine], [rc], [], []))
+
+        for failure_class in (None, FailureClass.PARSE):
+            with self.subTest(failure_class=failure_class):
+                self.assertEqual(self.elsewhere("10", failure_class), nine)
+
+    def test_a_failure_stream_decides_how_the_refusal_compares(self) -> None:
+        # The superseded failure at 10-rc turns the digest to text order just as a reading
+        # would, so the current 9 keeps a failure at 10 out.
+        nine = self.reading("9")
+        rc = self.failure("10-rc")
+        self.assertEqual(self.split(), ([nine], [], [], [rc]))
+
+        for failure_class in (None, FailureClass.PARSE):
+            with self.subTest(failure_class=failure_class):
+                self.assertEqual(self.elsewhere("10", failure_class), nine)
 
     def test_a_resolved_failure_opens_no_case(self) -> None:
         self.failure("1")

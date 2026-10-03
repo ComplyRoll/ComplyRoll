@@ -117,9 +117,10 @@ class AdapterOutput:
     observations: tuple[Observation, ...]
     diagnostics: tuple[IngestDiagnostic, ...] = field(default_factory=tuple)
     # Structured facts the failure classifier reads instead of message text (ADR 0014).
-    # Neither is serialized, so no existing output moves.
+    # None of them is serialized, so no existing output moves.
     format_rejected: bool = False
     failed_execution_at: datetime | None = None
+    withheld: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +133,8 @@ class IngestResult:
     format_rejected: bool = False
     # The earliest clock a failed scanner invocation declared, when one did.
     failed_execution_at: datetime | None = None
+    # The adapter read observations and withheld them all because the reading has an ERROR.
+    withheld: bool = False
 
     @property
     def errors(self) -> tuple[IngestDiagnostic, ...]:

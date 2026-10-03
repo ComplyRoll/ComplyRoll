@@ -16,6 +16,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import permutations
 from pathlib import Path
+from unittest import mock
 
 from test_kev import KEV_ARTIFACTS, KEV_CATALOG, KEV_EVALUATIONS, KEV_OVERRIDES
 from test_reports import (
@@ -39,7 +40,13 @@ from test_reports import (
     shared_benchmark_xccdf,
 )
 
-from complyroll.adapters import IngestResult, classify_ingest, ingest_stig_artifact
+from complyroll.adapters import (
+    DiagnosticLevel,
+    IngestDiagnostic,
+    IngestResult,
+    classify_ingest,
+    ingest_stig_artifact,
+)
 from complyroll.events import (
     EventMetadata,
     EventRepository,
@@ -73,6 +80,7 @@ from complyroll.reports import (
     load_evaluations,
     load_kev_catalog,
 )
+from complyroll.reports import vdt as vdt_module
 from complyroll.store import SQLiteEventStore
 
 AnyReport = CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport
@@ -1912,6 +1920,40 @@ def failures(report: AnyReport) -> list[tuple[str, str, str, str]]:
     ]
 
 
+def held_warning(holder: str, under: str, kept: str) -> IngestDiagnostic:
+    """Return the WARNING `record_failure` adds when another failure stream holds a failure.
+
+    `under` is the parser and version no failure was recorded under, `kept` the holder's.
+    """
+
+    return IngestDiagnostic(
+        level=DiagnosticLevel.WARNING,
+        code="failure_held_by_another_stream",
+        message=(
+            f"{holder} already holds this failure, so no failure was recorded under {under} and "
+            f"it stays recorded under {kept}"
+        ),
+    )
+
+
+def moved(result: IngestResult, parser_name: str, parser_version: str) -> IngestResult:
+    """Return the reading another parser, at `parser_version`, would make of the same bytes."""
+
+    reading = bumped(result, parser_version)
+    artifact = reading.artifact
+    if artifact is None:
+        raise AssertionError("only a reading that named its artifact can be moved")
+    observations = []
+    for observation in reading.observations:
+        changed = replace(observation, parser_name=parser_name)
+        observations.append(replace(changed, observation_id=changed.derived_observation_id))
+    return replace(
+        reading,
+        artifact=replace(artifact, parser_name=parser_name),
+        observations=tuple(observations),
+    )
+
+
 class FailedImportReconciliationTests(FailureStoreFixture):
     """ADR 0008 Decision 5 as amended: under the carve-out the two paths agree byte for byte.
 
@@ -2108,6 +2150,362 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.assertEqual(
             len(self.sole_vulnerability(stateless)["x-complyroll"]["observationIds"]), 1
         )
+
+    def test_an_older_parser_holding_a_held_failure_keeps_its_reading_on_the_persisted_path(
+        self,
+    ) -> None:
+        # Version 2 fails the invocation at the scanner's declared clock, which is the
+        # system observation version 1's side record holds. Nothing is written, so R2 never
+        # sees the newer failure: the store keeps the older reading, where a stateless run of
+        # version 2 reports the newer failure. The WARNING is the condition the carve-out
+        # names for this.
+        def failed(path: Path, *, ingested_at: datetime) -> IngestResult:
+            reading = bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+            error = IngestDiagnostic(
+                level=DiagnosticLevel.ERROR,
+                code="no_observations",
+                message="no usable results",
+            )
+            return replace(reading, observations=(), diagnostics=(*reading.diagnostics, error))
+
+        artifact, older = (stream for stream, _ in self.record(INVOCATION))
+        newer = failed(INVOCATION, ingested_at=INGESTED_AT)
+        classification = classify_ingest(newer)
+        assert classification is not None
+        self.assertEqual(classification.clock, datetime(2026, 8, 4, 10, tzinfo=UTC))
+
+        held = record_failure(
+            self.repository,
+            newer,
+            classification,
+            metadata=self.metadata,
+            ingested_at=INGESTED_AT,
+        )
+        self.correlate()
+
+        self.assertTrue(held.already_recorded)
+        self.assertEqual(held.stream_id, older)
+        self.assertEqual(
+            held.diagnostics[-1], held_warning(older, "complyroll.sarif 2", "complyroll.sarif 1")
+        )
+        # Nothing was recorded, so the WARNING takes the place of the notice saying a failure was.
+        self.assertNotIn("detection_failure_recorded", [item.code for item in held.diagnostics])
+        history = artifact_history(self.repository)
+        self.assertEqual([record.stream_id for record in history.current], [artifact])
+        self.assertEqual([record.stream_id for record in history.current_failures], [older])
+        self.assertEqual((history.superseded, history.superseded_failures), ((), ()))
+
+        replayed = self.replay()
+        with mock.patch.object(vdt_module, "ingest_stig_artifact", failed):
+            stateless = self.flagged((INVOCATION,))
+
+        # The same system record on both paths, at the scanner's clock.
+        records = [
+            {item["providerTrackingId"]: item for item in report.document["vulnerabilities"]}
+            for report in (replayed, stateless)
+        ]
+        self.assertEqual(records[0][INVOCATION_CASE], records[1][INVOCATION_CASE])
+        # The failure names the reading each path holds, and nothing else about it differs.
+        named = ("parserVersion", "failureCodes")
+        (replayed_entry,), (stateless_entry,) = (
+            report.document["x-complyroll"]["detectionFailures"] for report in (replayed, stateless)
+        )
+        self.assertEqual(
+            [{key: entry[key] for key in named} for entry in (replayed_entry, stateless_entry)],
+            [
+                {"parserVersion": "1", "failureCodes": ["execution_unsuccessful"]},
+                {
+                    "parserVersion": "2",
+                    "failureCodes": ["execution_unsuccessful", "no_observations"],
+                },
+            ],
+        )
+        self.assertEqual(
+            {key: value for key, value in replayed_entry.items() if key not in named},
+            {key: value for key, value in stateless_entry.items() if key not in named},
+        )
+        # The older reading's artifact, findings, and diagnostics stay on the persisted path.
+        self.assertEqual(
+            [item["parserVersion"] for item in replayed.document["x-complyroll"]["artifacts"]],
+            ["1"],
+        )
+        self.assertEqual(stateless.document["x-complyroll"]["artifacts"], [])
+        self.assertEqual(set(records[1]), {INVOCATION_CASE})
+        self.assertEqual(len(set(records[0]) - set(records[1])), 1)
+        self.assertEqual(
+            set(diagnostic_codes(stateless)) - set(diagnostic_codes(replayed)),
+            {("no_observations", INVOCATION.name)},
+        )
+        self.assertEqual(set(diagnostic_codes(replayed)) - set(diagnostic_codes(stateless)), set())
+
+    def test_an_older_parser_holding_a_side_record_keeps_only_its_failure_entry(self) -> None:
+        # Version 2 reads the log and records its failed invocation beside it, at the
+        # scanner's declared clock, which is the system observation version 1's side record
+        # holds. The newer reading is current by R1, so only the `detectionFailures` entry
+        # keeps version 1, where a stateless run of version 2 names version 2. The WARNING is
+        # the condition the carve-out names for this, and it claims nothing about readings.
+        def read_by_version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
+            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+
+        older_artifact, older = (stream for stream, _ in self.record(INVOCATION))
+        newer = read_by_version_2(INVOCATION, ingested_at=INGESTED_AT)
+        classification = classify_ingest(newer)
+        assert classification is not None and classification.side_record
+
+        read = record_ingest(
+            self.repository, newer, metadata=self.metadata, ingested_at=INGESTED_AT
+        )
+        held = record_failure(
+            self.repository,
+            newer,
+            classification,
+            metadata=self.metadata,
+            ingested_at=INGESTED_AT,
+        )
+        self.correlate()
+
+        self.assertTrue(read.appended)
+        # The WARNING says no failure was recorded under version 2, beside the reading this
+        # run recorded under it.
+        self.assertTrue(read.stream_id.endswith("/complyroll.sarif/2"))
+        self.assertTrue(held.already_recorded)
+        self.assertEqual(held.stream_id, older)
+        # The WARNING is the side record's only diagnostic: it takes the place of the
+        # `detection_failure_recorded` notice, because nothing was recorded.
+        self.assertEqual(
+            held.diagnostics, (held_warning(older, "complyroll.sarif 2", "complyroll.sarif 1"),)
+        )
+        history = artifact_history(self.repository)
+        self.assertEqual([record.stream_id for record in history.current], [read.stream_id])
+        self.assertEqual([record.stream_id for record in history.superseded], [older_artifact])
+        self.assertEqual([record.stream_id for record in history.current_failures], [older])
+
+        replayed = self.replay()
+        with mock.patch.object(vdt_module, "ingest_stig_artifact", read_by_version_2):
+            stateless = self.flagged((INVOCATION,))
+
+        for report in (replayed, stateless):
+            self.assertEqual(
+                [item["parserVersion"] for item in report.document["x-complyroll"]["artifacts"]],
+                ["2"],
+            )
+        self.assertEqual([version for _, version, _, _ in failures(replayed)], ["1"])
+        self.assertEqual([version for _, version, _, _ in failures(stateless)], ["2"])
+        (replayed_entry,), (stateless_entry,) = (
+            report.document["x-complyroll"]["detectionFailures"] for report in (replayed, stateless)
+        )
+        self.assertEqual(
+            {key: value for key, value in replayed_entry.items() if key != "parserVersion"},
+            {key: value for key, value in stateless_entry.items() if key != "parserVersion"},
+        )
+
+    def test_any_other_stream_holding_a_side_record_is_named_and_a_rerun_is_not(self) -> None:
+        # Whichever way the holder differs from the stream this reading would have written,
+        # nothing is recorded and the WARNING names it. Only the reading's own stream is quiet.
+        sarif = "complyroll.sarif"
+        cases = {
+            "a newer version": ((sarif, "2"), (sarif, "1"), True),
+            "the same version spelled another way": ((sarif, "1.0"), (sarif, "1"), True),
+            "another parser": (("complyroll.other", "1"), (sarif, "1"), True),
+            "the same stream": ((sarif, "1"), (sarif, "1"), False),
+        }
+        source = ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT)
+        for label, (kept, under, warned) in cases.items():
+            with self.subTest(label):
+                self.repository = self.open_repository(self.fresh_workspace())
+                _, holder = (
+                    stream for stream, _ in self.record(INVOCATION, result=moved(source, *kept))
+                )
+                reading = moved(source, *under)
+                classification = classify_ingest(reading)
+                assert classification is not None and classification.side_record
+                record_ingest(
+                    self.repository, reading, metadata=self.metadata, ingested_at=INGESTED_AT
+                )
+                written = len(self.repository.read_all())
+
+                outcome = record_failure(
+                    self.repository,
+                    reading,
+                    classification,
+                    metadata=self.metadata,
+                    ingested_at=INGESTED_AT,
+                )
+
+                self.assertTrue(outcome.already_recorded)
+                self.assertEqual(outcome.stream_id, holder)
+                self.assertEqual(len(self.repository.read_all()), written)
+                codes = [item.code for item in outcome.diagnostics]
+                if warned:
+                    self.assertEqual(
+                        outcome.diagnostics,
+                        (held_warning(holder, " ".join(under), " ".join(kept)),),
+                    )
+                else:
+                    self.assertNotIn("failure_held_by_another_stream", codes)
+
+    def test_a_newer_held_failure_holding_a_side_record_supersedes_its_reading(self) -> None:
+        # Version 2 fails the invocation with no usable results and holds the failure at the
+        # scanner's declared clock. Version 1 then reads the log, records its artifact, and
+        # finds its side record held. R2 supersedes the reading it just recorded, so the
+        # persisted report carries version 2's failure and none of version 1's reading.
+        def failed(path: Path, *, ingested_at: datetime) -> IngestResult:
+            reading = bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+            error = IngestDiagnostic(
+                level=DiagnosticLevel.ERROR,
+                code="no_observations",
+                message="no usable results",
+            )
+            return replace(reading, observations=(), diagnostics=(*reading.diagnostics, error))
+
+        ((holder, appended),) = self.record(
+            INVOCATION, result=failed(INVOCATION, ingested_at=INGESTED_AT)
+        )
+        self.assertTrue(appended)
+        older = ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT)
+        classification = classify_ingest(older)
+        assert classification is not None and classification.side_record
+
+        read = record_ingest(
+            self.repository, older, metadata=self.metadata, ingested_at=INGESTED_AT
+        )
+        held = record_failure(
+            self.repository,
+            older,
+            classification,
+            metadata=self.metadata,
+            ingested_at=INGESTED_AT,
+        )
+        self.correlate()
+
+        self.assertTrue(read.appended)
+        self.assertTrue(held.already_recorded)
+        self.assertEqual(held.stream_id, holder)
+        self.assertEqual(
+            held.diagnostics, (held_warning(holder, "complyroll.sarif 1", "complyroll.sarif 2"),)
+        )
+        history = artifact_history(self.repository)
+        self.assertEqual(history.current, ())
+        self.assertEqual([record.stream_id for record in history.superseded], [read.stream_id])
+        self.assertEqual([record.stream_id for record in history.current_failures], [holder])
+
+        replayed = self.replay()
+        stateless = self.flagged((INVOCATION,))
+
+        self.assertEqual(replayed.document["x-complyroll"]["artifacts"], [])
+        self.assertEqual(
+            [item["parserVersion"] for item in stateless.document["x-complyroll"]["artifacts"]],
+            ["1"],
+        )
+        self.assertEqual(
+            [
+                [(entry["parserVersion"], entry["failureCodes"]) for entry in failed_entries]
+                for failed_entries in (
+                    report.document["x-complyroll"]["detectionFailures"]
+                    for report in (replayed, stateless)
+                )
+            ],
+            [
+                [("2", ["execution_unsuccessful", "no_observations"])],
+                [("1", ["execution_unsuccessful"])],
+            ],
+        )
+        self.assertIn(
+            ("artifact_superseded_by_failure", read.stream_id), diagnostic_codes(replayed)
+        )
+        self.assertNotIn(
+            "artifact_superseded_by_failure", [code for code, _ in diagnostic_codes(stateless)]
+        )
+        # The reading's findings are gone from the persisted report; the system record is not.
+        tracked = [
+            {item["providerTrackingId"] for item in report.document["vulnerabilities"]}
+            for report in (replayed, stateless)
+        ]
+        self.assertEqual(tracked[0], {INVOCATION_CASE})
+        self.assertLess(tracked[0], tracked[1])
+
+    def test_a_held_side_record_whose_holder_a_later_reading_supersedes_reports_none(
+        self,
+    ) -> None:
+        """Pin the persisted path losing a held failure once a later ingest supersedes its holder.
+
+        This pins the behaviour ADR 0014 documents, not one it endorses. Version 1 of the
+        SARIF parser records the log and its failed invocation at the scanner's declared
+        clock. Another parser then reads the same bytes and finds its side record held by
+        version 1's failure, which is still current, so the run keeps the WARNING. A clean
+        reading under version 2 later supersedes that failure under R4. That run met no hold,
+        so nothing refuses it, and the persisted report carries no failure for these bytes
+        where a stateless run of the other parser reports its own (Decision 15).
+        """
+
+        source = ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT)
+        _, holder = (stream for stream, _ in self.record(INVOCATION))
+        other = moved(source, "complyroll.other", "1")
+        classification = classify_ingest(other)
+        assert classification is not None and classification.side_record
+
+        read = record_ingest(
+            self.repository, other, metadata=self.metadata, ingested_at=INGESTED_AT
+        )
+        held = record_failure(
+            self.repository,
+            other,
+            classification,
+            metadata=self.metadata,
+            ingested_at=INGESTED_AT,
+        )
+
+        self.assertTrue(read.appended)
+        self.assertTrue(held.already_recorded)
+        self.assertEqual(held.stream_id, holder)
+        self.assertEqual(
+            held.diagnostics, (held_warning(holder, "complyroll.other 1", "complyroll.sarif 1"),)
+        )
+        self.assertEqual(
+            [record.stream_id for record in artifact_history(self.repository).current_failures],
+            [holder],
+        )
+
+        # A clean reading under version 2: the same bytes, with no failed invocation.
+        newer = bumped(source, "2")
+        clean = replace(
+            newer,
+            diagnostics=tuple(
+                item for item in newer.diagnostics if item.code != "execution_unsuccessful"
+            ),
+            failed_execution_at=None,
+        )
+        self.assertIsNone(classify_ingest(clean))
+        later = INGESTED_AT + timedelta(days=1)
+        self.assertTrue(
+            record_ingest(
+                self.repository, clean, metadata=self.metadata, ingested_at=later
+            ).appended
+        )
+        self.correlate()
+
+        history = artifact_history(self.repository)
+        self.assertEqual(history.current_failures, ())
+        self.assertEqual([record.stream_id for record in history.superseded_failures], [holder])
+
+        replayed = self.replay(as_of=self.AS_OF)
+
+        def read_by_other(path: Path, *, ingested_at: datetime) -> IngestResult:
+            return moved(
+                ingest_stig_artifact(path, ingested_at=ingested_at), "complyroll.other", "1"
+            )
+
+        with mock.patch.object(vdt_module, "ingest_stig_artifact", read_by_other):
+            stateless = self.flagged((INVOCATION,), as_of=self.AS_OF)
+
+        self.assertEqual(failures(replayed), [])
+        self.assertIn(("failure_superseded", holder), diagnostic_codes(replayed))
+        (entry,) = stateless.document["x-complyroll"]["detectionFailures"]
+        self.assertEqual(
+            (entry["parser"], entry["parserVersion"], entry["failureClass"]),
+            ("complyroll.other", "1", "execution"),
+        )
+        self.assertNotIn("failure_superseded", [code for code, _ in diagnostic_codes(stateless)])
 
 
 class FailureWorkedExampleTests(FailureStoreFixture):

@@ -318,6 +318,10 @@ CASE_IDENTIFIED_V1: Final[dict[str, Any]] = _schema(
 #: and distinct, so the array is too and can never be longer than the vocabulary.
 FAILURE_CODE_VALUES: Final[tuple[str, ...]] = tuple(sorted(CLASS_CODES | {EXECUTION_UNSUCCESSFUL}))
 
+#: Which instant a recorded failure is observed at: the clock its scanner declared, or the
+#: caller's as-of fallback (ADR 0014).
+FAILURE_CLOCK_VALUES: Final[tuple[str, ...]] = ("invocation", "as-of")
+
 #: The head of a failure stream (ADR 0014). It carries no tracking id: that is a pure
 #: function of the system observation that follows it, and is derived at replay. Its
 #: diagnostics are what the failed reading contributes to a report, at most the cap plus
@@ -340,7 +344,7 @@ FAILURE_RECORDED_V1: Final[dict[str, Any]] = _schema(
             "uniqueItems": True,
             "maxItems": len(FAILURE_CODE_VALUES),
         },
-        "clock": {"enum": ["invocation", "as-of"]},
+        "clock": {"enum": list(FAILURE_CLOCK_VALUES)},
         "diagnostics": {
             "type": "array",
             "items": _DIAGNOSTIC,

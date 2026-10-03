@@ -739,6 +739,7 @@ def ingest_stig_artifact(
         diagnostics,
         format_rejected=output.format_rejected,
         failed_execution_at=output.failed_execution_at,
+        withheld=output.withheld,
     )
 
 

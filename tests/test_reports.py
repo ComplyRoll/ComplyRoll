@@ -10,9 +10,11 @@ from datetime import UTC, datetime
 from itertools import permutations
 from pathlib import Path
 from typing import Literal, overload
+from unittest import mock
 
 from complyroll import __version__
 from complyroll.adapters import DiagnosticLevel, IngestResult, ingest_stig_artifact
+from complyroll.adapters.common import MAX_METADATA_VALUE_CHARS, TRUNCATION_MARKER
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.models import CaseStatus
 from complyroll.policy import CertificationClass
@@ -45,6 +47,7 @@ from complyroll.reports import (
     project_historical,
     project_vdt,
 )
+from complyroll.reports import vdt as vdt_module
 from complyroll.reports.vdt import _describe
 from complyroll.schemas import ReportSchema, validate_bundled_report
 
@@ -2972,6 +2975,49 @@ class DuplicateBytesOrderTests(unittest.TestCase):
             ["b.xml", "c.xml"],
         )
 
+    def test_the_duplicate_diagnostic_cleans_both_names(self) -> None:
+        # Built with chr() so the control character is never a literal in this file. No
+        # file system holds a name past the cap, so that case renames each reading as the
+        # compiler receives it.
+        bell = chr(7)
+        prefix = "identical artifact bytes were supplied more than once; this report reads them as "
+        keep = MAX_METADATA_VALUE_CHARS - len(TRUNCATION_MARKER)
+        elected = "a" + "x" * MAX_METADATA_VALUE_CHARS + ".xml"
+        skipped = f"b{bell}" + "y" * MAX_METADATA_VALUE_CHARS + ".xml"
+        renames = {"a.xml": elected, "b.xml": skipped}
+
+        def renamed(path: Path, *, ingested_at: datetime) -> IngestResult:
+            result = ingest_stig_artifact(path, ingested_at=ingested_at)
+            assert result.artifact is not None
+            return replace(result, artifact=replace(result.artifact, name=renames[path.name]))
+
+        with mock.patch.object(vdt_module, "ingest_stig_artifact", renamed):
+            overlong = self.compile_named(("b.xml", "a.xml"))
+        cases = (
+            (
+                "a control character",
+                self.compile_named((f"b{bell}-copy.xml", f"a{bell}-copy.xml")),
+                "b-copy.xml",
+                "a-copy.xml",
+            ),
+            (
+                "an over-long name",
+                overlong,
+                ("b" + "y" * MAX_METADATA_VALUE_CHARS)[:keep] + TRUNCATION_MARKER,
+                elected[:keep] + TRUNCATION_MARKER,
+            ),
+        )
+        for label, report, location, name in cases:
+            with self.subTest(label):
+                self.assertEqual(
+                    [
+                        (item.location, item.message)
+                        for item in report.diagnostics
+                        if item.code == "duplicate_artifact"
+                    ],
+                    [(location, prefix + name)],
+                )
+
 
 class FailedImportsOffTests(unittest.TestCase):
     """Without `record_failed_imports`, a failed import behaves exactly as it did before."""
@@ -3341,8 +3387,14 @@ class DetectionFailureRefusalTests(unittest.TestCase):
             {"partial.cklb": self.partial_checklist()}, FIXTURES / "failed-truncated.sarif"
         )
 
-        # The held failure never reaches the diagnostics; only the refusal's errors do.
-        self.assertEqual(refused, [("invalid_rule", "stigs[0].rules[1]")])
+        # Nothing is recorded, so the held failure names itself beside the refusal's errors.
+        self.assertEqual(
+            refused,
+            [
+                ("artifact_parse_failed", "failed-truncated.sarif"),
+                ("invalid_rule", "stigs[0].rules[1]"),
+            ],
+        )
 
 
 class DetectionFailureElectionTests(unittest.TestCase):
@@ -3569,6 +3621,78 @@ class DetectionFailureEvaluationTests(unittest.TestCase):
         self.assertEqual(
             [item.code for item in caught.exception.diagnostics], ["evaluation_ambiguous"]
         )
+
+    def test_a_lone_failure_is_not_matched_without_its_context_key(self) -> None:
+        # One failure matches the pair today, and the next failure of another digest would
+        # make the same file ambiguous, so the triple is required even when nothing else
+        # could match.
+        for label, source_type in (("with sourceType", True), ("without sourceType", False)):
+            with self.subTest(label):
+                match = system_match(TRUNCATED_SHA256, source_type=source_type)
+                del match["contextKey"]
+                evaluations = evaluations_from(match=match, completedAt="2026-08-21T12:00:00Z")
+
+                with self.assertRaises(ReportCompileError) as caught:
+                    compile_fixtures(
+                        artifacts=(FIXTURES / "failed-truncated.sarif",),
+                        evaluations=evaluations,
+                        record_failed_imports=True,
+                    )
+
+                described = evaluations.entries[0].match.describe()
+                self.assertEqual(
+                    [
+                        (item.code, item.location, item.message)
+                        for item in caught.exception.diagnostics
+                    ],
+                    [
+                        (
+                            "evaluation_context_key_required",
+                            "evaluations[0]",
+                            f"{described} matches the detection process failure "
+                            f"{TRUNCATED_CASE}; a detection process failure is matched by "
+                            "sourceRecordId, sourceType and contextKey together, so add "
+                            "contextKey",
+                        )
+                    ],
+                )
+
+    def test_an_ambiguous_match_names_only_the_keys_it_leaves_out(self) -> None:
+        # Ambiguity is checked before the lone-failure refusal, so several failures matching
+        # the pair are named together, and the remedy never asks for a key already given.
+        def compile_failed(evaluations: EvaluationSet) -> CompiledVdtReport:
+            return compile_fixtures(
+                artifacts=FAILED_ARTIFACTS, evaluations=evaluations, record_failed_imports=True
+            )
+
+        with_source_type = system_match(TRUNCATED_SHA256)
+        del with_source_type["contextKey"]
+        cases = (
+            ("sourceType given", compile_failed, with_source_type, 3, "add contextKey"),
+            (
+                "contextKey given",
+                self.compile_hostile,
+                system_match(TRUNCATED_SHA256, source_type=False),
+                2,
+                "add sourceType",
+            ),
+            (
+                "neither given",
+                compile_failed,
+                {"sourceRecordId": "detection-process-failure"},
+                3,
+                "add contextKey or sourceType",
+            ),
+        )
+        for label, compile_with, match, count, remedy in cases:
+            with self.subTest(label):
+                with self.assertRaises(ReportCompileError) as caught:
+                    compile_with(evaluations_from(match=match))
+
+                (diagnostic,) = caught.exception.diagnostics
+                self.assertEqual(diagnostic.code, "evaluation_ambiguous")
+                self.assertIn(f"matches {count} vulnerabilities", diagnostic.message)
+                self.assertTrue(diagnostic.message.endswith(f"); {remedy}"))
 
     def test_an_override_renames_the_listed_tracking_id(self) -> None:
         evaluations = evaluations_from(

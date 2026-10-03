@@ -20,6 +20,9 @@ from datetime import datetime
 from typing import Any
 
 from complyroll.adapters import (
+    DETECTION_FAILURE_SOURCE_TYPE,
+    ArtifactProvenance,
+    DiagnosticLevel,
     FailureClass,
     FailureClassification,
     IngestDiagnostic,
@@ -27,6 +30,7 @@ from complyroll.adapters import (
     failure_diagnostics,
     system_observation_for,
 )
+from complyroll.adapters.failures import DETECTION_FAILURE_RECORDED
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import (
     MAX_BATCH_EVENTS,
@@ -38,6 +42,7 @@ from complyroll.events import (
     artifact_stream_id,
     canonical_payload_digest,
     case_stream_id,
+    failure_stream_components,
     failure_stream_id,
     is_case_stream,
     iso_utc,
@@ -63,6 +68,7 @@ from .fold import (
     CaseState,
     HistoryError,
     _failure_stream_problem,
+    artifact_history,
     fold_case_records,
     rehydrate_observations,
 )
@@ -72,6 +78,9 @@ CLERICAL_FIELDS: Mapping[str, frozenset[str]] = {
     DETECTION_ATTESTED: frozenset({"attestedAt"}),
     CASE_DISPOSITION_RECORDED: frozenset({"recordedAt"}),
 }
+
+#: The WARNING a failure carries when another failure stream of its digest already holds it.
+FAILURE_HELD_BY_ANOTHER_STREAM = "failure_held_by_another_stream"
 
 
 class EvaluationMatchError(HistoryError):
@@ -106,7 +115,9 @@ class FailureOutcome:
     `stream_id` is the failure stream that holds the failure. That is this reading's own
     stream unless another failure stream of the same digest already held the same system
     observation, in which case nothing was written and the holder is named instead.
-    `observation_id` is the system observation the store holds for this failure.
+    `ingest` tells such a hold from a rerun by comparing `stream_id` with the reading's own
+    `failure_stream_id`. `observation_id` is the system observation the store holds for
+    this failure.
     """
 
     stream_id: str
@@ -359,7 +370,11 @@ def record_failure(
     A stream holding anything else is refused rather than resumed, because nothing ever
     writes one half of a failure stream. One system observation is stored once per digest:
     its identity is the digest and the instant, never the parser, so when another failure
-    stream of the digest already holds it, this call writes nothing and names that stream.
+    stream of the digest already holds it, this call writes nothing, drops the
+    `detection_failure_recorded` notice, and names that stream in WARNING
+    `failure_held_by_another_stream`. `ingest` refuses the run instead when the holder ends
+    it superseded and this failure would not be (ADR 0014 Decision 13). A holder whose
+    stream id names no failed reading is refused with `HistoryError`, as the fold refuses it.
     """
 
     _require_aware(ingested_at, "ingested_at")
@@ -379,7 +394,7 @@ def record_failure(
     with _transaction_scope(repository):
         return _record_failure(
             repository,
-            result,
+            artifact,
             classification,
             failure_class,
             observation,
@@ -391,7 +406,7 @@ def record_failure(
 
 def _record_failure(
     repository: EventRepository,
-    result: IngestResult,
+    artifact: ArtifactProvenance,
     classification: FailureClassification,
     failure_class: FailureClass,
     observation: Observation,
@@ -401,10 +416,6 @@ def _record_failure(
     ingested_at: datetime,
 ) -> FailureOutcome:
     """Read the failure stream and write it whole when it is new, inside the transaction."""
-
-    artifact = result.artifact
-    if artifact is None:  # pragma: no cover - the caller refuses an unmintable failure first
-        raise HistoryError("only a mintable detection process failure can be recorded")
 
     stream_id = failure_stream_id(
         artifact.digest_sha256, artifact.parser_name, artifact.parser_version
@@ -431,12 +442,15 @@ def _record_failure(
 
     holder = repository.failure_observations_of_digest(stream_id).get(observation.observation_id)
     if holder is not None:
+        # Nothing is recorded, so the notice saying a failure was gives way to the WARNING
+        # naming the holder.
+        kept = tuple(item for item in diagnostics if item.code != DETECTION_FAILURE_RECORDED)
         return FailureOutcome(
             stream_id=holder,
             appended=False,
             observation_id=observation.observation_id,
             failure_class=failure_class,
-            diagnostics=diagnostics,
+            diagnostics=(*kept, _held_by_another_stream(repository, holder, artifact)),
         )
 
     # The head stores the name the observation's metadata carries, which
@@ -476,6 +490,51 @@ def _record_failure(
         observation_id=observation.observation_id,
         failure_class=failure_class,
         diagnostics=diagnostics,
+    )
+
+
+def _held_by_another_stream(
+    repository: EventRepository,
+    holder: str,
+    artifact: ArtifactProvenance,
+) -> IngestDiagnostic:
+    """Warn that another failure stream of the digest holds this reading's failure (ADR 0014).
+
+    A system observation's identity is the digest and the instant, never the parser, so a
+    failure read at one instant, or a failed invocation whose scanner declared its clock,
+    derives the same observation under every parser and version that reads it. Nothing is
+    written, so the failure stays recorded under the holder's parser and version, with the
+    holder's codes, where a stateless run of this reading would report its own. For a held
+    failure nothing of this reading reaches history. For a side record the artifact stream
+    this run recorded is in history, and R1 to R4 then decide over every stream of the
+    digest, the holder's failure stream included. Usually this reading is current by R1 and
+    only the `detectionFailures` entry is the holder's. When the holder is a held failure
+    under the same parser at a newer version and every artifact stream of the digest is
+    under that parser, R2 supersedes this reading's artifact, so the persisted report carries
+    the holder's failure and none of this reading. A hold is not kept when the holder ends
+    the run superseded and this reading's failure would not be superseded at birth: its
+    system observation would then reach no persisted report, so `ingest` refuses the run
+    (ADR 0014 Decision 13). One such hold is a parse or content holder that a side record's
+    own artifact outranks under R3. Any holder warns here: an older or a newer version, the
+    same version spelled another way, or another parser. A rerun finds this reading's own
+    stream before it looks for a holder, so it never warns. The warning takes the place of
+    the `detection_failure_recorded` notice, because nothing was recorded.
+
+    The store is folded before the holder's id is parsed. The holder is found by the digest's
+    prefix alone, and the fold refuses a failure stream id that names no reading with a
+    `HistoryError`, which `ingest` reports as `history_invalid`.
+    """
+
+    artifact_history(repository)
+    _, parser_name, parser_version = failure_stream_components(holder)
+    return IngestDiagnostic(
+        level=DiagnosticLevel.WARNING,
+        code=FAILURE_HELD_BY_ANOTHER_STREAM,
+        message=(
+            f"{holder} already holds this failure, so no failure was recorded under "
+            f"{artifact.parser_name} {artifact.parser_version} and it stays recorded under "
+            f"{parser_name} {parser_version}"
+        ),
     )
 
 
@@ -830,10 +889,15 @@ def _match_cases(
             named = ", ".join(case.tracking_id for case in candidates)
             problems.append(
                 f"{entry.location}: {entry.match.describe()} matches {len(candidates)} "
-                f"cases ({named}); add contextKey or sourceType"
+                f"cases ({named}); {entry.match.ambiguity_remedy()}"
             )
             continue
         case = candidates[0]
+        # The same refusal, in the same order, as `reports.vdt._match_evaluations`.
+        if case.source_type == DETECTION_FAILURE_SOURCE_TYPE and entry.match.context_key is None:
+            refusal = entry.match.context_key_required(case.tracking_id)
+            problems.append(f"{entry.location}: {refusal}")
+            continue
         previous = claimed.get(case.tracking_id)
         if previous is not None:
             problems.append(

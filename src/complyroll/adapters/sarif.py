@@ -885,11 +885,21 @@ class _ArtifactParse(EvidenceParse):
     ) -> None:
         super().__init__(artifact, ingested_at, limits)
         self.folds: dict[_FoldKey, list[_Candidate]] = {}
+        # The clocks failed invocations declare, across every run, read by _run_clock.
+        self.failed_starts: list[datetime] = []
+        self.failed_ends: list[datetime] = []
 
     def run(self, runs: list[Any]) -> AdapterOutput:
         """Scan every run, fold by identity, and fail closed on any error."""
         for index, run in enumerate(runs):
             self._scan_run(index, run)
+        # Set whether the log imports or fails closed, so a failed invocation keeps its own
+        # clock either way (ADR 0014).
+        failed_execution_at: datetime | None = None
+        if self.failed_starts:
+            failed_execution_at = _earliest(self.failed_starts)
+        elif self.failed_ends:
+            failed_execution_at = _earliest(self.failed_ends)
         if not self.folds:
             self.diagnostics.add_fixed(
                 IngestDiagnostic(
@@ -906,7 +916,11 @@ class _ArtifactParse(EvidenceParse):
                 self._assemble(key, candidates)
                 for key, candidates in sorted(self.folds.items(), key=_fold_order)
             ]
-        return AdapterOutput(tuple(observations), self.diagnostics.emit(self.artifact.name))
+        return AdapterOutput(
+            tuple(observations),
+            self.diagnostics.emit(self.artifact.name),
+            failed_execution_at=failed_execution_at,
+        )
 
     # Diagnostic and hygiene helpers
 
@@ -1084,6 +1098,8 @@ class _ArtifactParse(EvidenceParse):
         )
 
     # Earlier is the conservative reading of a detection clock (decision 8).
+    # NOTE: A failed invocation's clocks are collected in the same pass, so each clock is
+    # parsed, and any source_timestamp_invalid counted, exactly once (ADR 0014).
     def _run_clock(self, path: str, invocations: list[Any]) -> datetime | None:
         """Return the earliest invocation start, else the earliest end, else None."""
         starts: list[datetime] = []
@@ -1092,11 +1108,17 @@ class _ArtifactParse(EvidenceParse):
             entry = _mapping(invocation)
             if entry is None:
                 continue
-            for member, bucket in (("startTimeUtc", starts), ("endTimeUtc", ends)):
+            failed = entry.get("executionSuccessful") is False
+            for member, bucket, failed_bucket in (
+                ("startTimeUtc", starts, self.failed_starts),
+                ("endTimeUtc", ends, self.failed_ends),
+            ):
                 if member in entry:
                     parsed = self._clock(entry[member], f"{path}.invocations[{position}].{member}")
                     if parsed is not None:
                         bucket.append(parsed)
+                        if failed:
+                            failed_bucket.append(parsed)
         if starts:
             return _earliest(starts)
         if ends:

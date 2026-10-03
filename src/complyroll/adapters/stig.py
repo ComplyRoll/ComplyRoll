@@ -420,6 +420,9 @@ class XccdfAdapter:
         ]
         if root_name == "TestResult" and root not in test_results:
             test_results.insert(0, root)
+        # A document with no TestResult is a benchmark, not a scan result, so it is flagged as
+        # a format rejection rather than a detection failure (ADR 0014).
+        format_rejected = not test_results
         containers = test_results or [root]
         observations: list[Observation] = []
         timestamp_missing = False
@@ -490,7 +493,9 @@ class XccdfAdapter:
                     artifact.name,
                 )
             )
-        return AdapterOutput(tuple(observations), tuple(diagnostics))
+        return AdapterOutput(
+            tuple(observations), tuple(diagnostics), format_rejected=format_rejected
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,11 +554,13 @@ def _error_result(
     code: str,
     message: str,
     location: str,
+    format_rejected: bool = False,
 ) -> IngestResult:
     return IngestResult(
         artifact=artifact,
         observations=(),
         diagnostics=(IngestDiagnostic(DiagnosticLevel.ERROR, code, message, location),),
+        format_rejected=format_rejected,
     )
 
 
@@ -702,11 +709,14 @@ def ingest_stig_artifact(
             ingested_at=now,
         )
     except (AdapterParseError, ValueError, TypeError) as exc:
+        # Only an adapter's own refusal of the document's shape is a format rejection; a
+        # bound (InputLimitError) or any other ValueError or TypeError is a parse failure.
         return _error_result(
             artifact=artifact,
             code="artifact_parse_failed",
             message=str(exc),
             location=path.name,
+            format_rejected=isinstance(exc, AdapterParseError),
         )
 
     observation_ids = Counter(observation.observation_id for observation in output.observations)
@@ -723,7 +733,13 @@ def ingest_stig_artifact(
                 path.name,
             ),
         )
-    return IngestResult(artifact, output.observations, diagnostics)
+    return IngestResult(
+        artifact,
+        output.observations,
+        diagnostics,
+        format_rejected=output.format_rejected,
+        failed_execution_at=output.failed_execution_at,
+    )
 
 
 def load_cci_control_map(

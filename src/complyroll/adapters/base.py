@@ -116,6 +116,10 @@ class ParsedDocument:
 class AdapterOutput:
     observations: tuple[Observation, ...]
     diagnostics: tuple[IngestDiagnostic, ...] = field(default_factory=tuple)
+    # Structured facts the failure classifier reads instead of message text (ADR 0014).
+    # Neither is serialized, so no existing output moves.
+    format_rejected: bool = False
+    failed_execution_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +127,11 @@ class IngestResult:
     artifact: ArtifactProvenance | None
     observations: tuple[Observation, ...]
     diagnostics: tuple[IngestDiagnostic, ...]
+    # The input is not the format its name claims (any AdapterParseError, or an XCCDF
+    # document with no TestResult): an operator mistake, never a detection failure.
+    format_rejected: bool = False
+    # The earliest clock a failed scanner invocation declared, when one did.
+    failed_execution_at: datetime | None = None
 
     @property
     def errors(self) -> tuple[IngestDiagnostic, ...]:

@@ -5157,5 +5157,363 @@ class MissingStoreTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
 
+
+class StoredValueRefusalCommandTests(PersistedStoreTestCase):
+    """H3: every command that reads a store answers a planted value with one coded line.
+
+    Append writes none of these rows, so each is planted with raw SQL. On 298f1be each one
+    ended `report`, `cases correlate`, a flagged ingest or `store verify` itself in a Python
+    traceback, or echoed a 5000-character name. Each now exits 1 with a coded line, writes
+    nothing, and no line on either stream is longer than LINE_BOUND bytes.
+    """
+
+    LINE_BOUND = 1024
+    LONG = 5000
+
+    def setUp(self) -> None:
+        super().setUp()
+        code, _out, err = run(
+            [
+                "ingest",
+                str(FIXTURES / "windows-host.ckl"),
+                str(TRUNCATED_FIXTURE),
+                "--record-failed-imports",
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+        self.assertIn(code, (0, 3), err)
+
+    @staticmethod
+    def canonical(value: Mapping[str, Any]) -> str:
+        return json.dumps(
+            value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+
+    @staticmethod
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def raw(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def update(self, work: Callable[[sqlite3.Connection], None]) -> None:
+        """Run `work` with only `events_reject_update` dropped, then rebuild it as stored."""
+
+        with closing(self.raw()) as connection:
+            (restore,) = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'events_reject_update'"
+            ).fetchone()
+            connection.execute("DROP TRIGGER events_reject_update")
+            work(connection)
+            connection.execute(restore)
+
+    def insert(self, **overrides: object) -> None:
+        """INSERT one row after the last; no trigger guards INSERT."""
+
+        with closing(self.raw()) as connection:
+            first = connection.execute("SELECT * FROM events ORDER BY sequence LIMIT 1").fetchone()
+            values: dict[str, object] = {
+                "event_id": "evt-planted",
+                "stream_id": "probe/planted",
+                "stream_version": 1,
+                "event_type": "probe.planted",
+                "event_version": 1,
+                "occurred_at": first["occurred_at"],
+                "recorded_at": first["recorded_at"],
+                "payload_json": "{}",
+                "metadata_json": "{}",
+                "payload_sha256": self.digest("{}"),
+            }
+            values.update(overrides)
+            columns = ", ".join(values)
+            marks = ", ".join("?" for _ in values)
+            connection.execute(
+                f"INSERT INTO events ({columns}) VALUES ({marks})", tuple(values.values())
+            )
+
+    def retarget_failure(self, *, digits: int = 0, total: int = 0) -> None:
+        """Move the one failure stream to a long version: stream id, payloads, digests."""
+
+        def work(connection: sqlite3.Connection) -> None:
+            rows = connection.execute(
+                "SELECT * FROM events WHERE stream_id LIKE 'failure/%' ORDER BY sequence"
+            ).fetchall()
+            target = rows[0]["stream_id"]
+            head = target.rsplit("/", 1)[0] + "/"
+            version = "1" * (digits or total - len(head))
+            for row in rows:
+                payload = json.loads(row["payload_json"])
+                if row["event_type"] == "failure.recorded":
+                    payload["parserVersion"] = version
+                else:
+                    payload["source_metadata"]["artifact.parserVersion"] = version
+                text = self.canonical(payload)
+                connection.execute(
+                    "UPDATE events SET stream_id = ?, payload_json = ?, payload_sha256 = ? "
+                    "WHERE sequence = ?",
+                    (head + version, text, self.digest(text), row["sequence"]),
+                )
+
+        self.update(work)
+
+    def readers(self, *, at_open: bool) -> dict[str, list[str]]:
+        database = str(self.database)
+        commands = {
+            "report": [
+                "report",
+                "vdt",
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                INGESTED_AT,
+                "--db",
+                database,
+                "-o",
+                str(self.workspace / "vdt.json"),
+            ],
+            "correlate": ["cases", "correlate", "--db", database],
+            "flagged ingest": [
+                "ingest",
+                str(TRUNCATED_FIXTURE),
+                "--record-failed-imports",
+                "--db",
+                database,
+                "--as-of",
+                INGESTED_AT,
+            ],
+        }
+        if at_open:
+            commands["plain ingest"] = [
+                "ingest",
+                str(FIXTURES / "semgrep-code.sarif"),
+                "--db",
+                database,
+                "--as-of",
+                INGESTED_AT,
+            ]
+        return commands
+
+    def latest_sequence(self) -> int:
+        with closing(self.raw()) as connection:
+            return int(connection.execute("SELECT MAX(sequence) FROM events").fetchone()[0])
+
+    def assert_bounded(self, out: str, err: str) -> None:
+        for line in out.splitlines() + err.splitlines():
+            self.assertLessEqual(len(line.encode()), self.LINE_BOUND, line[:200])
+
+    def assert_refused(
+        self, fragment: str, verify_codes: set[str], *, at_open: bool = False
+    ) -> None:
+        before = self.latest_sequence()
+        for name, argv in self.readers(at_open=at_open).items():
+            with self.subTest(command=name):
+                code, out, err = run(argv)
+                self.assertEqual(code, 1, err[:500])
+                self.assertIn("error: store_integrity: ", err)
+                self.assertIn(fragment, err)
+                self.assertNotIn("Traceback", out + err)
+                self.assert_bounded(out, err)
+        self.assertEqual(self.latest_sequence(), before)
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 1, err[:500])
+        self.assertNotIn("Traceback", out + err)
+        self.assert_bounded(out, err)
+        reported = {
+            line.split(": ")[1]
+            for line in out.splitlines() + err.splitlines()
+            if line.startswith("error: ")
+        }
+        self.assertLessEqual(verify_codes, reported, err[:500])
+
+    # h3-v2: the parser-version route.
+
+    def test_a_failure_stream_past_the_name_cap_is_refused(self) -> None:
+        for digits in (self.LONG, 4300):
+            with self.subTest(digits=digits):
+                self.database.unlink()
+                self.setUp()
+                self.retarget_failure(digits=digits)
+                self.assert_refused("has an unreadable stream_id", {"event_name_invalid"})
+
+    def test_a_head_only_artifact_stream_past_the_name_cap_is_refused(self) -> None:
+        with closing(self.raw()) as connection:
+            row = connection.execute(
+                "SELECT * FROM events WHERE event_type = 'artifact.ingested' "
+                "ORDER BY sequence LIMIT 1"
+            ).fetchone()
+            payload = json.loads(row["payload_json"])
+            payload.update(sha256="c" * 64, observationCount=0, parserVersion="1" * self.LONG)
+            text = self.canonical(payload)
+        self.insert(
+            event_id="evt-smuggled-artifact",
+            stream_id=f"artifact/{'c' * 64}/{payload['parserName']}/{'1' * self.LONG}",
+            event_type="artifact.ingested",
+            payload_json=text,
+            payload_sha256=self.digest(text),
+            metadata_json=row["metadata_json"],
+        )
+        self.assert_refused("has an unreadable stream_id", {"event_name_invalid"})
+
+    def test_a_failure_stream_at_the_name_cap_reads_clean(self) -> None:
+        report = self.readers(at_open=False)["report"]
+        expected, _out, _err = run(report)
+        self.retarget_failure(total=500)
+        code, out, err = run(report)
+        self.assertEqual(code, expected, err[:500])
+        self.assertNotIn("store_integrity", err)
+        self.assertNotIn("Traceback", out + err)
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 0, out + err)
+
+    # J: integer literals and nesting in stored JSON.
+
+    def test_j1_a_payload_integer_past_the_digit_limit_is_refused(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            row = connection.execute(
+                "SELECT sequence, payload_json FROM events WHERE event_type = 'failure.recorded'"
+            ).fetchone()
+            text = row["payload_json"]
+            start = text.index('"sizeBytes":') + len('"sizeBytes":')
+            end = start
+            while text[end].isdigit():
+                end += 1
+            text = text[:start] + "1" * self.LONG + text[end:]
+            connection.execute(
+                "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = ?",
+                (text, self.digest(text), row["sequence"]),
+            )
+
+        self.update(work)
+        self.assert_refused("contains JSON past the decoder's limits", {"payload_not_json"})
+
+    def test_j2_a_metadata_integer_past_the_digit_limit_is_refused(self) -> None:
+        text = '{"n":' + "1" * self.LONG + "}"
+        for how in ("update", "insert"):
+            with self.subTest(how=how):
+                self.database.unlink()
+                self.setUp()
+                if how == "update":
+                    self.update(
+                        lambda connection: connection.execute(
+                            "UPDATE events SET metadata_json = ? WHERE sequence = 1", (text,)
+                        )
+                    )
+                else:
+                    self.insert(metadata_json=text)
+                self.assert_refused(
+                    "contains JSON past the decoder's limits", {"payload_not_json"}
+                )
+
+    def test_j3_metadata_nested_past_the_recursion_limit_is_refused(self) -> None:
+        self.insert(metadata_json='{"n":' + "[" * 200_000 + "]" * 200_000 + "}")
+        self.assert_refused("contains JSON past the decoder's limits", {"payload_not_json"})
+
+    # S and D: append's JSON rules. On 298f1be S1 and S5 end `report` in a traceback when it
+    # writes the output, and `store verify` says ok; D reads clean on 3.14.
+
+    def plant_surrogate(self, event_type: str, change: Callable[[dict[str, Any]], None]) -> None:
+        """Rewrite the first payload of `event_type` around a lone surrogate escape."""
+
+        def work(connection: sqlite3.Connection) -> None:
+            row = connection.execute(
+                "SELECT sequence, payload_json FROM events WHERE event_type = ? "
+                "ORDER BY sequence LIMIT 1",
+                (event_type,),
+            ).fetchone()
+            payload = json.loads(row["payload_json"])
+            change(payload)
+            text = self.canonical(payload).replace("\ud800", "\\ud800")
+            connection.execute(
+                "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = ?",
+                (text, self.digest(text), row["sequence"]),
+            )
+
+        self.update(work)
+
+    def test_s1_a_lone_surrogate_in_an_observation_title_is_refused(self) -> None:
+        self.plant_surrogate(
+            "observation.recorded", lambda payload: payload.update(title="Ubuntu \ud800 notice")
+        )
+        self.assert_refused(
+            "payload contains text that is not valid Unicode", {"payload_not_json"}
+        )
+
+    def test_s5_a_lone_surrogate_in_a_failure_diagnostic_is_refused(self) -> None:
+        def change(payload: dict[str, Any]) -> None:
+            payload["diagnostics"][0]["message"] = "x\ud800"
+
+        self.plant_surrogate("failure.recorded", change)
+        self.assert_refused(
+            "payload contains text that is not valid Unicode", {"payload_not_json"}
+        )
+
+    def test_d_metadata_past_the_append_depth_is_refused(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            (text,) = connection.execute(
+                "SELECT metadata_json FROM events WHERE sequence = 1"
+            ).fetchone()
+            deep = "[" * 65 + "]" * 65
+            connection.execute(
+                "UPDATE events SET metadata_json = ? WHERE sequence = 1",
+                (text[:-1] + ',"zz":' + deep + "}",),
+            )
+
+        self.update(work)
+        self.assert_refused("metadata exceeds the JSON depth limit", {"payload_not_json"})
+
+    # V and E: the integer columns.
+
+    def test_v1_a_text_stream_version_is_refused_at_open(self) -> None:
+        self.insert(stream_version="x")
+        self.assert_refused(
+            "has stream_version stored as text", {"event_version_invalid"}, at_open=True
+        )
+
+    def test_v2_an_overlong_numeric_stream_version_is_refused_at_open(self) -> None:
+        self.insert(stream_version="1" * self.LONG)
+        self.assert_refused(
+            "has stream_version stored as real", {"event_version_invalid"}, at_open=True
+        )
+
+    def test_e1_a_text_event_version_is_refused_on_read(self) -> None:
+        self.insert(event_version="x")
+        self.assert_refused("has event_version stored as text", {"event_version_invalid"})
+
+    # N: the echo.
+
+    def test_n1_a_long_event_id_with_a_bad_digest_is_not_echoed(self) -> None:
+        self.insert(event_id="e" * self.LONG, payload_sha256="0" * 64)
+        self.assert_refused(
+            "has an unreadable event_id", {"event_name_invalid", "payload_digest_mismatch"}
+        )
+
+    def test_n2_a_long_stream_id_at_version_two_is_not_echoed(self) -> None:
+        self.insert(stream_id="probe/" + "x" * self.LONG, stream_version=2)
+        self.assert_refused(
+            "characters outside the name grammar>",
+            {"event_name_invalid", "stream_version_gap"},
+            at_open=True,
+        )
+
+    # Q: the AUTOINCREMENT counter.
+
+    def test_q_a_counter_stored_as_text_is_refused_at_open(self) -> None:
+        with closing(self.raw()) as connection:
+            connection.execute("UPDATE sqlite_sequence SET seq = 'x' WHERE name = 'events'")
+        self.assert_refused(
+            "sequence counter is stored as text", {"sequence_counter_mismatch"}, at_open=True
+        )
+
 if __name__ == "__main__":
     unittest.main()

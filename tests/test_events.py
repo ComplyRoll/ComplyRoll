@@ -2684,5 +2684,26 @@ class FailureSchemaMarkingTests(unittest.TestCase):
         self.assertEqual(self.store.latest_sequence, 0)
 
 
+
+class StreamIdCapTests(unittest.TestCase):
+    """H3 (a): a reading's stream id past the store's name cap is refused by its parser too."""
+
+    def test_component_parsers_refuse_an_id_one_past_the_cap(self) -> None:
+        parsers = (
+            ("artifact", artifact_stream_components),
+            ("failure", failure_stream_components),
+        )
+        for prefix, parse in parsers:
+            head = f"{prefix}/{'a' * 64}/complyroll.sarif/"
+            at_cap = head + "1" * (_MAX_STREAM_ID_LENGTH - len(head))
+            with self.subTest(prefix=prefix):
+                self.assertEqual(len(at_cap), _MAX_STREAM_ID_LENGTH)
+                self.assertEqual(parse(at_cap)[2], at_cap[len(head) :])
+                past = at_cap + "1"
+                with self.assertRaises(ValueError) as caught:
+                    parse(past)
+                self.assertIn(f"at most {_MAX_STREAM_ID_LENGTH} characters", str(caught.exception))
+                self.assertNotIn(past, str(caught.exception))
+
 if __name__ == "__main__":
     unittest.main()

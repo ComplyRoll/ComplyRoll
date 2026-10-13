@@ -680,6 +680,7 @@ class SQLiteEventStore:
                     checked += 1
                     sequence = int(row["sequence"])
                     after_sequence = sequence
+                    faults.extend(_column_faults(row, sequence))
                     faults.extend(_payload_faults(row, sequence))
                     if sequence != expected_sequence:
                         faults.append(
@@ -696,7 +697,11 @@ class SQLiteEventStore:
                     expected_sequence += 1
 
                     stream_id = str(row["stream_id"])
-                    stream_version = int(row["stream_version"])
+                    stream_version = row["stream_version"]
+                    if type(stream_version) is not int:
+                        # `_column_faults` has reported this row, and a version that is not
+                        # an integer has no place in the stream's count.
+                        continue
                     expected_version = stream_versions.get(stream_id, 0) + 1
                     if stream_version != expected_version:
                         faults.append(
@@ -704,7 +709,7 @@ class SQLiteEventStore:
                                 sequence=sequence,
                                 code="stream_version_gap",
                                 message=(
-                                    f"stream {stream_id!r} is missing version "
+                                    f"stream {_shown_name(stream_id)} is missing version "
                                     f"{expected_version}; next stored version is "
                                     f"{stream_version}"
                                 ),
@@ -781,10 +786,17 @@ class SQLiteEventStore:
             row = connection.execute(
                 "SELECT seq FROM sqlite_sequence WHERE name = 'events'"
             ).fetchone()
-            counter = 0 if row is None else int(row[0])
+            counter = 0 if row is None else row[0]
         latest = int(
             connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM events").fetchone()[0]
         )
+        problem = _counter_problem(counter)
+        if problem is not None:
+            return (
+                IntegrityFault(
+                    sequence=latest, code="sequence_counter_mismatch", message=problem
+                ),
+            )
         if counter == latest:
             return ()
         return (
@@ -1070,9 +1082,12 @@ class SQLiteEventStore:
         row = connection.execute(
             "SELECT seq FROM sqlite_sequence WHERE name = 'events'"
         ).fetchone()
-        counter = 0 if row is None else int(row[0])
+        counter = 0 if row is None else row[0]
         latest_row = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM events").fetchone()
         latest = int(latest_row[0])
+        problem = _counter_problem(counter)
+        if problem is not None:
+            raise EventIntegrityError(problem, sequence=latest)
         if counter != latest:
             raise EventIntegrityError(
                 f"event history was truncated: last stored sequence is {latest} but the "
@@ -1147,12 +1162,14 @@ class SQLiteEventStore:
         ).fetchone()
         if row is None:
             return
+        lowest = _stored_stream_version(connection, row[0], row[2])
+        highest = _stored_stream_version(connection, row[0], row[3])
         raise _stream_version_gap_error(
             connection,
-            stream_id=str(row[0]),
+            stream_id=row[0],
             stored=int(row[1]),
-            lowest=int(row[2]),
-            highest=int(row[3]),
+            lowest=lowest,
+            highest=highest,
         )
 
     @staticmethod
@@ -1167,7 +1184,9 @@ class SQLiteEventStore:
             """,
             (stream_id,),
         ).fetchone()
-        stored, lowest, highest = int(row[0]), int(row[1]), int(row[2])
+        stored = int(row[0])
+        lowest = _stored_stream_version(connection, stream_id, row[1])
+        highest = _stored_stream_version(connection, stream_id, row[2])
         if stored == 0 or (stored == highest and lowest == 1):
             return
         raise _stream_version_gap_error(
@@ -1184,7 +1203,7 @@ class SQLiteEventStore:
             "SELECT COALESCE(MAX(stream_version), 0) FROM events WHERE stream_id = ?",
             (stream_id,),
         ).fetchone()
-        return int(row[0])
+        return _stored_stream_version(connection, stream_id, row[0])
 
     @staticmethod
     def _current_projection_sequence(connection: sqlite3.Connection, name: str) -> int:
@@ -1307,8 +1326,162 @@ class _write_transaction:
             self._on_unrecoverable()
 
 
+_NAME_COLUMNS = ("event_id", "stream_id", "event_type")
+_VERSION_COLUMNS = ("stream_version", "event_version")
+_STORAGE_CLASSES: dict[type, str] = {
+    int: "integer",
+    float: "real",
+    str: "text",
+    bytes: "blob",
+    type(None): "null",
+}
+
+
+def _storage_class(value: object) -> str:
+    """Name the SQLite storage class one column value came back as."""
+
+    return _STORAGE_CLASSES.get(type(value), type(value).__name__)
+
+
+def _shown_name(value: object) -> str:
+    """Quote a stored name for a message, or describe one no append could have written.
+
+    A name inside `_require_name`'s grammar is at most 500 characters and is quoted exactly
+    as before, so a healthy store's messages do not change. Anything else is described by
+    its length or storage class and never echoed: a row edited in place can hold any length.
+    """
+
+    if not isinstance(value, str):
+        return f"<{_storage_class(value)} value>"
+    try:
+        _require_name(value, "name")
+    except ValueError:
+        return f"<{len(value)} characters outside the name grammar>"
+    return repr(value)
+
+
+def _name_problem(row: sqlite3.Row) -> str | None:
+    """Say why a stored name breaks the append grammar, or return None.
+
+    Append refuses these names (`_require_name`); a row edited in place can still hold one.
+    This message never echoes the value, so an over-long name cannot flood the output.
+    """
+
+    for column in _NAME_COLUMNS:
+        value = row[column]
+        try:
+            _require_name(value, column)
+        except ValueError as exc:
+            return f"an unreadable {column}: {exc}"
+    return None
+
+
+def _version_problem(row: sqlite3.Row) -> str | None:
+    """Say why a stored version column is not an integer, or return None.
+
+    The columns are declared INTEGER without STRICT. SQLite orders TEXT above every integer,
+    so `CHECK (stream_version >= 1)` admits text, and integer affinity turns a numeric text
+    too long for 64 bits into REAL infinity. `int()` would raise an uncoded ValueError or
+    OverflowError on either.
+    """
+
+    for column in _VERSION_COLUMNS:
+        value = row[column]
+        if type(value) is not int:
+            return f"{column} stored as {_storage_class(value)}, not an integer"
+    return None
+
+
+def _column_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ...]:
+    """Report what `_event_from_row` refuses a row's columns for, as faults."""
+
+    faults: list[IntegrityFault] = []
+    problem = _name_problem(row)
+    if problem is not None:
+        faults.append(
+            IntegrityFault(
+                sequence=sequence, code="event_name_invalid", message=f"event has {problem}"
+            )
+        )
+    problem = _version_problem(row)
+    if problem is not None:
+        faults.append(
+            IntegrityFault(
+                sequence=sequence, code="event_version_invalid", message=f"event has {problem}"
+            )
+        )
+    return tuple(faults)
+
+
+def _counter_problem(value: object) -> str | None:
+    """Say why the stored AUTOINCREMENT counter is not an integer, or return None.
+
+    `sqlite_sequence.seq` has no declared type, so an edit can leave text in it.
+    """
+
+    if type(value) is int:
+        return None
+    return f"the events sequence counter is stored as {_storage_class(value)}, not an integer"
+
+
+def _stored_stream_version(
+    connection: sqlite3.Connection, stream_id: object, value: object
+) -> int:
+    """Return one aggregated stream_version, refusing a stream that stores anything else.
+
+    The open-time and append-time contiguity checks aggregate `stream_version` with raw SQL
+    and never pass through `_event_from_row`, so they apply its rule here, before any
+    conversion, and name the first offending row.
+    """
+
+    if type(value) is int:
+        return value
+    row = connection.execute(
+        "SELECT sequence, typeof(stream_version) FROM events "
+        "WHERE stream_id IS ? AND typeof(stream_version) <> 'integer' "
+        "ORDER BY sequence LIMIT 1",
+        (stream_id,),
+    ).fetchone()
+    if row is None:
+        raise EventIntegrityError(
+            f"stream {_shown_name(stream_id)} reports a stream_version stored as "
+            f"{_storage_class(value)}, not an integer",
+            sequence=None,
+        )
+    sequence = int(row[0])
+    raise EventIntegrityError(
+        f"event at sequence {sequence} has stream_version stored as {row[1]}, not an integer",
+        sequence=sequence,
+    )
+
+
+def _append_json_problem(value: Mapping[str, Any], field_name: str) -> str | None:
+    """Name the first of append's JSON rules a decoded column breaks, or return None.
+
+    `json.loads` accepts what `append` refuses: NaN and infinity, nesting past
+    MAX_EVENT_JSON_DEPTH, more than MAX_EVENT_JSON_VALUES values, and a lone surrogate escape
+    that only fails later, when the text is encoded for output. Re-running the canonicalizer
+    applies the same rules on every interpreter, and no reason it gives quotes the value.
+    """
+
+    try:
+        _canonical_json_object(value, field_name)
+    except UnicodeEncodeError:
+        return f"{field_name} contains text that is not valid Unicode"
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def _event_from_row(row: sqlite3.Row) -> EventRecord:
     sequence = int(row["sequence"])
+    # The columns go first: every message below names the event by its id, and the id is
+    # only bounded once it is known to be one append could have written.
+    problem = _name_problem(row) or _version_problem(row)
+    if problem is not None:
+        raise EventIntegrityError(
+            f"event at sequence {sequence} has {problem}", sequence=sequence
+        )
     payload_json = str(row["payload_json"])
     expected_digest = str(row["payload_sha256"])
     actual_digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
@@ -1326,11 +1499,23 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
             f"event {row['event_id']!r} contains invalid JSON",
             sequence=sequence,
         ) from exc
+    except (ValueError, RecursionError) as exc:
+        # An integer literal past the interpreter's digit limit raises a bare ValueError and
+        # nesting past the recursion limit a RecursionError; neither is a JSONDecodeError.
+        raise EventIntegrityError(
+            f"event {row['event_id']!r} contains JSON past the decoder's limits",
+            sequence=sequence,
+        ) from exc
     if not isinstance(payload, dict) or not isinstance(metadata, dict):
         raise EventIntegrityError(
             f"event {row['event_id']!r} JSON must contain objects",
             sequence=sequence,
         )
+    problem = _append_json_problem(payload, "payload") or _append_json_problem(
+        metadata, "metadata"
+    )
+    if problem is not None:
+        raise EventIntegrityError(f"event {row['event_id']!r} {problem}", sequence=sequence)
 
     return EventRecord(
         sequence=sequence,
@@ -1359,7 +1544,8 @@ def _payload_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ..
                 sequence=sequence,
                 code="payload_digest_mismatch",
                 message=(
-                    f"event {str(row['event_id'])!r} payload does not match its recorded digest"
+                    f"event {_shown_name(row['event_id'])} payload does not match its recorded "
+                    "digest"
                 ),
             ),
         )
@@ -1371,7 +1557,18 @@ def _payload_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ..
             IntegrityFault(
                 sequence=sequence,
                 code="payload_not_json",
-                message=f"event {str(row['event_id'])!r} contains invalid JSON",
+                message=f"event {_shown_name(row['event_id'])} contains invalid JSON",
+            ),
+        )
+    except (ValueError, RecursionError):
+        return (
+            IntegrityFault(
+                sequence=sequence,
+                code="payload_not_json",
+                message=(
+                    f"event {_shown_name(row['event_id'])} contains JSON past the decoder's "
+                    "limits"
+                ),
             ),
         )
     if not isinstance(payload, dict) or not isinstance(metadata, dict):
@@ -1379,7 +1576,18 @@ def _payload_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ..
             IntegrityFault(
                 sequence=sequence,
                 code="payload_not_object",
-                message=f"event {str(row['event_id'])!r} JSON must contain objects",
+                message=f"event {_shown_name(row['event_id'])} JSON must contain objects",
+            ),
+        )
+    problem = _append_json_problem(payload, "payload") or _append_json_problem(
+        metadata, "metadata"
+    )
+    if problem is not None:
+        return (
+            IntegrityFault(
+                sequence=sequence,
+                code="payload_not_json",
+                message=f"event {_shown_name(row['event_id'])} {problem}",
             ),
         )
     return ()
@@ -1453,20 +1661,24 @@ def _stream_version_gap_error(
         """,
         (stream_id,),
     ).fetchone()
-    following = None if row is None or row[0] is None else int(row[0])
+    following = (
+        None
+        if row is None or row[0] is None
+        else _stored_stream_version(connection, stream_id, row[0])
+    )
     if following is None:
         # Unlike a sequence, a stream version cannot fall below one while the table's CHECK
         # and its UNIQUE (stream_id, stream_version) stand, so a count that outruns the
         # highest version means the schema itself was rewritten. Reaching this without a
         # message would be worse than the guard costing a branch.
         return EventIntegrityError(
-            f"stream {stream_id!r} holds {stored} event(s) but its versions run from "
+            f"stream {_shown_name(stream_id)} holds {stored} event(s) but its versions run from "
             f"{lowest} to {highest}",
             sequence=None,
         )
     return EventIntegrityError(
-        f"stream {stream_id!r} is missing version {following - 1}; next stored version is "
-        f"{following}",
+        f"stream {_shown_name(stream_id)} is missing version {following - 1}; next stored "
+        f"version is {following}",
         sequence=int(row[1]),
     )
 

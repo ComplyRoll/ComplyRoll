@@ -640,6 +640,7 @@ def _reading_stream_components(prefix: str, described: str, stream_id: str) -> t
     start = f"{prefix}/"
     if not isinstance(stream_id, str) or not stream_id.startswith(start):
         raise ValueError(f"stream_id must start with {start!r}, got {stream_id!r}")
+    _require_stream_id(stream_id)
     parts = stream_id[len(start) :].split("/")
     if len(parts) != 3:
         raise ValueError(

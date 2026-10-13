@@ -1722,5 +1722,274 @@ class VerifyHistoryTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before)
 
 
+
+class StoredValueRefusalTests(unittest.TestCase):
+    """H3: a stored value no append writes is refused with a coded, bounded error.
+
+    Append runs `_require_name` on every name and writes integer versions, so each row below
+    is planted with raw SQL, as an edit in place would be. The constructor or the reader
+    refuses it with `EventIntegrityError`, `verify_history` reports it as a fault, and no
+    message is longer than MESSAGE_BOUND bytes however long the planted value is.
+    """
+
+    MESSAGE_BOUND = 1024
+    LONG = 5000
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.database_path = self.build()
+
+    def build(self, name: str = "complyroll.db") -> Path:
+        path = Path(self.temporary_directory.name) / name
+        store = SQLiteEventStore(path, clock=lambda: RECORDED_AT)
+        for index in range(3):
+            store.append("stream-h", [sample_event(f"evt-h-{index}")], expected_version=index)
+        store.close()
+        return path
+
+    @staticmethod
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def insert(self, **overrides: object) -> None:
+        """INSERT one row after the last; no trigger guards INSERT."""
+
+        values: dict[str, object] = {
+            "event_id": "evt-planted",
+            "stream_id": "stream-planted",
+            "stream_version": 1,
+            "event_type": "case.created",
+            "event_version": 1,
+            "occurred_at": RECORDED_TEXT,
+            "recorded_at": RECORDED_TEXT,
+            "payload_json": "{}",
+            "metadata_json": "{}",
+            "payload_sha256": self.digest("{}"),
+        }
+        values.update(overrides)
+        columns = ", ".join(values)
+        marks = ", ".join("?" for _ in values)
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                f"INSERT INTO events ({columns}) VALUES ({marks})", tuple(values.values())
+            )
+
+    def update(self, statement: str, parameters: tuple[object, ...]) -> None:
+        """Run one UPDATE with only `events_reject_update` dropped, then rebuild it."""
+
+        with closing(raw_connection(self.database_path)) as connection:
+            restore = recorded_sql(connection, "events_reject_update")
+            connection.execute("DROP TRIGGER events_reject_update")
+            connection.execute(statement, parameters)
+            connection.execute(restore)
+
+    def refusal(self) -> EventIntegrityError:
+        """Open the store and read it all, and return the refusal wherever it was raised."""
+
+        with self.assertRaises(EventIntegrityError) as caught:
+            store = SQLiteEventStore(self.database_path)
+            try:
+                store.read_all()
+            finally:
+                store.close()
+        self.assertLessEqual(len(str(caught.exception).encode()), self.MESSAGE_BOUND)
+        return caught.exception
+
+    def faults(self) -> dict[str, str]:
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+        report = store.verify_history()
+        self.assertFalse(report.ok)
+        for fault in report.faults:
+            self.assertLessEqual(len(fault.message.encode()), self.MESSAGE_BOUND, fault.code)
+        return {fault.code: fault.message for fault in report.faults}
+
+    def big_object(self, digits: int) -> str:
+        return '{"n":' + "1" * digits + "}"
+
+    # h3-v2: the names.
+
+    def test_an_unreadable_name_is_refused_without_echoing_it(self) -> None:
+        cases = (
+            ("event_id", "UPDATE events SET event_id = ? WHERE sequence = 2", "e" * 501, 2),
+            ("event_type", "UPDATE events SET event_type = ? WHERE sequence = 2", "t" * 501, 2),
+            ("stream_id", "UPDATE events SET stream_id = ?", "s" * 501, 1),
+            ("stream_id", "UPDATE events SET stream_id = ?", "s" * 498 + " s", 1),
+        )
+        for index, (column, statement, value, sequence) in enumerate(cases):
+            with self.subTest(column=column, length=len(value)):
+                self.database_path = self.build(f"name-{index}.db")
+                self.update(statement, (value,))
+                refused = self.refusal()
+                self.assertEqual(refused.sequence, sequence)
+                self.assertIn(f"has an unreadable {column}", str(refused))
+                self.assertNotIn(value, str(refused))
+                faults = self.faults()
+                self.assertIn("event_name_invalid", faults)
+                self.assertNotIn(value, faults["event_name_invalid"])
+                if column != "stream_id":
+                    with SQLiteEventStore(self.database_path) as store:
+                        with self.assertRaises(EventIntegrityError):
+                            store.read_stream("stream-h")
+
+    def test_a_name_at_the_cap_reads_back(self) -> None:
+        with SQLiteEventStore(self.database_path, clock=lambda: RECORDED_AT) as store:
+            store.append("s" * 500, [sample_event("evt-cap")], expected_version=0)
+        with SQLiteEventStore(self.database_path) as store:
+            self.assertEqual(store.read_all()[-1].stream_id, "s" * 500)
+
+    def test_a_blob_event_type_is_refused_rather_than_coerced(self) -> None:
+        self.insert(event_type=b"case.created")
+        self.assertIn("has an unreadable event_type", str(self.refusal()))
+        self.assertIn("event_name_invalid", self.faults())
+
+    # J: integer literals and nesting in stored JSON.
+
+    def test_j1_a_payload_integer_past_the_digit_limit_is_refused(self) -> None:
+        text = self.big_object(self.LONG)
+        self.update(
+            "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = 2",
+            (text, self.digest(text)),
+        )
+        refused = self.refusal()
+        self.assertEqual(refused.sequence, 2)
+        self.assertIn("contains JSON past the decoder's limits", str(refused))
+        self.assertIn("payload_not_json", self.faults())
+
+    def test_j2_a_metadata_integer_past_the_digit_limit_is_refused(self) -> None:
+        text = self.big_object(self.LONG)
+        for how in ("update", "insert"):
+            with self.subTest(how=how):
+                self.database_path = self.build(f"j2-{how}.db")
+                if how == "update":
+                    self.update("UPDATE events SET metadata_json = ? WHERE sequence = 1", (text,))
+                else:
+                    self.insert(metadata_json=text)
+                refused = self.refusal()
+                self.assertEqual(refused.sequence, 1 if how == "update" else 4)
+                self.assertIn("contains JSON past the decoder's limits", str(refused))
+                self.assertIn("payload_not_json", self.faults())
+
+    def test_j2_a_metadata_integer_at_the_digit_limit_still_reads(self) -> None:
+        self.insert(metadata_json=self.big_object(4300))
+        with SQLiteEventStore(self.database_path) as store:
+            self.assertEqual(len(store.read_all()), 4)
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+        self.assertTrue(store.verify_history().ok)
+
+    def test_j3_metadata_nested_past_the_recursion_limit_is_refused(self) -> None:
+        self.insert(metadata_json='{"n":' + "[" * 200_000 + "]" * 200_000 + "}")
+        self.assertIn("contains JSON past the decoder's limits", str(self.refusal()))
+        self.assertIn("payload_not_json", self.faults())
+
+    # S and D: append's JSON rules, which the decoder alone does not apply.
+
+    def test_s_a_lone_surrogate_escape_is_refused(self) -> None:
+        text = '{"t":"\\ud800"}'
+        for column in ("payload", "metadata"):
+            with self.subTest(column=column):
+                self.database_path = self.build(f"s-{column}.db")
+                self.update(f"UPDATE events SET {column}_json = ? WHERE sequence = 2", (text,))
+                if column == "payload":
+                    self.update(
+                        "UPDATE events SET payload_sha256 = ? WHERE sequence = 2",
+                        (self.digest(text),),
+                    )
+                refused = self.refusal()
+                self.assertEqual(refused.sequence, 2)
+                self.assertIn(f"{column} contains text that is not valid Unicode", str(refused))
+                self.assertIn("payload_not_json", self.faults())
+
+    def test_s_nan_in_a_payload_is_refused(self) -> None:
+        text = '{"n":NaN}'
+        self.update(
+            "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = 2",
+            (text, self.digest(text)),
+        )
+        self.assertIn("payload cannot contain NaN or infinity", str(self.refusal()))
+        self.assertIn("payload_not_json", self.faults())
+
+    def test_d_json_past_the_append_depth_is_refused_on_every_interpreter(self) -> None:
+        for depth in (65, 5000):
+            with self.subTest(depth=depth):
+                self.database_path = self.build(f"d-{depth}.db")
+                self.insert(metadata_json='{"n":' + "[" * depth + "]" * depth + "}")
+                refused = self.refusal()
+                self.assertEqual(refused.sequence, 4)
+                if depth == 65:
+                    self.assertIn("metadata exceeds the JSON depth limit", str(refused))
+                self.assertIn("payload_not_json", self.faults())
+
+    def test_d_json_at_the_append_depth_still_reads(self) -> None:
+        self.insert(metadata_json='{"n":' + "[" * 64 + "]" * 64 + "}")
+        with SQLiteEventStore(self.database_path) as store:
+            self.assertEqual(len(store.read_all()), 4)
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+        self.assertTrue(store.verify_history().ok)
+
+    # V and E: the integer columns.
+
+    def test_v1_a_text_stream_version_is_refused_at_open(self) -> None:
+        self.insert(stream_version="x")
+        refused = self.refusal()
+        self.assertEqual(refused.sequence, 4)
+        self.assertIn("has stream_version stored as text, not an integer", str(refused))
+        self.assertIn("event_version_invalid", self.faults())
+
+    def test_v2_an_overlong_numeric_stream_version_is_refused_at_open(self) -> None:
+        self.insert(stream_version="1" * self.LONG)
+        refused = self.refusal()
+        self.assertEqual(refused.sequence, 4)
+        self.assertIn("has stream_version stored as real, not an integer", str(refused))
+        self.assertIn("event_version_invalid", self.faults())
+
+    def test_e1_a_text_event_version_is_refused_on_read(self) -> None:
+        self.insert(event_version="x")
+        refused = self.refusal()
+        self.assertEqual(refused.sequence, 4)
+        self.assertIn("has event_version stored as text, not an integer", str(refused))
+        self.assertIn("event_version_invalid", self.faults())
+
+    # N: the echo, read before the name check could run.
+
+    def test_n1_a_long_event_id_with_a_bad_digest_is_not_echoed(self) -> None:
+        self.insert(event_id="e" * self.LONG, payload_sha256="0" * 64)
+        refused = self.refusal()
+        self.assertIn("has an unreadable event_id", str(refused))
+        faults = self.faults()
+        self.assertIn("event_name_invalid", faults)
+        self.assertIn(
+            f"<{self.LONG} characters outside the name grammar>",
+            faults["payload_digest_mismatch"],
+        )
+
+    def test_n2_a_long_stream_id_at_version_two_is_not_echoed(self) -> None:
+        stream_id = "stream-" + "x" * self.LONG
+        self.insert(stream_id=stream_id, stream_version=2)
+        refused = self.refusal()
+        self.assertEqual(refused.sequence, 4)
+        shown = f"<{len(stream_id)} characters outside the name grammar>"
+        self.assertIn(f"stream {shown} is missing version 1", str(refused))
+        faults = self.faults()
+        self.assertIn("event_name_invalid", faults)
+        self.assertIn(shown, faults["stream_version_gap"])
+
+    # Q: the AUTOINCREMENT counter, which has no declared type.
+
+    def test_q_a_counter_stored_as_text_is_refused(self) -> None:
+        for index, value in enumerate(("x", "1" * self.LONG)):
+            with self.subTest(length=len(value)):
+                self.database_path = self.build(f"q-{index}.db")
+                with closing(raw_connection(self.database_path)) as connection:
+                    connection.execute(
+                        "UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (value,)
+                    )
+                refused = self.refusal()
+                self.assertIn("sequence counter is stored as text", str(refused))
+                self.assertIn("sequence_counter_mismatch", self.faults())
+
 if __name__ == "__main__":
     unittest.main()

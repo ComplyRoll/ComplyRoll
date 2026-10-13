@@ -4136,5 +4136,25 @@ class FailureSupersessionTests(WriterFixture):
         self.assertEqual(self.correlate().created, ())
 
 
+
+class StorableVersionDigitLimitTests(unittest.TestCase):
+    """H3: no version component a store can hold reaches the interpreter's digit limit."""
+
+    def test_no_storable_version_component_reaches_the_int_digit_limit(self) -> None:
+        import sys
+
+        from complyroll.events.contracts import _MAX_STREAM_ID_LENGTH
+        from complyroll.history.fold import _numeric_version
+
+        longest = _MAX_STREAM_ID_LENGTH - len("failure/") - 64 - 2 - 1
+        self.assertEqual(longest, 425)
+        self.assertLess(longest, sys.int_info.str_digits_check_threshold)
+        previous = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(sys.int_info.str_digits_check_threshold)
+        try:
+            self.assertEqual(_numeric_version("9" * longest), (int("9" * longest),))
+        finally:
+            sys.set_int_max_str_digits(previous)
+
 if __name__ == "__main__":
     unittest.main()

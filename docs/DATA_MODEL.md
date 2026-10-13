@@ -154,9 +154,9 @@ gains three things, and a record set without one renders exactly as before:
 
 On the persisted path a failure is recorded on its own stream,
 `failure/<sha256>/<parser_name>/<parser_version>`, named for the failed reading. The stream holds
-exactly two events: a `failure.recorded` v1 head and one `observation.recorded` carrying the
-system observation. A failed invocation in a log that imported records its failure stream
-beside the artifact stream, never on it.
+exactly two events: a `failure.recorded` v1 head (a `failure.held` v1 head for a hold, below)
+and one `observation.recorded` carrying the system observation. A failed invocation in a log
+that imported records its failure stream beside the artifact stream, never on it.
 
 | `failure.recorded` field | Purpose |
 |---|---|
@@ -170,8 +170,17 @@ beside the artifact stream, never on it.
 | `diagnostics` | What the failed reading contributes to a report, at most 64 entries |
 
 The head carries no tracking id, because the tracking id is derived from the stored observation
-at replay, identically on both paths. A store that holds a failure stream is schema version 2
-(see ARCHITECTURE.md, Storage direction); a store that never records one stays at version 1.
+at replay, identically on both paths.
+
+A system observation id is the digest and the instant, so two readings of one digest can mint
+the same id. A failure another failure stream of the digest already holds is stored as a hold:
+the reading's own stream opens with a `failure.held` v1 head, which has the fields above, and
+holds the reading's own system record under the shared id. The hold names no holder. The holder
+is the first failure stream of the digest holding the id, and it must open with
+`failure.recorded`. The replay reads each id once, from the stream whose observation was recorded
+first among those no reading supersedes, and names every other stream with INFO `failure_held`.
+A store that holds a failure stream is schema version 2, and version 3 once it holds a hold (see
+ARCHITECTURE.md, Storage direction); a store that never records one stays at version 1.
 
 ## Schema validation result
 

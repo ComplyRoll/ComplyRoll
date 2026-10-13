@@ -198,16 +198,22 @@ those three match, and a test pins it.
   untrusted text.
 - Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
 - A failure stream (ADR 0014) is appended in the same transaction that marks the store schema
-  version 2, so the marker and the failure commit or roll back together. A build that predates
-  failure streams refuses such a store in `ingest`, `cases`, and `report --db` rather than
-  misreading it, and its `store verify` reports the failure streams as faults. `store verify`
-  reports a failure stream in a store left at version 1 (`failure_schema_unmarked`), a failure
+  version 2, so the marker and the failure commit or roll back together. A hold, a failure stream
+  that opens with `failure.held` (ADR 0014, amendment 2026-10-13), marks the store schema version
+  3 the same way. A build that predates failure streams refuses a schema 2 store, and a build that
+  predates holds refuses a schema 3 store, in `ingest`, `cases`, and `report --db` rather than
+  misreading it. Their `store verify` reports a marker they do not open as
+  `schema_version_unsupported` (ADR 0004, amendment 2026-10-03); before that amendment it
+  reported the failure streams as faults. `store verify` reports a failure stream in a store left
+  at version 1, or a hold in a store below version 3 (`failure_schema_unmarked`), a failure
   stream that is not exactly one head and one observation (`failure_incomplete`,
   `failure_overfull`), a head or observation that does not match its stream, an observation whose
   metadata is not what its writer stores, a stream its observation opens, or a head and observation
-  that describe two different failures (`failure_stream_mismatch`), and one system observation
-  stored on two failure streams of a digest (`failure_duplicate_observation`). Except for the
-  unmarked store, `report --db` refuses each of these rather than rendering it.
+  that describe two different failures (`failure_stream_mismatch`), a hold whose observation no
+  `failure.recorded` stream holds first (`failure_hold_orphaned`), and one system observation
+  stored on two `failure.recorded` streams of a digest (`failure_duplicate_observation`). The
+  head checks treat `failure.recorded` and `failure.held` alike. Except for the unmarked store,
+  `report --db` refuses each of these rather than rendering it.
 
 These controls protect against application mistakes and detectable corruption. They do not make a
 database file tamper-proof against a user with direct filesystem write access. File permissions,

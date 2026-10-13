@@ -47,14 +47,19 @@ from complyroll.adapters import (
     IngestDiagnostic,
     IngestResult,
     classify_ingest,
+    failure_diagnostics,
     ingest_stig_artifact,
+    system_observation_for,
 )
 from complyroll.events import (
+    FAILURE_HELD,
     EventMetadata,
     EventRepository,
+    PendingEvent,
     artifact_stream_id,
     canonical_payload_digest,
     case_stream_id,
+    failure_stream_id,
     iso_utc,
 )
 from complyroll.history import (
@@ -2003,6 +2008,76 @@ def moved(result: IngestResult, parser_name: str, parser_version: str) -> Ingest
     )
 
 
+def record_hold(
+    repository: EventRepository,
+    result: IngestResult,
+    *,
+    metadata: EventMetadata,
+    ingested_at: datetime,
+) -> str:
+    """Write one failed reading as a hold, the two events a hold's stream holds, and return it.
+
+    No writer writes a hold yet, so this writes through the repository what `record_failure`
+    writes for one under the hold amendment (ADR 0014, 2026-10-13): a `failure.held` head
+    with exactly the payload a recorded head would carry, then the reading's own system
+    observation, in one batch on the reading's own stream. The repository accepts the batch
+    only beneath the recorded failure that already holds that observation.
+    """
+
+    classification = classify_ingest(result)
+    artifact = result.artifact
+    if classification is None or classification.failure_class is None or artifact is None:
+        raise AssertionError("only a mintable detection process failure can be held")
+    observation = system_observation_for(
+        result, classification, name=artifact.name, observed_at=ingested_at
+    )
+    observation = replace(observation, ingested_at=ingested_at)
+    diagnostics = failure_diagnostics(result, classification, name=artifact.name)
+    head = {
+        "name": dict(observation.source_metadata)["artifact.name"],
+        "sha256": artifact.digest_sha256,
+        "sizeBytes": artifact.size_bytes,
+        "mediaType": artifact.media_type,
+        "parserName": artifact.parser_name,
+        "parserVersion": artifact.parser_version,
+        "ingestedAt": iso_utc(ingested_at),
+        "failureClass": classification.failure_class.value,
+        "failureCodes": list(classification.codes),
+        "clock": "invocation" if classification.clock is not None else "as-of",
+        "diagnostics": [item.to_dict() for item in diagnostics],
+    }
+    stream_id = failure_stream_id(
+        artifact.digest_sha256, artifact.parser_name, artifact.parser_version
+    )
+    repository.append_batch(
+        stream_id,
+        (
+            PendingEvent(FAILURE_HELD, head, occurred_at=ingested_at, metadata=metadata),
+            PendingEvent(
+                "observation.recorded",
+                observation.to_canonical_dict(),
+                occurred_at=ingested_at,
+                metadata=metadata,
+            ),
+        ),
+        expected_version=0,
+    )
+    return stream_id
+
+
+def pure_execution_failure(result: IngestResult) -> IngestResult:
+    """Return a reading of a failed invocation that found nothing, so only its failure records.
+
+    The shape `FailedImportDivergenceTests` builds for a held failure: the scanner's
+    declared clock stays, and the empty reading adds its ERROR.
+    """
+
+    error = IngestDiagnostic(
+        level=DiagnosticLevel.ERROR, code="no_observations", message="no usable results"
+    )
+    return replace(result, observations=(), diagnostics=(*result.diagnostics, error))
+
+
 class FailedImportReconciliationTests(FailureStoreFixture):
     """ADR 0008 Decision 5 as amended: under the carve-out the two paths agree byte for byte.
 
@@ -2769,6 +2844,99 @@ class FailureSupersessionReplayTests(FailureStoreFixture):
         self.failure("2", at=INGESTED_AT + timedelta(minutes=1))
 
         self.assertEqual(self.step(), ([], ["1", "2"], []))
+
+
+class HeldFailureReplayTests(FailureStoreFixture):
+    """R6 seen in the report it decides (ADR 0014, amendment 2026-10-13).
+
+    Each hold is written by `record_hold` beneath a failure the writer recorded, so every
+    store here is one the repository accepts.
+    """
+
+    def hold(self, result: IngestResult, *, at: datetime = INGESTED_AT) -> str:
+        """Write one failed reading as a hold beneath the failure holding its observation."""
+
+        return record_hold(self.repository, result, metadata=self.metadata, ingested_at=at)
+
+    def test_a_dormant_hold_is_named_at_its_stream_beside_the_failure_carried(self) -> None:
+        # The holder stands, so the report is the one it was before the hold, plus one INFO
+        # at the hold naming the record carried in its place.
+        self.failure("1", at=INGESTED_AT)
+        hold = self.hold(bumped(ingest_stig_artifact(TRUNCATED, ingested_at=INGESTED_AT), "2"))
+
+        self.assertEqual(self.step(), ([], ["1"], [("failure_held", hold)]))
+        report = self.replay(as_of=self.AS_OF)
+        (notice,) = [item for item in report.diagnostics if item.code == "failure_held"]
+        self.assertEqual(notice.level, DiagnosticLevel.INFO)
+        self.assertEqual(notice.location, hold)
+        self.assertEqual(
+            notice.message,
+            "failed-truncated.sarif failed under complyroll.sarif 2; this report carries the "
+            "same failure as complyroll.sarif 1 recorded it, so this reading's failure is in "
+            "history but not in it",
+        )
+        self.assertIn(notice.to_dict(), report.document["x-complyroll"]["diagnostics"])
+        self.assertIn("failure_held", report.to_markdown())
+        # One system record, the holder's: the hold's copy of it is never read back.
+        record = self.sole_vulnerability(report)
+        self.assertEqual(len(record["x-complyroll"]["observationIds"]), 1)
+
+    def test_a_hold_carries_its_failure_and_case_once_a_reading_supersedes_the_holder(
+        self,
+    ) -> None:
+        # The residual ADR 0014 documents, recorded as a hold. Version 1 of the SARIF parser
+        # records the log and its failed invocation at the scanner's declared clock; another
+        # parser's side record is held beneath it. A clean reading under version 2 later
+        # supersedes the holder under R4 and leaves the hold standing, so the hold carries:
+        # the report names the other parser's failure where it named version 1's, the case
+        # and its detection time stay, and correlate finds nothing to open.
+        source = ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT)
+        _, holder = (stream for stream, _ in self.record(INVOCATION))
+        other = moved(source, "complyroll.other", "1")
+        record_ingest(self.repository, other, metadata=self.metadata, ingested_at=INGESTED_AT)
+        hold = self.hold(other)
+        self.correlate()
+        before = self.replay(as_of=self.AS_OF)
+
+        self.assertIn(("failure_held", hold), diagnostic_codes(before))
+        (entry,) = before.document["x-complyroll"]["detectionFailures"]
+        self.assertEqual((entry["parser"], entry["parserVersion"]), ("complyroll.sarif", "1"))
+
+        newer = bumped(source, "2")
+        clean = replace(
+            newer,
+            diagnostics=tuple(
+                item for item in newer.diagnostics if item.code != "execution_unsuccessful"
+            ),
+            failed_execution_at=None,
+        )
+        later = INGESTED_AT + timedelta(days=1)
+        record_ingest(self.repository, clean, metadata=self.metadata, ingested_at=later)
+        correlated = correlate_cases(self.repository, metadata=self.metadata, now=later)
+        after = self.replay(as_of=self.AS_OF)
+
+        self.assertEqual(correlated.created, ())
+        history = artifact_history(self.repository)
+        self.assertEqual([record.stream_id for record in history.current_failures], [hold])
+        self.assertEqual([record.stream_id for record in history.superseded_failures], [holder])
+        self.assertEqual(history.dormant_failures, ())
+        (entry,) = after.document["x-complyroll"]["detectionFailures"]
+        self.assertEqual(
+            (entry["parser"], entry["parserVersion"], entry["failureClass"], entry["observedAt"]),
+            ("complyroll.other", "1", "execution", "2026-08-04T10:00:00Z"),
+        )
+        codes = diagnostic_codes(after)
+        self.assertIn(("failure_superseded", holder), codes)
+        self.assertNotIn("failure_held", [code for code, _ in codes])
+        self.assertNotIn("stale_case", [code for code, _ in codes])
+        detected = [
+            {
+                item["providerTrackingId"]: item["detection"]["detectedAt"]
+                for item in report.document["vulnerabilities"]
+            }[INVOCATION_CASE]
+            for report in (before, after)
+        ]
+        self.assertEqual(detected, ["2026-08-04T10:00:00Z", "2026-08-04T10:00:00Z"])
 
 
 def bad_rules(count: int) -> dict[str, object]:

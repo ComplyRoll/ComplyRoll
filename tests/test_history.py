@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from test_replay import bad_rules
+from test_replay import bad_rules, pure_execution_failure, record_hold
 from test_reports import TRUNCATED_SHA256, hostile_checklist
 
 from complyroll.adapters import (
@@ -35,13 +35,19 @@ from complyroll.adapters import (
     system_observation_for,
 )
 from complyroll.events import (
+    FAILURE_HELD,
     FAILURE_STREAM_SCHEMA_VERSION,
+    HELD_FAILURE_SCHEMA_VERSION,
     EventContractError,
     EventMetadata,
     EventRepository,
     PendingEvent,
     artifact_stream_id,
     case_stream_id,
+    failure_duplicate_observation_message,
+    failure_head_order_message,
+    failure_hold_orphan_message,
+    failure_identity_breach,
     failure_stream_id,
     iso_utc,
     parse_utc,
@@ -83,9 +89,17 @@ from complyroll.history import (
 )
 from complyroll.history import writers as history_writers
 from complyroll.history.fold import (
+    FailureRecord,
     _ArtifactStreamView,
+    _failure_is_superseded,
+    _FailureStreamView,
     _is_numeric_version,
     _newest_stream,
+    _read_artifact_streams,
+    _read_failure_streams,
+    _replaced_readings,
+    _split_streams,
+    _StreamSplit,
 )
 from complyroll.models import CaseStatus, Observation
 from complyroll.reports import EvaluationSet, load_evaluations, parse_evaluations
@@ -4134,6 +4148,616 @@ class FailureSupersessionTests(WriterFixture):
 
         self.assertEqual(rehydrate_observations(self.repository), ())
         self.assertEqual(self.correlate().created, ())
+
+
+def _split_streams_ff88db1(
+    artifacts: Sequence[_ArtifactStreamView],
+    failures: Sequence[_FailureStreamView],
+) -> _StreamSplit:
+    """Split one log's streams under R1 to R5 alone, word for word as `ff88db1` did.
+
+    The reference `NoHoldSplitTests` compares the fold against: the split before R6 (ADR
+    0014, amendment 2026-10-13), kept here so the claim that a log with no hold splits as it
+    did is checked against the old code rather than restated.
+    """
+
+    readings: dict[str, list[_ArtifactStreamView]] = {}
+    heads: dict[str, ArtifactRecord] = {}
+    for view in artifacts:
+        if view.record is not None:
+            readings.setdefault(view.record.sha256, []).append(view)
+            heads[view.stream_id] = view.record
+    failed: dict[str, list[_FailureStreamView]] = {}
+    for failure in failures:
+        failed.setdefault(failure.record.sha256, []).append(failure)
+
+    replaced_by: dict[str, ArtifactRecord | FailureRecord] = {}
+    superseded: set[str] = set()
+    for digest in sorted(readings.keys() | failed.keys()):
+        digest_readings = readings.get(digest, [])
+        digest_failures = failed.get(digest, [])
+        records = [heads[view.stream_id] for view in digest_readings]
+        versions = [record.parser_version for record in records]
+        versions.extend(failure.record.parser_version for failure in digest_failures)
+        numeric = all(_is_numeric_version(version) for version in versions)
+        if digest_readings:
+            replaced_by.update(
+                _replaced_readings(digest_readings, digest_failures, heads, numeric=numeric)
+            )
+        superseded.update(
+            failure.stream_id
+            for failure in digest_failures
+            if _failure_is_superseded(failure.record, records, numeric=numeric)
+        )
+    superseded.update(replaced_by)
+    return _StreamSplit(
+        current=tuple(view for view in artifacts if view.stream_id not in superseded),
+        superseded=tuple(view for view in artifacts if view.stream_id in superseded),
+        current_failures=tuple(view for view in failures if view.stream_id not in superseded),
+        superseded_failures=tuple(view for view in failures if view.stream_id in superseded),
+        replaced_by=replaced_by,
+    )
+
+
+class NoHoldSplitTests(FailureSupersessionTests):
+    """R6 changes nothing in a log with no hold (ADR 0014, amendment 2026-10-13).
+
+    Every scenario `FailureSupersessionTests` writes runs again here, and each time one
+    reads the split, the same log is also split by `_split_streams_ff88db1`. With no hold,
+    no two standing failure streams of a digest hold one observation, so R6 leaves nothing
+    dormant and the two splits agree stream for stream and replacement for replacement.
+    """
+
+    def assert_split_as_before(self) -> None:
+        artifacts = _read_artifact_streams(self.repository)
+        failures = _read_failure_streams(self.repository)
+        split = _split_streams(artifacts, failures)
+
+        self.assertEqual((split.dormant_failures, split.carried_by), ((), {}))
+        self.assertEqual(split, _split_streams_ff88db1(artifacts, failures))
+
+    def split(self) -> tuple[list[str], list[str], list[str], list[str]]:
+        self.assert_split_as_before()
+        return super().split()
+
+    def replacements(self) -> dict[str, str]:
+        self.assert_split_as_before()
+        return super().replacements()
+
+
+class HeldFailureTests(WriterFixture):
+    """R6: one failure several streams of a digest hold is carried by one of them (ADR 0014).
+
+    Under the hold amendment (2026-10-13) a failed reading whose system observation another
+    failure stream already holds is stored on its own stream, beneath that one, as a hold.
+    Each holder here is recorded by the writer and each hold is written by `record_hold`, as
+    the amendment's writer writes one, so every store is one the repository accepts unless
+    a test stages it underneath. Every failure of one digest here fails at one instant, so
+    each of them mints the same system observation.
+    """
+
+    OTHER = "complyroll.other"
+
+    def fresh_repository(self) -> None:
+        """Point the fixture at an empty log, so one shape cannot see another's streams."""
+
+        store = SQLiteEventStore(":memory:")
+        self.addCleanup(store.close)
+        self.repository = EventRepository(store)
+
+    def failed(
+        self,
+        version: str,
+        *,
+        parser_name: str | None = None,
+        source: Path = TRUNCATED,
+        at: datetime = INGESTED_AT,
+    ) -> IngestResult:
+        """Return the source's reading as `parser_name` at `version` would have made it."""
+
+        result = ingest_stig_artifact(source, ingested_at=at)
+        assert result.artifact is not None
+        artifact = replace(
+            result.artifact,
+            parser_name=parser_name or result.artifact.parser_name,
+            parser_version=version,
+        )
+        return replace(result, artifact=artifact)
+
+    def parse_failed(self, version: str, *, at: datetime) -> IngestResult:
+        """Return the failed invocation's log as a parser that cannot parse it would read it."""
+
+        error = IngestDiagnostic(
+            level=DiagnosticLevel.ERROR,
+            code="artifact_parse_failed",
+            message="the log does not parse",
+        )
+        return replace(
+            self.failed(version, source=INVOCATION, at=at),
+            observations=(),
+            diagnostics=(error,),
+            failed_execution_at=None,
+        )
+
+    def record(self, result: IngestResult) -> str:
+        """Record one failed reading through the writer, which records the failure."""
+
+        classification = classify_ingest(result)
+        assert classification is not None
+        outcome = record_failure(
+            self.repository,
+            result,
+            classification,
+            metadata=self.metadata,
+            ingested_at=INGESTED_AT,
+        )
+        self.assertTrue(outcome.appended)
+        return outcome.stream_id
+
+    def hold(self, result: IngestResult, *, at: datetime = INGESTED_AT) -> str:
+        """Write one failed reading as a hold beneath the failure holding its observation."""
+
+        return record_hold(self.repository, result, metadata=self.metadata, ingested_at=at)
+
+    def reading(
+        self, version: str, *, parser_name: str | None = None, source: Path = TRUNCATED
+    ) -> str:
+        """Record one clean reading of the source's bytes, holding no findings."""
+
+        result = self.failed(version, parser_name=parser_name, source=source)
+        clean = replace(result, observations=(), diagnostics=(), failed_execution_at=None)
+        outcome = record_ingest(
+            self.repository, clean, metadata=self.metadata, ingested_at=INGESTED_AT
+        )
+        self.assertTrue(outcome.appended)
+        return outcome.stream_id
+
+    def split(self) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+        """Return the current and superseded artifact streams, then the failure streams.
+
+        The failure streams come current, superseded, then dormant.
+        """
+
+        history = artifact_history(self.repository)
+        return (
+            [record.stream_id for record in history.current],
+            [record.stream_id for record in history.superseded],
+            [record.stream_id for record in history.current_failures],
+            [record.stream_id for record in history.superseded_failures],
+            [record.stream_id for record in history.dormant_failures],
+        )
+
+    def carriers(self) -> dict[str, str]:
+        """Map each dormant failure stream to the stream carrying its failure."""
+
+        history = artifact_history(self.repository)
+        return {stream: record.stream_id for stream, record in history.carried_by.items()}
+
+    def replacements(self) -> dict[str, str]:
+        """Map each superseded artifact stream to the stream that replaced it."""
+
+        history = artifact_history(self.repository)
+        return {stream: record.stream_id for stream, record in history.replaced_by.items()}
+
+    def observation_of(self, stream_id: str) -> dict[str, Any]:
+        """Return the system observation one failure stream stores."""
+
+        (stored,) = [
+            record
+            for record in self.repository.read_stream(stream_id)
+            if record.event_type == OBSERVATION_RECORDED
+        ]
+        return dict(stored.payload)
+
+    def rehydrated(self) -> list[dict[str, Any]]:
+        return [item.to_canonical_dict() for item in rehydrate_observations(self.repository)]
+
+    def faults(self) -> list[tuple[int, str, str]]:
+        """Return every fault the audit reports, as its sequence, code and message."""
+
+        return [
+            (fault.sequence, fault.code, fault.message) for fault in audit_history(self.repository)
+        ]
+
+    def scratch_pair(self, version: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """Record the truncated log failing under `version` in a scratch log, and return it.
+
+        Returns the stream, its head and its system observation. The fixture's own log is
+        left as it was, so a test stages exactly the shape it is about, past the repository,
+        from payloads the writer really writes. Every version fails at `INGESTED_AT`, so every
+        pair holds the same system observation.
+        """
+
+        store = SQLiteEventStore(":memory:")
+        self.addCleanup(store.close)
+        scratch, self.repository = self.repository, EventRepository(store)
+        try:
+            stream_id = self.record(self.failed(version))
+            head, observation = self.repository.read_stream(stream_id)
+        finally:
+            self.repository = scratch
+        return stream_id, dict(head.payload), dict(observation.payload)
+
+    def stage(
+        self,
+        stream_id: str,
+        events: Sequence[tuple[str, Mapping[str, Any]]],
+        *,
+        after: int = 0,
+        requires_schema: int = HELD_FAILURE_SCHEMA_VERSION,
+    ) -> list[int]:
+        """Append events to one stream past the repository, one at a time, in order.
+
+        `after` is the version the stream is already at, so two streams can interleave, and
+        `requires_schema` is the schema the store is marked forward to, as the repository
+        marks it for a hold. Returns each event's sequence.
+        """
+
+        sequences: list[int] = []
+        for offset, (event_type, payload) in enumerate(events):
+            (record,) = self.repository.store.append(
+                stream_id,
+                [
+                    NewEvent(
+                        event_type=event_type,
+                        occurred_at=INGESTED_AT,
+                        payload=dict(payload),
+                        metadata=self.metadata.to_dict(),
+                    )
+                ],
+                expected_version=after + offset,
+                requires_schema=requires_schema,
+            )
+            sequences.append(record.sequence)
+        return sequences
+
+    def test_a_hold_beneath_a_standing_holder_is_dormant(self) -> None:
+        # While the holder stands it carries the failure, so the report is the one it was
+        # before the hold: the hold is neither current nor superseded and adds no record.
+        holder = self.record(self.failed("1"))
+        hold = self.hold(self.failed("2"))
+
+        history = artifact_history(self.repository)
+        self.assertEqual(self.split(), ([], [], [holder], [], [hold]))
+        self.assertEqual(self.carriers(), {hold: holder})
+        self.assertEqual(history.carried_by[hold], history.current_failures[0])
+        self.assertEqual(history.dormant_failures[0].parser_version, "2")
+        self.assertEqual(
+            self.observation_of(hold)["observation_id"],
+            self.observation_of(holder)["observation_id"],
+        )
+        self.assertEqual(self.rehydrated(), [self.observation_of(holder)])
+        self.assertEqual(audit_history(self.repository), ())
+        self.assertEqual(self.repository.store.schema_version, HELD_FAILURE_SCHEMA_VERSION)
+
+    def test_a_hold_carries_once_a_reading_supersedes_its_holder(self) -> None:
+        # R3 retires the holder for a reading at its version and leaves the hold, a version
+        # newer, standing, so the hold carries: its own record is rehydrated, under the
+        # holder's identity, and R2 retires the reading in favour of it.
+        holder = self.record(self.failed("1"))
+        hold = self.hold(self.failed("2"))
+        reading = self.reading("1")
+
+        self.assertEqual(self.split(), ([], [reading], [hold], [holder], []))
+        self.assertEqual(self.carriers(), {})
+        self.assertEqual(self.replacements(), {reading: hold})
+        self.assertEqual(self.rehydrated(), [self.observation_of(hold)])
+        self.assertEqual(self.rehydrated()[0]["source_metadata"]["artifact.parserVersion"], "2")
+        self.assertEqual(audit_history(self.repository), ())
+
+    def test_the_earliest_standing_hold_carries_and_the_next_takes_over_when_it_falls(
+        self,
+    ) -> None:
+        holder = self.record(self.failed("1"))
+        second = self.hold(self.failed("2"))
+        third = self.hold(self.failed("3"))
+        self.assertEqual(self.split(), ([], [], [holder], [], [second, third]))
+        self.assertEqual(self.carriers(), {second: holder, third: holder})
+
+        one = self.reading("1")
+        self.assertEqual(self.split(), ([], [one], [second], [holder], [third]))
+        self.assertEqual(self.carriers(), {third: second})
+        # R2 weighs the carrier, never the dormant hold at the newest version.
+        self.assertEqual(self.replacements(), {one: second})
+
+        two = self.reading("2")
+        self.assertEqual(self.split(), ([], [one, two], [third], [holder, second], []))
+        self.assertEqual(self.replacements(), {one: third, two: third})
+
+        three = self.reading("3")
+        self.assertEqual(self.split(), ([three], [one, two], [], [holder, second, third], []))
+        self.assertEqual(self.replacements(), {one: three, two: three})
+
+    def test_r2_never_weighs_a_dormant_hold_and_weighs_a_carrying_one(self) -> None:
+        # Weighed while dormant, the hold at 3 would retire the reading in favour of a
+        # failure the report does not carry, and `artifact_superseded_by_failure` would name
+        # it. Once the holder falls the hold carries, and R2 weighs it like any failure.
+        one = self.reading("1")
+        holder = self.record(self.failed("2"))
+        hold = self.hold(self.failed("3"))
+        self.assertEqual(self.split(), ([], [one], [holder], [], [hold]))
+        self.assertEqual(self.replacements(), {one: holder})
+
+        two = self.reading("2")
+        self.assertEqual(self.split(), ([], [one, two], [hold], [holder], []))
+        self.assertEqual(self.replacements(), {one: hold, two: hold})
+
+    def test_a_hold_at_a_version_that_is_not_numeric_turns_its_digest_to_text_order(
+        self,
+    ) -> None:
+        # Holds join the numeric decision, so a hold at 10a is never compared as a number.
+        # Text order moves W from 10 to 9 while the holder stands, as a recorded failure at
+        # 10a would, and 9 then supersedes the hold under R4.
+        nine = self.reading("9", source=INVOCATION)
+        ten = self.reading("10", source=INVOCATION)
+        holder = self.record(
+            pure_execution_failure(self.failed("1", parser_name=self.OTHER, source=INVOCATION))
+        )
+        self.assertEqual(self.split(), ([ten], [nine], [holder], [], []))
+
+        hold = self.hold(pure_execution_failure(self.failed("10a", source=INVOCATION)))
+
+        self.assertEqual(self.split(), ([nine], [ten], [holder], [hold], []))
+        self.assertEqual(self.replacements(), {ten: nine})
+
+    def test_the_fold_and_the_refusal_compare_a_digest_with_a_dormant_hold_one_way(
+        self,
+    ) -> None:
+        # The dormant parse hold at 9-rc1 turns the digest to text order, where 9 follows
+        # 10, so the fold's W is 9. `reading_elsewhere` counts the hold too and compares the
+        # same way, so a failure under 11, which 9 follows in text order, is kept out by 9.
+        # Leaving the dormant hold out would compare numerically and let it in.
+        nine = self.reading("9", source=INVOCATION)
+        self.reading("10", source=INVOCATION)
+        holder = self.record(
+            pure_execution_failure(self.failed("1", parser_name=self.OTHER, source=INVOCATION))
+        )
+        hold = self.hold(self.parse_failed("9-rc1", at=INVOCATION_CLOCK), at=INVOCATION_CLOCK)
+
+        history = artifact_history(self.repository)
+        self.assertEqual([record.stream_id for record in history.current], [nine])
+        self.assertEqual(self.split()[2:], ([holder], [], [hold]))
+        self.assertIs(history.dormant_failures[0].failure_class, FailureClass.PARSE)
+        refused = reading_elsewhere(
+            history,
+            history.current[0].sha256,
+            parser_name="complyroll.sarif",
+            parser_version="11",
+        )
+        self.assertIsNotNone(refused)
+        assert refused is not None
+        self.assertEqual(refused.stream_id, nine)
+
+    def test_the_carrier_is_the_stream_whose_observation_was_recorded_first(self) -> None:
+        # Staged past the repository, a hold's head can come before its holder's while its
+        # observation comes after the holder's. The holder still holds the observation first,
+        # the order `failure_observations_of_digest` names a holder in, so the reader takes
+        # the hold, the audit finds nothing, and R6 elects the holder by its observation,
+        # not by its head.
+        holder, holder_head, holder_observation = self.scratch_pair("1")
+        hold, hold_head, hold_observation = self.scratch_pair("2")
+        self.stage(hold, [(FAILURE_HELD, hold_head)])
+        self.stage(
+            holder,
+            [(FAILURE_RECORDED, holder_head), (OBSERVATION_RECORDED, holder_observation)],
+        )
+        self.stage(hold, [(OBSERVATION_RECORDED, hold_observation)], after=1)
+
+        history = artifact_history(self.repository)
+        self.assertEqual(self.split(), ([], [], [holder], [], [hold]))
+        self.assertEqual(self.carriers(), {hold: holder})
+        self.assertLess(history.dormant_failures[0].sequence, history.current_failures[0].sequence)
+        self.assertEqual(
+            self.repository.failure_observations_of_digest(hold),
+            {holder_observation["observation_id"]: holder},
+        )
+        self.assertEqual(self.rehydrated(), [holder_observation])
+        self.assertEqual(audit_history(self.repository), ())
+
+    def test_a_hold_with_no_recorded_failure_above_it_is_refused_and_named_once(self) -> None:
+        # Staged past the repository, a hold can hold its observation first, sit beneath
+        # another hold, or sit beneath a stream its own observation opens. The reader refuses
+        # the first such hold it meets, and the audit names each, once a stream, at the
+        # observation that shows it. A recorded failure after a hold of its observation is
+        # a duplicate of that hold.
+        holder, holder_head, holder_observation = self.scratch_pair("1")
+        hold, hold_head, hold_observation = self.scratch_pair("2")
+        third, third_head, third_observation = self.scratch_pair("3")
+        observation_id = holder_observation["observation_id"]
+        recorded = [(FAILURE_RECORDED, holder_head), (OBSERVATION_RECORDED, holder_observation)]
+        held = [(FAILURE_HELD, hold_head), (OBSERVATION_RECORDED, hold_observation)]
+        alone = failure_hold_orphan_message(hold, observation_id, None)
+        beneath_an_opener = failure_hold_orphan_message(hold, observation_id, holder)
+        shapes: dict[
+            str,
+            tuple[list[tuple[str, list[tuple[str, Mapping[str, Any]]]]], str, list[Any]],
+        ] = {
+            "a hold alone": ([(hold, held)], alone, [(2, "failure_hold_orphaned", alone)]),
+            "a hold beneath a hold": (
+                [
+                    (hold, held),
+                    (
+                        third,
+                        [(FAILURE_HELD, third_head), (OBSERVATION_RECORDED, third_observation)],
+                    ),
+                ],
+                alone,
+                [
+                    (2, "failure_hold_orphaned", alone),
+                    (
+                        4,
+                        "failure_hold_orphaned",
+                        failure_hold_orphan_message(third, observation_id, hold),
+                    ),
+                ],
+            ),
+            "a hold before its holder": (
+                [(hold, held), (holder, recorded)],
+                alone,
+                [
+                    (2, "failure_hold_orphaned", alone),
+                    (
+                        4,
+                        "failure_duplicate_observation",
+                        failure_duplicate_observation_message(holder, observation_id, hold),
+                    ),
+                ],
+            ),
+            "a hold beneath a stream its observation opens": (
+                [(holder, recorded[::-1]), (hold, held)],
+                beneath_an_opener,
+                [
+                    (1, "failure_stream_mismatch", failure_head_order_message(holder)),
+                    (4, "failure_hold_orphaned", beneath_an_opener),
+                ],
+            ),
+            "a hold holding its observation twice": (
+                [(hold, [*held, (OBSERVATION_RECORDED, hold_observation)])],
+                alone,
+                [
+                    (
+                        1,
+                        "failure_overfull",
+                        f"failure stream {hold!r} is overfull: a failure stream holds one "
+                        "failure record and one observation, found 1 failure record(s) and 2 "
+                        "observation(s)",
+                    ),
+                    (2, "failure_hold_orphaned", alone),
+                ],
+            ),
+        }
+        for label, (streams, refused, faults) in shapes.items():
+            with self.subTest(label):
+                self.fresh_repository()
+                for stream_id, events in streams:
+                    self.stage(stream_id, events)
+
+                for read in (artifact_history, rehydrate_observations):
+                    with self.assertRaises(HistoryError) as caught:
+                        read(self.repository)
+
+                    self.assertEqual(str(caught.exception), refused)
+                self.assertEqual(
+                    self.faults(),
+                    faults,
+                )
+
+    def test_a_stream_holding_both_heads_is_overfull(self) -> None:
+        stream_id, head, observation = self.scratch_pair("1")
+        sequences = self.stage(
+            stream_id,
+            [
+                (FAILURE_RECORDED, head),
+                (OBSERVATION_RECORDED, observation),
+                (FAILURE_HELD, head),
+            ],
+        )
+        overfull = (
+            f"failure stream {stream_id!r} is overfull: a failure stream holds one failure "
+            "record and one observation, found 2 failure record(s) and 1 observation(s)"
+        )
+
+        for read in (artifact_history, rehydrate_observations):
+            with self.assertRaises(HistoryError) as caught:
+                read(self.repository)
+
+            self.assertEqual(str(caught.exception), overfull)
+        self.assertEqual(
+            self.faults(),
+            [(sequences[0], "failure_overfull", overfull)],
+        )
+
+    def test_a_hold_head_naming_another_reading_is_refused_and_named(self) -> None:
+        # The fold reads a hold's parser and version from its head, as it reads a recorded
+        # failure's, so the head is held to its stream id the same way: by the reader, which
+        # refuses it at the head, and by the audit, which names it there.
+        hold, head, observation = self.scratch_pair("2")
+        for label, field, value in (
+            ("another parser", "parserName", self.OTHER),
+            ("another version", "parserVersion", "3"),
+        ):
+            with self.subTest(label):
+                self.fresh_repository()
+                self.record(self.failed("1"))
+                stored = {**head, field: value}
+                breach = failure_identity_breach(hold, FAILURE_HELD, stored)
+                assert breach is not None
+                self.assertTrue(breach.startswith(f"{FAILURE_HELD} records digest"))
+                sequences = self.stage(
+                    hold, [(FAILURE_HELD, stored), (OBSERVATION_RECORDED, observation)]
+                )
+
+                for read in (artifact_history, rehydrate_observations):
+                    with self.assertRaises(HistoryError) as caught:
+                        read(self.repository)
+
+                    self.assertEqual(
+                        str(caught.exception),
+                        f"event {sequences[0]} is on the wrong stream: {breach}",
+                    )
+                self.assertEqual(
+                    self.faults(),
+                    [(sequences[0], "failure_stream_mismatch", breach)],
+                )
+
+    def test_a_hold_head_its_contract_refuses_is_named_as_a_hold(self) -> None:
+        # No stored diagnostic is an ERROR, a hold's head included, and the reader says
+        # which kind of head it could not read.
+        self.record(self.failed("1"))
+        hold, head, observation = self.scratch_pair("2")
+        head["diagnostics"] = [{**head["diagnostics"][0], "level": "error"}]
+        sequences = self.stage(hold, [(FAILURE_HELD, head), (OBSERVATION_RECORDED, observation)])
+
+        with self.assertRaises(HistoryError) as caught:
+            artifact_history(self.repository)
+
+        self.assertTrue(
+            str(caught.exception).startswith(
+                f"event {sequences[0]} is not a readable failure hold: {FAILURE_HELD} version 1 "
+                "payload is invalid: /diagnostics/0/level: enum:"
+            )
+        )
+        self.assertEqual(
+            [(fault.sequence, fault.code) for fault in audit_history(self.repository)],
+            [(sequences[0], "payload_contract_invalid")],
+        )
+
+    def test_a_hold_in_a_store_below_schema_3_is_one_fault_at_the_hold(self) -> None:
+        # The repository marks a store 3 in the transaction that writes its first hold, so a
+        # hold in a store below 3 was written past it, and a build that reads failure streams
+        # but predates holds would open the store and misread the hold. One fault names the
+        # store's condition, at the hold, whichever of the two schemas the store is short of.
+        holder, holder_head, holder_observation = self.scratch_pair("1")
+        hold, hold_head, hold_observation = self.scratch_pair("2")
+        for schema in (1, FAILURE_STREAM_SCHEMA_VERSION):
+            with self.subTest(schema=schema):
+                self.fresh_repository()
+                self.stage(
+                    holder,
+                    [(FAILURE_RECORDED, holder_head), (OBSERVATION_RECORDED, holder_observation)],
+                    requires_schema=schema,
+                )
+                sequences = self.stage(
+                    hold,
+                    [(FAILURE_HELD, hold_head), (OBSERVATION_RECORDED, hold_observation)],
+                    requires_schema=schema,
+                )
+
+                self.assertEqual(self.repository.store.schema_version, schema)
+                self.assertEqual(
+                    self.faults(),
+                    [
+                        (
+                            sequences[0],
+                            "failure_schema_unmarked",
+                            f"failure stream {hold!r} holds a {FAILURE_HELD} in a store at "
+                            f"schema {schema}; a store holding a hold is marked schema 3, so a "
+                            "build that cannot read holds refuses it rather than misreading it",
+                        )
+                    ],
+                )
+                # The reader reads the log: the schema is the store's condition, not a stream's.
+                self.assertEqual(self.split()[2:], ([holder], [], [hold]))
 
 
 

@@ -37,8 +37,10 @@ from complyroll.adapters import (
 from complyroll.cli import main
 from complyroll.events import (
     FAILURE_STREAM_SCHEMA_VERSION,
+    HELD_FAILURE_SCHEMA_VERSION,
     EventMetadata,
     EventRepository,
+    failure_hold_orphan_message,
     failure_stream_id,
 )
 from complyroll.history import (
@@ -1508,6 +1510,7 @@ COVERED_AUDIT_CODES = {
     "event_metadata_invalid",
     "event_stream_mismatch",
     "failure_duplicate_observation",
+    "failure_hold_orphaned",
     "failure_incomplete",
     "failure_overfull",
     "failure_schema_unmarked",
@@ -4590,6 +4593,32 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(report_code, 1)
         self.assertIn("history_invalid", report_err)
         self.assertIn(str(observation["observation_id"]), report_err)
+
+    def test_a_hold_beneath_no_recorded_failure_is_named_and_exits_one(self) -> None:
+        # A hold is written beneath the recorded failure that first holds its system record
+        # (ADR 0014, amendment 2026-10-13). Smuggled in alone, at the schema a hold marks,
+        # it holds the record first itself, so nothing is above it: the audit names it and
+        # the reports refuse it, with the same words.
+        self.populate()
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        sequences = self.smuggle_failure(
+            stream_id,
+            [("failure.held", head), ("observation.recorded", observation)],
+            requires_schema=HELD_FAILURE_SCHEMA_VERSION,
+        )
+        orphaned = failure_hold_orphan_message(stream_id, observation["observation_id"], None)
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        report_code, report_out, report_err = self.report_from_history()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequences[1]}: failure_hold_orphaned: {orphaned}\n", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+        self.assertEqual(report_code, 1)
+        self.assertEqual(report_out, "")
+        self.assertNotIn("Traceback", report_err)
+        self.assertIn(f"error: history_invalid: {orphaned}", report_err)
 
     def copy_store(self, source: Path, name: str) -> None:
         """Point the test at a copy of one store, so each damage starts from the same log."""

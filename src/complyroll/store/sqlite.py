@@ -649,11 +649,21 @@ class SQLiteEventStore:
         SQLite failure (unreadable file, I/O error) is still an error, not a fault.
 
         Faults arrive in a fixed order: schema objects sorted by ``(type, name)``, then the
-        migration record, then the sequence counter, then rows by ascending sequence. A
-        store opened through `open_for_verification` reaches the first four, which the
-        normal constructor refuses to open at all. When the `events` table is itself gone
+        header's schema marker and then its application id, then the migration record, then
+        the sequence counter, then rows by ascending sequence. A store opened through
+        `open_for_verification` reaches the first five, which the normal constructor refuses
+        to open at all. A file holding no schema objects at schema 0 has its marker left
+        alone and its application id judged only when it is not 0, so a file the open would
+        initialize reports only its missing objects. When the `events` table is itself gone
         the schema faults are reported and the walk is skipped rather than letting SQLite
-        raise, and the migration table is read only when it is present.
+        raise. A table rebuilt without a column `append` writes, or so `sequence` holds
+        anything but an integer, is treated the same way, because the walk reads each row by
+        those column names and the counter check and the walk both order and count by that
+        integer. The migration table is read only when it is present with its `version`
+        column, and only an integer there counts as a record, as `_mark_schema` writes it.
+        The walk's first page has no lower bound, so a row numbered below 1, which every
+        other command refuses at open, is checked like any other and reported as
+        `sequence_gap`.
         """
 
         connection = self._require_open()
@@ -662,18 +672,41 @@ class SQLiteEventStore:
         with _sqlite_errors("could not verify event history"):
             present = self._schema_objects(connection)
             faults.extend(self._schema_faults(connection))
+            faults.extend(self._header_faults(connection, present))
             faults.extend(self._migration_faults(connection, present))
             if ("table", "events") not in present:
+                return IntegrityReport(ok=not faults, checked_events=0, faults=tuple(faults))
+            if (
+                not _has_event_columns(connection)
+                or connection.execute(
+                    "SELECT 1 FROM events WHERE typeof(sequence) != 'integer' LIMIT 1"
+                ).fetchone()
+                is not None
+            ):
+                # `sequence` is the integer rowid alias `append` writes through, so only a
+                # table rebuilt by hand lacks a column `append` writes or holds anything but
+                # an integer there, and `_schema_faults` has reported it. The walk reads each
+                # row by those column names, and the counter check and the walk both order
+                # by that integer.
                 return IntegrityReport(ok=not faults, checked_events=0, faults=tuple(faults))
             faults.extend(self._counter_faults(connection, present))
             expected_sequence = 1
             stream_versions: dict[str, int] = {}
-            after_sequence = 0
+            # `append` numbers from 1 and every other command refuses a row stored below
+            # that at open, so the first page has no lower bound and reaches it. A bound
+            # computed under the lowest row would overflow SQLite's 64-bit integer when
+            # that row sits at -2**63.
+            after_sequence: int | None = None
             while True:
-                rows = connection.execute(
-                    "SELECT * FROM events WHERE sequence > ? ORDER BY sequence LIMIT ?",
-                    (after_sequence, MAX_READ_BATCH),
-                ).fetchall()
+                if after_sequence is None:
+                    rows = connection.execute(
+                        "SELECT * FROM events ORDER BY sequence LIMIT ?", (MAX_READ_BATCH,)
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT * FROM events WHERE sequence > ? ORDER BY sequence LIMIT ?",
+                        (after_sequence, MAX_READ_BATCH),
+                    ).fetchall()
                 if not rows:
                     break
                 for row in rows:
@@ -682,6 +715,20 @@ class SQLiteEventStore:
                     after_sequence = sequence
                     faults.extend(_column_faults(row, sequence))
                     faults.extend(_payload_faults(row, sequence))
+                    if sequence < 1:
+                        # Counted, this row would misreport every gap after it, so it stays
+                        # out of both the sequence and the stream-version walks.
+                        faults.append(
+                            IntegrityFault(
+                                sequence=sequence,
+                                code="sequence_gap",
+                                message=(
+                                    f"event history holds sequence {sequence}; sequences "
+                                    "start at 1"
+                                ),
+                            )
+                        )
+                        continue
                     if sequence != expected_sequence:
                         faults.append(
                             IntegrityFault(
@@ -696,11 +743,14 @@ class SQLiteEventStore:
                         expected_sequence = sequence
                     expected_sequence += 1
 
-                    stream_id = str(row["stream_id"])
+                    # The string is only the grouping key; the gap message describes the
+                    # stored value, so a blob reads as `<blob value>`, not its repr's length.
+                    stored_stream_id = row["stream_id"]
+                    stream_id = str(stored_stream_id)
                     stream_version = row["stream_version"]
-                    if type(stream_version) is not int:
+                    if type(stream_version) is not int or stream_version < 1:
                         # `_column_faults` has reported this row, and a version that is not
-                        # an integer has no place in the stream's count.
+                        # an integer of at least 1 has no place in the stream's count.
                         continue
                     expected_version = stream_versions.get(stream_id, 0) + 1
                     if stream_version != expected_version:
@@ -709,8 +759,8 @@ class SQLiteEventStore:
                                 sequence=sequence,
                                 code="stream_version_gap",
                                 message=(
-                                    f"stream {_shown_name(stream_id)} is missing version "
-                                    f"{expected_version}; next stored version is "
+                                    f"stream {_shown_name(stored_stream_id)} is missing "
+                                    f"version {expected_version}; next stored version is "
                                     f"{stream_version}"
                                 ),
                             )
@@ -748,17 +798,63 @@ class SQLiteEventStore:
         return tuple(faults)
 
     @staticmethod
+    def _header_faults(
+        connection: sqlite3.Connection,
+        present: frozenset[tuple[str, str]],
+    ) -> tuple[IntegrityFault, ...]:
+        """Report a schema marker or application id the normal open refuses.
+
+        A file holding no objects at schema 0 is what the open initializes, not a damaged
+        store, so its marker is not judged, and its application id may be 0 as well as
+        ComplyRoll's. Any other file must carry a marker in the supported range and
+        ComplyRoll's application id: the open refuses application id 0 on a file that holds
+        objects or claims a schema. Both values are SQLite header integers, so the messages
+        stay bounded.
+        """
+
+        application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        initializable = not present and version == 0
+        faults: list[IntegrityFault] = []
+        if not initializable and not SCHEMA_VERSION <= version <= SUPPORTED_SCHEMA_VERSION:
+            faults.append(
+                IntegrityFault(
+                    sequence=None,
+                    code="schema_version_unsupported",
+                    message=(
+                        f"database is marked schema {version}; this build opens schemas "
+                        f"{SCHEMA_VERSION} to {SUPPORTED_SCHEMA_VERSION}"
+                    ),
+                )
+            )
+        if application_id != APPLICATION_ID and not (initializable and application_id == 0):
+            faults.append(
+                IntegrityFault(
+                    sequence=None,
+                    code="application_id_mismatch",
+                    message=(
+                        f"database application_id is {application_id}; a ComplyRoll store "
+                        f"is marked {APPLICATION_ID}"
+                    ),
+                )
+            )
+        return tuple(faults)
+
+    @staticmethod
     def _migration_faults(
         connection: sqlite3.Connection,
         present: frozenset[tuple[str, str]],
     ) -> tuple[IntegrityFault, ...]:
-        """Report a missing migration record, reading the table only when it exists.
+        """Report a missing migration record, reading the table only when it can be read.
 
-        A database whose migration table is gone already carries a `schema_object_missing`
-        fault for it, and querying the absent table would raise instead of reporting.
+        A database whose migration table is gone, or was rebuilt without its `version`
+        column, already carries a schema fault for it, and querying the column would raise
+        instead of reporting.
         """
 
         if ("table", "complyroll_schema_migrations") not in present:
+            return ()
+        if "version" not in _table_columns(connection, "complyroll_schema_migrations"):
             return ()
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         return tuple(
@@ -781,16 +877,14 @@ class SQLiteEventStore:
         database that lost it reads as a counter of zero rather than raising.
         """
 
-        counter = 0
+        rows: list[Any] = []
         if ("table", "sqlite_sequence") in present:
-            row = connection.execute(
-                "SELECT seq FROM sqlite_sequence WHERE name = 'events'"
-            ).fetchone()
-            counter = 0 if row is None else row[0]
+            rows = connection.execute(_COUNTER_QUERY).fetchall()
+        counter = rows[0][0] if rows else 0
         latest = int(
             connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM events").fetchone()[0]
         )
-        problem = _counter_problem(counter)
+        problem = _counter_problem(rows)
         if problem is not None:
             return (
                 IntegrityFault(
@@ -1008,6 +1102,8 @@ class SQLiteEventStore:
 
         if application_id != APPLICATION_ID:
             raise UnsupportedSchemaError("database schema is not marked as a ComplyRoll store")
+        if not SCHEMA_VERSION <= version <= SUPPORTED_SCHEMA_VERSION:
+            raise _schema_out_of_range(version)
 
         missing = sorted(EXPECTED_SCHEMA_OBJECTS - present)
         if missing:
@@ -1043,6 +1139,17 @@ class SQLiteEventStore:
         """
 
         current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if not SCHEMA_VERSION <= current <= SUPPORTED_SCHEMA_VERSION:
+            # The open checked the marker, but another connection can rewrite it after a
+            # clean open. No migration exists below SCHEMA_VERSION to mark forward from, and
+            # above SUPPORTED_SCHEMA_VERSION the marker names a schema this build cannot
+            # write, so both are refused before the early return can let an append through.
+            raise _schema_out_of_range(current)
+        if int(connection.execute("PRAGMA application_id").fetchone()[0]) != APPLICATION_ID:
+            # The open checked the application id as well, and another connection can
+            # rewrite it the same way, so the append is refused before it writes into a
+            # file marked as another program's.
+            raise UnsupportedSchemaError("database schema is not marked as a ComplyRoll store")
         if current >= required:
             return
         applied_at = _format_timestamp(self._clock(), "applied_at")
@@ -1079,13 +1186,11 @@ class SQLiteEventStore:
         other one; together they keep an append from ever writing past missing history.
         """
 
-        row = connection.execute(
-            "SELECT seq FROM sqlite_sequence WHERE name = 'events'"
-        ).fetchone()
-        counter = 0 if row is None else row[0]
+        rows = connection.execute(_COUNTER_QUERY).fetchall()
+        counter = rows[0][0] if rows else 0
         latest_row = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM events").fetchone()
         latest = int(latest_row[0])
-        problem = _counter_problem(counter)
+        problem = _counter_problem(rows)
         if problem is not None:
             raise EventIntegrityError(problem, sequence=latest)
         if counter != latest:
@@ -1326,8 +1431,40 @@ class _write_transaction:
             self._on_unrecoverable()
 
 
+_EVENT_COLUMNS = (
+    "sequence",
+    "event_id",
+    "stream_id",
+    "stream_version",
+    "event_type",
+    "event_version",
+    "occurred_at",
+    "recorded_at",
+    "payload_json",
+    "metadata_json",
+    "payload_sha256",
+)
 _NAME_COLUMNS = ("event_id", "stream_id", "event_type")
 _VERSION_COLUMNS = ("stream_version", "event_version")
+
+
+def _table_columns(connection: sqlite3.Connection, table: str) -> frozenset[str]:
+    """Name the columns of ``table``, lowercased.
+
+    SQLite and `sqlite3.Row` both match a column name without regard to ASCII case, so a
+    column renamed only in case is still the one a query reads.
+    """
+
+    cursor = connection.execute(f"SELECT * FROM {table} LIMIT 0")
+    return frozenset(str(column[0]).lower() for column in cursor.description)
+
+
+def _has_event_columns(connection: sqlite3.Connection) -> bool:
+    """Report whether `events` still has every column `append` writes."""
+
+    return _table_columns(connection, "events").issuperset(_EVENT_COLUMNS)
+
+
 _STORAGE_CLASSES: dict[type, str] = {
     int: "integer",
     float: "real",
@@ -1377,18 +1514,21 @@ def _name_problem(row: sqlite3.Row) -> str | None:
 
 
 def _version_problem(row: sqlite3.Row) -> str | None:
-    """Say why a stored version column is not an integer, or return None.
+    """Say why a stored version column is not an integer of at least 1, or return None.
 
     The columns are declared INTEGER without STRICT. SQLite orders TEXT above every integer,
     so `CHECK (stream_version >= 1)` admits text, and integer affinity turns a numeric text
     too long for 64 bits into REAL infinity. `int()` would raise an uncoded ValueError or
-    OverflowError on either.
+    OverflowError on either. A write made with `PRAGMA ignore_check_constraints` on skips
+    the CHECK entirely, so an integer below 1 can be stored as well.
     """
 
     for column in _VERSION_COLUMNS:
         value = row[column]
         if type(value) is not int:
             return f"{column} stored as {_storage_class(value)}, not an integer"
+        if value < 1:
+            return f"{column} {value}; versions start at 1"
     return None
 
 
@@ -1413,12 +1553,20 @@ def _column_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ...
     return tuple(faults)
 
 
-def _counter_problem(value: object) -> str | None:
-    """Say why the stored AUTOINCREMENT counter is not an integer, or return None.
+_COUNTER_QUERY = "SELECT seq FROM sqlite_sequence WHERE name = 'events' LIMIT 2"
 
-    `sqlite_sequence.seq` has no declared type, so an edit can leave text in it.
+
+def _counter_problem(rows: Sequence[Sequence[object]]) -> str | None:
+    """Say why the stored AUTOINCREMENT counter is not one integer, or return None.
+
+    `sqlite_sequence.seq` has no declared type, so an edit can leave text in it. The table has
+    no key either, so an edit can add a second row for `events`, and which row a check read
+    would then depend on row order. `_COUNTER_QUERY` reads at most two rows, enough to tell.
     """
 
+    if len(rows) > 1:
+        return "the events sequence counter is stored in more than one row"
+    value = rows[0][0] if rows else 0
     if type(value) is int:
         return None
     return f"the events sequence counter is stored as {_storage_class(value)}, not an integer"
@@ -1490,10 +1638,16 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
             f"event {row['event_id']!r} payload does not match its recorded digest",
             sequence=sequence,
         )
+    metadata_json = str(row["metadata_json"])
+    problem = _json_size_problem(payload_json, "payload") or _json_size_problem(
+        metadata_json, "metadata"
+    )
+    if problem is not None:
+        raise EventIntegrityError(f"event {row['event_id']!r} {problem}", sequence=sequence)
 
     try:
         payload = json.loads(payload_json)
-        metadata = json.loads(str(row["metadata_json"]))
+        metadata = json.loads(metadata_json)
     except json.JSONDecodeError as exc:
         raise EventIntegrityError(
             f"event {row['event_id']!r} contains invalid JSON",
@@ -1549,9 +1703,21 @@ def _payload_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ..
                 ),
             ),
         )
+    metadata_json = str(row["metadata_json"])
+    problem = _json_size_problem(payload_json, "payload") or _json_size_problem(
+        metadata_json, "metadata"
+    )
+    if problem is not None:
+        return (
+            IntegrityFault(
+                sequence=sequence,
+                code="payload_not_json",
+                message=f"event {_shown_name(row['event_id'])} {problem}",
+            ),
+        )
     try:
         payload = json.loads(payload_json)
-        metadata = json.loads(str(row["metadata_json"]))
+        metadata = json.loads(metadata_json)
     except json.JSONDecodeError:
         return (
             IntegrityFault(
@@ -1667,10 +1833,12 @@ def _stream_version_gap_error(
         else _stored_stream_version(connection, stream_id, row[0])
     )
     if following is None:
-        # Unlike a sequence, a stream version cannot fall below one while the table's CHECK
-        # and its UNIQUE (stream_id, stream_version) stand, so a count that outruns the
-        # highest version means the schema itself was rewritten. Reaching this without a
-        # message would be worse than the guard costing a branch.
+        # No version above one lacks its predecessor, so the count outruns the versions
+        # only if one sits below one or two rows share one. The table's CHECK refuses the
+        # first unless the writer set `PRAGMA ignore_check_constraints`, and its UNIQUE
+        # (stream_id, stream_version) refuses the second unless the schema itself was
+        # rewritten. Reaching this without a message would be worse than the guard costing
+        # a branch.
         return EventIntegrityError(
             f"stream {_shown_name(stream_id)} holds {stored} event(s) but its versions run from "
             f"{lowest} to {highest}",
@@ -1861,19 +2029,35 @@ def _require_supported_schema(value: int) -> None:
         )
 
 
+def _schema_out_of_range(version: int) -> UnsupportedSchemaError:
+    """Describe a ``user_version`` marker this build has no migrations for."""
+
+    return UnsupportedSchemaError(
+        f"database schema {version} is outside supported schemas {SCHEMA_VERSION} to "
+        f"{SUPPORTED_SCHEMA_VERSION}"
+    )
+
+
 def _missing_migrations(connection: sqlite3.Connection, version: int) -> tuple[int, ...]:
     """Return the migration records a store marked at ``version`` lacks, in order.
 
     A store at version 1 needs record 1 and a store at version 2 needs records 1 and 2. A
     version this build does not open is held to the records it knows, so `verify_history`
-    can still describe such a file rather than raising.
+    can still describe such a file rather than raising. Only a record stored as an integer
+    counts. The column is an alias for the rowid and holds nothing else, so only a table
+    rebuilt by hand, which `_schema_faults` reports, can hold text there, and text such as
+    ``'1x'`` compares as text against the bounds and then fails `int`.
     """
 
     newest = max(SCHEMA_VERSION, min(version, SUPPORTED_SCHEMA_VERSION))
     recorded = {
         int(row[0])
         for row in connection.execute(
-            "SELECT version FROM complyroll_schema_migrations WHERE version BETWEEN ? AND ?",
+            """
+            SELECT version
+            FROM complyroll_schema_migrations
+            WHERE typeof(version) = 'integer' AND version BETWEEN ? AND ?
+            """,
             (SCHEMA_VERSION, newest),
         ).fetchall()
     }
@@ -1913,9 +2097,22 @@ def _canonical_json_object(value: Mapping[str, Any], field_name: str) -> str:
         )
     except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError(f"{field_name} must contain valid JSON values") from exc
-    if len(encoded.encode("utf-8")) > MAX_EVENT_JSON_BYTES:
-        raise ValueError(f"{field_name} exceeds the {MAX_EVENT_JSON_BYTES}-byte limit")
+    problem = _json_size_problem(encoded, field_name)
+    if problem is not None:
+        raise ValueError(problem)
     return encoded
+
+
+def _json_size_problem(text: str, field_name: str) -> str | None:
+    """Name the size limit a JSON column's text breaks, or return None.
+
+    `append` applies it to the canonical text it stores. Reads apply it to the stored text
+    before decoding it, because text padded past the limit can still decode to a small value.
+    """
+
+    if len(text.encode("utf-8")) > MAX_EVENT_JSON_BYTES:
+        return f"{field_name} exceeds the {MAX_EVENT_JSON_BYTES}-byte limit"
+    return None
 
 
 def _validate_json_tree(value: Mapping[str, Any], field_name: str) -> None:

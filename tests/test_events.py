@@ -76,6 +76,7 @@ from complyroll.events.contracts import (
     _placement_problem,
     _timestamp_pointers,
 )
+from complyroll.events.repository import _SHOWN_LIMIT, _shown
 from complyroll.models import (
     Observation,
     ObservationDisposition,
@@ -1647,6 +1648,16 @@ class StreamCompatibilityTests(unittest.TestCase):
             f"'2' on stream {ARTIFACT_STREAM_ID!r}, which names digest {DIGEST!r} read by "
             "'complyroll.cklb' version '1'",
         )
+
+    def test_a_quote_of_exactly_the_limit_is_shown_whole(self) -> None:
+        # The cut is past `_SHOWN_LIMIT` characters of the quoted form, not at it: 198 nines
+        # quote to exactly 200 characters and are shown unchanged, and one more nine is cut
+        # just before its closing quote and counted.
+        fits, over = "9" * 198, "9" * 199
+        self.assertEqual(len(repr(fits)), _SHOWN_LIMIT)
+
+        self.assertEqual(_shown(fits), repr(fits))
+        self.assertEqual(_shown(over), "'" + over + "... (201 characters)")
 
     def test_the_same_identity_on_its_own_stream_is_accepted(self) -> None:
         # The check is about agreement between the payload and the stream, not about one

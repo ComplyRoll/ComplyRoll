@@ -21,21 +21,56 @@ All notable project changes will be documented here.
   The event log is deliberately not order-independent: two stores built by ingesting the same
   files in opposite orders differ in bytes and in sequence, both verify clean, and both rebuild
   the identical report.
-- A store edited in place so a name, version, counter, or JSON column holds something `append`
-  never writes is now refused with a coded error (`store_integrity` for those columns) instead of
-  crashing or reading as valid. A stream id carrying a parser version of 4301 digits or more, an
-  integer in stored JSON past the interpreter's 4300-digit limit, JSON nested past the recursion
-  limit, text in `stream_version` or `event_version` or a number there past the range of a
-  double, and text in the sequence counter each ended `report --db`, `cases correlate` and
-  `ingest --record-failed-imports` in a Python traceback, and all but the parser version crashed
-  `store verify` too. A lone surrogate escape in a stored payload ended `report --db` in a
-  traceback while `store verify` reported nothing wrong. A stored name over 500 characters that
-  broke nothing else used to read as valid. `store verify` now reports `event_name_invalid` and
-  `event_version_invalid`, and reports the JSON and counter cases as `payload_not_json` and
-  `sequence_counter_mismatch`. Store errors describe an over-long name by its length rather than
-  repeating it, and the artifact and failure identity checks cut a quoted payload value at 200
-  characters. Stored timestamps are still parsed rather than checked against the format `append`
-  writes.
+- A store edited in place so a name, a version, or the sequence counter holds something `append`
+  never writes, or so a JSON column breaks a rule `append` applies to JSON, is now refused with a
+  coded error (`store_integrity` for those columns) instead of crashing or reading as valid. Every
+  command but `store verify` checks `stream_version` and the sequence counter when it opens the
+  store. `ingest` without `--record-failed-imports` and
+  `cases history` read only the streams they append to or show, so that `ingest` can still
+  append, and `cases history` can still show a case, while a name, `event_version`, or JSON value
+  of this kind sits on another stream; `store verify` checks every row. A stream id carrying a
+  parser version of 4301 digits or more, an integer in stored JSON past the
+  interpreter's 4300-digit limit, JSON nested past the recursion limit, text in `stream_version`
+  or `event_version` or a number there past the range of a double, and text in the sequence
+  counter each ended `report --db`, `cases correlate`, and `ingest` whenever it read the row
+  (every run for the counter and `stream_version`) in a Python traceback, and all but the parser
+  version crashed `store verify` too. A lone surrogate escape in a stored payload ended
+  `report --db` in a traceback while `store verify` reported nothing wrong. A stored name over 500
+  characters that broke nothing else used to read as valid. So did an `event_version` below 1 in
+  `cases list`, which decodes only case streams, on any other stream. On a case stream, and in
+  `report --db` and `store verify` on any stream, such a version was caught only as an
+  unpublished contract version; the table's `CHECK` refuses such a version unless the writer
+  turned on `PRAGMA ignore_check_constraints`. A second `sqlite_sequence` row for `events`, added
+  after SQLite's own, read as valid in every command and in `store verify` whatever it held,
+  because each check read only the first row. `store verify` now reports
+  `event_name_invalid` and `event_version_invalid`, and reports the JSON and counter cases as
+  `payload_not_json` and `sequence_counter_mismatch`. A text column that is not valid UTF-8 is
+  refused as `store_unavailable`, and that message can quote the stored text. Store integrity
+  errors never repeat a name outside the append grammar: the refusal of the name gives the rule
+  it breaks, and a message that identifies its event or stream for another fault, such as a
+  version gap or a digest mismatch, gives its length or storage class. The artifact and failure
+  identity checks cut a quoted payload value at 200 characters. Stored timestamps are still
+  parsed rather than checked against the format `append` writes. A schema marker rewritten to a
+  negative number ended `ingest`, `cases correlate`, `cases attest-detection`, and
+  `cases evaluate` in a Python traceback (`KeyError`) when they had work to append, and read as
+  valid in `report --db`, `cases list`, and `cases history`; each now refuses it with
+  `store_unavailable`. `store verify` passed a store with a foreign application id. It passed a
+  negative marker or a marker of 0 unless the store held a failure stream, which failed only as
+  `failure_schema_unmarked`. It passed a marker above the supported range unless the store was
+  still at schema 1, which failed only as `migration_missing`. It now reports a marker outside
+  the schemas this build opens as `schema_version_unsupported` and a foreign application id as
+  `application_id_mismatch`. It also passed a store holding a row numbered below 1, which every
+  other command refused at open. It ended in a traceback on an `events` table rebuilt so
+  `sequence` held text (`ValueError`) or without a column the walk reads (`IndexError`), and on a
+  migration table rebuilt to hold a version such as `'1x'` at schema 2 (`ValueError`). Without its
+  `version` column, the migration table ended it in a store error that dropped the schema faults
+  already found. It now reports the row as `sequence_gap`, and reports a table rebuilt without a
+  column `append` writes or with text in `sequence` as `schema_object_altered` without walking
+  it. It reads the migration table only when it has its `version` column, and counts a record
+  only when that version is an integer. Stored JSON is checked against the 1 MiB cap `append`
+  applies as the text it stores, and against the other rules as the value it decodes to rather
+  than as the text `append` writes, so whitespace under the cap and duplicate object members
+  still read, the decoder keeping the last one.
 - `.arf`, the suffix OpenSCAP gives its ARF output, was refused unread while the CLI help text on
   the same argument promised ARF support. It now dispatches by root element exactly as `.xml`
   does, so a valid ARF is accepted under either suffix and a misnamed CKL still reaches the CKL

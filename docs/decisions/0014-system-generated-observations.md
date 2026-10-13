@@ -755,3 +755,8 @@ no limit below 640 other than 0, so `int()` never meets its digit limit on a sto
 numeric predicate needs no bound of its own. Before this amendment, a stream id edited out of band
 to carry a version of 4301 digits or more crashed the fold in `int()`. Every version the stateless
 path produces is a parser constant, so this changes no stateless output.
+
+The Consequences item on older builds says their `store verify` does not refuse on the version,
+which describes builds before this amendment; from this amendment `store verify` reports a marker
+outside the schemas the build opens as `schema_version_unsupported` (ADR 0004, amendment
+2026-10-03).

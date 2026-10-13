@@ -481,33 +481,6 @@ def reading_elsewhere(
     return _failure_superseded_at_birth(history, sha256, failure, numeric=numeric)
 
 
-def held_failure_lost(
-    history: ArtifactHistory,
-    sha256: str,
-    *,
-    parser_name: str,
-    parser_version: str,
-    failure_class: FailureClass,
-    holder: str,
-) -> bool:
-    """Return whether a failure another failure stream holds would reach no persisted report.
-
-    A system observation's identity is the digest and the instant, never the parser, so
-    `record_failure` writes nothing for a failure whose observation `holder` already holds.
-    The failure is lost when the holder is superseded and no reading of the digest, current
-    or superseded, would supersede the failure at birth under R3 or R4: recorded, it would
-    be current, but its observation is the holder's. `reading_elsewhere`'s R2 check is not
-    asked, because a side record's own artifact stream would match it. `ingest` asks this
-    once its writes are in and refuses the run when it holds (ADR 0014 Decision 13).
-    """
-
-    if all(record.stream_id != holder for record in history.superseded_failures):
-        return False
-    numeric = _digest_compares_numerically(history, sha256, parser_version)
-    failure = _PendingFailure(failure_class, parser_name, parser_version)
-    return _failure_superseded_at_birth(history, sha256, failure, numeric=numeric) is None
-
-
 def _failure_superseded_at_birth(
     history: ArtifactHistory,
     sha256: str,
@@ -1314,8 +1287,8 @@ def _failure_is_superseded(
     `readings` is every artifact stream of the digest, current or superseded, so a failure
     a newer parser resolved stays resolved when a still newer parser fails in turn. No
     other failure stream is consulted (R5), and no sequence breaks a tie: at equal versions
-    the artifact stream wins. `reading_elsewhere` and `held_failure_lost` ask the same of a
-    failure that is not recorded, one reading at a time.
+    the artifact stream wins. `reading_elsewhere` asks the same of a failure that is not
+    recorded, one reading at a time.
 
     A hold is decided here exactly as a recorded failure is, with its own parser, version
     and class (ADR 0014, amendment 2026-10-13), so a hold and its holder can fall at
@@ -1937,7 +1910,6 @@ __all__ = [
     "fold_all_cases",
     "fold_case",
     "fold_case_records",
-    "held_failure_lost",
     "history_entries",
     "reading_elsewhere",
     "rehydrate_observations",

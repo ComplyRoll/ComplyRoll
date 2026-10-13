@@ -3051,8 +3051,10 @@ class NumericVersionPredicateTests(unittest.TestCase):
 class RecordFailureTests(WriterFixture):
     """A detection process failure is written whole, once, and never resumed (ADR 0014).
 
-    A failure stream holds one `failure.recorded` head and the one system observation the
-    failure mints. The writer is idempotent the way `record_ingest` is, with one difference:
+    A failure stream holds one head and the one system observation the failure mints: a
+    `failure.recorded` head, or a `failure.held` one when another failure stream of the
+    digest already holds that observation. The writer is idempotent the way `record_ingest`
+    is, with one difference:
     a stream holding half of that pair is refused, because no writer ever wrote half of one,
     and finishing it would put a record in history that nothing read.
     """
@@ -3213,10 +3215,11 @@ class RecordFailureTests(WriterFixture):
                 self.assertIn("refused rather than resumed", str(caught.exception))
                 self.assertEqual(self.latest_sequence, sequence)
 
-    def test_one_system_observation_is_stored_once_per_digest(self) -> None:
+    def test_one_system_observation_is_recorded_once_per_digest_then_held(self) -> None:
         # The system observation's identity is the digest and the instant, never the
         # parser, so the same failure read again under another parser version at the same
-        # instant is the observation another stream already holds.
+        # instant is the observation another stream already holds. The reading's own stream
+        # stores it as a hold beneath that stream, and only the first stream records it.
         result, classification = self.read(TRUNCATED)
         artifact = result.artifact
         assert artifact is not None
@@ -3227,11 +3230,22 @@ class RecordFailureTests(WriterFixture):
 
         outcome = self.record(bumped, classification)
 
-        self.assertTrue(outcome.already_recorded)
-        self.assertEqual(outcome.stream_id, first.stream_id)
+        self.assertTrue(outcome.appended)
+        self.assertEqual(outcome.stream_id, bumped_stream)
+        self.assertEqual(outcome.held_by, first.stream_id)
         self.assertEqual(outcome.observation_id, first.observation_id)
-        self.assertEqual(self.latest_sequence, sequence)
-        self.assertEqual(self.events_of(bumped_stream), [])
+        self.assertIsNone(first.held_by)
+        self.assertEqual(self.latest_sequence, sequence + 2)
+        events = self.events_of(bumped_stream)
+        self.assertEqual(
+            [event_type for event_type, _ in events], [FAILURE_HELD, OBSERVATION_RECORDED]
+        )
+        self.assertEqual(events[1][1]["observation_id"], first.observation_id)
+        self.assertEqual(
+            [event_type for event_type, _ in self.events_of(first.stream_id)],
+            [FAILURE_RECORDED, OBSERVATION_RECORDED],
+        )
+        self.assertEqual(self.repository.store.schema_version, HELD_FAILURE_SCHEMA_VERSION)
 
     def test_another_instant_is_another_system_observation(self) -> None:
         result, classification = self.read(TRUNCATED)
@@ -3251,10 +3265,10 @@ class RecordFailureTests(WriterFixture):
         self.assertNotEqual(outcome.observation_id, first.observation_id)
 
     def test_a_failure_another_failure_stream_holds_is_named_with_a_warning(self) -> None:
-        # Nothing is written, so the failure stays recorded under the holder's parser and
-        # version however the two differ, and the WARNING says so in place of the
-        # `detection_failure_recorded` notice. Neither the digest's order nor the parser
-        # decides it: only a rerun of the same stream stays silent.
+        # The failure is recorded as a hold on the reading's own stream however its parser
+        # and version differ from the holder's, and the WARNING naming the holder follows
+        # the `detection_failure_recorded` notice. Neither the digest's order nor the parser
+        # decides it: only a rerun of a recorded failure stays silent.
         result, classification = self.read(TRUNCATED)
         artifact = result.artifact
         assert artifact is not None
@@ -3287,30 +3301,37 @@ class RecordFailureTests(WriterFixture):
 
                 outcome = self.record(reading, classification)
 
-                self.assertTrue(outcome.already_recorded)
-                self.assertEqual(outcome.stream_id, first.stream_id)
-                self.assertEqual(self.latest_sequence, sequence)
+                self.assertTrue(outcome.appended)
+                self.assertEqual(
+                    outcome.stream_id,
+                    failure_stream_id(artifact.digest_sha256, parser_name, version),
+                )
+                self.assertEqual(outcome.held_by, first.stream_id)
+                self.assertEqual(self.latest_sequence, sequence + 2)
                 diagnostics = failure_diagnostics(reading, classification, name=artifact.name)
                 self.assertEqual(diagnostics[-1].code, "detection_failure_recorded")
                 self.assertEqual(
                     outcome.diagnostics,
                     (
-                        *diagnostics[:-1],
+                        *diagnostics,
                         IngestDiagnostic(
                             level=DiagnosticLevel.WARNING,
                             code=history_writers.FAILURE_HELD_BY_ANOTHER_STREAM,
                             message=(
-                                f"{first.stream_id} already holds this failure, so no failure "
-                                f"was recorded under {parser_name} {version} and it stays "
-                                f"recorded under {artifact.parser_name} {held}"
+                                f"{first.stream_id} already holds this failure's system "
+                                f"observation, so the failure is recorded under {parser_name} "
+                                f"{version} as a hold on it; a report carries the earliest "
+                                "record of that observation that no reading of these bytes "
+                                "supersedes"
                             ),
                         ),
                     ),
                 )
 
     def test_a_hold_keeps_the_truncation_notice(self) -> None:
-        # 70 diagnostics, 62 kept, then the truncation notice. On the hold path only the
-        # recorded notice gives way to the WARNING (ADR 0014 Decision 12).
+        # 70 diagnostics, 62 kept, then the truncation notice and the recorded notice. A hold
+        # keeps both and adds the WARNING after them, and its head stores what a recorded
+        # head would, without the WARNING (ADR 0014, amendment 2026-10-13).
         path = self.workspace / "bad-rules.cklb"
         path.write_text(json.dumps(bad_rules(69)), encoding="utf-8")
         result, classification = self.read(path)
@@ -3322,18 +3343,25 @@ class RecordFailureTests(WriterFixture):
 
         outcome = self.record(result, classification)
 
-        self.assertTrue(outcome.already_recorded)
-        self.assertEqual(outcome.stream_id, first.stream_id)
+        self.assertTrue(outcome.appended)
+        self.assertEqual(outcome.held_by, first.stream_id)
         diagnostics = failure_diagnostics(result, classification, name=artifact.name)
         self.assertEqual(
             [item.code for item in diagnostics[-2:]],
             ["failure_diagnostics_truncated", "detection_failure_recorded"],
         )
         self.assertEqual(
-            [item.code for item in outcome.diagnostics[-2:]],
-            ["failure_diagnostics_truncated", "failure_held_by_another_stream"],
+            [item.code for item in outcome.diagnostics[-3:]],
+            [
+                "failure_diagnostics_truncated",
+                "detection_failure_recorded",
+                "failure_held_by_another_stream",
+            ],
         )
-        self.assertEqual(outcome.diagnostics[:-1], diagnostics[:-1])
+        self.assertEqual(outcome.diagnostics[:-1], diagnostics)
+        head = self.events_of(outcome.stream_id)[0]
+        self.assertEqual(head, (FAILURE_HELD, head[1]))
+        self.assertEqual(head[1]["diagnostics"], [item.to_dict() for item in diagnostics])
 
     def test_a_rerun_of_the_same_stream_carries_no_holder_warning(self) -> None:
         result, classification = self.read(TRUNCATED)
@@ -3349,9 +3377,137 @@ class RecordFailureTests(WriterFixture):
             [item.code for item in again.diagnostics],
         )
 
+    def test_a_rerun_of_a_hold_repeats_its_warning_at_any_instant(self) -> None:
+        # A rerun finds the reading's own stream, as a rerun of a recorded failure does, and
+        # names the holder again, so every run that meets the hold says so. The first
+        # instant wins: the stored observation is named, not the one a later instant would
+        # mint (ADR 0014, amendment 2026-10-13).
+        result, classification = self.read(TRUNCATED)
+        artifact = result.artifact
+        assert artifact is not None
+        first = self.record(result, classification)
+        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+        hold = self.record(bumped, classification)
+        sequence = self.latest_sequence
+        later = INGESTED_AT + timedelta(days=1)
+        moved_result, moved_classification = self.read(TRUNCATED, ingested_at=later)
+        assert moved_result.artifact is not None
+        moved = replace(moved_result, artifact=replace(moved_result.artifact, parser_version="2"))
+
+        for label, (reading, reading_classification, at) in {
+            "the same instant": (bumped, classification, INGESTED_AT),
+            "a later instant": (moved, moved_classification, later),
+        }.items():
+            with self.subTest(label):
+                again = self.record(reading, reading_classification, ingested_at=at)
+
+                self.assertTrue(again.already_recorded)
+                self.assertEqual(again.stream_id, hold.stream_id)
+                self.assertEqual(again.held_by, first.stream_id)
+                self.assertEqual(again.observation_id, first.observation_id)
+                self.assertEqual(again.diagnostics, hold.diagnostics)
+                self.assertEqual(
+                    again.diagnostics[-1].code, history_writers.FAILURE_HELD_BY_ANOTHER_STREAM
+                )
+                self.assertEqual(self.latest_sequence, sequence)
+
+    def test_every_hold_of_one_observation_names_the_recorded_failure_above_it(self) -> None:
+        # A second hold of one observation is written beneath the same recorded failure as
+        # the first: the WARNING names the first stream holding the observation, never an
+        # earlier hold, on the first run and on every rerun (ADR 0014, amendment 2026-10-13).
+        result, classification = self.read(TRUNCATED)
+        artifact = result.artifact
+        assert artifact is not None
+        first = self.record(result, classification)
+        readings = [
+            replace(result, artifact=replace(artifact, parser_version=version))
+            for version in ("2", "3")
+        ]
+
+        holds = [self.record(reading, classification) for reading in readings]
+        reruns = [self.record(reading, classification) for reading in readings]
+
+        self.assertEqual([outcome.appended for outcome in holds], [True, True])
+        self.assertEqual([outcome.appended for outcome in reruns], [False, False])
+        for outcome in (*holds, *reruns):
+            with self.subTest(stream=outcome.stream_id, appended=outcome.appended):
+                self.assertEqual(outcome.held_by, first.stream_id)
+                self.assertTrue(outcome.diagnostics[-1].message.startswith(f"{first.stream_id} "))
+        self.assertEqual(
+            [event_type for event_type, _ in self.events_of(holds[1].stream_id)],
+            [FAILURE_HELD, OBSERVATION_RECORDED],
+        )
+
+    def test_a_hold_stores_what_its_reading_records_where_nothing_holds_it(self) -> None:
+        # One payload for both heads: a hold differs from the failure the same reading
+        # records in an empty store only in its head's type. The WARNING is the run's and is
+        # not stored, and the observation is the reading's own, under the holder's id.
+        result, classification = self.read(TRUNCATED)
+        artifact = result.artifact
+        assert artifact is not None
+        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+        alone = self.record(bumped, classification)
+        head, observation = self.events_of(alone.stream_id)
+        self.assertEqual(head[0], FAILURE_RECORDED)
+        self.fresh_repository()
+        first = self.record(result, classification)
+
+        held = self.record(bumped, classification)
+
+        self.assertEqual(held.stream_id, alone.stream_id)
+        self.assertEqual(held.observation_id, first.observation_id)
+        self.assertEqual(self.events_of(held.stream_id), [(FAILURE_HELD, head[1]), observation])
+        self.assertEqual(held.diagnostics[:-1], alone.diagnostics)
+
+    def test_a_rerun_of_a_hold_beneath_no_recorded_failure_is_refused(self) -> None:
+        # A hold is written only beneath a recorded failure, so a rerun that finds none above
+        # the reading's own hold is reading history no writer wrote, and nothing is written.
+        result, classification = self.read(TRUNCATED)
+        artifact = result.artifact
+        assert artifact is not None
+        self.record(result, classification)
+        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+        hold = self.record(bumped, classification)
+        (_, head), observation = self.events_of(hold.stream_id)
+        # Version 3's recorded failure of the same observation, restaged below as a hold.
+        self.fresh_repository()
+        above = self.record(
+            replace(result, artifact=replace(artifact, parser_version="3")), classification
+        ).stream_id
+        (_, above_head), above_observation = self.events_of(above)
+        shapes = {
+            "no stream above it": (
+                [],
+                failure_hold_orphan_message(hold.stream_id, hold.observation_id, None),
+            ),
+            "a hold above it": (
+                [(above, (FAILURE_HELD, above_head)), (above, above_observation)],
+                failure_hold_orphan_message(above, hold.observation_id, None),
+            ),
+        }
+        for label, (staged, message) in shapes.items():
+            with self.subTest(label):
+                self.fresh_repository()
+                versions: dict[str, int] = {}
+                for stream_id, (event_type, payload) in (
+                    *staged,
+                    (hold.stream_id, (FAILURE_HELD, head)),
+                    (hold.stream_id, observation),
+                ):
+                    version = versions.get(stream_id, 0)
+                    self.append_unchecked(stream_id, event_type, payload, expected_version=version)
+                    versions[stream_id] = version + 1
+                sequence = self.latest_sequence
+
+                with self.assertRaises(HistoryError) as caught:
+                    self.record(bumped, classification)
+
+                self.assertEqual(str(caught.exception), message)
+                self.assertEqual(self.latest_sequence, sequence)
+
     def test_a_holder_whose_stream_id_names_no_reading_is_refused_as_history(self) -> None:
         # The holder is found by the digest's prefix alone. The writer folds the store before
-        # it parses the holder's id, so a malformed one is a HistoryError, not a ValueError.
+        # it writes a hold, so a malformed holder is a HistoryError and nothing is written.
         result, classification = self.read(TRUNCATED)
         artifact = result.artifact
         assert artifact is not None

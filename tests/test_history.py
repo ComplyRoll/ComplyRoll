@@ -3181,11 +3181,16 @@ class RecordFailureTests(WriterFixture):
         again = self.record(result, classification)
         moved = self.record(moved_result, moved_classification, ingested_at=later)
 
+        self.assertIs(first.failure_class, FailureClass.PARSE)
         for outcome in (again, moved):
             self.assertTrue(outcome.already_recorded)
             self.assertEqual(outcome.stream_id, first.stream_id)
             # The later instant would mint a different identifier; the stored one is named.
             self.assertEqual(outcome.observation_id, first.observation_id)
+            # Nothing is written, and the rerun still reports the reading as the first run
+            # did: its class, and its diagnostics with the notice.
+            self.assertIs(outcome.failure_class, first.failure_class)
+            self.assertEqual(outcome.diagnostics, first.diagnostics)
         self.assertEqual(self.latest_sequence, sequence)
 
     def test_a_half_written_stream_is_refused_rather_than_resumed(self) -> None:
@@ -3268,7 +3273,8 @@ class RecordFailureTests(WriterFixture):
         # The failure is recorded as a hold on the reading's own stream however its parser
         # and version differ from the holder's, and the WARNING naming the holder follows
         # the `detection_failure_recorded` notice. Neither the digest's order nor the parser
-        # decides it: only a rerun of a recorded failure stays silent.
+        # decides it: only a rerun of a recorded failure stays silent. The outcome and the
+        # hold's head carry the reading's own class.
         result, classification = self.read(TRUNCATED)
         artifact = result.artifact
         assert artifact is not None
@@ -3308,6 +3314,9 @@ class RecordFailureTests(WriterFixture):
                 )
                 self.assertEqual(outcome.held_by, first.stream_id)
                 self.assertEqual(self.latest_sequence, sequence + 2)
+                self.assertIs(outcome.failure_class, FailureClass.PARSE)
+                (head_type, head), _ = self.events_of(outcome.stream_id)
+                self.assertEqual((head_type, head["failureClass"]), (FAILURE_HELD, "parse"))
                 diagnostics = failure_diagnostics(reading, classification, name=artifact.name)
                 self.assertEqual(diagnostics[-1].code, "detection_failure_recorded")
                 self.assertEqual(
@@ -3393,6 +3402,7 @@ class RecordFailureTests(WriterFixture):
         moved_result, moved_classification = self.read(TRUNCATED, ingested_at=later)
         assert moved_result.artifact is not None
         moved = replace(moved_result, artifact=replace(moved_result.artifact, parser_version="2"))
+        self.assertIs(hold.failure_class, FailureClass.PARSE)
 
         for label, (reading, reading_classification, at) in {
             "the same instant": (bumped, classification, INGESTED_AT),
@@ -3405,6 +3415,7 @@ class RecordFailureTests(WriterFixture):
                 self.assertEqual(again.stream_id, hold.stream_id)
                 self.assertEqual(again.held_by, first.stream_id)
                 self.assertEqual(again.observation_id, first.observation_id)
+                self.assertIs(again.failure_class, hold.failure_class)
                 self.assertEqual(again.diagnostics, hold.diagnostics)
                 self.assertEqual(
                     again.diagnostics[-1].code, history_writers.FAILURE_HELD_BY_ANOTHER_STREAM
@@ -4855,6 +4866,31 @@ class HeldFailureTests(WriterFixture):
                     self.faults(),
                     [(sequences[0], "failure_stream_mismatch", breach)],
                 )
+
+    def test_a_hold_whose_head_and_record_disagree_is_refused_and_named_as_a_hold(self) -> None:
+        # The fold reads a hold's head beside its system record, as it reads a recorded
+        # failure's, so a hold whose two events describe two failures is refused by the
+        # reader and named by the audit at the record, and both say the head is a hold.
+        self.record(self.failed("1"))
+        hold, head, observation = self.scratch_pair("2")
+        sequences = self.stage(
+            hold,
+            [(FAILURE_HELD, {**head, "clock": "invocation"}), (OBSERVATION_RECORDED, observation)],
+        )
+        disagreement = (
+            f"failure stream {hold!r} records clock 'invocation' in its failure.held and "
+            "failure.clock 'as-of' in its system record; the two describe one failure"
+        )
+
+        for read in (artifact_history, rehydrate_observations):
+            with self.assertRaises(HistoryError) as caught:
+                read(self.repository)
+
+            self.assertEqual(str(caught.exception), disagreement)
+        self.assertEqual(
+            self.faults(),
+            [(sequences[1], "failure_stream_mismatch", disagreement)],
+        )
 
     def test_a_hold_head_its_contract_refuses_is_named_as_a_hold(self) -> None:
         # No stored diagnostic is an ERROR, a hold's head included, and the reader says

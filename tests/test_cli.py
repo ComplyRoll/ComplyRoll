@@ -238,6 +238,19 @@ def run(argv: Sequence[str]) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
+def run_on_one_stream(argv: Sequence[str]) -> tuple[int, str]:
+    """Run one CLI invocation with both streams captured together, in the order written.
+
+    `run` keeps the streams apart, so it cannot see which line came first. A terminal shows
+    both on one screen, in the order the run wrote them.
+    """
+
+    written = io.StringIO()
+    with redirect_stdout(written), redirect_stderr(written):
+        code = main(list(argv))
+    return code, written.getvalue()
+
+
 def help_text(argv: Sequence[str]) -> str:
     """Return one command's `--help` output with its line wrapping folded away.
 
@@ -2390,25 +2403,88 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
     #: A second ingest instant. A failure that declares no clock read at it derives another
     #: system observation than the same failure read at `INGESTED_AT`.
     LATER = "2026-08-21T13:00:00Z"
+    #: What a flagged ingest of every persisted and failed fixture prints as it builds a
+    #: fresh store: each reading's line in listed order, a side record's failure in its
+    #: reading's slot, then the pure failures in name order.
+    FRESH_STORE_SUMMARY = (
+        "ubuntu-host.cklb: recorded 6 observation(s)",
+        "windows-host.ckl: recorded 2 observation(s)",
+        "openscap-results.xml: recorded 3 observation(s)",
+        "failed-invocation.sarif: recorded 1 observation(s)",
+        "failed-invocation.sarif: recorded detection failure (execution)",
+        "failed-invalid-rules.cklb: recorded detection failure (content)",
+        "failed-truncated.sarif: recorded detection failure (parse)",
+    )
+    #: The truncated log's own ERROR, as a failure's diagnostics carry it: demoted.
+    TRUNCATED_PARSE_FAILED = (
+        "warning: artifact_parse_failed: Unterminated string starting at: line 18 column 21 "
+        "(char 419) [failed-truncated.sarif]"
+    )
+
+    def flagged_argv(self, *artifacts: str | Path, as_of: str = INGESTED_AT) -> list[str]:
+        """Return one flagged ingest's arguments, at the golden instant by default."""
+
+        return [
+            "ingest",
+            *(str(path) for path in artifacts),
+            "--record-failed-imports",
+            "--db",
+            str(self.database),
+            "--as-of",
+            as_of,
+            "--actor",
+            "golden",
+        ]
 
     def ingest_flagged(
         self, *artifacts: str | Path, as_of: str = INGESTED_AT
     ) -> tuple[int, str, str]:
         """Run one flagged ingest, at the golden instant by default, and return its streams."""
 
-        return run(
-            [
-                "ingest",
-                *(str(path) for path in artifacts),
-                "--record-failed-imports",
-                "--db",
-                str(self.database),
-                "--as-of",
-                as_of,
-                "--actor",
-                "golden",
-            ]
+        return run(self.flagged_argv(*artifacts, as_of=as_of))
+
+    @staticmethod
+    def recorded_notice(name: str, failure_class: str) -> str:
+        """Return the notice `ingest` writes for the failure of the fixture named `name`."""
+
+        digest = hashlib.sha256((FIXTURES / name).read_bytes()).hexdigest()
+        return (
+            "warning: detection_failure_recorded: recorded a detection process failure of "
+            f"class {failure_class} for source artifact sha256:{digest} (VDR-CSO-FAV) [{name}]"
         )
+
+    def fresh_store_diagnostics(self) -> list[str]:
+        """Return what a flagged ingest of every persisted and failed fixture writes to stderr.
+
+        Each reading's own diagnostics are written as it is read, in listed order, while a
+        failed reading writes nothing yet. Once the store is published the failures' follow:
+        the side record's notice in its reading's slot, then each failed reading's demoted
+        list in name order, ordered by code and closed by its notice (ADR 0014 Decision 14).
+        """
+
+        def undated(name: str) -> str:
+            return (
+                "warning: source_timestamp_missing: source artifact does not declare an "
+                f"observation timestamp; observed_at is unknown [{name}]"
+            )
+
+        return [
+            undated("ubuntu-host.cklb"),
+            undated("windows-host.ckl"),
+            undated("openscap-results.xml"),
+            "warning: execution_unsuccessful: invocation reports executionSuccessful false; its "
+            "results are still read (1 occurrence: runs[1].invocations[0]) "
+            "[failed-invocation.sarif]",
+            "info: run_clean: run reports no results (1 occurrence: runs[1]) "
+            "[failed-invocation.sarif]",
+            self.recorded_notice("failed-invocation.sarif", "execution"),
+            "warning: invalid_rules: STIG entry has no rules array [stigs[0].rules]",
+            "warning: no_observations: CKLB contains no usable rules [failed-invalid-rules.cklb]",
+            undated("failed-invalid-rules.cklb"),
+            self.recorded_notice("failed-invalid-rules.cklb", "content"),
+            self.TRUNCATED_PARSE_FAILED,
+            self.recorded_notice("failed-truncated.sarif", "parse"),
+        ]
 
     def schema_version(self) -> int:
         with SQLiteEventStore(self.database) as store:
@@ -2625,22 +2701,10 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(code, 3)
         self.assertEqual(code, cli_module.EXIT_DETECTION_FAILURES)
         self.assertTrue(self.database.is_file())
-        self.assertEqual(
-            out.splitlines(),
-            [
-                "ubuntu-host.cklb: recorded 6 observation(s)",
-                "windows-host.ckl: recorded 2 observation(s)",
-                "openscap-results.xml: recorded 3 observation(s)",
-                "failed-invocation.sarif: recorded 1 observation(s)",
-                "failed-invocation.sarif: recorded detection failure (execution)",
-                "failed-invalid-rules.cklb: recorded detection failure (content)",
-                "failed-truncated.sarif: recorded detection failure (parse)",
-            ],
-        )
-        # The failed readings' ERRORs are written demoted, so a run that exits 3 prints none.
-        self.assertNotIn("error:", err)
-        self.assertIn("warning: artifact_parse_failed", err)
-        self.assertEqual(err.count("warning: detection_failure_recorded"), 3)
+        self.assertEqual(out.splitlines(), list(self.FRESH_STORE_SUMMARY))
+        # Every diagnostic, whole and in order. The failed readings' ERRORs are written
+        # demoted, so a run that exits 3 prints none.
+        self.assertEqual(err.splitlines(), self.fresh_store_diagnostics())
         self.assertEqual(
             sorted(head["name"] for head in self.failure_heads()),
             sorted(Path(path).name for path in FAILED_ARTIFACTS),
@@ -2648,6 +2712,19 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(self.schema_version(), FAILURE_STREAM_SCHEMA_VERSION)
         verified, _ = self.succeeds(["store", "verify", "--db", str(self.database)])
         self.assertEqual(verified, f"ok: {self.latest_sequence()} event(s) verified\n")
+
+    def test_a_fresh_store_writes_every_diagnostic_before_its_summary(self) -> None:
+        # The readings' own diagnostics are written as they are read, and the failures' once
+        # the store is published, just before the lines that claim them, so on a terminal no
+        # recorded line comes before a diagnostic of the run.
+        code, written = run_on_one_stream(
+            self.flagged_argv(*PERSISTED_ARTIFACTS, *FAILED_ARTIFACTS)
+        )
+
+        self.assertEqual(code, 3)
+        self.assertEqual(
+            written.splitlines(), [*self.fresh_store_diagnostics(), *self.FRESH_STORE_SUMMARY]
+        )
 
     def test_a_rerun_finds_every_failure_recorded_and_still_exits_3(self) -> None:
         self.ingest_flagged(*PERSISTED_ARTIFACTS, *FAILED_ARTIFACTS)
@@ -2668,7 +2745,8 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
                 "failed-truncated.sarif: already_recorded",
             ],
         )
-        self.assertNotIn("error:", err)
+        # The rerun writes what the first run wrote, each failure's notice included.
+        self.assertEqual(err.splitlines(), self.fresh_store_diagnostics())
         self.assertEqual(self.latest_sequence(), before)
 
     def test_the_flag_without_a_failure_exits_0_and_leaves_the_store_at_schema_1(self) -> None:
@@ -2723,10 +2801,8 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assert_failure_named_not_claimed(err, "openscap-copy.sarif", "artifact_parse_failed")
-        self.assert_failure_named_not_claimed(
-            err, "failed-truncated.sarif", "artifact_parse_failed"
-        )
+        self.assert_failure_named_not_claimed(err, copy, "artifact_parse_failed")
+        self.assert_failure_named_not_claimed(err, TRUNCATED_FIXTURE, "artifact_parse_failed")
         self.assertEqual(
             [line.rsplit(" ", 1)[1] for line in err.splitlines() if line.startswith("error: ")],
             ["[openscap-copy.sarif]", "[failed-truncated.sarif]"],
@@ -2734,17 +2810,36 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertNotIn("failure_read_elsewhere", err)
         self.assertFalse(self.database.exists())
 
-    def assert_failure_named_not_claimed(self, err: str, name: str, code: str) -> None:
-        """Require the held reading's own ERROR on stderr and no claim of a recording."""
+    def assert_failure_named_not_claimed(self, err: str, path: str | Path, code: str) -> None:
+        """Require a failed reading's own diagnostics on stderr, whole, and no recording claimed.
 
-        self.assertNotIn("detection_failure_recorded", err)
+        A run that exits 1 records nothing, so each failed reading writes, as one block, the
+        lines a run without the flag writes for that file alone, ERROR `code` among them.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            alone, out, written = run(
+                [
+                    "ingest",
+                    str(path),
+                    "--db",
+                    str(Path(directory) / "unflagged.sqlite"),
+                    "--as-of",
+                    INGESTED_AT,
+                ]
+            )
+        self.assertEqual((alone, out), (1, ""))
+        block = written.splitlines()
+        self.assertTrue(any(line.startswith(f"error: {code}: ") for line in block), msg=written)
+        lines = err.splitlines()
         self.assertTrue(
             any(
-                line.startswith(f"error: {code}: ") and line.endswith(f"[{name}]")
-                for line in err.splitlines()
+                lines[start : start + len(block)] == block
+                for start in range(len(lines) - len(block) + 1)
             ),
-            msg=err,
+            msg=f"{block!r} is not one block of:\n{err}",
         )
+        self.assertNotIn("detection_failure_recorded", err)
 
     def test_a_store_that_appears_while_building_names_the_failure_and_claims_none(self) -> None:
         # The run records both failures in its own transaction, then loses the race to
@@ -2765,14 +2860,12 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("error: store_conflict", err)
-        self.assert_failure_named_not_claimed(
-            err, "failed-truncated.sarif", "artifact_parse_failed"
-        )
+        self.assert_failure_named_not_claimed(err, TRUNCATED_FIXTURE, "artifact_parse_failed")
         self.assertEqual(self.database.read_bytes(), appeared)
 
     def test_a_rolled_back_run_names_the_failure_and_claims_none(self) -> None:
-        # The windows checklist's append fails before any failure is recorded, so the held
-        # reading's own ERROR is all that names it.
+        # The windows checklist's append fails before any failure is recorded, so the failed
+        # reading's own diagnostics are all that name it.
         def refuse(*args: Any, **kwargs: Any) -> Any:
             raise HistoryError("simulated history refusal")
 
@@ -2782,9 +2875,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("error: history_invalid: simulated history refusal", err)
-        self.assert_failure_named_not_claimed(
-            err, "failed-truncated.sarif", "artifact_parse_failed"
-        )
+        self.assert_failure_named_not_claimed(err, TRUNCATED_FIXTURE, "artifact_parse_failed")
         self.assertFalse(self.database.exists())
 
     def test_a_failure_refused_after_another_was_recorded_names_both_and_claims_neither(
@@ -2808,10 +2899,8 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("error: history_invalid: simulated history refusal", err)
-        self.assert_failure_named_not_claimed(err, "failed-invalid-rules.cklb", "no_observations")
-        self.assert_failure_named_not_claimed(
-            err, "failed-truncated.sarif", "artifact_parse_failed"
-        )
+        self.assert_failure_named_not_claimed(err, INVALID_RULES_FIXTURE, "no_observations")
+        self.assert_failure_named_not_claimed(err, TRUNCATED_FIXTURE, "artifact_parse_failed")
         self.assertFalse(self.database.exists())
 
     def test_bytes_history_reads_elsewhere_refuse_the_failure_and_append_nothing(self) -> None:
@@ -2837,10 +2926,10 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(self.latest_sequence(), before)
         self.assertEqual(self.schema_version(), 1)
 
-    def test_a_refusal_history_decides_comes_before_every_held_reading_named(self) -> None:
+    def test_a_refusal_history_decides_comes_before_every_failed_reading_named(self) -> None:
         # History decides `read_elsewhere` only once every file is read, so a failure listed
-        # after the copy is named too. The refusal comes first, then each held reading's own
-        # ERROR in the order listed, wherever the copy was listed.
+        # after the copy is named too. The refusal comes first, then each failed reading's
+        # own ERROR in the order listed, wherever the copy was listed.
         self.succeeds(
             ["ingest", PERSISTED_ARTIFACTS[2], "--db", str(self.database), "--as-of", INGESTED_AT]
         )
@@ -2865,7 +2954,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
                     [line.rsplit(" ", 1)[1] for line in lines[1:]], [f"[{name}]" for name in names]
                 )
                 self.assert_failure_named_not_claimed(
-                    err, "failed-truncated.sarif", "artifact_parse_failed"
+                    err, TRUNCATED_FIXTURE, "artifact_parse_failed"
                 )
                 self.assertEqual(self.latest_sequence(), before)
 
@@ -3574,7 +3663,15 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             out,
             f"failed-truncated.sarif: recorded detection failure (parse), held by {holder}\n",
         )
-        self.assertIn(self.held_warning(holder, "failed-truncated.sarif"), err.splitlines())
+        # A hold writes what a recorded failure would, then the WARNING naming its holder.
+        self.assertEqual(
+            err.splitlines(),
+            [
+                self.TRUNCATED_PARSE_FAILED,
+                self.recorded_notice("failed-truncated.sarif", "parse"),
+                self.held_warning(holder, "failed-truncated.sarif"),
+            ],
+        )
         reading = self.record_reading(parser_name="complyroll.sarif", parser_version="2")
         before = self.database.read_bytes()
 
@@ -3583,9 +3680,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertEqual(err.splitlines()[0], self.refusal(reading, "failed-truncated.sarif"))
-        self.assert_failure_named_not_claimed(
-            err, "failed-truncated.sarif", "artifact_parse_failed"
-        )
+        self.assert_failure_named_not_claimed(err, TRUNCATED_FIXTURE, "artifact_parse_failed")
         self.assertNotIn("failure_held_by", err)
         self.assertEqual(self.database.read_bytes(), before)
 
@@ -3612,9 +3707,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertEqual(err.splitlines()[0], self.refusal(reading, "failed-truncated.sarif"))
-        self.assert_failure_named_not_claimed(
-            err, "failed-truncated.sarif", "artifact_parse_failed"
-        )
+        self.assert_failure_named_not_claimed(err, TRUNCATED_FIXTURE, "artifact_parse_failed")
         self.assertNotIn("failure_held_by", err)
         self.assertEqual(self.database.read_bytes(), before)
 

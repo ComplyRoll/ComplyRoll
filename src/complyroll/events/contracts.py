@@ -58,6 +58,10 @@ FAILURE_STREAM_PREFIX: Final = "failure"
 #: marked 2 by the transaction that first writes a failure stream, so a store that never
 #: records a failure stays readable by a build that knows only schema 1.
 FAILURE_STREAM_SCHEMA_VERSION: Final = 2
+#: The store schema a held failure needs (ADR 0014, amendment 2026-10-13). A store is marked
+#: 3 by the transaction that first writes a `failure.held` stream, so a store that holds
+#: failure streams and no hold stays at 2 and readable by a build that knows only schema 2.
+HELD_FAILURE_SCHEMA_VERSION: Final = 3
 TRACKING_ID_PATTERN: Final = re.compile(r"^case-[0-9a-f]{16}$")
 
 #: Stream-id components may not contain the separator, so a stream id parses back.
@@ -120,12 +124,16 @@ _COUNT: Final[dict[str, Any]] = {"type": "integer", "minimum": 0}
 _TRACKING_ID: Final[dict[str, Any]] = {"type": "string", "pattern": r"^case-[0-9a-f]{16}$"}
 _STRING_ARRAY: Final[dict[str, Any]] = {"type": "array", "items": _NON_EMPTY_TEXT}
 
+#: A stored diagnostic is never an ERROR. An ERROR stops a reading before anything is
+#: stored: `record_ingest` refuses one, and a failure head carries each one demoted. One
+#: found in a head is a damaged log that every report refuses, so the contract refuses it
+#: too and `store verify`, which checks every payload against it, names it.
 _DIAGNOSTIC: Final[dict[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["level", "code", "message"],
     "properties": {
-        "level": {"enum": ["info", "warning", "error"]},
+        "level": {"enum": ["info", "warning"]},
         "code": _NON_EMPTY_TEXT,
         "message": _NON_EMPTY_TEXT,
         "location": _NON_EMPTY_TEXT,
@@ -322,36 +330,47 @@ FAILURE_CODE_VALUES: Final[tuple[str, ...]] = tuple(sorted(CLASS_CODES | {EXECUT
 #: caller's as-of fallback (ADR 0014).
 FAILURE_CLOCK_VALUES: Final[tuple[str, ...]] = ("invocation", "as-of")
 
-#: The head of a failure stream (ADR 0014). It carries no tracking id: that is a pure
-#: function of the system observation that follows it, and is derived at replay. Its
-#: diagnostics are what the failed reading contributes to a report, at most the cap plus
-#: the truncation notice and the recorded notice.
-FAILURE_RECORDED_V1: Final[dict[str, Any]] = _schema(
-    "failure.recorded",
-    {
-        "name": _NON_BLANK_TEXT,
-        "sha256": _SHA256,
-        "sizeBytes": _COUNT,
-        "mediaType": _NON_BLANK_TEXT,
-        "parserName": _NON_BLANK_TEXT,
-        "parserVersion": _NON_BLANK_TEXT,
-        "ingestedAt": _UTC_TIMESTAMP,
-        "failureClass": {"enum": [member.value for member in FailureClass]},
-        "failureCodes": {
-            "type": "array",
-            "items": {"enum": list(FAILURE_CODE_VALUES)},
-            "minItems": 1,
-            "uniqueItems": True,
-            "maxItems": len(FAILURE_CODE_VALUES),
-        },
-        "clock": {"enum": list(FAILURE_CLOCK_VALUES)},
-        "diagnostics": {
-            "type": "array",
-            "items": _DIAGNOSTIC,
-            "maxItems": FAILURE_DIAGNOSTIC_CAP + 2,
-        },
+#: The event type of a hold's head (ADR 0014, amendment 2026-10-13).
+FAILURE_HELD: Final = "failure.held"
+
+#: The properties of a failure stream's head, whichever head it is (ADR 0014). It carries no
+#: tracking id: that is a pure function of the system observation that follows it, and is
+#: derived at replay. Its diagnostics are what the failed reading contributes to a report,
+#: at most the cap plus the truncation notice and the recorded notice. Both heads are built
+#: from this one map, so the two cannot drift apart.
+_FAILURE_HEAD_PROPERTIES: Final[dict[str, Any]] = {
+    "name": _NON_BLANK_TEXT,
+    "sha256": _SHA256,
+    "sizeBytes": _COUNT,
+    "mediaType": _NON_BLANK_TEXT,
+    "parserName": _NON_BLANK_TEXT,
+    "parserVersion": _NON_BLANK_TEXT,
+    "ingestedAt": _UTC_TIMESTAMP,
+    "failureClass": {"enum": [member.value for member in FailureClass]},
+    "failureCodes": {
+        "type": "array",
+        "items": {"enum": list(FAILURE_CODE_VALUES)},
+        "minItems": 1,
+        "uniqueItems": True,
+        "maxItems": len(FAILURE_CODE_VALUES),
     },
-)
+    "clock": {"enum": list(FAILURE_CLOCK_VALUES)},
+    "diagnostics": {
+        "type": "array",
+        "items": _DIAGNOSTIC,
+        "maxItems": FAILURE_DIAGNOSTIC_CAP + 2,
+    },
+}
+
+#: The head of a failure stream that records a failure (ADR 0014).
+FAILURE_RECORDED_V1: Final[dict[str, Any]] = _schema("failure.recorded", _FAILURE_HEAD_PROPERTIES)
+
+#: The head of a failure stream that holds a failure another failure stream of the same
+#: digest already records: the same bytes failing under another parser or version at the
+#: same instant (ADR 0014, amendment 2026-10-13). The failed reading is its own, so its head
+#: has exactly a recorded head's properties; what differs is that another stream records its
+#: system observation first.
+FAILURE_HELD_V1: Final[dict[str, Any]] = _schema(FAILURE_HELD, _FAILURE_HEAD_PROPERTIES)
 
 #: The one registry every writer validates against (ADR 0008 Decision 1).
 EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
@@ -365,6 +384,7 @@ EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("case.disposition_recorded", 1): CASE_DISPOSITION_RECORDED_V1,
     ("case.identified", 1): CASE_IDENTIFIED_V1,
     ("failure.recorded", 1): FAILURE_RECORDED_V1,
+    (FAILURE_HELD, 1): FAILURE_HELD_V1,
 }
 
 EVENT_TYPES: Final[tuple[str, ...]] = tuple(
@@ -376,7 +396,7 @@ EVENT_TYPES: Final[tuple[str, ...]] = tuple(
 #: silently ignored there while `store verify` called the log healthy, so the repository
 #: refuses the combination at append. `observation.recorded` is the one type two kinds
 #: share: an artifact stream records what a reading found, and a failure stream records the
-#: one system observation a failed reading mints.
+#: one system observation a failed reading mints. A failure stream opens with either head.
 ARTIFACT_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {"artifact.ingested", "observation.recorded"}
 )
@@ -384,7 +404,7 @@ CASE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     name for name in EVENT_TYPES if name.startswith("case.") or name == "detection.attested"
 )
 FAILURE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
-    {"failure.recorded", "observation.recorded"}
+    {"failure.recorded", FAILURE_HELD, "observation.recorded"}
 )
 STREAM_EVENT_TYPES: Final[Mapping[str, frozenset[str]]] = {
     ARTIFACT_STREAM_PREFIX: ARTIFACT_STREAM_EVENT_TYPES,
@@ -765,10 +785,13 @@ __all__ = [
     "EVENT_TIMESTAMP_POINTERS",
     "EVENT_TYPES",
     "FAILURE_CODE_VALUES",
+    "FAILURE_HELD",
+    "FAILURE_HELD_V1",
     "FAILURE_RECORDED_V1",
     "FAILURE_STREAM_EVENT_TYPES",
     "FAILURE_STREAM_PREFIX",
     "FAILURE_STREAM_SCHEMA_VERSION",
+    "HELD_FAILURE_SCHEMA_VERSION",
     "OBSERVATION_RECORDED_V1",
     "STREAM_EVENT_TYPES",
     "TRACKING_ID_PATTERN",

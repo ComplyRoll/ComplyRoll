@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import permutations
@@ -45,16 +47,23 @@ from complyroll.adapters import (
     IngestDiagnostic,
     IngestResult,
     classify_ingest,
+    failure_diagnostics,
     ingest_stig_artifact,
+    system_observation_for,
 )
 from complyroll.events import (
+    FAILURE_HELD,
     EventMetadata,
     EventRepository,
+    PendingEvent,
     artifact_stream_id,
+    canonical_payload_digest,
     case_stream_id,
+    failure_stream_id,
     iso_utc,
 )
 from complyroll.history import (
+    HistoryError,
     apply_evaluations,
     artifact_history,
     attest_detection,
@@ -1564,8 +1573,15 @@ class DamagedIngestHistoryTests(StoreFixture):
 
     DIGEST = "0" * 64
 
-    def append_failed_ingest(self) -> None:
-        self.repository.append(
+    def append_failed_ingest(self) -> int:
+        """Store one artifact head carrying an ERROR diagnostic, as only a hand edit can.
+
+        The contract admits INFO and WARNING alone, so the head is appended with a WARNING
+        and its level rewritten in place: the append-only trigger dropped, the payload and
+        its digest rewritten, and the trigger rebuilt from the DDL SQLite recorded.
+        """
+
+        appended = self.repository.append(
             artifact_stream_id(self.DIGEST, "complyroll.damaged", "1"),
             "artifact.ingested",
             {
@@ -1579,7 +1595,7 @@ class DamagedIngestHistoryTests(StoreFixture):
                 "observationCount": 0,
                 "diagnostics": [
                     {
-                        "level": "error",
+                        "level": "warning",
                         "code": "artifact_unparsable",
                         "message": "the recorded artifact did not parse",
                     }
@@ -1589,14 +1605,52 @@ class DamagedIngestHistoryTests(StoreFixture):
             metadata=self.metadata,
             expected_version=0,
         )
+        payload = dict(appended.payload)
+        payload["diagnostics"] = [{**payload["diagnostics"][0], "level": "error"}]
+        text = json.dumps(
+            payload, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with closing(sqlite3.connect(self.database, isolation_level=None)) as raw:
+            (restore,) = raw.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'events_reject_update'"
+            ).fetchone()
+            raw.execute("DROP TRIGGER events_reject_update")
+            raw.execute(
+                "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = ?",
+                (text, canonical_payload_digest(payload), appended.sequence),
+            )
+            raw.execute(restore)
+        return appended.sequence
 
     def test_a_stored_error_diagnostic_stops_the_rebuild(self) -> None:
+        # The contract admits INFO and WARNING alone, and the fold reads every head against
+        # its contract before anything else, so the rebuild stops there, naming the level.
+        self.ingest(WINDOWS_ONLY)
+        self.correlate()
+        self.attest()
+        sequence = self.append_failed_ingest()
+
+        with self.assertRaises(HistoryError) as caught:
+            self.replay()
+
+        self.assertIn(
+            f"event {sequence} is not a readable artifact record: artifact.ingested version 1 "
+            "payload is invalid: /diagnostics/0/level: enum:",
+            str(caught.exception),
+        )
+
+    def test_the_compiler_still_refuses_an_error_the_contract_check_lets_through(self) -> None:
+        # The compiler keeps its own refusal behind the fold's: with the contract check
+        # skipped, the stored ERROR reaches it and still stops the run.
         self.ingest(WINDOWS_ONLY)
         self.correlate()
         self.attest()
         self.append_failed_ingest()
 
-        with self.assertRaises(ReportCompileError) as caught:
+        with (
+            mock.patch.object(self.repository, "validate_payload"),
+            self.assertRaises(ReportCompileError) as caught,
+        ):
             self.replay()
 
         diagnostic = caught.exception.diagnostics[0]
@@ -1920,20 +1974,30 @@ def failures(report: AnyReport) -> list[tuple[str, str, str, str]]:
     ]
 
 
-def held_warning(holder: str, under: str, kept: str) -> IngestDiagnostic:
-    """Return the WARNING `record_failure` adds when another failure stream holds a failure.
+def held_warning(holder: str, under: str) -> IngestDiagnostic:
+    """Return the WARNING `record_failure` adds when it records a failure as a hold.
 
-    `under` is the parser and version no failure was recorded under, `kept` the holder's.
+    `under` is the parser and version the hold is recorded under.
     """
 
     return IngestDiagnostic(
         level=DiagnosticLevel.WARNING,
         code="failure_held_by_another_stream",
         message=(
-            f"{holder} already holds this failure, so no failure was recorded under {under} and "
-            f"it stays recorded under {kept}"
+            f"{holder} already holds this failure's system observation, so the failure is "
+            f"recorded under {under} as a hold on it; a report carries the earliest record of "
+            "that observation that no reading of these bytes supersedes"
         ),
     )
+
+
+def hold_of(result: IngestResult) -> str:
+    """Return the reading's own failure stream, the one its hold is recorded on."""
+
+    artifact = result.artifact
+    if artifact is None:
+        raise AssertionError("only a reading that named its artifact has a failure stream")
+    return failure_stream_id(artifact.digest_sha256, artifact.parser_name, artifact.parser_version)
 
 
 def moved(result: IngestResult, parser_name: str, parser_version: str) -> IngestResult:
@@ -1952,6 +2016,77 @@ def moved(result: IngestResult, parser_name: str, parser_version: str) -> Ingest
         artifact=replace(artifact, parser_name=parser_name),
         observations=tuple(observations),
     )
+
+
+def record_hold(
+    repository: EventRepository,
+    result: IngestResult,
+    *,
+    metadata: EventMetadata,
+    ingested_at: datetime,
+) -> str:
+    """Write one failed reading as a hold, the two events a hold's stream holds, and return it.
+
+    This writes through the repository, not `record_failure`, what the writer records for a
+    hold (ADR 0014, amendment 2026-10-13), so the fold's tests do not lean on the writer: a
+    `failure.held` head with exactly the payload a recorded head would carry, then the
+    reading's own system observation, in one batch on the reading's own stream. The
+    repository accepts the batch only beneath the recorded failure that already holds that
+    observation. `test_history` pins that the writer stores the same two events.
+    """
+
+    classification = classify_ingest(result)
+    artifact = result.artifact
+    if classification is None or classification.failure_class is None or artifact is None:
+        raise AssertionError("only a mintable detection process failure can be held")
+    observation = system_observation_for(
+        result, classification, name=artifact.name, observed_at=ingested_at
+    )
+    observation = replace(observation, ingested_at=ingested_at)
+    diagnostics = failure_diagnostics(result, classification, name=artifact.name)
+    head = {
+        "name": dict(observation.source_metadata)["artifact.name"],
+        "sha256": artifact.digest_sha256,
+        "sizeBytes": artifact.size_bytes,
+        "mediaType": artifact.media_type,
+        "parserName": artifact.parser_name,
+        "parserVersion": artifact.parser_version,
+        "ingestedAt": iso_utc(ingested_at),
+        "failureClass": classification.failure_class.value,
+        "failureCodes": list(classification.codes),
+        "clock": "invocation" if classification.clock is not None else "as-of",
+        "diagnostics": [item.to_dict() for item in diagnostics],
+    }
+    stream_id = failure_stream_id(
+        artifact.digest_sha256, artifact.parser_name, artifact.parser_version
+    )
+    repository.append_batch(
+        stream_id,
+        (
+            PendingEvent(FAILURE_HELD, head, occurred_at=ingested_at, metadata=metadata),
+            PendingEvent(
+                "observation.recorded",
+                observation.to_canonical_dict(),
+                occurred_at=ingested_at,
+                metadata=metadata,
+            ),
+        ),
+        expected_version=0,
+    )
+    return stream_id
+
+
+def pure_execution_failure(result: IngestResult) -> IngestResult:
+    """Return a reading of a failed invocation that found nothing, so only its failure records.
+
+    The shape `FailedImportDivergenceTests` builds for a held failure: the scanner's
+    declared clock stays, and the empty reading adds its ERROR.
+    """
+
+    error = IngestDiagnostic(
+        level=DiagnosticLevel.ERROR, code="no_observations", message="no usable results"
+    )
+    return replace(result, observations=(), diagnostics=(*result.diagnostics, error))
 
 
 class FailedImportReconciliationTests(FailureStoreFixture):
@@ -2155,10 +2290,10 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self,
     ) -> None:
         # Version 2 fails the invocation at the scanner's declared clock, which is the
-        # system observation version 1's side record holds. Nothing is written, so R2 never
-        # sees the newer failure: the store keeps the older reading, where a stateless run of
-        # version 2 reports the newer failure. The WARNING is the condition the carve-out
-        # names for this.
+        # system observation version 1's side record holds. The failure is recorded as a
+        # hold, dormant while version 1's failure stands, so R2 never weighs it: the store
+        # keeps the older reading, where a stateless run of version 2 reports the newer
+        # failure. The WARNING is the condition the carve-out names for this.
         def failed(path: Path, *, ingested_at: datetime) -> IngestResult:
             reading = bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
             error = IngestDiagnostic(
@@ -2183,16 +2318,18 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         )
         self.correlate()
 
-        self.assertTrue(held.already_recorded)
-        self.assertEqual(held.stream_id, older)
-        self.assertEqual(
-            held.diagnostics[-1], held_warning(older, "complyroll.sarif 2", "complyroll.sarif 1")
-        )
-        # Nothing was recorded, so the WARNING takes the place of the notice saying a failure was.
-        self.assertNotIn("detection_failure_recorded", [item.code for item in held.diagnostics])
+        self.assertTrue(held.appended)
+        self.assertEqual(held.stream_id, hold_of(newer))
+        self.assertEqual(held.held_by, older)
+        self.assertEqual(held.diagnostics[-1], held_warning(older, "complyroll.sarif 2"))
+        # The hold is recorded, so the notice saying a failure was stays beside the WARNING.
+        self.assertIn("detection_failure_recorded", [item.code for item in held.diagnostics])
         history = artifact_history(self.repository)
         self.assertEqual([record.stream_id for record in history.current], [artifact])
         self.assertEqual([record.stream_id for record in history.current_failures], [older])
+        self.assertEqual(
+            [record.stream_id for record in history.dormant_failures], [held.stream_id]
+        )
         self.assertEqual((history.superseded, history.superseded_failures), ((), ()))
 
         replayed = self.replay()
@@ -2236,14 +2373,18 @@ class FailedImportDivergenceTests(FailureStoreFixture):
             set(diagnostic_codes(stateless)) - set(diagnostic_codes(replayed)),
             {("no_observations", INVOCATION.name)},
         )
-        self.assertEqual(set(diagnostic_codes(replayed)) - set(diagnostic_codes(stateless)), set())
+        self.assertEqual(
+            set(diagnostic_codes(replayed)) - set(diagnostic_codes(stateless)),
+            {("failure_held", held.stream_id)},
+        )
 
     def test_an_older_parser_holding_a_side_record_keeps_only_its_failure_entry(self) -> None:
         # Version 2 reads the log and records its failed invocation beside it, at the
         # scanner's declared clock, which is the system observation version 1's side record
-        # holds. The newer reading is current by R1, so only the `detectionFailures` entry
-        # keeps version 1, where a stateless run of version 2 names version 2. The WARNING is
-        # the condition the carve-out names for this, and it claims nothing about readings.
+        # holds. The newer reading is current by R1, and the newer failure is a hold, dormant
+        # beneath version 1's, so only the `detectionFailures` entry keeps version 1, where a
+        # stateless run of version 2 names version 2. The WARNING is the condition the
+        # carve-out names for this.
         def read_by_version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
             return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
 
@@ -2251,6 +2392,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         newer = read_by_version_2(INVOCATION, ingested_at=INGESTED_AT)
         classification = classify_ingest(newer)
         assert classification is not None and classification.side_record
+        assert newer.artifact is not None
 
         read = record_ingest(
             self.repository, newer, metadata=self.metadata, ingested_at=INGESTED_AT
@@ -2265,20 +2407,25 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.correlate()
 
         self.assertTrue(read.appended)
-        # The WARNING says no failure was recorded under version 2, beside the reading this
-        # run recorded under it.
         self.assertTrue(read.stream_id.endswith("/complyroll.sarif/2"))
-        self.assertTrue(held.already_recorded)
-        self.assertEqual(held.stream_id, older)
-        # The WARNING is the side record's only diagnostic: it takes the place of the
-        # `detection_failure_recorded` notice, because nothing was recorded.
+        self.assertTrue(held.appended)
+        self.assertEqual(held.stream_id, hold_of(newer))
+        self.assertEqual(held.held_by, older)
+        # A side record's notice, then the WARNING naming the holder.
         self.assertEqual(
-            held.diagnostics, (held_warning(older, "complyroll.sarif 2", "complyroll.sarif 1"),)
+            held.diagnostics,
+            (
+                *failure_diagnostics(newer, classification, name=newer.artifact.name),
+                held_warning(older, "complyroll.sarif 2"),
+            ),
         )
         history = artifact_history(self.repository)
         self.assertEqual([record.stream_id for record in history.current], [read.stream_id])
         self.assertEqual([record.stream_id for record in history.superseded], [older_artifact])
         self.assertEqual([record.stream_id for record in history.current_failures], [older])
+        self.assertEqual(
+            [record.stream_id for record in history.dormant_failures], [held.stream_id]
+        )
 
         replayed = self.replay()
         with mock.patch.object(vdt_module, "ingest_stig_artifact", read_by_version_2):
@@ -2298,10 +2445,12 @@ class FailedImportDivergenceTests(FailureStoreFixture):
             {key: value for key, value in replayed_entry.items() if key != "parserVersion"},
             {key: value for key, value in stateless_entry.items() if key != "parserVersion"},
         )
+        self.assertIn(("failure_held", held.stream_id), diagnostic_codes(replayed))
 
     def test_any_other_stream_holding_a_side_record_is_named_and_a_rerun_is_not(self) -> None:
-        # Whichever way the holder differs from the stream this reading would have written,
-        # nothing is recorded and the WARNING names it. Only the reading's own stream is quiet.
+        # Whichever way the holder differs from the stream this reading writes, the failure
+        # is recorded as a hold on the reading's own stream and the WARNING names the holder.
+        # Only the reading's own recorded stream is quiet, as a rerun.
         sarif = "complyroll.sarif"
         cases = {
             "a newer version": ((sarif, "2"), (sarif, "1"), True),
@@ -2332,22 +2481,28 @@ class FailedImportDivergenceTests(FailureStoreFixture):
                     ingested_at=INGESTED_AT,
                 )
 
-                self.assertTrue(outcome.already_recorded)
-                self.assertEqual(outcome.stream_id, holder)
-                self.assertEqual(len(self.repository.read_all()), written)
                 codes = [item.code for item in outcome.diagnostics]
                 if warned:
+                    self.assertTrue(outcome.appended)
+                    self.assertEqual(outcome.stream_id, hold_of(reading))
+                    self.assertEqual(outcome.held_by, holder)
+                    self.assertEqual(len(self.repository.read_all()), written + 2)
+                    self.assertEqual(outcome.diagnostics[-1], held_warning(holder, " ".join(under)))
                     self.assertEqual(
-                        outcome.diagnostics,
-                        (held_warning(holder, " ".join(under), " ".join(kept)),),
+                        codes, ["detection_failure_recorded", "failure_held_by_another_stream"]
                     )
                 else:
+                    self.assertTrue(outcome.already_recorded)
+                    self.assertEqual(outcome.stream_id, holder)
+                    self.assertIsNone(outcome.held_by)
+                    self.assertEqual(len(self.repository.read_all()), written)
                     self.assertNotIn("failure_held_by_another_stream", codes)
 
     def test_a_newer_held_failure_holding_a_side_record_supersedes_its_reading(self) -> None:
         # Version 2 fails the invocation with no usable results and holds the failure at the
         # scanner's declared clock. Version 1 then reads the log, records its artifact, and
-        # finds its side record held. R2 supersedes the reading it just recorded, so the
+        # records its side record as a hold, dormant beneath version 2's failure. R2 weighs
+        # the holder alone and supersedes the reading version 1 just recorded, so the
         # persisted report carries version 2's failure and none of version 1's reading.
         def failed(path: Path, *, ingested_at: datetime) -> IngestResult:
             reading = bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
@@ -2379,15 +2534,17 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.correlate()
 
         self.assertTrue(read.appended)
-        self.assertTrue(held.already_recorded)
-        self.assertEqual(held.stream_id, holder)
-        self.assertEqual(
-            held.diagnostics, (held_warning(holder, "complyroll.sarif 1", "complyroll.sarif 2"),)
-        )
+        self.assertTrue(held.appended)
+        self.assertEqual(held.stream_id, hold_of(older))
+        self.assertEqual(held.held_by, holder)
+        self.assertEqual(held.diagnostics[-1], held_warning(holder, "complyroll.sarif 1"))
         history = artifact_history(self.repository)
         self.assertEqual(history.current, ())
         self.assertEqual([record.stream_id for record in history.superseded], [read.stream_id])
         self.assertEqual([record.stream_id for record in history.current_failures], [holder])
+        self.assertEqual(
+            [record.stream_id for record in history.dormant_failures], [held.stream_id]
+        )
 
         replayed = self.replay()
         stateless = self.flagged((INVOCATION,))
@@ -2413,6 +2570,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.assertIn(
             ("artifact_superseded_by_failure", read.stream_id), diagnostic_codes(replayed)
         )
+        self.assertIn(("failure_held", held.stream_id), diagnostic_codes(replayed))
         self.assertNotIn(
             "artifact_superseded_by_failure", [code for code, _ in diagnostic_codes(stateless)]
         )
@@ -2424,18 +2582,17 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.assertEqual(tracked[0], {INVOCATION_CASE})
         self.assertLess(tracked[0], tracked[1])
 
-    def test_a_held_side_record_whose_holder_a_later_reading_supersedes_reports_none(
+    def test_a_held_side_record_whose_holder_a_later_reading_supersedes_is_carried_by_its_hold(
         self,
     ) -> None:
-        """Pin the persisted path losing a held failure once a later ingest supersedes its holder.
+        """Pin the hold carrying a failure once a later ingest supersedes its holder.
 
-        This pins the behaviour ADR 0014 documents, not one it endorses. Version 1 of the
-        SARIF parser records the log and its failed invocation at the scanner's declared
-        clock. Another parser then reads the same bytes and finds its side record held by
-        version 1's failure, which is still current, so the run keeps the WARNING. A clean
-        reading under version 2 later supersedes that failure under R4. That run met no hold,
-        so nothing refuses it, and the persisted report carries no failure for these bytes
-        where a stateless run of the other parser reports its own (Decision 15).
+        Version 1 of the SARIF parser records the log and its failed invocation at the
+        scanner's declared clock. Another parser then reads the same bytes, and its side
+        record is recorded as a hold beneath version 1's failure, dormant while that failure
+        stands. A clean reading under version 2 later supersedes the holder under R4 and
+        meets no hold. The hold then carries, and its `detectionFailures` entry is the one a
+        stateless run of the other parser gives, whole (ADR 0014, amendment 2026-10-13).
         """
 
         source = ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT)
@@ -2456,14 +2613,14 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         )
 
         self.assertTrue(read.appended)
-        self.assertTrue(held.already_recorded)
-        self.assertEqual(held.stream_id, holder)
+        self.assertTrue(held.appended)
+        self.assertEqual(held.stream_id, hold_of(other))
+        self.assertEqual(held.held_by, holder)
+        self.assertEqual(held.diagnostics[-1], held_warning(holder, "complyroll.other 1"))
+        history = artifact_history(self.repository)
+        self.assertEqual([record.stream_id for record in history.current_failures], [holder])
         self.assertEqual(
-            held.diagnostics, (held_warning(holder, "complyroll.other 1", "complyroll.sarif 1"),)
-        )
-        self.assertEqual(
-            [record.stream_id for record in artifact_history(self.repository).current_failures],
-            [holder],
+            [record.stream_id for record in history.dormant_failures], [held.stream_id]
         )
 
         # A clean reading under version 2: the same bytes, with no failed invocation.
@@ -2485,8 +2642,11 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.correlate()
 
         history = artifact_history(self.repository)
-        self.assertEqual(history.current_failures, ())
+        self.assertEqual(
+            [record.stream_id for record in history.current_failures], [held.stream_id]
+        )
         self.assertEqual([record.stream_id for record in history.superseded_failures], [holder])
+        self.assertEqual(history.dormant_failures, ())
 
         replayed = self.replay(as_of=self.AS_OF)
 
@@ -2498,14 +2658,83 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         with mock.patch.object(vdt_module, "ingest_stig_artifact", read_by_other):
             stateless = self.flagged((INVOCATION,), as_of=self.AS_OF)
 
-        self.assertEqual(failures(replayed), [])
-        self.assertIn(("failure_superseded", holder), diagnostic_codes(replayed))
         (entry,) = stateless.document["x-complyroll"]["detectionFailures"]
         self.assertEqual(
             (entry["parser"], entry["parserVersion"], entry["failureClass"]),
             ("complyroll.other", "1", "execution"),
         )
+        self.assertEqual(replayed.document["x-complyroll"]["detectionFailures"], [entry])
+        self.assertIn(("failure_superseded", holder), diagnostic_codes(replayed))
+        self.assertNotIn("failure_held", [code for code, _ in diagnostic_codes(replayed)])
         self.assertNotIn("failure_superseded", [code for code, _ in diagnostic_codes(stateless)])
+
+    def test_an_upgrade_chain_that_supersedes_a_parse_holder_carries_its_execution_hold(
+        self,
+    ) -> None:
+        """Pin the reachable chain in which a hold outlives its holder (ADR 0014 amendment).
+
+        Three releases read one clockless log three ways. Version 1 cannot parse it at T
+        and records the failure X. Version 2 parses it, finds no results, and fails the
+        invocation at T: a pure execution failure H, held beneath X. Version 3 reads its
+        result and the failed invocation a day later. R3 supersedes X, while R4 leaves H
+        standing, since version 3 still reports the failed invocation, so H carries at T
+        beside version 3's own side record, in one case detected at T. H's entry is the one
+        a stateless run of version 2 alone gives at T, whole.
+        """
+
+        source = replace(
+            ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT), failed_execution_at=None
+        )
+        unparsed = IngestDiagnostic(
+            level=DiagnosticLevel.ERROR, code="artifact_parse_failed", message="cannot parse"
+        )
+        parse_failure = replace(bumped(source, "1"), observations=(), diagnostics=(unparsed,))
+        execution_failure = pure_execution_failure(bumped(source, "2"))
+        later = INGESTED_AT + timedelta(days=1)
+        upgraded = replace(
+            bumped(ingest_stig_artifact(INVOCATION, ingested_at=later), "3"),
+            failed_execution_at=None,
+        )
+
+        ((parse, appended),) = self.record(INVOCATION, result=parse_failure)
+        self.assertTrue(appended)
+        ((hold, appended),) = self.record(INVOCATION, result=execution_failure)
+        self.assertTrue(appended)
+        history = artifact_history(self.repository)
+        self.assertEqual([record.stream_id for record in history.current_failures], [parse])
+        self.assertEqual([record.stream_id for record in history.dormant_failures], [hold])
+        self.assertEqual(dict(history.carried_by)[hold].stream_id, parse)
+        _, (side, appended) = self.record(INVOCATION, at=later, result=upgraded)
+        self.assertTrue(appended)
+        self.correlate()
+
+        history = artifact_history(self.repository)
+        self.assertEqual([record.stream_id for record in history.superseded_failures], [parse])
+        self.assertEqual([record.stream_id for record in history.current_failures], [hold, side])
+        self.assertEqual(history.dormant_failures, ())
+        replayed = self.replay(as_of=self.AS_OF)
+        self.assertEqual(
+            failures(replayed),
+            [
+                (INVOCATION.name, "2", "2026-08-21T12:00:00Z", INVOCATION_CASE),
+                (INVOCATION.name, "3", "2026-08-22T12:00:00Z", INVOCATION_CASE),
+            ],
+        )
+        self.assertIn(("failure_superseded", parse), diagnostic_codes(replayed))
+        record = {
+            item["providerTrackingId"]: item for item in replayed.document["vulnerabilities"]
+        }[INVOCATION_CASE]
+        self.assertEqual(record["detection"]["detectedAt"], "2026-08-21T12:00:00Z")
+        self.assertEqual(len(record["x-complyroll"]["observationIds"]), 2)
+
+        def read_by_version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
+            return execution_failure
+
+        with mock.patch.object(vdt_module, "ingest_stig_artifact", read_by_version_2):
+            stateless = self.flagged((INVOCATION,), as_of=INGESTED_AT)
+
+        (entry,) = stateless.document["x-complyroll"]["detectionFailures"]
+        self.assertEqual(replayed.document["x-complyroll"]["detectionFailures"][0], entry)
 
 
 class FailureWorkedExampleTests(FailureStoreFixture):
@@ -2594,16 +2823,20 @@ class FailureWorkedExampleTests(FailureStoreFixture):
         return written
 
     def test_an_execution_failure_upgraded_at_the_same_as_of_keeps_one_record(self) -> None:
-        # One digest at one instant is one system record, whichever parser recorded it.
+        # One digest at one instant is one system record, whichever parser recorded it:
+        # version 2's failure is recorded as a hold, dormant while version 1's stands.
         written = self.upgrade(at=INGESTED_AT)
 
-        self.assertEqual([appended for _, appended in written], [True, False])
+        self.assertEqual([appended for _, appended in written], [True, True])
         report = self.replay(as_of=self.AS_OF)
         self.assertEqual(
             failures(report), [(INVOCATION.name, "1", "2026-08-21T12:00:00Z", INVOCATION_CASE)]
         )
         self.assertEqual(report.document["x-complyroll"]["artifacts"][0]["parserVersion"], "2")
-        self.assertEqual(len(artifact_history(self.repository).current_failures), 1)
+        history = artifact_history(self.repository)
+        self.assertEqual(len(history.current_failures), 1)
+        self.assertEqual([record.stream_id for record in history.dormant_failures], [written[1][0]])
+        self.assertIn(("failure_held", written[1][0]), diagnostic_codes(report))
 
     def test_an_execution_failure_upgraded_later_keeps_its_case_detection_time(self) -> None:
         # R4: the newer reading still reports the failed invocation, so the older failure
@@ -2720,6 +2953,99 @@ class FailureSupersessionReplayTests(FailureStoreFixture):
         self.failure("2", at=INGESTED_AT + timedelta(minutes=1))
 
         self.assertEqual(self.step(), ([], ["1", "2"], []))
+
+
+class HeldFailureReplayTests(FailureStoreFixture):
+    """R6 seen in the report it decides (ADR 0014, amendment 2026-10-13).
+
+    Each hold is written by `record_hold` beneath a failure the writer recorded, so every
+    store here is one the repository accepts.
+    """
+
+    def hold(self, result: IngestResult, *, at: datetime = INGESTED_AT) -> str:
+        """Write one failed reading as a hold beneath the failure holding its observation."""
+
+        return record_hold(self.repository, result, metadata=self.metadata, ingested_at=at)
+
+    def test_a_dormant_hold_is_named_at_its_stream_beside_the_failure_carried(self) -> None:
+        # The holder stands, so the report is the one it was before the hold, plus one INFO
+        # at the hold naming the record carried in its place.
+        self.failure("1", at=INGESTED_AT)
+        hold = self.hold(bumped(ingest_stig_artifact(TRUNCATED, ingested_at=INGESTED_AT), "2"))
+
+        self.assertEqual(self.step(), ([], ["1"], [("failure_held", hold)]))
+        report = self.replay(as_of=self.AS_OF)
+        (notice,) = [item for item in report.diagnostics if item.code == "failure_held"]
+        self.assertEqual(notice.level, DiagnosticLevel.INFO)
+        self.assertEqual(notice.location, hold)
+        self.assertEqual(
+            notice.message,
+            "failed-truncated.sarif failed under complyroll.sarif 2; this report carries the "
+            "same failure as complyroll.sarif 1 recorded it, so this reading's failure is in "
+            "history but not in it",
+        )
+        self.assertIn(notice.to_dict(), report.document["x-complyroll"]["diagnostics"])
+        self.assertIn("failure_held", report.to_markdown())
+        # One system record, the holder's: the hold's copy of it is never read back.
+        record = self.sole_vulnerability(report)
+        self.assertEqual(len(record["x-complyroll"]["observationIds"]), 1)
+
+    def test_a_hold_carries_its_failure_and_case_once_a_reading_supersedes_the_holder(
+        self,
+    ) -> None:
+        # The residual ADR 0014 documents, recorded as a hold. Version 1 of the SARIF parser
+        # records the log and its failed invocation at the scanner's declared clock; another
+        # parser's side record is held beneath it. A clean reading under version 2 later
+        # supersedes the holder under R4 and leaves the hold standing, so the hold carries:
+        # the report names the other parser's failure where it named version 1's, the case
+        # and its detection time stay, and correlate finds nothing to open.
+        source = ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT)
+        _, holder = (stream for stream, _ in self.record(INVOCATION))
+        other = moved(source, "complyroll.other", "1")
+        record_ingest(self.repository, other, metadata=self.metadata, ingested_at=INGESTED_AT)
+        hold = self.hold(other)
+        self.correlate()
+        before = self.replay(as_of=self.AS_OF)
+
+        self.assertIn(("failure_held", hold), diagnostic_codes(before))
+        (entry,) = before.document["x-complyroll"]["detectionFailures"]
+        self.assertEqual((entry["parser"], entry["parserVersion"]), ("complyroll.sarif", "1"))
+
+        newer = bumped(source, "2")
+        clean = replace(
+            newer,
+            diagnostics=tuple(
+                item for item in newer.diagnostics if item.code != "execution_unsuccessful"
+            ),
+            failed_execution_at=None,
+        )
+        later = INGESTED_AT + timedelta(days=1)
+        record_ingest(self.repository, clean, metadata=self.metadata, ingested_at=later)
+        correlated = correlate_cases(self.repository, metadata=self.metadata, now=later)
+        after = self.replay(as_of=self.AS_OF)
+
+        self.assertEqual(correlated.created, ())
+        history = artifact_history(self.repository)
+        self.assertEqual([record.stream_id for record in history.current_failures], [hold])
+        self.assertEqual([record.stream_id for record in history.superseded_failures], [holder])
+        self.assertEqual(history.dormant_failures, ())
+        (entry,) = after.document["x-complyroll"]["detectionFailures"]
+        self.assertEqual(
+            (entry["parser"], entry["parserVersion"], entry["failureClass"], entry["observedAt"]),
+            ("complyroll.other", "1", "execution", "2026-08-04T10:00:00Z"),
+        )
+        codes = diagnostic_codes(after)
+        self.assertIn(("failure_superseded", holder), codes)
+        self.assertNotIn("failure_held", [code for code, _ in codes])
+        self.assertNotIn("stale_case", [code for code, _ in codes])
+        detected = [
+            {
+                item["providerTrackingId"]: item["detection"]["detectedAt"]
+                for item in report.document["vulnerabilities"]
+            }[INVOCATION_CASE]
+            for report in (before, after)
+        ]
+        self.assertEqual(detected, ["2026-08-04T10:00:00Z", "2026-08-04T10:00:00Z"])
 
 
 def bad_rules(count: int) -> dict[str, object]:

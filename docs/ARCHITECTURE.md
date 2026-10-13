@@ -168,10 +168,18 @@ Schema version 2 (ADR 0014) changes no schema object. It marks a store that hold
 stream. New stores are still created at version 1 (`SCHEMA_VERSION`), and the first append that
 needs version 2 (`SQLiteEventStore.append` with `requires_schema=2`) inserts migration record 2
 into `complyroll_schema_migrations` and sets `user_version` to 2 inside its own transaction, so a
-rollback leaves both untouched. This build opens versions 1 and 2 (`SUPPORTED_SCHEMA_VERSION`).
-An earlier build's `ingest`, `cases`, and `report --db` refuse a version 2 store as newer than
-they support, and its `store verify` reports each failure stream as domain faults and exits 1. A
-store that never records a failure stays at version 1 and readable by an earlier build.
+rollback leaves both untouched. An earlier build's `ingest`, `cases`, and `report --db` refuse a
+version 2 store as newer than they support, and its `store verify` reports each failure stream as
+domain faults and exits 1. A store that never records a failure stays at version 1 and readable by
+an earlier build.
+
+Schema version 3 (the ADR 0014 amendment of 2026-10-13) changes no schema object either. It marks
+a store that holds a hold, a failure stream that opens with `failure.held`. The first append that
+needs version 3 (`requires_schema=3`) inserts migration record 3 and sets `user_version` to 3
+inside its own transaction, as version 2 does. A store with failure streams and no hold stays at
+version 2. This build opens versions 1 to 3 (`SUPPORTED_SCHEMA_VERSION`). An earlier build refuses
+a version 3 store at open with `database schema 3 is newer than supported schema 2`, and its
+`store verify` reports the marker as `schema_version_unsupported`.
 
 Projection checkpoints are mutable compare-and-swap cursors over the global sequence. Projection
 rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
@@ -180,9 +188,10 @@ will own their query tables and must update those rows and their checkpoint in o
 Event types with published version-1 contracts (ADR 0008): `artifact.ingested`,
 `observation.recorded`, `case.created`, `case.observation_linked`, `detection.attested`,
 `case.evaluated`, `case.pain_reduced`, `case.disposition_recorded`, `case.identified`.
-ADR 0014 adds `failure.recorded` v1 and a third stream kind beside artifact and case streams:
-`failure/<sha256>/<parser_name>/<parser_version>`, which holds one `failure.recorded` head and
-the one `observation.recorded` carrying its system observation. Candidates for later slices:
+ADR 0014 adds `failure.recorded` v1, `failure.held` v1, and a third stream kind beside artifact
+and case streams: `failure/<sha256>/<parser_name>/<parser_version>`, which holds one
+`failure.recorded` or `failure.held` head and the one `observation.recorded` carrying its system
+observation. Candidates for later slices:
 `case.action_planned`, `case.action_completed`, `validation.completed`, `evidence.attached`.
 
 ## Package layout

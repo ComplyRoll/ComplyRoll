@@ -19,7 +19,6 @@ from . import __version__
 from .adapters import (
     ArtifactProvenance,
     DiagnosticLevel,
-    FailureClass,
     FailureClassification,
     IngestDiagnostic,
     IngestResult,
@@ -30,7 +29,6 @@ from .events import (
     EventContractError,
     EventMetadata,
     EventRepository,
-    failure_stream_id,
     require_tracking_id,
 )
 from .history import (
@@ -45,7 +43,6 @@ from .history import (
     case_history,
     correlate_cases,
     fold_all_cases,
-    held_failure_lost,
     reading_elsewhere,
     record_failure,
     record_ingest,
@@ -475,10 +472,9 @@ def _run_ingest(args: argparse.Namespace) -> int:
     # The failures' diagnostics, written just before the lines above and only once the store
     # is published, so a run that exits 1 never claims a recording (ADR 0014).
     pending: list[ReportDiagnostic] = []
-    # Held with nothing written yet: whether each writes its own ERRORs or the failure's
-    # diagnostics depends on the rest of the run, including the store check after the
-    # writes (ADR 0014 Decision 13).
-    held: list[_FailedReading] = []
+    # Set aside with nothing written yet: whether each writes its own ERRORs or the
+    # failure's diagnostics depends on the rest of the run (ADR 0014).
+    failing: list[_FailedReading] = []
     failures_seen = False
 
     def ingest(target: Path) -> int:
@@ -497,7 +493,7 @@ def _run_ingest(args: argparse.Namespace) -> int:
                 and classification is not None
                 and classification.mintable
             ):
-                held.append(_FailedReading(path, result, result.artifact, classification))
+                failing.append(_FailedReading(path, result, result.artifact, classification))
                 continue
             _write_diagnostics(stderr, _as_report_diagnostics(result.diagnostics, path.name))
             if result.errors or result.artifact is None:
@@ -509,92 +505,68 @@ def _run_ingest(args: argparse.Namespace) -> int:
         # Bytes that read successfully under another name are a misnamed copy, not a failed
         # detection, so the failed reading stops the run exactly as it always has.
         read = {reading.artifact.digest_sha256 for reading in parsed}
-        if any(reading.artifact.digest_sha256 in read for reading in held):
+        if any(reading.artifact.digest_sha256 in read for reading in failing):
             return 1
         # Elected by name: recording the lowest name first leaves the failure stream named
         # for it whatever order the files were listed in, and the others find it recorded.
-        failed = sorted(held, key=lambda reading: reading.artifact.name)
+        failed = sorted(failing, key=lambda reading: reading.artifact.name)
 
         # One transaction around every artifact of the run. Each `record_ingest` joins it
         # rather than opening its own, so a failure on any artifact leaves the store
         # exactly as it was and the empty summary below is the truth: nothing became
-        # durable (ADR 0008, second amendment). A failure its holder would lose leaves the
-        # store exactly as it was too, because its refusal raises out of the transaction
-        # rather than returning inside it, which would commit the run's appends.
-        try:
-            with _open_repository(target) as repository, repository.transaction():
-                if failed and _refuse_failures_read_elsewhere(stderr, repository, failed):
-                    return 1
-                # Each reading's lines and diagnostics, in the slot of its place in the
-                # list, so the summary keeps listed order whatever order the side records'
-                # failures are recorded in.
-                slots: list[tuple[list[str], list[ReportDiagnostic]]] = []
-                for reading in parsed:
-                    outcome = record_ingest(
-                        repository, reading.result, metadata=metadata, ingested_at=ingested_at
+        # durable (ADR 0008, second amendment).
+        with _open_repository(target) as repository, repository.transaction():
+            if failed and _refuse_failures_read_elsewhere(stderr, repository, failed):
+                return 1
+            # Each reading's lines and diagnostics, in the slot of its place in the list, so
+            # the summary keeps listed order whatever order the side records' failures are
+            # recorded in.
+            slots: list[tuple[list[str], list[ReportDiagnostic]]] = []
+            for reading in parsed:
+                outcome = record_ingest(
+                    repository, reading.result, metadata=metadata, ingested_at=ingested_at
+                )
+                if outcome.already_recorded:
+                    line = f"{reading.path.name}: already_recorded"
+                else:
+                    line = (
+                        f"{reading.path.name}: recorded {outcome.observation_count} observation(s)"
                     )
-                    if outcome.already_recorded:
-                        line = f"{reading.path.name}: already_recorded"
-                    else:
-                        line = (
-                            f"{reading.path.name}: recorded {outcome.observation_count} "
-                            "observation(s)"
-                        )
-                    slots.append(([line], []))
-                holds: list[_Hold] = []
-                # Side records' failures go in once every artifact is, in name order like the
-                # held failures, so which reading meets another's hold never depends on the
-                # order the files were listed in.
-                for index, reading in sorted(
-                    enumerate(parsed), key=lambda item: item[1].artifact.name
-                ):
-                    if reading.classification is None:
-                        continue
-                    # A side record: the artifact imported, and its failed invocation is
-                    # recorded beside it.
-                    line, diagnostics, hold = _record_detection_failure(
-                        repository,
-                        reading.path,
-                        reading.result,
-                        reading.artifact,
-                        reading.classification,
-                        metadata=metadata,
-                        ingested_at=ingested_at,
-                    )
-                    slots[index][0].append(line)
-                    slots[index][1].extend(diagnostics)
-                    if hold is not None:
-                        holds.append(hold)
-                    failures_seen = True
-                for slot_lines, slot_diagnostics in slots:
-                    recorded.extend(slot_lines)
-                    pending.extend(slot_diagnostics)
-                for failure in failed:
-                    line, diagnostics, hold = _record_detection_failure(
-                        repository,
-                        failure.path,
-                        failure.result,
-                        failure.artifact,
-                        failure.classification,
-                        metadata=metadata,
-                        ingested_at=ingested_at,
-                    )
-                    recorded.append(line)
-                    pending.extend(diagnostics)
-                    if hold is not None:
-                        holds.append(hold)
-                    failures_seen = True
-                # Weighed once every write of the run is in, because the run's own artifacts
-                # can be what supersedes a holder (ADR 0014 Decision 13).
-                if holds:
-                    refused = _failures_lost_to_superseded_holders(repository, holds)
-                    if refused:
-                        raise _FailedHoldRefused(refused)
-        except _FailedHoldRefused as refusal:
-            # Written only once the rollback is done: a rollback that fails raises in place
-            # of the refusal, and no line may then say the store was left unchanged.
-            _write_diagnostics(stderr, refusal.diagnostics)
-            return 1
+                slots.append(([line], []))
+            # Side records' failures go in once every artifact is, in name order like the
+            # pure failures, so which reading meets another's hold never depends on the order
+            # the files were listed in.
+            for index, reading in sorted(enumerate(parsed), key=lambda item: item[1].artifact.name):
+                if reading.classification is None:
+                    continue
+                # A side record: the artifact imported, and its failed invocation is recorded
+                # beside it.
+                line, diagnostics = _record_detection_failure(
+                    repository,
+                    reading.path,
+                    reading.result,
+                    reading.classification,
+                    metadata=metadata,
+                    ingested_at=ingested_at,
+                )
+                slots[index][0].append(line)
+                slots[index][1].extend(diagnostics)
+                failures_seen = True
+            for slot_lines, slot_diagnostics in slots:
+                recorded.extend(slot_lines)
+                pending.extend(slot_diagnostics)
+            for failure in failed:
+                line, diagnostics = _record_detection_failure(
+                    repository,
+                    failure.path,
+                    failure.result,
+                    failure.classification,
+                    metadata=metadata,
+                    ingested_at=ingested_at,
+                )
+                recorded.append(line)
+                pending.extend(diagnostics)
+                failures_seen = True
         return 0
 
     # A store that is already there is opened in place; concurrent writers contend on the
@@ -606,11 +578,9 @@ def _run_ingest(args: argparse.Namespace) -> int:
         else _build_and_publish_store(stderr, database, ingest)
     )
     if code != 0:
-        # Nothing was recorded, so each held reading writes the diagnostics it would have
+        # Nothing was recorded, so each pure failure writes the diagnostics it would have
         # written as the run's first failure, ERRORs included, and no failure is claimed.
-        # A side record refused under ADR 0014 Decision 13 wrote its reading's diagnostics
-        # as it was read, so its refusal ERROR is the only line it adds.
-        for failure in held:
+        for failure in failing:
             _write_diagnostics(
                 stderr, _as_report_diagnostics(failure.result.diagnostics, failure.path.name)
             )
@@ -637,34 +607,12 @@ class _ParsedReading:
 
 @dataclass(frozen=True, slots=True)
 class _FailedReading:
-    """One reading `ingest` holds as a mintable detection failure."""
+    """One reading `ingest` sets aside as a mintable detection failure."""
 
     path: Path
     result: IngestResult
     artifact: ArtifactProvenance
     classification: FailureClassification
-
-
-@dataclass(frozen=True, slots=True)
-class _Hold:
-    """One failure `record_failure` left unwritten because another failure stream holds it."""
-
-    path: Path
-    artifact: ArtifactProvenance
-    failure_class: FailureClass
-    holder: str
-
-
-class _FailedHoldRefused(Exception):
-    """Raised inside the ingest transaction so a run that would lose a held failure rolls back.
-
-    `diagnostics` are the refusal ERRORs, written only once the rollback is done (ADR 0014
-    Decision 13).
-    """
-
-    def __init__(self, diagnostics: tuple[ReportDiagnostic, ...]) -> None:
-        super().__init__("a held failure would reach no persisted report")
-        self.diagnostics = diagnostics
 
 
 def _refuse_failures_read_elsewhere(
@@ -714,55 +662,16 @@ def _refuse_failures_read_elsewhere(
     return refused
 
 
-def _failures_lost_to_superseded_holders(
-    repository: EventRepository,
-    holds: Sequence[_Hold],
-) -> tuple[ReportDiagnostic, ...]:
-    """Return a refusal ERROR for every held failure the run's history would lose, by name.
-
-    Asked inside the ingest transaction once every write of the run is in, so the fold sees
-    the run's own artifacts. A hold is kept, with its WARNING, unless its holder ends the
-    run superseded and no reading of the digest would supersede the held failure at birth:
-    then the failure's system observation is the holder's, and no persisted report would
-    carry it (ADR 0014 Decision 13). Nothing is written here.
-    """
-
-    history = artifact_history(repository)
-    return tuple(
-        ReportDiagnostic(
-            level=DiagnosticLevel.ERROR,
-            code="failure_held_by_superseded_stream",
-            message=(
-                f"{hold.holder} holds this failure's system observation and is superseded, so "
-                f"recording the failure under {hold.artifact.parser_name} "
-                f"{hold.artifact.parser_version} would leave it in no persisted report; "
-                "nothing was recorded"
-            ),
-            location=hold.path.name,
-        )
-        for hold in sorted(holds, key=lambda hold: hold.artifact.name)
-        if held_failure_lost(
-            history,
-            hold.artifact.digest_sha256,
-            parser_name=hold.artifact.parser_name,
-            parser_version=hold.artifact.parser_version,
-            failure_class=hold.failure_class,
-            holder=hold.holder,
-        )
-    )
-
-
 def _record_detection_failure(
     repository: EventRepository,
     path: Path,
     result: IngestResult,
-    artifact: ArtifactProvenance,
     classification: FailureClassification,
     *,
     metadata: EventMetadata,
     ingested_at: datetime,
-) -> tuple[str, tuple[ReportDiagnostic, ...], _Hold | None]:
-    """Record one reading's detection process failure; return its line, diagnostics and hold.
+) -> tuple[str, tuple[ReportDiagnostic, ...]]:
+    """Record one reading's detection process failure; return its line and diagnostics.
 
     Nothing is written here. The caller writes the diagnostics, then the line, only once
     the store is published, so a run that rolls back or loses the race to publish never
@@ -771,12 +680,10 @@ def _record_detection_failure(
     record's are only its `detection_failure_recorded` notice, because the artifact's own
     were written already.
 
-    The hold is returned when another failure stream of the digest already holds the
-    failure's system observation: `record_failure` then wrote nothing and returned that
-    stream, so its `stream_id` is not the reading's own `failure_stream_id`. A rerun finds
-    its own stream and is never a hold. On a hold the WARNING naming the holder takes the
-    place of the `detection_failure_recorded` notice, and the caller refuses the run when
-    the holder ends it superseded and this failure would not be (ADR 0014 Decision 13).
+    A failure another failure stream of the digest already holds is recorded as a hold
+    beneath it: the line names that holder after the class, and WARNING
+    `failure_held_by_another_stream` joins the notice. A rerun of a hold prints
+    `already_recorded` and the WARNING again (ADR 0014, amendment 2026-10-13).
     """
 
     outcome = record_failure(
@@ -788,17 +695,11 @@ def _record_detection_failure(
     )
     diagnostics = _as_report_diagnostics(outcome.diagnostics, path.name)
     if not outcome.appended:
-        own = failure_stream_id(
-            artifact.digest_sha256, artifact.parser_name, artifact.parser_version
-        )
-        hold = (
-            _Hold(path, artifact, outcome.failure_class, outcome.stream_id)
-            if outcome.stream_id != own
-            else None
-        )
-        return f"{path.name}: already_recorded", diagnostics, hold
+        return f"{path.name}: already_recorded", diagnostics
     line = f"{path.name}: recorded detection failure ({outcome.failure_class.value})"
-    return line, diagnostics, None
+    if outcome.held_by is not None:
+        line = f"{line}, held by {outcome.held_by}"
+    return line, diagnostics
 
 
 def _build_and_publish_store(

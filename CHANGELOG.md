@@ -258,8 +258,10 @@ All notable project changes will be documented here.
   twenty existing goldens are byte-identical.
 - System-generated observations for detection process failures (ADR 0014, `VDR-CSO-FAV`).
   `--record-failed-imports` on `report vdt`, `report avi`, `report historical`, and `ingest` turns
-  a failed reading into one system observation and one vulnerability case per failing artifact
-  digest instead of stopping the run. The class is decided from a closed vocabulary of diagnostic
+  each failed reading into one system observation instead of stopping the run. The system
+  observations of one failing digest correlate into one vulnerability case, which a report compiles
+  directly and which `cases correlate` opens in a store, as for any other observation. The class is
+  decided from a closed vocabulary of diagnostic
   codes and never from message text: `parse` for truncated or corrupt bytes or an input bound
   exceeded, `content` for a well-formed file with no usable content, such as a CKLB STIG with no
   rules array, and `execution` for a SARIF invocation with `executionSuccessful: false`, recorded
@@ -283,24 +285,33 @@ All notable project changes will be documented here.
   observation opens and an observation whose metadata is not what the writer stores, and the fold
   and `store verify` also refuse a head and an observation that describe two failures. With the
   flag, `ingest` exits 1 with `failure_read_elsewhere` and records nothing when history holds a
-  reading of the same bytes that would supersede the failure. It also exits 1 with
-  `failure_held_by_superseded_stream` and records nothing, side records included, when a failure
-  stream the run leaves superseded already holds the failure's system observation, which would
-  otherwise drop the failure from every persisted report. Rules R1 to R5 decide per digest which
-  readings and failures are current, `store verify` gains five audit codes, and reports print INFO
-  lines for a superseded reading, a superseded failure, and a stale case. The first failure stream
-  marks the store schema version 2 in the same transaction, and a store that never records a failure
-  stays at version 1. A store that recorded a failure cannot be opened by an earlier build: its
-  `ingest`, `cases`, and `report --db` exit 1 with
+  reading of the same bytes that would supersede the failure. A failure whose system observation
+  another failure stream of its bytes already holds is recorded as a `failure.held` hold on its own
+  stream, and the fold reports one record per observation, the earliest no reading supersedes (R6),
+  so a later ingest that supersedes the holder hands the failure to the hold. A failure that a build
+  of `main` before this change refused, or a held side record it lost, is recorded by ingesting the
+  same file again with the flag at the same instant. A lost pure failure has no recording path once
+  a current reading of its bytes is under another parser, or under the same parser at its version or
+  later: `failure_read_elsewhere` refuses it before the writes. Rules R1 to R6 decide per digest
+  which readings and failures are current, `store verify` gains six audit codes, and reports print
+  INFO lines for a superseded reading, a superseded failure, and a stale case. The stored-diagnostic
+  contract of `artifact.ingested`, `failure.recorded`, and `failure.held` admits INFO and WARNING
+  alone, so `store verify` refuses a head edited to carry an ERROR. The first failure stream marks
+  the store schema version 2 in the same transaction, the first hold marks it version 3, and a store
+  that never records a failure stays at version 1. A store that recorded a failure cannot be opened
+  by an earlier build: its `ingest`, `cases`, and `report --db` exit 1 with
   `store_unavailable: database schema 2 is newer than supported schema 1`, and its `store verify`
-  reports each failure stream as faults. Stateless and persisted reports stay byte-identical under
+  reports each failure stream as faults. A store that recorded a hold is refused the same way by a
+  build that knows only version 2, with `database schema 3 is newer than supported schema 2`, and
+  its `store verify` reports the marker as `schema_version_unsupported`. Stateless and persisted
+  reports stay byte-identical under
   the conditions ADR 0014 Decision 15 names, recorded as an amendment to ADR 0008. Response-process
   failures, missing attestations, stale coverage, missing resources, and the clean scan are not
   built; `docs/BUILD_PLAN.md` records the scope change. Three synthetic fixtures
   (`failed-truncated.sarif`, `failed-invalid-rules.cklb`, and `failed-invocation.sarif`),
   `examples/evaluations-failed.json`, and four goldens (`tests/golden/vdt-failed.json`,
   `vdt-failed.md`, `historical-failed.json`, and `historical-failed.md`) hold the behavior. Verified
-  by 1,914 tests on Python 3.11, 3.13, and 3.14, by the four goldens on the stateless path and from
+  by 2,065 tests on Python 3.11, 3.13, and 3.14, by the four goldens on the stateless path and from
   the store's history, and by a test that recompiles the sixteen report goldens of runs without a
   failure with the flag on, byte for byte; none of the 22 existing goldens moved.
 

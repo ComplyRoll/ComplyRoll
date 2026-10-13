@@ -744,6 +744,10 @@ error: store_unavailable: database schema 2 is newer than supported schema 1
 
 and its `store verify` reports the failure streams as domain faults and exits 1.
 
+A store that records a hold, a failure that another failure stream of its digest already holds,
+moves on to schema version 3. An earlier build refuses it the same way, naming schema 3 as newer
+than the schema it supports.
+
 The clean log described under Other formats is not a detection failure: it still fails with
 `no_observations`, with or without the flag, until the coverage observation lands. A SARIF log
 that yields nothing and has a run with no `results` array, or a null one, is not a clean scan:

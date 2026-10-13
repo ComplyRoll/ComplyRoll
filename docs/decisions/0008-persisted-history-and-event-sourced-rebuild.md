@@ -340,3 +340,41 @@ store. These rules bind from this date.
   stream's events as `event_stream_mismatch` and `payload_contract_invalid` faults (ADR 0014,
   Consequences). A store that never records a failure stays at schema 1 and stays readable by
   earlier builds.
+
+## Amendment 2026-10-13: holds
+
+ADR 0014's amendment of this date stores a failure another failure stream already holds as a
+`failure.held` v1 head and the reading's own system observation, on the reading's own failure
+stream. One system observation id may now sit on several failure streams of a digest, and the
+fold rehydrates it once, from the carrier: the stream whose observation was recorded first
+among those no reading supersedes (R6). These rules bind from this date.
+
+- **The Decision 5 carve-out keeps its five conditions.** For history written from this date
+  the fifth can also be read from the store: no failure stream of the digest opens with
+  `failure.held`. The sentence "No failure stream is then written under the reading's parser
+  and version" in the 2026-09-30 amendment no longer holds, because the reading is stored as a
+  hold. INFO `failure_held` joins the fields that may differ.
+- **Ingest diagnostics have a second source.** Decision 5 says artifact provenance and ingest
+  diagnostics come from `artifact.ingested` events. Persisted ingest diagnostics also come from
+  the failure head that carries its observation, `failure.recorded` or `failure.held` (R6),
+  each read once as the stateless path emits it (ADR 0014, Decision 12). A dormant hold
+  contributes only INFO `failure_held`.
+- **`failure.held` v1.** The event is accepted on failure streams only, with the payload of
+  `failure.recorded` v1. A failure stream holds one head of either type and one
+  `observation.recorded`. The audit gains `failure_hold_orphaned`, a hold whose observation is
+  not first held by a `failure.recorded` stream, so it has six failure codes. This supersedes
+  three phrases of the 2026-09-30 amendment's stream-kind bullet: "exactly one
+  `failure.recorded` head" now reads one head of either type, "`failure.recorded` on failure
+  streams only" covers `failure.held` too, and "One system observation id is stored once per
+  digest across failure streams" holds for `failure.recorded` streams, while a hold stores the
+  id again beneath the recorded stream that holds it first.
+- **Stored diagnostics narrow.** The stored-diagnostic contract admits only `info` and
+  `warning` for `artifact.ingested`, `failure.recorded`, and `failure.held`. A head edited to
+  carry an ERROR is `payload_contract_invalid` in `store verify` and stops the fold with
+  `history_invalid`. No writer ever stored an ERROR diagnostic, so no released store holds one.
+- **A store that records a hold is schema 3.** The first hold append inserts migration row 3
+  ("held failures, ADR 0014 amendment 2026-10-13") and sets `user_version` to 3 in the same
+  transaction; a store with failure streams and no hold stays at 2. This supersedes "This build
+  opens 1 and 2" above and the `store verify` sentence that follows it. This build opens 1 to
+  3. An earlier build refuses a schema 3 store at open, and its `store verify` reports
+  `schema_version_unsupported` (ADR 0004, amendment 2026-10-03).

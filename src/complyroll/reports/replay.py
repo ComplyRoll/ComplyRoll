@@ -7,6 +7,8 @@ uses. Nothing is recomputed differently and nothing is cached, so a report rebui
 the log is byte-identical to the stateless report compiled from the same inputs. A current
 failure stream reads back as its system observation and its head's diagnostics, which are
 what the stateless path compiled for that failure (ADR 0014 records where the two differ).
+Current is the stream that carries the failure: a hold left dormant beneath it is named,
+not read back (ADR 0014, amendment 2026-10-13).
 
 Detection-time attestations are per case here rather than one flag on the command line.
 An attestation still applies only to a group where no observation declares a source
@@ -115,6 +117,7 @@ def compile_record_set_from_history(
         _ingest_diagnostics((*history.current, *history.current_failures))
         + _superseded_artifacts(history)
         + _superseded_failures(history)
+        + _held_failures(history)
         + _stale_cases(cases, observations)
     )
     return compile_record_set(
@@ -147,15 +150,19 @@ def _ingest_diagnostics(
 
     The artifact name stands in for a diagnostic that names no location, exactly as the
     stateless compiler substitutes the artifact's file name, so a report never depends
-    on the directory layout of the machine that ingested it. An error-level diagnostic
-    cannot reach history through `record_ingest`, so one found here is a damaged log and
-    stops the run the same way a failed ingest does.
+    on the directory layout of the machine that ingested it.
 
     A current failure's head holds `failure_diagnostics`, every ERROR already demoted, and
     a side record's holds only its `detection_failure_recorded` notice, because the
     reading's own diagnostics are on its artifact stream (ADR 0014). Each diagnostic is
-    therefore read back once, as the stateless path emits it, and an ERROR in a head is
-    the same damaged log.
+    therefore read back once, as the stateless path emits it.
+
+    No stored diagnostic is an ERROR. `record_ingest` refuses one, a failure head carries
+    each one demoted, and the contracts of `artifact.ingested`, `failure.recorded` and
+    `failure.held` admit INFO and WARNING alone. The fold checks every head against its
+    contract before it reads it, so an ERROR planted in a stored head stops the fold with
+    `HistoryError` and never reaches here. The refusal below stays behind that check, so
+    an ERROR that ever got past it would still stop the run as a failed ingest does.
     """
 
     diagnostics: list[ReportDiagnostic] = []
@@ -242,6 +249,35 @@ def _superseded_failures(history: ArtifactHistory) -> tuple[ReportDiagnostic, ..
         )
         for record in history.superseded_failures
     )
+
+
+def _held_failures(history: ArtifactHistory) -> tuple[ReportDiagnostic, ...]:
+    """Name every failure stream R6 leaves dormant (ADR 0014, amendment 2026-10-13).
+
+    A hold stores its own reading of a system observation another failure stream of the
+    same bytes also holds. The report carries one record of that observation, the earliest
+    no reading supersedes, so a dormant hold's head and record are in no `detectionFailures`
+    entry and its diagnostics are not read back. This names the hold, at its own stream,
+    with the parser and version whose record the report carries in its place.
+    """
+
+    diagnostics: list[ReportDiagnostic] = []
+    for record in history.dormant_failures:
+        carrier = history.carried_by[record.stream_id]
+        diagnostics.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.INFO,
+                code="failure_held",
+                message=(
+                    f"{record.name} failed under {record.parser_name} {record.parser_version}; "
+                    f"this report carries the same failure as {carrier.parser_name} "
+                    f"{carrier.parser_version} recorded it, so this reading's failure is in "
+                    "history but not in it"
+                ),
+                location=record.stream_id or record.name,
+            )
+        )
+    return tuple(diagnostics)
 
 
 def _stale_cases(

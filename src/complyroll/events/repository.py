@@ -34,8 +34,10 @@ from .contracts import (
     EVENT_CONTRACTS,
     FAILURE_CLOCK_VALUES,
     FAILURE_CODE_VALUES,
+    FAILURE_HELD,
     FAILURE_STREAM_PREFIX,
     FAILURE_STREAM_SCHEMA_VERSION,
+    HELD_FAILURE_SCHEMA_VERSION,
     artifact_stream_components,
     event_belongs_on_stream,
     failure_stream_components,
@@ -60,6 +62,10 @@ ARTIFACT_INGESTED = "artifact.ingested"
 
 #: The head of a failure stream, which names the failed reading its stream is about.
 FAILURE_RECORDED = "failure.recorded"
+
+#: The two heads a failure stream may open with: a recorded failure, or a hold beneath one
+#: (ADR 0014, amendment 2026-10-13). Both name the failed reading their stream is about.
+FAILURE_HEAD_TYPES: Final[tuple[str, ...]] = (FAILURE_RECORDED, FAILURE_HELD)
 
 #: How each artifact-stream event names the artifact it belongs to: the digest of the
 #: bytes, the parser that read them, and that parser's version. `observation.recorded`
@@ -325,7 +331,7 @@ class EventRepository:
                 index == 0
                 and expected_version == 0
                 and is_failure_stream(stream_id)
-                and event.event_type != FAILURE_RECORDED
+                and event.event_type not in FAILURE_HEAD_TYPES
             ):
                 raise EventContractError(failure_head_order_message(stream_id))
             metadata = event.metadata.to_dict()
@@ -339,15 +345,30 @@ class EventRepository:
                     event_version=event.event_version,
                 )
             )
-        self._require_unseen_observations(stream_id, pending)
+        head_type: str | None = None
         if is_failure_stream(stream_id):
-            # A failure stream needs schema 2, and the store marks itself in the same
-            # transaction as these events, so a rollback undoes both (ADR 0014).
+            # The head decides the rules below: the batch's first event when the batch opens
+            # the stream, which the order check above holds to a head, else the stored one.
+            head_type = (
+                pending[0].event_type
+                if expected_version == 0
+                else self._failure_head_type(stream_id)
+            )
+        self._require_unseen_observations(
+            stream_id, pending, head_type=head_type, opening=expected_version == 0
+        )
+        if is_failure_stream(stream_id):
+            # A failure stream needs schema 2 and a hold needs 3, and the store marks itself
+            # in the same transaction as these events, so a rollback undoes both (ADR 0014).
             return self._store.append(
                 stream_id,
                 prepared,
                 expected_version=expected_version,
-                requires_schema=FAILURE_STREAM_SCHEMA_VERSION,
+                requires_schema=(
+                    HELD_FAILURE_SCHEMA_VERSION
+                    if head_type == FAILURE_HELD
+                    else FAILURE_STREAM_SCHEMA_VERSION
+                ),
             )
         return self._store.append(stream_id, prepared, expected_version=expected_version)
 
@@ -355,6 +376,9 @@ class EventRepository:
         self,
         stream_id: str,
         events: Sequence[PendingEvent],
+        *,
+        head_type: str | None = None,
+        opening: bool = False,
     ) -> None:
         """Refuse a batch that would store one observation identifier twice.
 
@@ -377,6 +401,13 @@ class EventRepository:
         one instant mint one observation, and storing it on both streams would rehydrate one
         failure twice. Finding the other failure streams of a digest reads the whole log,
         which is linear in its size and runs only for an append to a failure stream.
+
+        A stream whose head is `failure.held` is the one exception, and the rule inverts for
+        it (ADR 0014, amendment 2026-10-13): its observation must already be held, and the
+        first stream holding it must open with `failure.recorded`. Holds are therefore one
+        level deep, and the earliest stream of any identifier is a recorded failure. A batch
+        that opens a hold with no observation names no holder, so it is refused too.
+        `head_type` is the stream's head and `opening` says the batch writes it.
         """
 
         incoming = [
@@ -385,6 +416,8 @@ class EventRepository:
             if event.event_type == OBSERVATION_RECORDED
         ]
         if not incoming:
+            if opening and head_type == FAILURE_HELD:
+                raise EventContractError(failure_hold_orphan_message(stream_id, None, None))
             return
         if not is_artifact_stream(stream_id) and not is_failure_stream(stream_id):
             return
@@ -404,6 +437,14 @@ class EventRepository:
         if not is_failure_stream(stream_id):
             return
         elsewhere = self.failure_observations_of_digest(stream_id)
+        if head_type == FAILURE_HELD:
+            for observation_id in incoming:
+                holder = elsewhere.get(observation_id)
+                if holder is None or self._failure_head_type(holder) != FAILURE_RECORDED:
+                    raise EventContractError(
+                        failure_hold_orphan_message(stream_id, observation_id, holder)
+                    )
+            return
         for observation_id in incoming:
             other = elsewhere.get(observation_id)
             if other is not None:
@@ -411,12 +452,19 @@ class EventRepository:
                     failure_duplicate_observation_message(stream_id, observation_id, other)
                 )
 
+    def _failure_head_type(self, stream_id: str) -> str | None:
+        """Return the type of the first event one stream stores, or None when it is empty."""
+
+        first = self._store.read_stream(stream_id, after_version=0, limit=1)
+        return first[0].event_type if first else None
+
     def failure_observations_of_digest(self, stream_id: str) -> dict[str, str]:
         """Map each observation id on the other failure streams of one digest to its stream.
 
         The digest is the one `stream_id` names. The stream itself is left out, so the map
         answers "who else already holds this failure", which is the question the append
-        check and `record_failure` both ask.
+        check and `record_failure` both ask. Each identifier maps to the first other stream
+        that records it in the log, which is the stream a hold is written beneath.
         """
 
         digest = failure_stream_components(stream_id)[0]
@@ -657,12 +705,16 @@ def failure_identity_breach(
     class, code list, clock, and rule from their vocabularies. Whether it agrees with the
     head takes both events, which is `failure_record_disagreement`'s business.
 
+    A hold's head is held to its stream id exactly as a recorded head is (ADR 0014,
+    amendment 2026-10-13): the fold reads the parser and version of either from its head,
+    so a version the stream id does not carry would otherwise reach the fold unbounded.
+
     Returns None for an event no failure stream carries and for a stream of another kind,
     which are the stream-kind check's business rather than this one's.
     """
 
     if not is_failure_stream(stream_id) or event_type not in (
-        FAILURE_RECORDED,
+        *FAILURE_HEAD_TYPES,
         OBSERVATION_RECORDED,
     ):
         return None
@@ -670,12 +722,12 @@ def failure_identity_breach(
         expected = failure_stream_components(stream_id)
     except ValueError as exc:
         return f"stream {stream_id!r} names no failed reading: {exc}"
-    if event_type == FAILURE_RECORDED:
+    if event_type in FAILURE_HEAD_TYPES:
         recorded = tuple(payload.get(key) for key in ARTIFACT_IDENTITY_KEYS[ARTIFACT_INGESTED])
         if recorded == expected:
             return None
         return (
-            f"{FAILURE_RECORDED} records digest {_shown(recorded[0])} read by "
+            f"{event_type} records digest {_shown(recorded[0])} read by "
             f"{_shown(recorded[1])} version {_shown(recorded[2])} on stream {stream_id!r}, "
             "which names digest "
             f"{expected[0]!r} read by {expected[1]!r} version {expected[2]!r}"
@@ -695,6 +747,8 @@ def failure_record_disagreement(
     stream_id: str,
     head: Mapping[str, Any],
     observation: Mapping[str, Any],
+    *,
+    head_type: str = FAILURE_RECORDED,
 ) -> str | None:
     """Return why a failure head and its system record describe two different failures.
 
@@ -704,7 +758,8 @@ def failure_record_disagreement(
     audit, which read both, ask this. The head decides supersession and the record's
     metadata is what `detectionFailures` renders, so a store where they differ would report
     one failure and rank another. Both payloads are expected to have passed their own
-    contract and `failure_identity_breach` already.
+    contract and `failure_identity_breach` already. `head_type` is the head's event type,
+    which the message names; a hold's head and record agree exactly as a recorded one's do.
     """
 
     raw = observation.get("source_metadata")
@@ -723,7 +778,7 @@ def failure_record_disagreement(
         if not agrees:
             return (
                 f"failure stream {stream_id!r} records {head_key} {_shown(recorded)} in its "
-                f"{FAILURE_RECORDED} and {metadata_key} {_shown(described)} in its system "
+                f"{head_type} and {metadata_key} {_shown(described)} in its system "
                 "record; "
                 "the two describe one failure"
             )
@@ -761,8 +816,39 @@ def failure_head_order_message(stream_id: str) -> str:
     """
 
     return (
-        f"failure stream {stream_id!r} does not open with its {FAILURE_RECORDED}; a failure "
-        "stream is written head first"
+        f"failure stream {stream_id!r} does not open with its {FAILURE_RECORDED} or "
+        f"{FAILURE_HELD} head; a failure stream is written head first"
+    )
+
+
+def failure_hold_orphan_message(
+    stream_id: str,
+    observation_id: str | None,
+    holder: str | None,
+) -> str:
+    """Word a hold that no recorded failure holds the observation of, wherever it is reported.
+
+    `observation_id` is None for a hold that carries no observation, and `holder` is None
+    when no other failure stream of the digest records the observation; otherwise `holder`
+    is the stream that records it first and does not open with `failure.recorded`. Worded
+    once, like the messages above, so every place that reports an orphaned hold agrees.
+    """
+
+    if observation_id is None:
+        found = "carries no system observation"
+    elif holder is None:
+        found = (
+            f"records observation {_shown(observation_id)}, which no other failure stream of "
+            "the same digest records"
+        )
+    else:
+        found = (
+            f"records observation {_shown(observation_id)}, which failure stream "
+            f"{holder!r} records first without opening with its {FAILURE_RECORDED}"
+        )
+    return (
+        f"failure stream {stream_id!r} opens with {FAILURE_HELD} and {found}; a hold is "
+        f"written beneath the {FAILURE_RECORDED} stream that first records its observation"
     )
 
 
@@ -982,6 +1068,7 @@ def _json_pointer(parts: Any) -> str:
 
 __all__ = [
     "ARTIFACT_IDENTITY_KEYS",
+    "FAILURE_HEAD_TYPES",
     "MAX_BATCH_EVENTS",
     "METADATA_KEYS",
     "METHOD_VALUES",
@@ -998,6 +1085,7 @@ __all__ = [
     "canonical_payload_digest",
     "duplicate_observation_message",
     "failure_duplicate_observation_message",
+    "failure_hold_orphan_message",
     "failure_identity_breach",
     "iso_utc",
     "metadata_breaches",

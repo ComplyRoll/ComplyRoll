@@ -33,8 +33,11 @@ from complyroll.events import (
     EVENT_CONTRACTS,
     EVENT_TYPES,
     FAILURE_CODE_VALUES,
+    FAILURE_HEAD_TYPES,
+    FAILURE_HELD,
     FAILURE_METADATA_KEYS,
     FAILURE_STREAM_EVENT_TYPES,
+    HELD_FAILURE_SCHEMA_VERSION,
     METHOD_VALUES,
     READ_PAGE_SIZE,
     STREAM_EVENT_TYPES,
@@ -53,6 +56,7 @@ from complyroll.events import (
     event_belongs_on_stream,
     failure_duplicate_observation_message,
     failure_head_order_message,
+    failure_hold_orphan_message,
     failure_identity_breach,
     failure_record_disagreement,
     failure_stream_components,
@@ -72,6 +76,8 @@ from complyroll.events import (
 from complyroll.events.contracts import (
     _MAX_STREAM_ID_LENGTH,
     _UTC_TIMESTAMP,
+    FAILURE_HELD_V1,
+    FAILURE_RECORDED_V1,
     _contract_timestamp_pointers,
     _placement_problem,
     _timestamp_pointers,
@@ -87,6 +93,7 @@ from complyroll.store import (
     SUPPORTED_SCHEMA_VERSION,
     EventConcurrencyError,
     EventConflictError,
+    EventRecord,
     NewEvent,
     SQLiteEventStore,
     UnsupportedSchemaError,
@@ -98,6 +105,8 @@ TRACKING_ID = "case-0123456789abcdef"
 STREAM_ID = f"case/{TRACKING_ID}"
 ARTIFACT_STREAM_ID = f"artifact/{DIGEST}/complyroll.cklb/1"
 FAILURE_STREAM_ID = f"failure/{DIGEST}/complyroll.sarif/1"
+#: The same bytes failing under the next parser version: a hold beneath the stream above.
+HELD_STREAM_ID = f"failure/{DIGEST}/complyroll.sarif/2"
 
 #: A deterministic run identifier that is also a real one: `run-` plus a canonical
 #: version-4 UUID. A fixed word like `run-fixed` used to stand here, which is exactly the
@@ -115,6 +124,7 @@ OPEN_MAP_POINTERS = frozenset({"observation.recorded/properties/source_metadata"
 OPTIONAL_FIELD_POINTERS = frozenset(
     {
         "artifact.ingested/properties/diagnostics/items",
+        "failure.held/properties/diagnostics/items",
         "failure.recorded/properties/diagnostics/items",
     }
 )
@@ -248,11 +258,19 @@ GOOD_PAYLOADS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: The same bytes failing under the next parser version at the same instant: a hold beneath
+#: the recorded failure above, with exactly that head's properties.
+GOOD_PAYLOADS["failure.held"] = {
+    **deepcopy(GOOD_PAYLOADS["failure.recorded"]),
+    "parserVersion": "2",
+}
+
 #: One field per contract that the schema requires in UTC `Z` form. The two contracts
 #: that accept a source offset are asserted separately below.
 UTC_ONLY_FIELDS: dict[str, str] = {
     "artifact.ingested": "ingestedAt",
     "failure.recorded": "ingestedAt",
+    "failure.held": "ingestedAt",
     "case.created": "createdAt",
     "detection.attested": "detectedAt",
     "case.evaluated": "completedAt",
@@ -265,6 +283,7 @@ BAD_ENUM_VALUES: dict[str, tuple[str, Any]] = {
     "observation.recorded": ("disposition", "sideways"),
     "case.disposition_recorded": ("status", "active"),
     "failure.recorded": ("failureClass", "network"),
+    "failure.held": ("failureClass", "network"),
 }
 
 #: The two PAIN-bearing contracts and the integer field each constrains to 1 through 5.
@@ -389,6 +408,7 @@ EXPECTED_TIMESTAMP_POINTERS: dict[str, tuple[str, ...]] = {
     "case.observation_linked": ("/observedAt",),
     "case.pain_reduced": ("/reducedAt",),
     "detection.attested": ("/attestedAt", "/detectedAt"),
+    "failure.held": ("/ingestedAt",),
     "failure.recorded": ("/ingestedAt",),
     # The two `observation.recorded` timestamps are read back through
     # `Observation.from_canonical_dict`, which is stricter than parsing, so they are
@@ -508,11 +528,13 @@ def pending_event(event_type: str, payload: dict[str, Any]) -> PendingEvent:
     )
 
 
-def failure_batch(head: dict[str, Any], record: Observation) -> tuple[PendingEvent, ...]:
+def failure_batch(
+    head: dict[str, Any], record: Observation, *, head_type: str = "failure.recorded"
+) -> tuple[PendingEvent, ...]:
     """Return the two events one failure stream holds: its head, then its system record."""
 
     return (
-        pending_event("failure.recorded", head),
+        pending_event(head_type, head),
         pending_event("observation.recorded", record.to_canonical_dict()),
     )
 
@@ -656,6 +678,28 @@ class PayloadValidationTests(unittest.TestCase):
         with self.assertRaises(EventContractError) as caught:
             self.repository.validate_payload("artifact.ingested", payload)
         self.assertIn("/diagnostics/0/level", str(caught.exception))
+
+    def test_a_head_never_stores_an_error_diagnostic(self) -> None:
+        # An ERROR stops a reading before anything is stored: `record_ingest` refuses one
+        # and a failure head carries each one demoted. One found in a stored head is a
+        # damaged log that every report refuses, so the contract refuses it too and
+        # `store verify`, which checks every payload against it, names the damage.
+        for event_type in ("artifact.ingested", "failure.recorded", "failure.held"):
+            for level in ("info", "warning"):
+                with self.subTest(event_type=event_type, level=level):
+                    payload = deepcopy(GOOD_PAYLOADS[event_type])
+                    payload["diagnostics"][0]["level"] = level
+                    self.repository.validate_payload(event_type, payload)
+            with self.subTest(event_type=event_type, level="error"):
+                payload = deepcopy(GOOD_PAYLOADS[event_type])
+                payload["diagnostics"][0]["level"] = "error"
+                with self.assertRaises(EventContractError) as caught:
+                    self.repository.validate_payload(event_type, payload)
+                issues = caught.exception.issues
+                self.assertEqual(
+                    [(issue.instance_pointer, issue.validator) for issue in issues],
+                    [("/diagnostics/0/level", "enum")],
+                )
 
     def test_disposition_refuses_every_status_that_is_not_a_disposition(self) -> None:
         for status in UNDISPOSED_STATUSES:
@@ -1442,7 +1486,9 @@ class StreamCompatibilityTests(unittest.TestCase):
         self.assertEqual(
             ARTIFACT_STREAM_EVENT_TYPES, {"artifact.ingested", "observation.recorded"}
         )
-        self.assertEqual(FAILURE_STREAM_EVENT_TYPES, {"failure.recorded", "observation.recorded"})
+        self.assertEqual(
+            FAILURE_STREAM_EVENT_TYPES, {"failure.held", "failure.recorded", "observation.recorded"}
+        )
         self.assertEqual(
             STREAM_EVENT_TYPES,
             {
@@ -2705,16 +2751,309 @@ class FailureDuplicateObservationTests(unittest.TestCase):
         self.assertEqual(self.repository.failure_observations_of_digest(elsewhere), {})
 
 
+class FailureHoldTests(unittest.TestCase):
+    """A failure another stream already holds is stored as a hold beneath it (ADR 0014).
+
+    A system record's identity is the digest and the instant, never the parser, so the same
+    bytes failing under a second parser or version at one instant mint the record a failure
+    stream already holds. The second reading keeps its own stream, opened by a
+    `failure.held` head and carrying its own copy of that record. The repository accepts it
+    only beneath a stream that opens with `failure.recorded`, so holds are one level deep and
+    the first stream to hold any record is a recorded failure.
+    """
+
+    def setUp(self) -> None:
+        self.store = SQLiteEventStore(":memory:")
+        self.addCleanup(self.store.close)
+        self.repository = EventRepository(self.store)
+
+    def record(
+        self, version: str = "1", *, head_type: str = "failure.recorded"
+    ) -> tuple[EventRecord, ...]:
+        """Append one failed reading of `DIGEST` by `complyroll.sarif` at `version`."""
+
+        stream_id = failure_stream_id(DIGEST, "complyroll.sarif", version)
+        return self.repository.append_batch(
+            stream_id,
+            failure_batch(
+                failure_head(parser_version=version),
+                system_record(parser_version=version),
+                head_type=head_type,
+            ),
+            expected_version=self.repository.current_version(stream_id),
+        )
+
+    def hold(self, version: str = "2") -> tuple[EventRecord, ...]:
+        return self.record(version, head_type=FAILURE_HELD)
+
+    def smuggle(self, version: str, head_type: str) -> None:
+        """Store one failed reading past the repository, as history no writer makes."""
+
+        self.store.append(
+            failure_stream_id(DIGEST, "complyroll.sarif", version),
+            (
+                NewEvent(head_type, NOW, failure_head(parser_version=version)),
+                NewEvent(
+                    "observation.recorded",
+                    NOW,
+                    system_record(parser_version=version).to_canonical_dict(),
+                ),
+            ),
+            expected_version=0,
+            requires_schema=HELD_FAILURE_SCHEMA_VERSION,
+        )
+
+    def test_a_hold_is_stored_beneath_the_recorded_failure_holding_its_record(self) -> None:
+        holder = self.record()
+
+        held = self.hold()
+
+        observation_id = holder[1].payload["observation_id"]
+        self.assertEqual(
+            [record.event_type for record in held], ["failure.held", "observation.recorded"]
+        )
+        self.assertEqual({record.stream_id for record in held}, {HELD_STREAM_ID})
+        self.assertEqual(held[1].payload["observation_id"], observation_id)
+        self.assertEqual(held[1].payload["source_metadata"]["artifact.parserVersion"], "2")
+        self.assertEqual(
+            self.repository.failure_observations_of_digest(HELD_STREAM_ID),
+            {observation_id: FAILURE_STREAM_ID},
+        )
+
+    def test_every_hold_of_one_record_sits_beneath_the_same_recorded_failure(self) -> None:
+        holder = self.record()
+        self.hold("2")
+        self.hold("3")
+
+        observation_id = holder[1].payload["observation_id"]
+        third = failure_stream_id(DIGEST, "complyroll.sarif", "3")
+        self.assertEqual(self.store.latest_sequence, 6)
+        self.assertEqual(
+            self.repository.failure_observations_of_digest(third),
+            {observation_id: FAILURE_STREAM_ID},
+        )
+
+    def test_a_hold_whose_record_no_other_failure_stream_holds_is_refused(self) -> None:
+        observation_id = system_record(parser_version="2").observation_id
+
+        with self.assertRaises(EventContractError) as caught:
+            self.hold()
+
+        self.assertEqual(
+            str(caught.exception),
+            failure_hold_orphan_message(HELD_STREAM_ID, observation_id, None),
+        )
+        self.assertEqual(self.store.latest_sequence, 0)
+        self.assertEqual(self.store.schema_version, 1)
+
+    def test_a_hold_beneath_a_hold_is_refused(self) -> None:
+        # Written past the repository, a hold can be the first stream to hold a record. A
+        # hold beneath it would be two levels deep. The rule reads the first holder only, so
+        # a recorded failure that holds the same record later does not rescue it.
+        observation_id = system_record().observation_id
+        third = failure_stream_id(DIGEST, "complyroll.sarif", "3")
+        for label, smuggled in (
+            ("a hold alone", (("2", FAILURE_HELD),)),
+            ("a hold, then a recorded failure", (("2", FAILURE_HELD), ("4", "failure.recorded"))),
+        ):
+            with self.subTest(shape=label):
+                self.setUp()
+                for version, head_type in smuggled:
+                    self.smuggle(version, head_type)
+                before = self.store.latest_sequence
+
+                with self.assertRaises(EventContractError) as caught:
+                    self.hold("3")
+
+                self.assertEqual(
+                    str(caught.exception),
+                    failure_hold_orphan_message(third, observation_id, HELD_STREAM_ID),
+                )
+                self.assertEqual(self.store.latest_sequence, before)
+
+    def test_a_hold_that_carries_no_record_is_refused(self) -> None:
+        # The hold rule is about the record a hold shares with its holder, so a hold head
+        # alone names no holder and cannot meet it.
+        self.record()
+
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.append(
+                HELD_STREAM_ID,
+                FAILURE_HELD,
+                failure_head(parser_version="2"),
+                occurred_at=NOW,
+                metadata=metadata(),
+                expected_version=0,
+            )
+
+        self.assertEqual(
+            str(caught.exception), failure_hold_orphan_message(HELD_STREAM_ID, None, None)
+        )
+        self.assertEqual(self.store.latest_sequence, 2)
+
+    def test_a_written_hold_takes_no_record_its_holder_lacks(self) -> None:
+        # An append past the head reads the stored one, so a later record on a hold still
+        # needs a recorded failure holding it first.
+        self.record()
+        self.hold()
+        later = system_record(parser_version="2", observed_at=NOW + timedelta(hours=1))
+
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.append(
+                HELD_STREAM_ID,
+                "observation.recorded",
+                later.to_canonical_dict(),
+                occurred_at=NOW,
+                metadata=metadata(),
+                expected_version=2,
+            )
+
+        self.assertEqual(
+            str(caught.exception),
+            failure_hold_orphan_message(HELD_STREAM_ID, later.observation_id, None),
+        )
+        self.assertEqual(self.store.latest_sequence, 4)
+
+    def test_a_recorded_failure_on_a_held_record_is_still_refused(self) -> None:
+        holder = self.record()
+        self.hold()
+        third = failure_stream_id(DIGEST, "complyroll.sarif", "3")
+
+        with self.assertRaises(EventContractError) as caught:
+            self.record("3")
+
+        self.assertEqual(
+            str(caught.exception),
+            failure_duplicate_observation_message(
+                third, holder[1].payload["observation_id"], FAILURE_STREAM_ID
+            ),
+        )
+        self.assertEqual(self.store.latest_sequence, 4)
+
+    def test_a_hold_stream_is_opened_by_its_head(self) -> None:
+        self.record()
+        head = pending_event(FAILURE_HELD, failure_head(parser_version="2"))
+        record = pending_event(
+            "observation.recorded", system_record(parser_version="2").to_canonical_dict()
+        )
+        for label, batch in (
+            ("the record alone", (record,)),
+            ("the record before its head", (record, head)),
+        ):
+            with self.subTest(shape=label):
+                with self.assertRaises(EventContractError) as caught:
+                    self.repository.append_batch(HELD_STREAM_ID, batch, expected_version=0)
+
+                self.assertEqual(str(caught.exception), failure_head_order_message(HELD_STREAM_ID))
+        self.assertEqual(self.store.latest_sequence, 2)
+        self.repository.append_batch(HELD_STREAM_ID, (head, record), expected_version=0)
+        self.assertEqual(self.store.latest_sequence, 4)
+
+    def test_the_head_order_message_names_both_heads(self) -> None:
+        self.assertEqual(FAILURE_HEAD_TYPES, ("failure.recorded", "failure.held"))
+        self.assertEqual(
+            failure_head_order_message(HELD_STREAM_ID),
+            f"failure stream {HELD_STREAM_ID!r} does not open with its failure.recorded or "
+            "failure.held head; a failure stream is written head first",
+        )
+
+    def test_a_hold_head_naming_another_reading_is_refused(self) -> None:
+        # The fold reads a hold's parser and version from its head, so the head is held to
+        # its stream id as a recorded head is: a version the id does not carry, however
+        # long, never reaches the fold's comparison of versions.
+        self.record()
+        record = pending_event(
+            "observation.recorded", system_record(parser_version="2").to_canonical_dict()
+        )
+        for label, overrides in (
+            ("another digest", {"sha256": "b" * 64}),
+            ("another parser", {"parserName": "complyroll.cklb"}),
+            ("another parser version", {"parserVersion": "3"}),
+            ("a version no stream id can carry", {"parserVersion": "9" * 5000}),
+        ):
+            with self.subTest(shape=label):
+                head = pending_event(
+                    FAILURE_HELD, {**failure_head(parser_version="2"), **overrides}
+                )
+                with self.assertRaises(EventContractError) as caught:
+                    self.repository.append_batch(HELD_STREAM_ID, (head, record), expected_version=0)
+
+                message = str(caught.exception)
+                self.assertTrue(message.startswith("failure.held records digest "), message)
+                self.assertIn(HELD_STREAM_ID, message)
+                self.assertLessEqual(len(message.encode()), IDENTITY_MESSAGE_BOUND)
+        self.assertEqual(self.store.latest_sequence, 2)
+
+    def test_a_short_hold_identity_is_quoted_whole(self) -> None:
+        self.assertIsNone(
+            failure_identity_breach(HELD_STREAM_ID, FAILURE_HELD, failure_head(parser_version="2"))
+        )
+        self.assertEqual(
+            failure_identity_breach(HELD_STREAM_ID, FAILURE_HELD, failure_head(parser_version="3")),
+            f"failure.held records digest {DIGEST!r} read by 'complyroll.sarif' version "
+            f"'3' on stream {HELD_STREAM_ID!r}, which names digest {DIGEST!r} read by "
+            "'complyroll.sarif' version '2'",
+        )
+
+    def test_a_long_hold_identity_is_cut_short_in_the_message(self) -> None:
+        value = "9" * 5000
+        for key in ("sha256", "parserName", "parserVersion"):
+            with self.subTest(key=key):
+                payload = {**failure_head(parser_version="2"), key: value}
+
+                breach = failure_identity_breach(HELD_STREAM_ID, FAILURE_HELD, payload)
+
+                self.assertIsNotNone(breach)
+                self.assertIn(cut_quote(value), str(breach))
+                self.assertNotIn(value, str(breach))
+                self.assertLessEqual(len(str(breach).encode()), IDENTITY_MESSAGE_BOUND)
+
+    def test_a_hold_and_its_record_that_disagree_name_the_hold(self) -> None:
+        head = failure_head(parser_version="2")
+        good = system_record(parser_version="2").to_canonical_dict()
+        renamed = {
+            **good,
+            "source_metadata": {**good["source_metadata"], "artifact.name": "other.sarif"},
+        }
+
+        self.assertIsNone(
+            failure_record_disagreement(HELD_STREAM_ID, head, good, head_type=FAILURE_HELD)
+        )
+        self.assertEqual(
+            failure_record_disagreement(HELD_STREAM_ID, head, renamed, head_type=FAILURE_HELD),
+            f"failure stream {HELD_STREAM_ID!r} records name {FAILED_NAME!r} in its "
+            "failure.held and artifact.name 'other.sarif' in its system record; the two "
+            "describe one failure",
+        )
+
+    def test_the_two_heads_publish_one_set_of_properties(self) -> None:
+        # One property map builds both contracts, so a field added to one is added to both.
+        self.assertEqual(FAILURE_HELD, "failure.held")
+        self.assertEqual(schema_for(FAILURE_HELD), FAILURE_HELD_V1)
+        self.assertEqual(FAILURE_HELD_V1["title"], "failure.held")
+        self.assertEqual(FAILURE_HELD_V1["$id"], "https://complyroll.invalid/events/failure.held/1")
+        self.assertEqual(
+            {key: value for key, value in FAILURE_HELD_V1.items() if key not in ("$id", "title")},
+            {
+                key: value
+                for key, value in FAILURE_RECORDED_V1.items()
+                if key not in ("$id", "title")
+            },
+        )
+
+
 class FailureSchemaMarkingTests(unittest.TestCase):
     """A store holding a failure stream is marked schema 2 in the same transaction.
 
     A build that knows only schema 1 reads a failure stream as a stream of no kind, so a
     store holding one says so before such a build can open it. A store that never holds one
-    stays at schema 1 and stays readable by that build (ADR 0014).
+    stays at schema 1 and stays readable by that build (ADR 0014). A store holding a hold is
+    marked schema 3 the same way, and one with failure streams and no hold stays at 2.
     """
 
     FIRST = (1, "append-only event history and projection checkpoints")
     SECOND = (2, "failure streams, ADR 0014")
+    THIRD = (3, "held failures, ADR 0014 amendment 2026-10-13")
 
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
@@ -2738,13 +3077,27 @@ class FailureSchemaMarkingTests(unittest.TestCase):
             expected_version=0,
         )
 
+    def record_hold(self, version: str = "2") -> None:
+        """Hold the failure `record_failure` recorded, read again under another version."""
+
+        self.repository.append_batch(
+            failure_stream_id(DIGEST, "complyroll.sarif", version),
+            failure_batch(
+                failure_head(parser_version=version),
+                system_record(parser_version=version),
+                head_type=FAILURE_HELD,
+            ),
+            expected_version=0,
+        )
+
     def damage(self, statement: str) -> None:
         self.store.close()
         with closing(sqlite3.connect(self.path, isolation_level=None)) as connection:
             connection.execute(statement)
 
     def test_a_new_store_is_created_at_schema_1(self) -> None:
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 2)
+        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 3)
+        self.assertEqual(HELD_FAILURE_SCHEMA_VERSION, 3)
         self.assertEqual(self.store.schema_version, 1)
         self.assertEqual(self.migrations(), [self.FIRST])
 
@@ -2845,6 +3198,108 @@ class FailureSchemaMarkingTests(unittest.TestCase):
                     [("migration_missing", f"database is missing migration record {missing}")],
                 )
 
+    def test_one_transaction_recording_a_holder_and_its_hold_marks_schemas_2_and_3(
+        self,
+    ) -> None:
+        with self.repository.transaction():
+            self.record_failure()
+            self.assertEqual(self.store.schema_version, 2)
+            self.record_hold()
+
+        self.assertEqual(self.store.schema_version, 3)
+        self.assertEqual(self.migrations(), [self.FIRST, self.SECOND, self.THIRD])
+        self.store.close()
+        reopened = SQLiteEventStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.schema_version, 3)
+        self.assertTrue(reopened.verify_history().ok)
+
+    def test_an_append_needing_schema_3_marks_a_schema_1_store_through_both_records(
+        self,
+    ) -> None:
+        # Through the repository a hold never meets a schema 1 store, since its holder's
+        # append marked 2 first, so the store's own loop is what inserts both records here.
+        self.store.append(
+            STREAM_ID,
+            (NewEvent("case.created", NOW, GOOD_PAYLOADS["case.created"]),),
+            expected_version=0,
+            requires_schema=3,
+        )
+
+        self.assertEqual(self.store.schema_version, 3)
+        self.assertEqual(self.migrations(), [self.FIRST, self.SECOND, self.THIRD])
+
+    def test_a_hold_on_a_schema_2_store_marks_schema_3_alone(self) -> None:
+        self.record_failure()
+        self.assertEqual(self.migrations(), [self.FIRST, self.SECOND])
+
+        self.record_hold()
+
+        self.assertEqual(self.store.schema_version, 3)
+        self.assertEqual(self.migrations(), [self.FIRST, self.SECOND, self.THIRD])
+
+    def test_neither_marking_changes_a_schema_object(self) -> None:
+        # Schemas 2 and 3 only mark the store, so a build that opens them needs no object a
+        # schema 1 store lacks; the marker and its migration row are all that change.
+        def objects() -> list[tuple[str, str, str, str | None]]:
+            with closing(sqlite3.connect(self.path)) as connection:
+                rows = connection.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+                ).fetchall()
+            return [(str(kind), str(name), str(table), sql) for kind, name, table, sql in rows]
+
+        at_1 = objects()
+        self.record_failure()
+        self.assertEqual(self.store.schema_version, 2)
+        at_2 = objects()
+        self.record_hold()
+        self.assertEqual(self.store.schema_version, 3)
+
+        self.assertEqual(at_2, at_1)
+        self.assertEqual(objects(), at_1)
+
+    def test_later_failures_and_holds_mark_nothing_again(self) -> None:
+        self.record_failure()
+        self.record_hold("2")
+        self.record_hold("3")
+        self.record_failure("b" * 64)
+
+        self.assertEqual(self.store.schema_version, 3)
+        self.assertEqual(self.migrations(), [self.FIRST, self.SECOND, self.THIRD])
+
+    def test_a_rolled_back_hold_leaves_the_store_at_schema_2(self) -> None:
+        self.record_failure()
+
+        with self.assertRaises(RuntimeError):
+            with self.repository.transaction():
+                self.record_hold()
+                self.assertEqual(self.store.schema_version, 3)
+                raise RuntimeError("abandon the hold")
+
+        self.assertEqual(self.store.schema_version, 2)
+        self.assertEqual(self.migrations(), [self.FIRST, self.SECOND])
+        self.assertEqual(self.store.latest_sequence, 2)
+
+    def test_schema_3_needs_all_three_migration_records(self) -> None:
+        for missing in (1, 2, 3):
+            with self.subTest(missing=missing):
+                self.setUp()
+                self.record_failure()
+                self.record_hold()
+                self.damage(f"DELETE FROM complyroll_schema_migrations WHERE version = {missing}")
+
+                with self.assertRaises(UnsupportedSchemaError) as caught:
+                    SQLiteEventStore(self.path)
+
+                self.assertIn(f"missing migration record {missing}", str(caught.exception))
+                verifier = SQLiteEventStore.open_for_verification(self.path)
+                self.addCleanup(verifier.close)
+                faults = verifier.verify_history().faults
+                self.assertEqual(
+                    [(fault.code, fault.message) for fault in faults],
+                    [("migration_missing", f"database is missing migration record {missing}")],
+                )
+
     def test_schema_1_needs_only_its_own_record(self) -> None:
         self.store.close()
         reopened = SQLiteEventStore(self.path)
@@ -2853,18 +3308,18 @@ class FailureSchemaMarkingTests(unittest.TestCase):
         self.assertEqual(reopened.schema_version, 1)
         self.assertTrue(reopened.verify_history().ok)
 
-    def test_a_store_newer_than_schema_2_is_refused(self) -> None:
+    def test_a_store_newer_than_schema_3_is_refused(self) -> None:
         self.record_failure()
-        self.damage("PRAGMA user_version = 3")
+        self.damage("PRAGMA user_version = 4")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 3 is newer than supported schema 2", str(caught.exception))
+        self.assertIn("database schema 4 is newer than supported schema 3", str(caught.exception))
 
     def test_the_required_schema_must_be_one_this_build_knows(self) -> None:
         event = NewEvent("failure.recorded", NOW, failure_head())
-        for value in (0, 3, True, "2"):
+        for value in (0, 4, True, "2"):
             with self.subTest(requires_schema=value):
                 with self.assertRaises(ValueError) as caught:
                     self.store.append(
@@ -2874,7 +3329,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
                         requires_schema=value,  # type: ignore[arg-type]
                     )
 
-                self.assertIn("requires_schema must be between 1 and 2", str(caught.exception))
+                self.assertIn("requires_schema must be between 1 and 3", str(caught.exception))
         self.assertEqual(self.store.latest_sequence, 0)
 
 

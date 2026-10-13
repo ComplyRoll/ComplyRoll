@@ -582,6 +582,23 @@ def _is_run_identifier(value: object) -> bool:
     return parsed.version == 4 and parsed.variant == uuid.RFC_4122 and str(parsed) == text
 
 
+_SHOWN_LIMIT = 200
+
+
+def _shown(value: Any) -> str:
+    """Quote one payload-sourced value for a message, cut short past `_SHOWN_LIMIT` characters.
+
+    The payload digest proves a payload is the one recorded, not that its values are short, and
+    a value edited in place with its digest recomputed reaches these messages at any length. A
+    value whose quoted form fits is shown exactly as before.
+    """
+
+    text = repr(value)
+    if len(text) <= _SHOWN_LIMIT:
+        return text
+    return f"{text[:_SHOWN_LIMIT]}... ({len(text)} characters)"
+
+
 def artifact_identity_breach(
     stream_id: str,
     event_type: str,
@@ -612,8 +629,9 @@ def artifact_identity_breach(
     if recorded == expected:
         return None
     return (
-        f"{event_type} records digest {recorded[0]!r} read by {recorded[1]!r} version "
-        f"{recorded[2]!r} on stream {stream_id!r}, which names digest {expected[0]!r} read "
+        f"{event_type} records digest {_shown(recorded[0])} read by {_shown(recorded[1])} "
+        f"version {_shown(recorded[2])} on stream {stream_id!r}, which names digest "
+        f"{expected[0]!r} read "
         f"by {expected[1]!r} version {expected[2]!r}"
     )
 
@@ -657,8 +675,9 @@ def failure_identity_breach(
         if recorded == expected:
             return None
         return (
-            f"{FAILURE_RECORDED} records digest {recorded[0]!r} read by {recorded[1]!r} "
-            f"version {recorded[2]!r} on stream {stream_id!r}, which names digest "
+            f"{FAILURE_RECORDED} records digest {_shown(recorded[0])} read by "
+            f"{_shown(recorded[1])} version {_shown(recorded[2])} on stream {stream_id!r}, "
+            "which names digest "
             f"{expected[0]!r} read by {expected[1]!r} version {expected[2]!r}"
         )
     problem = _system_record_problem(expected[0], payload)
@@ -703,8 +722,9 @@ def failure_record_disagreement(
             agrees = described == recorded
         if not agrees:
             return (
-                f"failure stream {stream_id!r} records {head_key} {recorded!r} in its "
-                f"{FAILURE_RECORDED} and {metadata_key} {described!r} in its system record; "
+                f"failure stream {stream_id!r} records {head_key} {_shown(recorded)} in its "
+                f"{FAILURE_RECORDED} and {metadata_key} {_shown(described)} in its system "
+                "record; "
                 "the two describe one failure"
             )
     return None
@@ -759,27 +779,34 @@ def _failure_metadata_problem(
             return f"its metadata has no {key!r}"
     for key in raw:
         if key not in FAILURE_METADATA_KEYS:
-            return f"its metadata carries {key!r}, which a system record does not"
+            return f"its metadata carries {_shown(key)}, which a system record does not"
     for key, named in zip(
         ("artifact.sha256", "artifact.parser", "artifact.parserVersion"), expected, strict=True
     ):
         if raw[key] != named:
-            return f"its metadata {key} is {raw[key]!r}, where the stream names {named!r}"
+            return f"its metadata {key} is {_shown(raw[key])}, where the stream names {named!r}"
     size = raw["artifact.sizeBytes"]
     if not isinstance(size, str) or _COUNT_TEXT.fullmatch(size) is None:
-        return f"its metadata artifact.sizeBytes is {size!r}, not a count"
+        return f"its metadata artifact.sizeBytes is {_shown(size)}, not a count"
     if raw["failure.class"] not in _FAILURE_CLASS_VALUES:
-        return f"its metadata failure.class is {raw['failure.class']!r}, not a failure class"
+        return (
+            f"its metadata failure.class is {_shown(raw['failure.class'])}, not a failure "
+            "class"
+        )
     if decode_failure_codes(raw["failure.codes"]) is None:
         return (
-            f"its metadata failure.codes is {raw['failure.codes']!r}, not the compact JSON "
+            f"its metadata failure.codes is {_shown(raw['failure.codes'])}, not the compact JSON "
             "array of sorted, distinct failure codes its writer stores"
         )
     if raw["failure.clock"] not in FAILURE_CLOCK_VALUES:
-        return f"its metadata failure.clock is {raw['failure.clock']!r}, not a failure clock"
+        return (
+            f"its metadata failure.clock is {_shown(raw['failure.clock'])}, not a failure "
+            "clock"
+        )
     if raw["failure.rule"] != DETECTION_FAILURE_RULE:
         return (
-            f"its metadata failure.rule is {raw['failure.rule']!r}, not {DETECTION_FAILURE_RULE!r}"
+            f"its metadata failure.rule is {_shown(raw['failure.rule'])}, "
+            f"not {DETECTION_FAILURE_RULE!r}"
         )
     return None
 
@@ -792,15 +819,18 @@ def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | Non
     resource_id = resource.get("resource_id") if isinstance(resource, Mapping) else None
     derived = f"obs-{payload.get('fingerprint')}"
     if payload.get("origin") != ObservationOrigin.SYSTEM.value:
-        return f"its origin is {payload.get('origin')!r}"
+        return f"its origin is {_shown(payload.get('origin'))}"
     if payload.get("source_type") != DETECTION_FAILURE_SOURCE_TYPE:
-        return f"its source type is {payload.get('source_type')!r}"
+        return f"its source type is {_shown(payload.get('source_type'))}"
     if payload.get("context_key") != reference:
-        return f"its context key is {payload.get('context_key')!r}"
+        return f"its context key is {_shown(payload.get('context_key'))}"
     if resource_id != reference:
-        return f"its resource id is {resource_id!r}"
+        return f"its resource id is {_shown(resource_id)}"
     if payload.get(OBSERVATION_ID_KEY) != derived:
-        return f"its id is {payload.get(OBSERVATION_ID_KEY)!r}, not its derived id {derived!r}"
+        return (
+            f"its id is {_shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
+            f"{_shown(derived)}"
+        )
     return None
 
 

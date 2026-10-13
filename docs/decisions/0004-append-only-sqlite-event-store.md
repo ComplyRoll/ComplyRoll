@@ -183,3 +183,100 @@ both opening and appending require SQLite's AUTOINCREMENT counter for `events` t
 stored sequence; a mismatch is reported as a truncated history with the last intact sequence.
 The constructor also maps a path that cannot be opened onto `EventStoreError` rather than a raw
 driver exception. Envelope fields outside `payload_json` remain undigested until the hash chain.
+
+## Amendment 2026-10-03: reads apply the append rules to names, versions, the counter, and JSON
+
+`append` has always refused an `event_id`, `stream_id`, or `event_type` that is blank, over 500
+characters, or outside `_NAME_PATTERN`, and has always written `stream_version` and
+`event_version` as integers of at least 1. It has always written both JSON columns through
+`_canonical_json_object`, which refuses nesting deeper than 64 levels, more than 100000 values, NaN
+or infinity, more than 1 MiB, and text that cannot be encoded as UTF-8. Reads checked none of this.
+The version columns are declared `INTEGER` in a table that is not `STRICT`, so SQLite stores
+whatever an out-of-band edit gives it: `CHECK (stream_version >= 1)` admits the text `'x'`, because
+SQLite orders text above every integer, and a numeric text too large for 64 bits is coerced to a
+real, which is infinity once it passes the range of a double. A write made with
+`PRAGMA ignore_check_constraints` on skips the `CHECK` entirely, so it can also store an integer
+below 1. The `AUTOINCREMENT` counter in `sqlite_sequence` has no declared type at all. A row or
+counter edited that way was either read as valid or ended the command in a Python traceback. A
+stream id carrying a parser version of 4301 digits or more crashed the fold in `int()`, and a
+payload holding a lone surrogate escape passed `store verify` and then crashed `report` when it
+wrote its output.
+
+Reads now apply those rules before they use a row:
+
+- `_event_from_row` refuses a name outside the append grammar and a version column that is not an
+  integer of at least 1 before it checks the payload digest, and raises `EventIntegrityError`.
+- The open-time and append-time contiguity checks aggregate `stream_version` with raw SQL and
+  never pass through `_event_from_row`. They refuse a stream whose aggregate is not an integer and
+  name the first offending row. Opening a store refuses a sequence counter that is not an integer,
+  and one stored in more than one row, because `sqlite_sequence` has no key and a check that read
+  one row would pass whatever another held.
+- Before decoding, `_event_from_row` applies the 1 MiB cap to the text of each JSON column, as
+  `append` applies it to the canonical text it stores, so text padded past the cap is refused even
+  when its value fits. After decoding, it runs both columns through `_canonical_json_object`, the
+  same check `append` runs, and raises `EventIntegrityError` when either breaks it. The depth
+  limit is therefore 64 levels on every Python version.
+- Stored JSON the decoder cannot parse at all, because an integer literal exceeds the
+  interpreter's digit limit or the nesting exceeds its recursion limit, is refused like JSON that
+  does not parse. Neither error is a `json.JSONDecodeError`, so neither was caught before.
+- `store verify` reports `event_name_invalid` and `event_version_invalid` for such rows, the JSON
+  cases as `payload_not_json`, and a counter that is not an integer or is stored in more than one
+  row as `sequence_counter_mismatch`. It does not count a row whose `stream_version` is not an
+  integer of at least 1 in the stream-version contiguity walk.
+- `store verify` reports a row numbered below 1 as `sequence_gap`: `append` numbers from 1 and every
+  other command refuses such a row at open, but the walk started above 0 and passed it. On a table
+  rebuilt without a column `append` writes, or so `sequence` holds text, `store verify` reports
+  the schema faults and skips the counter check and the walk, as it does when the table is gone,
+  instead of ending in a traceback or a store error.
+- `store verify` reads the migration table only when it has its `version` column, and counts a
+  record only when its version is an integer, which is what `_mark_schema` writes and all the
+  column, an alias for the rowid, can hold. A table rebuilt without the column ended
+  `store verify` in a store error that dropped the schema faults already found, and one rebuilt
+  to hold text such as `'1x'` at schema 2 ended it in a `ValueError` traceback. Both now report
+  `schema_object_altered`, and the second also reports `migration_missing` for each record it
+  needs that is not stored as an integer.
+
+The refusal of a name outside the grammar gives only the rule it breaks, never the value, its
+length, or its storage class. An integrity error that names a stored event or stream for another
+fault, such as a version gap or a digest mismatch, quotes a name inside the append grammar
+exactly as before, and describes any other name by its length or storage class, because a name
+outside the grammar can be any length.
+
+Two stored values stay outside these checks. `occurred_at` and `recorded_at` are parsed, not
+checked against the UTC format `append` writes, so a timestamp with another offset still reads. A
+text column that is not valid UTF-8 fails inside the `sqlite3` module before any check runs and is
+reported as `store_unavailable`, with the module's message.
+
+Bounding a quoted name does not make the output safe to display. The decode message above, a
+payload key in a contract issue's JSON pointer, and a key in a `metadata_breaches` message carry
+stored text unescaped, newlines and terminal escape sequences included, and `cases history`
+prints a stored actor raw on stdout from a store that verifies clean. This amendment does not
+change those routes, so any output read from an untrusted store is untrusted text.
+
+The SQLite header is now checked in full as well. Opening a store already refused a foreign
+application id, a marker above the supported range, and a marker of 0 on a file that holds
+objects. It now also refuses a negative marker, which used to open, after which the first append
+ended in `KeyError: 0` in `_mark_schema`. `_mark_schema` also refuses what another connection can
+set after the open: a marker outside the supported range, below or above, before its early return
+can let an append through, and an application id other than ComplyRoll's, which used to let the
+append commit. `store verify` reports a marker outside the supported range as
+`schema_version_unsupported` and a foreign application id as `application_id_mismatch`. The fault
+order ADR 0008 gives predates both and does not place them; this amendment places them after the
+schema object faults and before the migration record. An empty file at schema 0 is what the open
+initializes, so verify does not judge its marker and accepts its application id as 0 or
+ComplyRoll's. It still reports each schema object such a file lacks as `schema_object_missing`,
+because ADR 0008 counts a missing object as a fault and verify describes the file as it is
+rather than as the open would leave it. Any other file must carry a marker in the supported
+range and ComplyRoll's application id, because the open refuses application id 0 on a file that
+holds objects or claims a schema.
+
+This does not make a rewritten envelope detectable in general. A name or version rewritten to
+another value `append` could have written still reads, as "What the payload digest does and does not
+cover" says. Apart from the size cap, stored JSON is checked as the value it decodes to, not as the
+text `append` writes, so text under the cap that decodes to such a value also reads, whitespace and
+duplicate object members included (the decoder keeps the last one). The checks refuse only rows no
+`append` could have written, so no store written
+through `append` is affected. Because every stream id a read accepts is at most 500 characters, a
+parser version component in one is at most 425 digits. That is below 640, the lowest limit
+`sys.set_int_max_str_digits` accepts other than 0 (unlimited), so version comparison cannot reach
+the interpreter's digit limit under any setting.

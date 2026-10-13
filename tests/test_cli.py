@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
+import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Mapping, Sequence
@@ -21,6 +22,7 @@ from unittest.mock import patch
 from test_hdf import compile_hdf_golden
 from test_replay import bumped, moved
 from test_sarif import compile_sarif_golden, make_log, make_result, make_run
+from test_store import retype_sequence_as_text
 
 from complyroll import __version__
 from complyroll import cli as cli_module
@@ -4807,6 +4809,87 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn("warning: payload_contracts_unchecked", err)
         self.assertNotIn("payload_contract_invalid", err)
 
+    def test_a_text_sequence_is_reported_without_a_traceback(self) -> None:
+        # On 298f1be the counter check passed the text to int() and the command ended in
+        # a ValueError traceback.
+        self.populate()
+        retype_sequence_as_text(self.database)
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertNotIn("Traceback", err)
+        self.assertIn(
+            "error: schema_object_altered: table events does not match its expected definition",
+            err,
+        )
+        self.assertIn("faults: 1 problem(s) in 0 verified event(s)", err)
+
+    def test_an_events_table_missing_its_columns_is_reported_without_a_traceback(self) -> None:
+        # On 298f1be the walk read `event_id` from a table rebuilt with `sequence` alone and
+        # the command ended in an IndexError traceback.
+        self.populate()
+        with closing(sqlite3.connect(self.database, isolation_level=None)) as connection:
+            connection.executescript(
+                "DROP TABLE events; CREATE TABLE events (sequence INTEGER); "
+                "INSERT INTO events VALUES (1);"
+            )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertNotIn("Traceback", err)
+        self.assertIn(
+            "error: schema_object_altered: table events does not match its expected definition",
+            err,
+        )
+        self.assertIn("faults: 5 problem(s) in 0 verified event(s)", err)
+
+    def test_a_migration_table_missing_its_version_column_keeps_its_schema_fault(self) -> None:
+        # On 298f1be the migration check queried `version` on a table rebuilt without it, and
+        # the store error that ended the command dropped the schema fault already found.
+        self.populate()
+        count = self.latest_sequence()
+        with closing(sqlite3.connect(self.database, isolation_level=None)) as connection:
+            connection.executescript(
+                "DROP TABLE complyroll_schema_migrations; "
+                "CREATE TABLE complyroll_schema_migrations (wrong INTEGER); "
+                "INSERT INTO complyroll_schema_migrations VALUES (1);"
+            )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertNotIn("store_unavailable", err)
+        self.assertIn(
+            "error: schema_object_altered: table complyroll_schema_migrations does not match "
+            "its expected definition",
+            err,
+        )
+        self.assertIn(f"faults: 1 problem(s) in {count} verified event(s)", err)
+
+    def test_a_second_sequence_counter_row_is_reported_and_refused(self) -> None:
+        # On 298f1be a text row added after SQLite's own counter row passed `store verify`
+        # and every command, because each check read only the first row.
+        self.populate()
+        count = self.latest_sequence()
+        with closing(sqlite3.connect(self.database, isolation_level=None)) as connection:
+            connection.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('events', 'x')")
+        message = "the events sequence counter is stored in more than one row"
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence_counter_mismatch: sequence {count}: {message}", err)
+        code, out, err = run(["cases", "list", "--db", str(self.database)])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: store_integrity: {message}", err)
+
 
 class ReportSourceConflictTests(unittest.TestCase):
     """Every `report` command takes a store or stateless inputs, never both, never neither.
@@ -5155,6 +5238,469 @@ class MissingStoreTests(unittest.TestCase):
                     self.assertIn("error: store_missing", err)
                     self.assertFalse(database.exists())
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+
+
+class StoredValueRefusalCommandTests(PersistedStoreTestCase):
+    """H3: each command in `readers` refuses a planted stored value with one coded line.
+
+    Append writes none of these rows, so each is planted with raw SQL. setUp ingests with one
+    recorded failure, correlates and attests, so an unmodified store renders all three reports.
+    In `assert_refused` each reader exits 1 with exactly one `error: store_integrity:` line,
+    appends no event, leaves the pre-seeded report outputs unchanged, and prints no traceback
+    and no line longer than LINE_BOUND bytes; `store verify` then exits 1 with the codes named
+    and no traceback. `cases history` reads only its case's stream, so it joins only the
+    refusals at open. On 298f1be most of these values ended a reader in a traceback or echoed
+    a 5000-character name; D reads clean there on 3.14.
+    """
+
+    LINE_BOUND = 1024
+    LONG = 5000
+    SEED = b"pre-seeded output\n"
+    REPORTS = ("vdt", "avi", "historical")
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The J cases are sized against the default digit limit, not whatever
+        # PYTHONINTMAXSTRDIGITS set for this process.
+        self.addCleanup(sys.set_int_max_str_digits, sys.get_int_max_str_digits())
+        sys.set_int_max_str_digits(sys.int_info.default_max_str_digits)
+        code, _out, err = run(
+            [
+                "ingest",
+                str(FIXTURES / "windows-host.ckl"),
+                str(TRUNCATED_FIXTURE),
+                "--record-failed-imports",
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+        self.assertEqual(code, 3, err)
+        # Correlated and attested, an unmodified store renders all three reports, so a
+        # report leg reaches its output stage rather than stopping at detection_time_missing.
+        self.correlate()
+        self.attest_missing()
+        # The failed-run example evaluations without the Ubuntu entry match this store's two
+        # cases, so `cases evaluate` has work to append and reads the store to find it.
+        payload = json.loads((EXAMPLES / "evaluations-failed.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = [
+            entry for entry in payload["evaluations"] if entry["match"]["sourceType"] != "cklb"
+        ]
+        self.evaluations = self.workspace / "evaluations-windows.json"
+        self.evaluations.write_text(json.dumps(payload), encoding="utf-8")
+
+    @staticmethod
+    def canonical(value: Mapping[str, Any]) -> str:
+        return json.dumps(
+            value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+
+    @staticmethod
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def raw(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def update(self, work: Callable[[sqlite3.Connection], object]) -> None:
+        """Run `work` with only `events_reject_update` dropped, then rebuild it as stored."""
+
+        with closing(self.raw()) as connection:
+            (restore,) = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'events_reject_update'"
+            ).fetchone()
+            connection.execute("DROP TRIGGER events_reject_update")
+            work(connection)
+            connection.execute(restore)
+
+    def insert(self, **overrides: object) -> None:
+        """INSERT one row after the last; no trigger guards INSERT."""
+
+        with closing(self.raw()) as connection:
+            first = connection.execute("SELECT * FROM events ORDER BY sequence LIMIT 1").fetchone()
+            values: dict[str, object] = {
+                "event_id": "evt-planted",
+                "stream_id": "probe/planted",
+                "stream_version": 1,
+                "event_type": "probe.planted",
+                "event_version": 1,
+                "occurred_at": first["occurred_at"],
+                "recorded_at": first["recorded_at"],
+                "payload_json": "{}",
+                "metadata_json": "{}",
+                "payload_sha256": self.digest("{}"),
+            }
+            values.update(overrides)
+            columns = ", ".join(values)
+            marks = ", ".join("?" for _ in values)
+            connection.execute(
+                f"INSERT INTO events ({columns}) VALUES ({marks})", tuple(values.values())
+            )
+
+    def retarget_failure(self, *, digits: int = 0, total: int = 0) -> None:
+        """Move the one failure stream to a long version: stream id, payloads, digests."""
+
+        def work(connection: sqlite3.Connection) -> None:
+            rows = connection.execute(
+                "SELECT * FROM events WHERE stream_id LIKE 'failure/%' ORDER BY sequence"
+            ).fetchall()
+            target = rows[0]["stream_id"]
+            head = target.rsplit("/", 1)[0] + "/"
+            version = "1" * (digits or total - len(head))
+            for row in rows:
+                payload = json.loads(row["payload_json"])
+                if row["event_type"] == "failure.recorded":
+                    payload["parserVersion"] = version
+                else:
+                    payload["source_metadata"]["artifact.parserVersion"] = version
+                text = self.canonical(payload)
+                connection.execute(
+                    "UPDATE events SET stream_id = ?, payload_json = ?, payload_sha256 = ? "
+                    "WHERE sequence = ?",
+                    (head + version, text, self.digest(text), row["sequence"]),
+                )
+
+        self.update(work)
+
+    def output(self, kind: str) -> Path:
+        return self.workspace / f"{kind}.json"
+
+    def report_reader(self, kind: str) -> list[str]:
+        argv = [
+            "report",
+            kind,
+            "--class",
+            "C",
+            "--package-uri",
+            "https://example.test/cpo",
+        ]
+        if kind != "historical":
+            argv += ["--from", "2026-08-01T00:00:00Z", "--to", "2026-08-31T23:59:59Z"]
+        return argv + [
+            "--as-of",
+            INGESTED_AT,
+            "--db",
+            str(self.database),
+            "-o",
+            str(self.output(kind)),
+        ]
+
+    def readers(self, *, at_open: bool) -> dict[str, list[str]]:
+        """The commands under test; `plain ingest` and `cases history` join only at open."""
+
+        database = str(self.database)
+        commands = {f"report {kind}": self.report_reader(kind) for kind in self.REPORTS}
+        commands |= {
+            "cases correlate": ["cases", "correlate", "--db", database],
+            "cases list": ["cases", "list", "--db", database],
+            "cases evaluate": [
+                "cases",
+                "evaluate",
+                "--db",
+                database,
+                "--evaluations",
+                str(self.evaluations),
+            ],
+            "cases attest-detection": [
+                "cases",
+                "attest-detection",
+                "--db",
+                database,
+                "--all-missing",
+                "--detected-at",
+                ATTESTED_AT,
+                "--rationale",
+                RATIONALE,
+            ],
+            "flagged ingest": [
+                "ingest",
+                str(TRUNCATED_FIXTURE),
+                "--record-failed-imports",
+                "--db",
+                database,
+                "--as-of",
+                INGESTED_AT,
+            ],
+        }
+        if at_open:
+            commands["plain ingest"] = [
+                "ingest",
+                str(FIXTURES / "semgrep-code.sarif"),
+                "--db",
+                database,
+                "--as-of",
+                INGESTED_AT,
+            ]
+            commands["cases history"] = ["cases", "history", WINDOWS_CASE, "--db", database]
+        return commands
+
+    def latest_sequence(self) -> int:
+        with closing(self.raw()) as connection:
+            return int(connection.execute("SELECT MAX(sequence) FROM events").fetchone()[0])
+
+    def assert_bounded(self, out: str, err: str) -> None:
+        for line in out.splitlines() + err.splitlines():
+            self.assertLessEqual(len(line.encode()), self.LINE_BOUND, line[:200])
+
+    def assert_refused(
+        self, fragment: str, verify_codes: set[str], *, at_open: bool = False
+    ) -> None:
+        before = self.latest_sequence()
+        for kind in self.REPORTS:
+            self.output(kind).write_bytes(self.SEED)
+        for name, argv in self.readers(at_open=at_open).items():
+            with self.subTest(command=name):
+                code, out, err = run(argv)
+                self.assertEqual(code, 1, err[:500])
+                # The ingests also print the truncated fixture's own diagnostics, so the
+                # refusal is counted by its prefix rather than by the lines on stderr.
+                refusals = [
+                    line for line in err.splitlines() if line.startswith("error: store_integrity: ")
+                ]
+                self.assertEqual(len(refusals), 1, err[:500])
+                self.assertIn(fragment, refusals[0])
+                self.assertNotIn("Traceback", out + err)
+                self.assert_bounded(out, err)
+                for kind in self.REPORTS:
+                    self.assertEqual(self.output(kind).read_bytes(), self.SEED, kind)
+        self.assertEqual(self.latest_sequence(), before)
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 1, err[:500])
+        self.assertNotIn("Traceback", out + err)
+        self.assert_bounded(out, err)
+        reported = {
+            line.split(": ")[1]
+            for line in out.splitlines() + err.splitlines()
+            if line.startswith("error: ")
+        }
+        self.assertLessEqual(verify_codes, reported, err[:500])
+
+    # h3-v2: the parser-version route.
+
+    def test_a_failure_stream_past_the_name_cap_is_refused(self) -> None:
+        for digits in (self.LONG, 4300):
+            with self.subTest(digits=digits):
+                self.database.unlink()
+                self.setUp()
+                self.retarget_failure(digits=digits)
+                self.assert_refused("has an unreadable stream_id", {"event_name_invalid"})
+
+    def test_a_head_only_artifact_stream_past_the_name_cap_is_refused(self) -> None:
+        with closing(self.raw()) as connection:
+            row = connection.execute(
+                "SELECT * FROM events WHERE event_type = 'artifact.ingested' "
+                "ORDER BY sequence LIMIT 1"
+            ).fetchone()
+            payload = json.loads(row["payload_json"])
+            payload.update(sha256="c" * 64, observationCount=0, parserVersion="1" * self.LONG)
+            text = self.canonical(payload)
+        self.insert(
+            event_id="evt-smuggled-artifact",
+            stream_id=f"artifact/{'c' * 64}/{payload['parserName']}/{'1' * self.LONG}",
+            event_type="artifact.ingested",
+            payload_json=text,
+            payload_sha256=self.digest(text),
+            metadata_json=row["metadata_json"],
+        )
+        self.assert_refused("has an unreadable stream_id", {"event_name_invalid"})
+
+    def test_a_failure_stream_at_the_name_cap_reads_clean(self) -> None:
+        self.retarget_failure(total=500)
+        code, out, err = run(self.report_reader("vdt"))
+        self.assertEqual(code, 0, err[:500])
+        self.assertNotIn("store_integrity", err)
+        self.assertNotIn("Traceback", out + err)
+        self.assertTrue(self.output("vdt").is_file())
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 0, out + err)
+
+    # J: integer literals and nesting in stored JSON.
+
+    def test_j1_a_payload_integer_past_the_digit_limit_is_refused(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            row = connection.execute(
+                "SELECT sequence, payload_json FROM events WHERE event_type = 'failure.recorded'"
+            ).fetchone()
+            text = row["payload_json"]
+            start = text.index('"sizeBytes":') + len('"sizeBytes":')
+            end = start
+            while text[end].isdigit():
+                end += 1
+            text = text[:start] + "1" * self.LONG + text[end:]
+            connection.execute(
+                "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = ?",
+                (text, self.digest(text), row["sequence"]),
+            )
+
+        self.update(work)
+        self.assert_refused("contains JSON past the decoder's limits", {"payload_not_json"})
+
+    def test_j2_a_metadata_integer_past_the_digit_limit_is_refused(self) -> None:
+        text = '{"n":' + "1" * self.LONG + "}"
+        for how in ("update", "insert"):
+            with self.subTest(how=how):
+                self.database.unlink()
+                self.setUp()
+                if how == "update":
+                    self.update(
+                        lambda connection: connection.execute(
+                            "UPDATE events SET metadata_json = ? WHERE sequence = 1", (text,)
+                        )
+                    )
+                else:
+                    self.insert(metadata_json=text)
+                self.assert_refused(
+                    "contains JSON past the decoder's limits", {"payload_not_json"}
+                )
+
+    def test_j3_metadata_nested_past_the_recursion_limit_is_refused(self) -> None:
+        self.insert(metadata_json='{"n":' + "[" * 200_000 + "]" * 200_000 + "}")
+        self.assert_refused("contains JSON past the decoder's limits", {"payload_not_json"})
+
+    # S and D: append's JSON rules. On 298f1be, with this setUp, S1 ends `report vdt` and
+    # `report historical` in a traceback while staging the output and S5 ends all three reports
+    # there; the other readers finish as on an unmodified store and `store verify` says ok. D
+    # reads clean with every reader on 3.14, and `store verify` faults only its extra key.
+
+    def plant_surrogate(self, event_type: str, change: Callable[[dict[str, Any]], None]) -> None:
+        """Rewrite the first payload of `event_type` around a lone surrogate escape."""
+
+        def work(connection: sqlite3.Connection) -> None:
+            row = connection.execute(
+                "SELECT sequence, payload_json FROM events WHERE event_type = ? "
+                "ORDER BY sequence LIMIT 1",
+                (event_type,),
+            ).fetchone()
+            payload = json.loads(row["payload_json"])
+            change(payload)
+            text = self.canonical(payload).replace("\ud800", "\\ud800")
+            connection.execute(
+                "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = ?",
+                (text, self.digest(text), row["sequence"]),
+            )
+
+        self.update(work)
+
+    def test_s1_a_lone_surrogate_in_an_observation_title_is_refused(self) -> None:
+        self.plant_surrogate(
+            "observation.recorded", lambda payload: payload.update(title="Ubuntu \ud800 notice")
+        )
+        self.assert_refused(
+            "payload contains text that is not valid Unicode", {"payload_not_json"}
+        )
+
+    def test_s5_a_lone_surrogate_in_a_failure_diagnostic_is_refused(self) -> None:
+        def change(payload: dict[str, Any]) -> None:
+            payload["diagnostics"][0]["message"] = "x\ud800"
+
+        self.plant_surrogate("failure.recorded", change)
+        self.assert_refused(
+            "payload contains text that is not valid Unicode", {"payload_not_json"}
+        )
+
+    def test_d_metadata_past_the_append_depth_is_refused(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            (text,) = connection.execute(
+                "SELECT metadata_json FROM events WHERE sequence = 1"
+            ).fetchone()
+            deep = "[" * 65 + "]" * 65
+            connection.execute(
+                "UPDATE events SET metadata_json = ? WHERE sequence = 1",
+                (text[:-1] + ',"zz":' + deep + "}",),
+            )
+
+        self.update(work)
+        self.assert_refused("metadata exceeds the JSON depth limit", {"payload_not_json"})
+
+    # V and E: the integer columns.
+
+    def test_v1_a_text_stream_version_is_refused_at_open(self) -> None:
+        self.insert(stream_version="x")
+        self.assert_refused(
+            "has stream_version stored as text", {"event_version_invalid"}, at_open=True
+        )
+
+    def test_v2_an_overlong_numeric_stream_version_is_refused_at_open(self) -> None:
+        self.insert(stream_version="1" * self.LONG)
+        self.assert_refused(
+            "has stream_version stored as real", {"event_version_invalid"}, at_open=True
+        )
+
+    def test_e1_a_text_event_version_is_refused_on_read(self) -> None:
+        self.insert(event_version="x")
+        self.assert_refused("has event_version stored as text", {"event_version_invalid"})
+
+    # N: the echo.
+
+    def test_n1_a_long_event_id_with_a_bad_digest_is_not_echoed(self) -> None:
+        self.insert(event_id="e" * self.LONG, payload_sha256="0" * 64)
+        self.assert_refused(
+            "has an unreadable event_id", {"event_name_invalid", "payload_digest_mismatch"}
+        )
+
+    def test_n2_a_long_stream_id_at_version_two_is_not_echoed(self) -> None:
+        self.insert(stream_id="probe/" + "x" * self.LONG, stream_version=2)
+        self.assert_refused(
+            "characters outside the name grammar>",
+            {"event_name_invalid", "stream_version_gap"},
+            at_open=True,
+        )
+
+    # Q: the AUTOINCREMENT counter.
+
+    def test_q_a_counter_stored_as_text_is_refused_at_open(self) -> None:
+        with closing(self.raw()) as connection:
+            connection.execute("UPDATE sqlite_sequence SET seq = 'x' WHERE name = 'events'")
+        self.assert_refused(
+            "sequence counter is stored as text", {"sequence_counter_mismatch"}, at_open=True
+        )
+
+    # H: the header's schema marker. On 298f1be a marker of -1 verified clean and the next
+    # append ended in `KeyError: 0`.
+
+    def header_state(self) -> tuple[object, ...]:
+        with closing(self.raw()) as connection:
+            return (
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                tuple(connection.execute("SELECT COUNT(*), MAX(sequence) FROM events").fetchone()),
+                [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT version FROM complyroll_schema_migrations ORDER BY version"
+                    )
+                ],
+            )
+
+    def test_a_marker_below_the_supported_range_is_refused_by_every_command(self) -> None:
+        with closing(self.raw()) as connection:
+            connection.execute("PRAGMA user_version = -1")
+        before = self.header_state()
+        for name, argv in self.readers(at_open=True).items():
+            with self.subTest(command=name):
+                code, out, err = run(argv)
+                self.assertEqual(code, 1, err[:500])
+                self.assertIn(
+                    "error: store_unavailable: database schema -1 is outside supported "
+                    "schemas 1 to 2",
+                    err,
+                )
+                self.assert_bounded(out, err)
+        self.assertEqual(self.header_state(), before)
+        self.assertEqual(before[0], -1)
+        for kind in self.REPORTS:
+            self.assertFalse(self.output(kind).exists(), kind)
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 1, err[:500])
+        self.assertIn(
+            "schema_version_unsupported: database is marked schema -1; this build opens "
+            "schemas 1 to 2",
+            out + err,
+        )
+        self.assert_bounded(out, err)
 
 
 if __name__ == "__main__":

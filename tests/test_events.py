@@ -45,6 +45,7 @@ from complyroll.events import (
     EventMetadata,
     EventRepository,
     PendingEvent,
+    artifact_identity_breach,
     artifact_stream_components,
     artifact_stream_id,
     canonical_payload_digest,
@@ -75,6 +76,7 @@ from complyroll.events.contracts import (
     _placement_problem,
     _timestamp_pointers,
 )
+from complyroll.events.repository import _SHOWN_LIMIT, _shown
 from complyroll.models import (
     Observation,
     ObservationDisposition,
@@ -116,6 +118,10 @@ OPTIONAL_FIELD_POINTERS = frozenset(
         "failure.recorded/properties/diagnostics/items",
     }
 )
+
+#: The longest message an identity check may give, however long the payload value it
+#: quotes: each quoted value is cut at 200 characters, and a stream id is at most 500.
+IDENTITY_MESSAGE_BOUND = 1024
 
 
 def observation(**overrides: object) -> Observation:
@@ -428,6 +434,12 @@ def with_value(payload: dict[str, Any], pointer: str, value: Any) -> dict[str, A
         target = target[part]
     target[parts[-1]] = value
     return updated
+
+
+def cut_quote(text: str) -> str:
+    """Return how an identity message quotes a long string with no quote or escape in it."""
+
+    return f"'{text[:199]}... ({len(text) + 2} characters)"
 
 
 #: The name every synthetic failed reading below carries.
@@ -1611,6 +1623,42 @@ class StreamCompatibilityTests(unittest.TestCase):
                 self.assertIn(ARTIFACT_STREAM_ID, message)
         self.assertEqual(self.store.latest_sequence, 0)
 
+    def test_a_long_recorded_identity_is_cut_short_in_the_message(self) -> None:
+        # The payload digest proves a payload is the one recorded, not that its values are
+        # short, so a payload edited in the store with its digest recomputed reaches this
+        # message from the fold and the audit at any length.
+        value = "9" * 5000
+        for key in ("sha256", "parserName", "parserVersion"):
+            with self.subTest(key=key):
+                payload = {**GOOD_PAYLOADS["artifact.ingested"], key: value}
+
+                breach = artifact_identity_breach(ARTIFACT_STREAM_ID, "artifact.ingested", payload)
+
+                self.assertIsNotNone(breach)
+                self.assertIn(cut_quote(value), str(breach))
+                self.assertNotIn(value, str(breach))
+                self.assertLessEqual(len(str(breach).encode()), IDENTITY_MESSAGE_BOUND)
+
+    def test_a_short_recorded_identity_is_quoted_whole(self) -> None:
+        payload = {**GOOD_PAYLOADS["artifact.ingested"], "parserVersion": "2"}
+
+        self.assertEqual(
+            artifact_identity_breach(ARTIFACT_STREAM_ID, "artifact.ingested", payload),
+            f"artifact.ingested records digest {DIGEST!r} read by 'complyroll.cklb' version "
+            f"'2' on stream {ARTIFACT_STREAM_ID!r}, which names digest {DIGEST!r} read by "
+            "'complyroll.cklb' version '1'",
+        )
+
+    def test_a_quote_of_exactly_the_limit_is_shown_whole(self) -> None:
+        # The cut is past `_SHOWN_LIMIT` characters of the quoted form, not at it: 198 nines
+        # quote to exactly 200 characters and are shown unchanged, and one more nine is cut
+        # just before its closing quote and counted.
+        fits, over = "9" * 198, "9" * 199
+        self.assertEqual(len(repr(fits)), _SHOWN_LIMIT)
+
+        self.assertEqual(_shown(fits), repr(fits))
+        self.assertEqual(_shown(over), "'" + over + "... (201 characters)")
+
     def test_the_same_identity_on_its_own_stream_is_accepted(self) -> None:
         # The check is about agreement between the payload and the stream, not about one
         # blessed stream: the same events land cleanly on the stream they name.
@@ -2214,6 +2262,29 @@ class FailureStreamIdentityTests(unittest.TestCase):
                 self.assertIn(FAILURE_STREAM_ID, message)
         self.assertEqual(self.store.latest_sequence, 0)
 
+    def test_a_long_head_identity_is_cut_short_in_the_message(self) -> None:
+        value = "9" * 5000
+        for key in ("sha256", "parserName", "parserVersion"):
+            with self.subTest(key=key):
+                payload = {**failure_head(), key: value}
+
+                breach = failure_identity_breach(FAILURE_STREAM_ID, "failure.recorded", payload)
+
+                self.assertIsNotNone(breach)
+                self.assertIn(cut_quote(value), str(breach))
+                self.assertNotIn(value, str(breach))
+                self.assertLessEqual(len(str(breach).encode()), IDENTITY_MESSAGE_BOUND)
+
+    def test_a_short_head_identity_is_quoted_whole(self) -> None:
+        payload = failure_head(parser_version="2")
+
+        self.assertEqual(
+            failure_identity_breach(FAILURE_STREAM_ID, "failure.recorded", payload),
+            f"failure.recorded records digest {DIGEST!r} read by 'complyroll.sarif' version "
+            f"'2' on stream {FAILURE_STREAM_ID!r}, which names digest {DIGEST!r} read by "
+            "'complyroll.sarif' version '1'",
+        )
+
     def test_each_clause_of_the_system_record_is_held(self) -> None:
         # Each shape changes exactly one field of a good record, so dropping any one
         # clause lets exactly one of them through.
@@ -2240,6 +2311,40 @@ class FailureStreamIdentityTests(unittest.TestCase):
                 self.assertIsNotNone(breach)
                 self.assertIn(f"is not the system record of digest {DIGEST!r}", str(breach))
                 self.assertIn(expected, str(breach))
+
+    def test_a_long_system_record_value_is_cut_short_in_the_message(self) -> None:
+        good = system_record().to_canonical_dict()
+        value = "c" * 5000
+        quoted = cut_quote(value)
+        for label, pointer, expected in (
+            ("an origin", "/origin", f"its origin is {quoted}"),
+            ("a source type", "/source_type", f"its source type is {quoted}"),
+            ("a context key", "/context_key", f"its context key is {quoted}"),
+            ("a resource id", "/resource/resource_id", f"its resource id is {quoted}"),
+            ("an id", "/observation_id", f"its id is {quoted}, not its derived id"),
+            # The derived id is built from the payload's fingerprint, so it is a payload value.
+            ("a fingerprint", "/fingerprint", f"not its derived id {cut_quote('obs-' + value)}"),
+        ):
+            with self.subTest(shape=label):
+                breach = failure_identity_breach(
+                    FAILURE_STREAM_ID, "observation.recorded", with_value(good, pointer, value)
+                )
+
+                self.assertIsNotNone(breach)
+                self.assertIn(expected, str(breach))
+                self.assertNotIn(value, str(breach))
+                self.assertLessEqual(len(str(breach).encode()), IDENTITY_MESSAGE_BOUND)
+
+    def test_a_short_system_record_value_is_quoted_whole(self) -> None:
+        good = system_record().to_canonical_dict()
+        chosen = with_value(good, "/observation_id", "obs-chosen")
+
+        self.assertEqual(
+            failure_identity_breach(FAILURE_STREAM_ID, "observation.recorded", chosen),
+            f"observation.recorded on failure stream {FAILURE_STREAM_ID!r} is not the system "
+            f"record of digest {DIGEST!r}: its id is 'obs-chosen', not its derived id "
+            f"{good['observation_id']!r}",
+        )
 
     def test_an_observation_that_is_not_the_digest_system_record_is_refused(self) -> None:
         chosen = with_value(system_record().to_canonical_dict(), "/observation_id", "obs-chosen")
@@ -2357,6 +2462,70 @@ class FailureStreamIdentityTests(unittest.TestCase):
                 self.assertIn(expected, str(breach))
                 self.assertEqual(payload["observation_id"], good["observation_id"])
 
+    def test_a_long_metadata_value_is_cut_short_in_the_message(self) -> None:
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        value = "x" * 5000
+        quoted = cut_quote(value)
+        for label, metadata_value, expected in (
+            (
+                "a key no writer stores",
+                {**stored, value: "x"},
+                f"its metadata carries {quoted}, which a system record does not",
+            ),
+            (
+                "another version",
+                {**stored, "artifact.parserVersion": value},
+                f"its metadata artifact.parserVersion is {quoted}, where the stream names '1'",
+            ),
+            (
+                "a size",
+                {**stored, "artifact.sizeBytes": value},
+                f"its metadata artifact.sizeBytes is {quoted}, not a count",
+            ),
+            (
+                "a class",
+                {**stored, "failure.class": value},
+                f"its metadata failure.class is {quoted}, not a failure class",
+            ),
+            (
+                "codes",
+                {**stored, "failure.codes": value},
+                f"its metadata failure.codes is {quoted}, not the compact JSON array",
+            ),
+            (
+                "a clock",
+                {**stored, "failure.clock": value},
+                f"its metadata failure.clock is {quoted}, not a failure clock",
+            ),
+            (
+                "a rule",
+                {**stored, "failure.rule": value},
+                f"its metadata failure.rule is {quoted}, not 'VDR-CSO-FAV'",
+            ),
+        ):
+            with self.subTest(shape=label):
+                payload = {**good, "source_metadata": metadata_value}
+
+                breach = failure_identity_breach(FAILURE_STREAM_ID, "observation.recorded", payload)
+
+                self.assertIsNotNone(breach)
+                self.assertIn(expected, str(breach))
+                self.assertNotIn(value, str(breach))
+                self.assertLessEqual(len(str(breach).encode()), IDENTITY_MESSAGE_BOUND)
+
+    def test_a_short_metadata_value_is_quoted_whole(self) -> None:
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        payload = {**good, "source_metadata": {**stored, "artifact.parserVersion": "2"}}
+
+        self.assertEqual(
+            failure_identity_breach(FAILURE_STREAM_ID, "observation.recorded", payload),
+            f"observation.recorded on failure stream {FAILURE_STREAM_ID!r} is not the system "
+            f"record of digest {DIGEST!r}: its metadata artifact.parserVersion is '2', where "
+            "the stream names '1'",
+        )
+
     def test_a_record_naming_another_reading_in_its_metadata_is_refused(self) -> None:
         good = system_record().to_canonical_dict()
         stored = good["source_metadata"]
@@ -2398,6 +2567,31 @@ class FailureStreamIdentityTests(unittest.TestCase):
                     f"{head[head_key]!r} in its failure.recorded and {key} {value!r} in its "
                     "system record; the two describe one failure",
                 )
+
+    def test_a_long_disagreeing_value_is_cut_short_in_the_message(self) -> None:
+        # The test above is the short control: it pins whole messages for short values.
+        head = failure_head()
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        value = "x" * 5000
+        for label, head_name, record_name, shown_head, shown_record in (
+            ("in the head", value, FAILED_NAME, cut_quote(value), repr(FAILED_NAME)),
+            ("in the record", FAILED_NAME, value, repr(FAILED_NAME), cut_quote(value)),
+        ):
+            with self.subTest(shape=label):
+                disagreement = failure_record_disagreement(
+                    FAILURE_STREAM_ID,
+                    {**head, "name": head_name},
+                    {**good, "source_metadata": {**stored, "artifact.name": record_name}},
+                )
+
+                self.assertEqual(
+                    disagreement,
+                    f"failure stream {FAILURE_STREAM_ID!r} records name {shown_head} in its "
+                    f"failure.recorded and artifact.name {shown_record} in its system record; "
+                    "the two describe one failure",
+                )
+                self.assertLessEqual(len(str(disagreement).encode()), IDENTITY_MESSAGE_BOUND)
 
     def test_a_failure_stream_is_opened_by_its_head(self) -> None:
         head = pending_event("failure.recorded", failure_head())
@@ -2683,6 +2877,27 @@ class FailureSchemaMarkingTests(unittest.TestCase):
                 self.assertIn("requires_schema must be between 1 and 2", str(caught.exception))
         self.assertEqual(self.store.latest_sequence, 0)
 
+
+
+class StreamIdCapTests(unittest.TestCase):
+    """H3 (a): a reading's stream id past the store's name cap is refused by its parser too."""
+
+    def test_component_parsers_refuse_an_id_one_past_the_cap(self) -> None:
+        parsers = (
+            ("artifact", artifact_stream_components),
+            ("failure", failure_stream_components),
+        )
+        for prefix, parse in parsers:
+            head = f"{prefix}/{'a' * 64}/complyroll.sarif/"
+            at_cap = head + "1" * (_MAX_STREAM_ID_LENGTH - len(head))
+            with self.subTest(prefix=prefix):
+                self.assertEqual(len(at_cap), _MAX_STREAM_ID_LENGTH)
+                self.assertEqual(parse(at_cap)[2], at_cap[len(head) :])
+                past = at_cap + "1"
+                with self.assertRaises(ValueError) as caught:
+                    parse(past)
+                self.assertIn(f"at most {_MAX_STREAM_ID_LENGTH} characters", str(caught.exception))
+                self.assertNotIn(past, str(caught.exception))
 
 if __name__ == "__main__":
     unittest.main()

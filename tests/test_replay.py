@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import permutations
@@ -51,10 +53,12 @@ from complyroll.events import (
     EventMetadata,
     EventRepository,
     artifact_stream_id,
+    canonical_payload_digest,
     case_stream_id,
     iso_utc,
 )
 from complyroll.history import (
+    HistoryError,
     apply_evaluations,
     artifact_history,
     attest_detection,
@@ -1564,8 +1568,15 @@ class DamagedIngestHistoryTests(StoreFixture):
 
     DIGEST = "0" * 64
 
-    def append_failed_ingest(self) -> None:
-        self.repository.append(
+    def append_failed_ingest(self) -> int:
+        """Store one artifact head carrying an ERROR diagnostic, as only a hand edit can.
+
+        The contract admits INFO and WARNING alone, so the head is appended with a WARNING
+        and its level rewritten in place: the append-only trigger dropped, the payload and
+        its digest rewritten, and the trigger rebuilt from the DDL SQLite recorded.
+        """
+
+        appended = self.repository.append(
             artifact_stream_id(self.DIGEST, "complyroll.damaged", "1"),
             "artifact.ingested",
             {
@@ -1579,7 +1590,7 @@ class DamagedIngestHistoryTests(StoreFixture):
                 "observationCount": 0,
                 "diagnostics": [
                     {
-                        "level": "error",
+                        "level": "warning",
                         "code": "artifact_unparsable",
                         "message": "the recorded artifact did not parse",
                     }
@@ -1589,14 +1600,52 @@ class DamagedIngestHistoryTests(StoreFixture):
             metadata=self.metadata,
             expected_version=0,
         )
+        payload = dict(appended.payload)
+        payload["diagnostics"] = [{**payload["diagnostics"][0], "level": "error"}]
+        text = json.dumps(
+            payload, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with closing(sqlite3.connect(self.database, isolation_level=None)) as raw:
+            (restore,) = raw.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'events_reject_update'"
+            ).fetchone()
+            raw.execute("DROP TRIGGER events_reject_update")
+            raw.execute(
+                "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = ?",
+                (text, canonical_payload_digest(payload), appended.sequence),
+            )
+            raw.execute(restore)
+        return appended.sequence
 
     def test_a_stored_error_diagnostic_stops_the_rebuild(self) -> None:
+        # The contract admits INFO and WARNING alone, and the fold reads every head against
+        # its contract before anything else, so the rebuild stops there, naming the level.
+        self.ingest(WINDOWS_ONLY)
+        self.correlate()
+        self.attest()
+        sequence = self.append_failed_ingest()
+
+        with self.assertRaises(HistoryError) as caught:
+            self.replay()
+
+        self.assertIn(
+            f"event {sequence} is not a readable artifact record: artifact.ingested version 1 "
+            "payload is invalid: /diagnostics/0/level: enum:",
+            str(caught.exception),
+        )
+
+    def test_the_compiler_still_refuses_an_error_the_contract_check_lets_through(self) -> None:
+        # The compiler keeps its own refusal behind the fold's: with the contract check
+        # skipped, the stored ERROR reaches it and still stops the run.
         self.ingest(WINDOWS_ONLY)
         self.correlate()
         self.attest()
         self.append_failed_ingest()
 
-        with self.assertRaises(ReportCompileError) as caught:
+        with (
+            mock.patch.object(self.repository, "validate_payload"),
+            self.assertRaises(ReportCompileError) as caught,
+        ):
             self.replay()
 
         diagnostic = caught.exception.diagnostics[0]

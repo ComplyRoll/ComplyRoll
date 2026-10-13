@@ -4391,6 +4391,38 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn("is not the system record", err)
         self.assertIn("faults: 1 domain fault(s) in", err)
 
+    def test_an_error_diagnostic_in_a_failure_head_is_named_and_exits_one(self) -> None:
+        # No writer stores an ERROR: `record_ingest` refuses one and a failure head carries
+        # each one demoted. One planted in a head used to verify clean while every report
+        # refused the store. The contract admits INFO and WARNING alone, so the audit and
+        # the reports now name the same head for the same reason.
+        self.populate()
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        head["diagnostics"] = [
+            {**head["diagnostics"][0], "level": "error"},
+            *head["diagnostics"][1:],
+        ]
+        sequences = self.smuggle_failure(
+            stream_id, [("failure.recorded", head), ("observation.recorded", observation)]
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        report_code, report_out, report_err = self.report_from_history()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequences[0]}: payload_contract_invalid:", err)
+        self.assertIn("/diagnostics/0/level: enum:", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+        self.assertEqual(report_code, 1)
+        self.assertEqual(report_out, "")
+        self.assertNotIn("Traceback", report_err)
+        self.assertIn(
+            f"error: history_invalid: event {sequences[0]} is not a readable failure record: ",
+            report_err,
+        )
+        self.assertIn("/diagnostics/0/level: enum:", report_err)
+
     def test_a_failure_stream_id_naming_no_digest_is_named_and_exits_one(self) -> None:
         # Each event's check parses the id before it reads the payload, so a malformed id
         # is a fault on every event of the stream rather than an exception out of the audit.
@@ -5685,7 +5717,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 self.assertEqual(code, 1, err[:500])
                 self.assertIn(
                     "error: store_unavailable: database schema -1 is outside supported "
-                    "schemas 1 to 2",
+                    "schemas 1 to 3",
                     err,
                 )
                 self.assert_bounded(out, err)
@@ -5697,7 +5729,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1, err[:500])
         self.assertIn(
             "schema_version_unsupported: database is marked schema -1; this build opens "
-            "schemas 1 to 2",
+            "schemas 1 to 3",
             out + err,
         )
         self.assert_bounded(out, err)

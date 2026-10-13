@@ -744,3 +744,14 @@ bytes:
   ERROR code identifies it.
 - Deciding before the writes, beside the `failure_read_elsewhere` check: when a side record's own
   artifact supersedes the holder, that artifact exists only once the run has written it.
+
+## Amendment 2026-10-03: version components are bounded by the store
+
+Decision 13 compares versions numerically when every component of every version of a digest is a
+decimal integer. A component read from the store is at most 425 digits, because every read
+refuses a stored stream id over 500 characters (ADR 0004, amendment 2026-10-03) and the identity
+checks bind every payload copy of a version to its stream id. `sys.set_int_max_str_digits` accepts
+no limit below 640 other than 0, so `int()` never meets its digit limit on a stored version and the
+numeric predicate needs no bound of its own. Before this amendment, a stream id edited out of band
+to carry a version of 4301 digits or more crashed the fold in `int()`. Every version the stateless
+path produces is a parser constant, so this changes no stateless output.

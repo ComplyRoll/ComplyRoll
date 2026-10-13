@@ -173,6 +173,20 @@ those three match, and a test pins it.
   store verifies that the expected tables, indexes, and triggers are still present.
 - Reads verify that global sequences and stream versions are contiguous, so a deleted event is
   reported as an integrity error instead of being skipped.
+- Reads apply the append rules to event names, version columns, the sequence counter, and both
+  JSON columns. Event IDs, stream identifiers, and event types must be at most 500 characters
+  from the allowed set. The stream version, event version, and sequence counter must be stored as
+  integers. Stored JSON must pass the checks `append` runs on it (nesting, value count, size, no
+  NaN or infinity, valid Unicode), and JSON past the decoder's own limits is refused like JSON
+  that does not parse. A row edited in place to break any of these is refused with
+  `store_integrity` rather than a traceback, and `store verify` reports it (`event_name_invalid`,
+  `event_version_invalid`, `payload_not_json`, `sequence_counter_mismatch`). Stored timestamps
+  are parsed, not checked against the format `append` writes. A text column that is not valid
+  UTF-8 is refused as `store_unavailable`, and that message can quote the stored text. A value
+  rewritten to another one `append` could have written is not detected. Store integrity errors
+  describe a name outside the grammar by its length or storage class instead of quoting it, and
+  the artifact and failure identity checks cut a quoted payload value at 200 characters. Other
+  domain messages can still quote a payload value at full length.
 - Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
 - A failure stream (ADR 0014) is appended in the same transaction that marks the store schema
   version 2, so the marker and the failure commit or roll back together. A build that predates

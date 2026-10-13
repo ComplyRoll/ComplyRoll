@@ -21,6 +21,21 @@ All notable project changes will be documented here.
   The event log is deliberately not order-independent: two stores built by ingesting the same
   files in opposite orders differ in bytes and in sequence, both verify clean, and both rebuild
   the identical report.
+- A store edited in place so a name, version, counter, or JSON column holds something `append`
+  never writes is now refused with a coded error (`store_integrity` for those columns) instead of
+  crashing or reading as valid. A stream id carrying a parser version of 4301 digits or more, an
+  integer in stored JSON past the interpreter's 4300-digit limit, JSON nested past the recursion
+  limit, text in `stream_version` or `event_version` or a number there past the range of a
+  double, and text in the sequence counter each ended `report --db`, `cases correlate` and
+  `ingest --record-failed-imports` in a Python traceback, and all but the parser version crashed
+  `store verify` too. A lone surrogate escape in a stored payload ended `report --db` in a
+  traceback while `store verify` reported nothing wrong. A stored name over 500 characters that
+  broke nothing else used to read as valid. `store verify` now reports `event_name_invalid` and
+  `event_version_invalid`, and reports the JSON and counter cases as `payload_not_json` and
+  `sequence_counter_mismatch`. Store errors describe an over-long name by its length rather than
+  repeating it, and the artifact and failure identity checks cut a quoted payload value at 200
+  characters. Stored timestamps are still parsed rather than checked against the format `append`
+  writes.
 - `.arf`, the suffix OpenSCAP gives its ARF output, was refused unread while the CLI help text on
   the same argument promised ARF support. It now dispatches by root element exactly as `.xml`
   does, so a valid ARF is accepted under either suffix and a misnamed CKL still reaches the CKL

@@ -183,3 +183,54 @@ both opening and appending require SQLite's AUTOINCREMENT counter for `events` t
 stored sequence; a mismatch is reported as a truncated history with the last intact sequence.
 The constructor also maps a path that cannot be opened onto `EventStoreError` rather than a raw
 driver exception. Envelope fields outside `payload_json` remain undigested until the hash chain.
+
+## Amendment 2026-10-03: reads apply the append rules to names, versions, the counter, and JSON
+
+`append` has always refused an `event_id`, `stream_id`, or `event_type` that is blank, over 500
+characters, or outside `_NAME_PATTERN`, and has always written `stream_version` and
+`event_version` as integers. It has always written both JSON columns through
+`_canonical_json_object`, which refuses nesting deeper than 64 levels, more than 100000 values,
+NaN or infinity, more than 1 MiB, and text that cannot be encoded as UTF-8. Reads checked none
+of this. The version columns are declared `INTEGER` in a table that is not `STRICT`, so SQLite
+stores whatever an out-of-band edit gives it: `CHECK (stream_version >= 1)` admits the text
+`'x'`, because SQLite orders text above every integer, and a numeric text too large for 64 bits is
+coerced to a real, which is infinity once it passes the range of a double. The `AUTOINCREMENT`
+counter in `sqlite_sequence` has no declared type at all. A row or counter edited that way was
+either read as valid or ended the command in a Python traceback. A stream id carrying a parser
+version of 4301 digits or more crashed the fold in `int()`, and a payload holding a lone surrogate
+escape passed `store verify` and then crashed `report` when it wrote its output.
+
+Reads now apply those rules before they use a row:
+
+- `_event_from_row` refuses a name outside the append grammar and a version column that is not an
+  integer before it checks the payload digest, and raises `EventIntegrityError`.
+- The open-time and append-time contiguity checks aggregate `stream_version` with raw SQL and
+  never pass through `_event_from_row`. They refuse a stream whose aggregate is not an integer and
+  name the first offending row. Opening a store refuses a sequence counter that is not an integer.
+- After decoding, `_event_from_row` runs both JSON columns through `_canonical_json_object`, the
+  same check `append` runs, and raises `EventIntegrityError` when either breaks it. The depth
+  limit is therefore 64 levels on every Python version.
+- Stored JSON the decoder cannot parse at all, because an integer literal exceeds the
+  interpreter's digit limit or the nesting exceeds its recursion limit, is refused like JSON that
+  does not parse. Neither error is a `json.JSONDecodeError`, so neither was caught before.
+- `store verify` reports `event_name_invalid` and `event_version_invalid` for such rows, the JSON
+  cases as `payload_not_json`, and a counter that is not an integer as
+  `sequence_counter_mismatch`. It does not count a row whose `stream_version` is not an integer in
+  the stream-version contiguity walk.
+
+An integrity error that names a stored event or stream quotes a name inside the append grammar
+exactly as before, and describes any other name by its length or storage class, because a name
+outside the grammar can be any length.
+
+Two stored values stay outside these checks. `occurred_at` and `recorded_at` are parsed, not
+checked against the UTC format `append` writes, so a timestamp with another offset still reads. A
+text column that is not valid UTF-8 fails inside the `sqlite3` module before any check runs and is
+reported as `store_unavailable`, with the module's message.
+
+This does not make a rewritten envelope detectable in general. A name or version rewritten to
+another value `append` could have written still reads, as "What the payload digest does and does
+not cover" says. The checks refuse only rows no `append` could have written, so no store written
+through `append` is affected. Because every stream id a read accepts is at most 500 characters, a
+parser version component in one is at most 425 digits. That is below 640, the lowest limit
+`sys.set_int_max_str_digits` accepts other than 0 (unlimited), so version comparison cannot reach
+the interpreter's digit limit under any setting.

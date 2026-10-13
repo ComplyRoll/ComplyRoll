@@ -829,7 +829,9 @@ changes.
 
 **Audit.** `store verify` gains `failure_hold_orphaned`, a hold whose id is not first held by
 a `failure.recorded` stream, reported at most once per stream. `failure_schema_unmarked` also
-covers a hold in a store below schema 3, as one fault at the first hold.
+covers a hold in a store below schema 3, as one fault at the first hold. Like a failure stream
+left at schema 1, it is a `store verify` fault only: this build reads the hold, and a build that
+predates holds still refuses the store's history as `history_invalid`.
 `failure_duplicate_observation` is reported only for a stream that does not open with
 `failure.held`. `failure_incomplete`, `failure_overfull`, and `failure_stream_mismatch` treat
 both head types alike: a stream with one head of each type is overfull, a hold head whose
@@ -882,8 +884,11 @@ amendment holds.
   rerun prints `already_recorded` and repeats the WARNING. A pure failure that a reading of
   its bytes would supersede at birth is refused before the writes with
   `failure_read_elsewhere` (Decision 13), on its first run and on any rerun.
-- Decision 12, "reports `already_recorded`, writes nothing" (380) to "it stays recorded under
-  the holder's" (384): the writer records a hold, as `failure.held` v1 above says. "A rerun
+- Decision 12, "One observation id is stored once per digest across failure streams" (377 to
+  378) holds for `failure.recorded` streams; a hold stores the id again, beneath the recorded
+  stream that holds it first. "reports `already_recorded`, writes nothing" (380) to "it stays
+  recorded under the holder's" (384): the writer records a hold, as `failure.held` v1 above
+  says. "A rerun
   finds the reading's own stream and stays silent" (382 to 383) holds for a recorded failure,
   which adds no WARNING; a rerun of a hold repeats it. "For a held failure nothing of the
   reading reaches history" (384 to 385) no longer holds: the pure failure's hold is stored,
@@ -892,7 +897,10 @@ amendment holds.
   refusal. The sentence on folding the store (395 to 398) reads: the holder is found by the
   digest's prefix alone, and the writer folds the store before it writes a hold, so a holder
   whose stream id names no reading stops the run as `history_invalid`. The writer no longer
-  parses the holder's id.
+  parses the holder's id. "The once-per-digest rule is enforced at append" (400) to
+  "`failure_schema_unmarked`" (404): the rule binds `failure.recorded` streams, the repository,
+  the reader and the audit accept a hold beneath its recorded holder, and the audit gains a
+  sixth code, `failure_hold_orphaned`.
 - Decision 13: the rules are R1 to R6, with R6 above, and the title reads so. Holds are among
   the failure versions that decide whether a digest compares numerically (445 to 448). In the
   check before the writes, "Both kinds are weighed again after the writes when the writer met
@@ -915,6 +923,10 @@ amendment holds.
   failure entry under version 1, with INFO `failure_held` for version 2's stream.
 - Consequences, older builds and newer stores (675 to 691): an earlier build meets a schema 3
   store as Schema 3 above says.
+- Consequences, the cross-parser corner (692 to 694): "history keeps every failure stream
+  current (R5)" holds for every failure stream no reading supersedes except a dormant hold,
+  which shares its carrier's system observation and adds no member to the case. The two
+  persisted members the corner describes come from readings at two instants.
 - Rejected alternatives, the four entries on the refusal after the writes, from "Keeping,
   documented and pinned, the hold of a side record" (736) to "exists only once the run has
   written it" (746): superseded with the refusal.

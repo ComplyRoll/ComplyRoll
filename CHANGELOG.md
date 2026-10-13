@@ -311,7 +311,7 @@ All notable project changes will be documented here.
   (`failed-truncated.sarif`, `failed-invalid-rules.cklb`, and `failed-invocation.sarif`),
   `examples/evaluations-failed.json`, and four goldens (`tests/golden/vdt-failed.json`,
   `vdt-failed.md`, `historical-failed.json`, and `historical-failed.md`) hold the behavior. Verified
-  by 2,062 tests on Python 3.11, 3.13, and 3.14, by the four goldens on the stateless path and from
+  by 2,065 tests on Python 3.11, 3.13, and 3.14, by the four goldens on the stateless path and from
   the store's history, and by a test that recompiles the sixteen report goldens of runs without a
   failure with the flag on, byte for byte; none of the 22 existing goldens moved.
 

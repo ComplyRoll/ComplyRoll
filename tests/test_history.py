@@ -3540,6 +3540,29 @@ class RecordFailureTests(WriterFixture):
                 self.assertIn(f"stream {holder!r} names no failed reading", str(caught.exception))
                 self.assertEqual(self.latest_sequence, sequence)
 
+    def test_a_refused_hold_inside_a_callers_transaction_writes_nothing(self) -> None:
+        # A caller's open transaction makes the writer's own scope a no-op, so only folding
+        # before the append keeps a caller that catches the refusal from committing a hold.
+        result, classification = self.read(TRUNCATED)
+        artifact = result.artifact
+        assert artifact is not None
+        self.record(result, classification)
+        events = self.events_of(self.repository.read_all()[0].stream_id)
+        holder = f"failure/{artifact.digest_sha256}/{artifact.parser_name}"
+        self.fresh_repository()
+        for version, (event_type, payload) in enumerate(events):
+            self.append_unchecked(holder, event_type, payload, expected_version=version)
+        sequence = self.latest_sequence
+        schema = self.repository.store.schema_version
+        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+
+        with self.repository.transaction(), self.assertRaises(HistoryError):
+            self.record(bumped, classification)
+
+        self.assertEqual(self.latest_sequence, sequence)
+        self.assertEqual(self.repository.store.schema_version, schema)
+        self.assertEqual({event.stream_id for event in self.repository.read_all()}, {holder})
+
     def test_record_ingest_still_refuses_a_failed_reading(self) -> None:
         for path in (TRUNCATED, INVALID_RULES):
             with self.subTest(path=path.name):

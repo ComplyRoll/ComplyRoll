@@ -359,13 +359,13 @@ def record_failure(
 ) -> FailureOutcome:
     """Record one detection process failure as a failure stream, once and atomically.
 
-    A failure stream is one `failure.recorded` head and the one system observation the
-    failure mints, written together in one transaction (ADR 0014). The head's diagnostics
-    are `failure_diagnostics`: the failed reading's own, demoted and capped, for a failed
-    reading, and only `detection_failure_recorded` for a side record, whose artifact stream
-    already holds its `execution_unsuccessful` WARNING. `ingested_at` is the instant the
-    system observation is observed at, unless the scanner declared the failed invocation's
-    own clock, and the instant the head records.
+    A failure stream is one head, `failure.recorded` or `failure.held`, and the one system
+    observation the failure mints, written together in one transaction (ADR 0014). The head's
+    diagnostics are `failure_diagnostics`: the failed reading's own, demoted and capped, for a
+    failed reading, and only `detection_failure_recorded` for a side record, whose artifact
+    stream already holds its `execution_unsuccessful` WARNING. `ingested_at` is the instant
+    the system observation is observed at, unless the scanner declared the failed
+    invocation's own clock, and the instant the head records.
 
     A stream already holding its head and its observation is reported as already recorded.
     A stream holding anything else is refused rather than resumed, because nothing ever

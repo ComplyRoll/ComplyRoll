@@ -178,9 +178,10 @@ the reading's own stream opens with a `failure.held` v1 head, which has the fiel
 holds the reading's own system record under the shared id. The hold names no holder. The holder
 is the first failure stream of the digest holding the id, and it must open with
 `failure.recorded`. The replay reads each id once, from the stream whose observation was recorded
-first among those no reading supersedes, and names every other stream with INFO `failure_held`.
-A store that holds a failure stream is schema version 2, and version 3 once it holds a hold (see
-ARCHITECTURE.md, Storage direction); a store that never records one stays at version 1.
+first among those no reading supersedes, and names each of the other streams no reading
+supersedes with INFO `failure_held`. A store that holds a failure stream is schema version 2,
+and version 3 once it holds a hold (see ARCHITECTURE.md, Storage direction); a store that never
+records one stays at version 1.
 
 ## Schema validation result
 

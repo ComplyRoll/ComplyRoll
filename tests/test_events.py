@@ -2891,6 +2891,29 @@ class FailureHoldTests(unittest.TestCase):
         )
         self.assertEqual(self.store.latest_sequence, 2)
 
+    def test_a_written_hold_takes_no_record_its_holder_lacks(self) -> None:
+        # An append past the head reads the stored one, so a later record on a hold still
+        # needs a recorded failure holding it first.
+        self.record()
+        self.hold()
+        later = system_record(parser_version="2", observed_at=NOW + timedelta(hours=1))
+
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.append(
+                HELD_STREAM_ID,
+                "observation.recorded",
+                later.to_canonical_dict(),
+                occurred_at=NOW,
+                metadata=metadata(),
+                expected_version=2,
+            )
+
+        self.assertEqual(
+            str(caught.exception),
+            failure_hold_orphan_message(HELD_STREAM_ID, later.observation_id, None),
+        )
+        self.assertEqual(self.store.latest_sequence, 4)
+
     def test_a_recorded_failure_on_a_held_record_is_still_refused(self) -> None:
         holder = self.record()
         self.hold()
@@ -3214,6 +3237,26 @@ class FailureSchemaMarkingTests(unittest.TestCase):
 
         self.assertEqual(self.store.schema_version, 3)
         self.assertEqual(self.migrations(), [self.FIRST, self.SECOND, self.THIRD])
+
+    def test_neither_marking_changes_a_schema_object(self) -> None:
+        # Schemas 2 and 3 only mark the store, so a build that opens them needs no object a
+        # schema 1 store lacks; the marker and its migration row are all that change.
+        def objects() -> list[tuple[str, str, str, str | None]]:
+            with closing(sqlite3.connect(self.path)) as connection:
+                rows = connection.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+                ).fetchall()
+            return [(str(kind), str(name), str(table), sql) for kind, name, table, sql in rows]
+
+        at_1 = objects()
+        self.record_failure()
+        self.assertEqual(self.store.schema_version, 2)
+        at_2 = objects()
+        self.record_hold()
+        self.assertEqual(self.store.schema_version, 3)
+
+        self.assertEqual(at_2, at_1)
+        self.assertEqual(objects(), at_1)
 
     def test_later_failures_and_holds_mark_nothing_again(self) -> None:
         self.record_failure()

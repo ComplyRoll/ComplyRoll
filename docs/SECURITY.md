@@ -210,10 +210,11 @@ those three match, and a test pins it.
   `failure_overfull`), a head or observation that does not match its stream, an observation whose
   metadata is not what its writer stores, a stream its observation opens, or a head and observation
   that describe two different failures (`failure_stream_mismatch`), a hold whose observation no
-  `failure.recorded` stream holds first (`failure_hold_orphaned`), and one system observation
-  stored on two `failure.recorded` streams of a digest (`failure_duplicate_observation`). The
-  head checks treat `failure.recorded` and `failure.held` alike. Except for the unmarked store,
-  `report --db` refuses each of these rather than rendering it.
+  `failure.recorded` stream holds first (`failure_hold_orphaned`), and a stream that does not
+  open with `failure.held` holding a system observation another failure stream of the digest
+  already holds (`failure_duplicate_observation`). The head checks treat `failure.recorded` and
+  `failure.held` alike. Except for the unmarked store, `report --db` refuses each of these rather
+  than rendering it.
 
 These controls protect against application mistakes and detectable corruption. They do not make a
 database file tamper-proof against a user with direct filesystem write access. File permissions,

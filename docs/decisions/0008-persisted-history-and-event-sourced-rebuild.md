@@ -362,7 +362,12 @@ among those no reading supersedes (R6). These rules bind from this date.
 - **`failure.held` v1.** The event is accepted on failure streams only, with the payload of
   `failure.recorded` v1. A failure stream holds one head of either type and one
   `observation.recorded`. The audit gains `failure_hold_orphaned`, a hold whose observation is
-  not first held by a `failure.recorded` stream.
+  not first held by a `failure.recorded` stream, so it has six failure codes. This supersedes
+  three phrases of the 2026-09-30 amendment's stream-kind bullet: "exactly one
+  `failure.recorded` head" now reads one head of either type, "`failure.recorded` on failure
+  streams only" covers `failure.held` too, and "One system observation id is stored once per
+  digest across failure streams" holds for `failure.recorded` streams, while a hold stores the
+  id again beneath the recorded stream that holds it first.
 - **Stored diagnostics narrow.** The stored-diagnostic contract admits only `info` and
   `warning` for `artifact.ingested`, `failure.recorded`, and `failure.held`. A head edited to
   carry an ERROR is `payload_contract_invalid` in `store verify` and stops the fold with

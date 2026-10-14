@@ -20,6 +20,7 @@ from itertools import permutations
 from pathlib import Path
 from unittest import mock
 
+from test_evaluation_order import SYSTEM_REMEDY
 from test_kev import KEV_ARTIFACTS, KEV_CATALOG, KEV_EVALUATIONS, KEV_OVERRIDES
 from test_reports import (
     ACCEPTED_EVALUATIONS,
@@ -2213,6 +2214,44 @@ class FailedImportDivergenceTests(FailureStoreFixture):
                 else:
                     self.assertEqual(paths["stateless"][tracking_id], ids)
         self.assertEqual(diagnostic_codes(replayed), diagnostic_codes(stateless))
+
+    def test_a_report_later_than_the_ingest_refuses_what_history_publishes(self) -> None:
+        # The recipe evaluates the as-of failure at its ingest instant. History keeps that
+        # instant as the detection time, so the record is in order and published; a
+        # stateless run at a later as-of detects the failure then, after the evaluation,
+        # and refuses the record (ADR 0014 amendment 2026-10-14, refuse versus publish).
+        later = datetime(2026, 8, 25, 12, tzinfo=UTC)
+        self.populate_failed((*ARTIFACTS, *FAILED_ARTIFACTS), FAILED_EVALUATIONS)
+
+        replayed = self.replay(as_of=later)
+        (published,) = [
+            item
+            for item in replayed.document["vulnerabilities"]
+            if item["providerTrackingId"] == TRUNCATED_CASE
+        ]
+        self.assertEqual(published["detection"]["detectedAt"], "2026-08-21T12:00:00Z")
+        self.assertEqual(published["evaluationCompletedAt"], "2026-08-21T12:00:00Z")
+        self.assertEqual(published["x-complyroll"]["detectedAtSource"], "system")
+        self.assertNotIn(
+            "evaluation_before_detection", [code for code, _ in diagnostic_codes(replayed)]
+        )
+
+        with self.assertRaises(ReportCompileError) as caught:
+            self.flagged((*ARTIFACTS, *FAILED_ARTIFACTS), FAILED_EVALUATIONS, as_of=later)
+
+        (refusal,) = caught.exception.diagnostics
+        self.assertEqual(
+            (refusal.level.value, refusal.code, refusal.location),
+            ("error", "evaluation_before_detection", "detection-process-failure"),
+        )
+        head, separator, remedy = refusal.message.partition("(source system); ")
+        self.assertEqual(separator, "(source system); ")
+        self.assertEqual(
+            head,
+            f"{TRUNCATED_CASE} was evaluated at 2026-08-21T12:00:00Z, before its detection "
+            "time 2026-08-25T12:00:00Z ",
+        )
+        self.assertEqual(remedy, SYSTEM_REMEDY)
 
     def test_a_superseded_stream_adds_only_its_supersession_notice(self) -> None:
         reading = self.reading("0")

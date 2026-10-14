@@ -10,7 +10,8 @@ The compiler refuses a record evaluated before a detection time that is its own
 every refusal it reaches in one run (ADR 0007 amendment 2026-10-14). The history writers
 mirror it: `cases evaluate` and `cases attest-detection` refuse, before any append, what a
 report from the store would refuse, and print the report's lines (ADR 0008 amendment
-2026-10-14).
+2026-10-14). `store verify` names an inversion written around the writers as the audit
+fault `evaluation_before_detection`, with the same message.
 """
 
 # *--- Imports ---*
@@ -28,21 +29,31 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from test_reports import compile_fixtures, evaluation_json, evaluations_for, options
+from test_reports import (
+    FAILED_EVALUATIONS,
+    FIXTURES,
+    compile_fixtures,
+    evaluation_json,
+    evaluations_for,
+    options,
+)
 
 from complyroll.adapters import IngestResult, ingest_stig_artifact
 from complyroll.cli import main
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import EventMetadata, EventRepository, case_stream_id, iso_utc
 from complyroll.history import (
+    AUDIT_FAULT_CODES,
     CASE_CREATED,
     CASE_EVALUATED,
     DETECTION_ATTESTED,
     AttestationOutcome,
     EvaluationOrderError,
     EvaluationOutcome,
+    HistoryFault,
     apply_evaluations,
     attest_detection,
+    audit_history,
     correlate_cases,
     fold_all_cases,
     record_ingest,
@@ -54,10 +65,11 @@ from complyroll.reports import (
     ReportCompileError,
     ReportDiagnostic,
     compile_record_set_from_artifacts,
+    parse_evaluations,
 )
 from complyroll.reports.replay import compile_record_set_from_history
 from complyroll.reports.vdt import CompiledRecordSet
-from complyroll.store import SQLiteEventStore
+from complyroll.store import NewEvent, SQLiteEventStore
 
 # *--- Fixtures ---*
 
@@ -134,6 +146,11 @@ WRITTEN_AT_TEXT = "2026-08-21T12:00:00Z"
 RATIONALE = "The synthetic results declare no source timestamp."
 #: A well-formed tracking id no synthetic artifact produces, for the stale-case path.
 ORPHAN_CASE = "case-00000000000000ff"
+#: Another, for a case created with a metadata envelope `store verify` faults.
+SPARE_CASE = "case-00000000000000fe"
+#: The instant a failure is recorded at in `CommandOrderTests`, and an evaluation before it.
+FAILURE_RECORDED_AT = "2026-08-21T12:00:00Z"
+FAILURE_EVALUATED_AT = "2026-08-20T12:00:00Z"
 
 
 def rendered(diagnostics: Sequence[ReportDiagnostic]) -> list[str]:
@@ -148,6 +165,47 @@ def run(argv: Sequence[str]) -> tuple[int, str, str]:
     with redirect_stdout(out), redirect_stderr(err):
         code = main(list(argv))
     return code, out.getvalue(), err.getvalue()
+
+
+def orphan_created(tracking_id: str) -> dict[str, Any]:
+    """Return a `case.created` payload for a case no synthetic artifact groups into."""
+
+    return {
+        "trackingId": tracking_id,
+        "sourceType": "ckl",
+        "sourceRecordId": "V-000001",
+        "contextKey": "Retired Windows STIG",
+        "title": "A weakness whose artifact was never ingested again",
+        "description": "Recorded from an artifact that is no longer supplied.",
+        "createdAt": iso_utc(WRITTEN_AT),
+    }
+
+
+def report_vdt(database: Path) -> tuple[int, str, str]:
+    """Run `report vdt --db` on a store at the as-of every store here is written at."""
+
+    return run(
+        [
+            "report",
+            "vdt",
+            "--db",
+            str(database),
+            "--class",
+            "C",
+            "--package-uri",
+            "https://example.test/cpo",
+            "--from",
+            "2026-08-01T00:00:00Z",
+            "--to",
+            "2026-08-31T23:59:59Z",
+            "--as-of",
+            WRITTEN_AT_TEXT,
+        ]
+    )
+
+
+def verify_store(database: Path) -> tuple[int, str, str]:
+    return run(["store", "verify", "--db", str(database)])
 
 
 def reread_with_timestamp(result: IngestResult, observed_at: datetime) -> IngestResult:
@@ -443,7 +501,8 @@ class HistoryOrderFixture(unittest.TestCase):
     def open_store(self, name: str) -> None:
         """Point this test at a new, empty store."""
 
-        store = SQLiteEventStore(self.directory / name)
+        self.database = self.directory / name
+        store = SQLiteEventStore(self.database)
         self.addCleanup(store.close)
         self.repository = EventRepository(store)
 
@@ -754,6 +813,181 @@ class WriterOrderTests(HistoryOrderFixture):
         self.assertEqual(self.sequence, before + 1)
         self.assertEqual(self.report().records[0].tracking_id, case)
 
+    def test_verify_and_the_report_name_an_inversion_written_around_the_writers(self) -> None:
+        # Plan probe p2: attestations after two cases' evaluations, appended directly. The
+        # case whose tracking id sorts second is evaluated first, and twice, so the faults
+        # are ordered by sequence (not by case) and sit at the current evaluation, not the
+        # case's creation or its first evaluation (08-06, which is still in order).
+        banner = self.artifact("banner", [("lab-untimed", None)])
+        sshd = self.artifact("sshd", [("lab-untimed", None)], rule=SSHD_RULE)
+        rule_of = {group.tracking_id: group.source_record_id for group in groups_of((banner, sshd))}
+        self.ingest(banner, sshd)
+        self.correlate()
+        first, second = sorted(rule_of)
+        self.attest([first, second], EARLY_ATTESTATION)
+        self.evaluate(
+            evaluations_for(
+                {
+                    "match": {"sourceRecordId": rule_of[second], "sourceType": "xccdf"},
+                    "completedAt": "2026-08-06T00:00:00Z",
+                }
+            )
+        )
+        one = {
+            case: {"match": {"sourceRecordId": rule_of[case], "sourceType": "xccdf"}}
+            for case in (first, second)
+        }
+        for case in (second, first):
+            self.assertEqual(self.evaluate(evaluations_for(one[case])).evaluations_appended, 1)
+        both = evaluations_for(one[first], one[second])
+        # A stale case evaluated before its attestation is in no report and is no fault.
+        self.append_around(ORPHAN_CASE, CASE_CREATED, orphan_created(ORPHAN_CASE))
+        orphan = evaluations_for({"match": {"sourceRecordId": "V-000001", "sourceType": "ckl"}})
+        self.assertEqual(self.evaluate(orphan).evaluations_appended, 1)
+        self.attest([ORPHAN_CASE], datetime(2026, 8, 6, tzinfo=UTC))
+        self.assertEqual(audit_history(self.repository), ())
+        clean = verify_store(self.database)
+        self.assertEqual(clean[0], 0, msg=clean[2])
+
+        for case in (first, second):
+            self.append_around(
+                case,
+                DETECTION_ATTESTED,
+                {
+                    "detectedAt": iso_utc(LATE_ATTESTATION),
+                    "rationale": RATIONALE,
+                    "attestedAt": iso_utc(WRITTEN_AT),
+                },
+            )
+
+        states = {state.tracking_id: state for state in fold_all_cases(self.repository)}
+        at = {}
+        for case in (first, second):
+            current = states[case].current_evaluation
+            assert current is not None
+            at[case] = current.sequence
+            self.assertNotIn(at[case], (states[case].created_sequence, states[case].last_sequence))
+        self.assertNotEqual(at[second], states[second].evaluations[0].sequence)
+        self.assertLess(at[second], at[first])
+        message = {
+            case: refusal(case, EARLY, "2026-08-05T00:00:00Z", "attestation", ATTESTATION_REMEDY)
+            for case in (first, second)
+        }
+        faults = (
+            HistoryFault(at[second], "evaluation_before_detection", message[second]),
+            HistoryFault(at[first], "evaluation_before_detection", message[first]),
+        )
+        self.assertEqual(audit_history(self.repository), faults)
+        self.assert_named_alike(faults, self.refused(lambda: self.evaluate(both)))
+
+        with self.subTest("plan probe p4: the same bytes re-read with a timestamp"):
+            self.open_store("reread.db")
+            untimed = self.artifact("untimed", [("lab-untimed", None)])
+            self.ingest(untimed)
+            self.correlate()
+            case = self.only_case()
+            self.attest([case], EARLY_ATTESTATION)
+            self.evaluate(self.banner_evaluation())
+            self.assertEqual(audit_history(self.repository), ())
+            record_ingest(
+                self.repository,
+                reread_with_timestamp(
+                    ingest_stig_artifact(untimed, ingested_at=WRITTEN_AT),
+                    datetime(2026, 8, 10, 9, 0, tzinfo=UTC),
+                ),
+                metadata=self.metadata,
+                ingested_at=WRITTEN_AT,
+            )
+            (state,) = fold_all_cases(self.repository)
+            assert state.current_evaluation is not None
+            reread = (
+                HistoryFault(
+                    state.current_evaluation.sequence,
+                    "evaluation_before_detection",
+                    refusal(case, EARLY, TIMED_AT, "artifact", ARTIFACT_REMEDY),
+                ),
+            )
+            self.assertEqual(audit_history(self.repository), reread)
+            self.assert_named_alike(
+                reread, self.refused(lambda: self.evaluate(self.banner_evaluation()))
+            )
+
+        with self.subTest("a partly timestamped group's WARNING is not a fault"):
+            self.open_store("partial.db")
+            self.ingest(self.artifact("partial", [("lab-timed", TIMED_AT), ("lab-untimed", None)]))
+            self.correlate()
+            self.assertEqual(len(self.evaluate(self.banner_evaluation()).warnings), 1)
+            self.assertEqual(audit_history(self.repository), ())
+            self.assertEqual(verify_store(self.database)[0], 0)
+
+        with self.subTest("another fault is reported alone (open decision E)"):
+            self.open_store("damaged.db")
+            self.ingest(untimed)
+            self.correlate()
+            case = self.only_case()
+            self.attest([case], EARLY_ATTESTATION)
+            self.evaluate(self.banner_evaluation())
+            self.append_around(
+                case,
+                DETECTION_ATTESTED,
+                {
+                    "detectedAt": iso_utc(LATE_ATTESTATION),
+                    "rationale": RATIONALE,
+                    "attestedAt": iso_utc(WRITTEN_AT),
+                },
+            )
+            self.assertEqual(
+                [fault.code for fault in audit_history(self.repository)],
+                ["evaluation_before_detection"],
+            )
+            self.repository.store.append(
+                case_stream_id(SPARE_CASE),
+                [
+                    NewEvent(
+                        event_type=CASE_CREATED,
+                        occurred_at=WRITTEN_AT,
+                        payload=orphan_created(SPARE_CASE),
+                        metadata={**self.metadata.to_dict(), "method": "not-cli"},
+                    )
+                ],
+                expected_version=0,
+            )
+
+            damaged = audit_history(self.repository)
+
+            self.assertEqual([fault.code for fault in damaged], ["event_metadata_invalid"])
+            code, out, err = verify_store(self.database)
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn(f"error: {damaged[0].render()}\n", err)
+            self.assertNotIn("evaluation_before_detection", err)
+
+    def assert_named_alike(
+        self, faults: Sequence[HistoryFault], refused: EvaluationOrderError
+    ) -> None:
+        """Require the audit, the writer and the report to name each record in one message.
+
+        `store verify` and `report vdt --db` run on the store through the command line,
+        and the fault's code is one `AUDIT_FAULT_CODES` publishes as the command's contract.
+        """
+
+        lines = rendered(refused.diagnostics)
+        self.assertLessEqual({fault.code for fault in faults}, set(AUDIT_FAULT_CODES))
+        self.assertEqual(
+            sorted(fault.message for fault in faults),
+            sorted(item.message for item in refused.diagnostics),
+        )
+        self.assertEqual(self.report_refusal(), lines)
+        self.assertEqual(report_vdt(self.database), (1, "", "".join(f"{line}\n" for line in lines)))
+        self.assertEqual(
+            verify_store(self.database),
+            (
+                1,
+                "",
+                "".join(f"error: {fault.render()}\n" for fault in faults)
+                + f"faults: {len(faults)} domain fault(s) in {self.sequence} verified event(s)\n",
+            ),
+        )
+
 
 class CommandOrderTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -872,6 +1106,89 @@ class CommandOrderTests(unittest.TestCase):
             ]
         )
         self.assertEqual(report, (1, "", expected))
+
+    def test_a_failure_evaluated_before_its_ingest_is_refused_on_every_persisted_surface(
+        self,
+    ) -> None:
+        # A detection process failure is detected at the ingest --as-of in history, so an
+        # evaluation completed a day earlier is refused by the writer, and once written
+        # around it, by the report and by `store verify`, all in one message whose remedy
+        # holds in history (decision 3), never "report from history".
+        database = ["--db", str(self.database)]
+        actor = ["--actor", "tester"]
+        code, _, err = run(
+            [
+                "ingest",
+                str(FIXTURES / "failed-truncated.sarif"),
+                *database,
+                "--as-of",
+                FAILURE_RECORDED_AT,
+                "--record-failed-imports",
+                *actor,
+            ]
+        )
+        # Exit 3: the failure was recorded rather than stopping the ingest.
+        self.assertEqual(code, 3, msg=err)
+        self.succeeds(["cases", "correlate", *database, *actor])
+        (entry,) = (
+            item
+            for item in json.loads(FAILED_EVALUATIONS.read_text(encoding="utf-8"))["evaluations"]
+            if item["match"]["sourceRecordId"] == "detection-process-failure"
+        )
+        entry["completedAt"] = FAILURE_EVALUATED_AT
+        content = json.dumps({"evaluations": [entry]})
+        evaluations = self.directory / "evaluations.json"
+        evaluations.write_text(content, encoding="utf-8")
+        verified = self.verify()
+
+        evaluated = run(["cases", "evaluate", *database, "--evaluations", str(evaluations), *actor])
+
+        self.assertEqual(self.verify(), verified)
+        store = SQLiteEventStore(self.database)
+        try:
+            repository = EventRepository(store)
+            (case,) = fold_all_cases(repository)
+            self.assertEqual(case.source_record_id, "detection-process-failure")
+            self.assertEqual(case.evaluations, ())
+            stream_id = case_stream_id(case.tracking_id)
+            (parsed,) = parse_evaluations(content.encode("utf-8")).entries
+            repository.append(
+                stream_id,
+                CASE_EVALUATED,
+                history_writers._evaluation_payload(parsed),
+                occurred_at=WRITTEN_AT,
+                metadata=EventMetadata(actor="tester"),
+                expected_version=len(repository.read_stream(stream_id)),
+            )
+            (case,) = fold_all_cases(repository)
+            assert case.current_evaluation is not None
+            sequence = case.current_evaluation.sequence
+            checked = store.latest_sequence
+        finally:
+            store.close()
+        message = refusal(
+            case.tracking_id, FAILURE_EVALUATED_AT, FAILURE_RECORDED_AT, "system", SYSTEM_REMEDY
+        )
+        line = f"error: evaluation_before_detection: {message} [detection-process-failure]\n"
+
+        reported = report_vdt(self.database)
+        audited = verify_store(self.database)
+
+        self.assertEqual(evaluated, (1, "", line))
+        self.assertEqual(reported, (1, "", line))
+        self.assertEqual(
+            audited,
+            (
+                1,
+                "",
+                f"error: sequence {sequence}: evaluation_before_detection: {message}\n"
+                f"faults: 1 domain fault(s) in {checked} verified event(s)\n",
+            ),
+        )
+        for _, _, printed in (evaluated, reported, audited):
+            self.assertEqual(printed.count(message), 1)
+            self.assertIn(f"(source system); {SYSTEM_REMEDY}", printed)
+            self.assertNotIn("report from history", printed)
 
 
 if __name__ == "__main__":

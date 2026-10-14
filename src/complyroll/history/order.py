@@ -11,7 +11,8 @@ observation group (never from the case's links, which lag the group until `cases
 correlate` runs), through `reports.vdt.resolve_detection_time`, and states the result
 with `reports.vdt.evaluation_order_diagnostic`. The lines a writer prints are therefore
 the lines `report vdt --db` prints for the same record (ADR 0007 and ADR 0008
-amendments 2026-10-14).
+amendments 2026-10-14). `store verify` reads the same resolution back as an audit fault,
+for an inversion that arrived around the writers, such as through `ingest`.
 """
 
 # *--- Imports ---*
@@ -21,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 from datetime import datetime
 
+from complyroll.adapters import DiagnosticLevel
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import EventRepository
 from complyroll.reports.vdt import (
@@ -30,7 +32,7 @@ from complyroll.reports.vdt import (
     resolve_detection_time,
 )
 
-from .fold import CaseState, HistoryError, rehydrate_observations
+from .fold import CaseState, HistoryError, HistoryFault, fold_all_cases, rehydrate_observations
 
 # *--- Types ---*
 
@@ -109,8 +111,49 @@ def case_order_diagnostic(
     )
 
 
+def evaluation_order_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
+    """Return every case whose current evaluation precedes its detection time, as faults.
+
+    Each case with a current evaluation and an open group in `current_groups` resolves
+    its detection time with its recorded attestation, exactly as a report from the store
+    does. An ERROR becomes an `evaluation_before_detection` fault at the sequence of the
+    event that recorded the current evaluation, carrying the compiler's message, so
+    `store verify` and `report vdt --db` describe the record in the same words. A partial
+    group's WARNING is published by the report and is not a fault. A case with no open
+    group (`stale_case`) or no resolvable detection time is in no report's order check
+    and is skipped. Observations are rehydrated only when some case has an evaluation.
+    Faults are ordered as `audit_history` orders them.
+    """
+
+    evaluated = [case for case in fold_all_cases(repository) if case.current_evaluation]
+    if not evaluated:
+        return ()
+    groups = current_groups(repository)
+    faults: list[HistoryFault] = []
+    for case in evaluated:
+        evaluation = case.current_evaluation
+        group = groups.get(case.tracking_id)
+        if evaluation is None or group is None:
+            continue
+        diagnostic = case_order_diagnostic(
+            case,
+            group,
+            completed_at=evaluation.completed_at,
+            attested_at=None if case.attestation is None else case.attestation.detected_at,
+        )
+        if diagnostic is None or diagnostic.level is not DiagnosticLevel.ERROR:
+            continue
+        faults.append(
+            HistoryFault(
+                sequence=evaluation.sequence, code=diagnostic.code, message=diagnostic.message
+            )
+        )
+    return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
+
+
 __all__ = [
     "EvaluationOrderError",
     "case_order_diagnostic",
     "current_groups",
+    "evaluation_order_faults",
 ]

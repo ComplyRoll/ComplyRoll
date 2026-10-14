@@ -68,6 +68,7 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    "evaluation_before_detection",
     "event_metadata_invalid",
     "event_stream_mismatch",
     "failure_duplicate_observation",
@@ -580,6 +581,16 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       build that predates failure streams would open and misread, or a hold in a store
       below schema 3, which a build that predates holds would misread the same way.
 
+    One fault orders the log's cases against the report rather than describing damage:
+
+    - `evaluation_before_detection`: a case's current evaluation completed before the
+      detection time a report from the store resolves for it, at the sequence of the
+      evaluation, with the compiler's message (ADR 0008 amendment 2026-10-14). The writers
+      refuse to leave one, but `ingest` can, by superseding an untimed reading with a timed
+      one, and so can a store written around the writers. It is checked only when no
+      other fault was found, because it folds every case and rehydrates observations,
+      which a damaged log cannot do dependably.
+
     Faults are ordered by sequence and then by code, so one damaged file always describes
     itself the same way. A store-level failure (an unreadable file, a hole in history) is
     still raised: this walk is for a log the store has already called intact.
@@ -664,7 +675,12 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
             else _overfull_message(stream_id, count, found)
         )
         faults.append(HistoryFault(sequence=sequence, code=code, message=message))
-    return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
+    if faults:
+        return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
+    # Imported here because `history.order` imports this module.
+    from .order import evaluation_order_faults
+
+    return evaluation_order_faults(repository)
 
 
 def fold_case(repository: EventRepository, tracking_id: str) -> CaseState:

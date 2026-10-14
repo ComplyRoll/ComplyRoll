@@ -440,7 +440,7 @@ All notable project changes will be documented here.
   at the detection instant is in order. A partly timestamped group is published with the WARNING
   `evaluation_before_partial_detection`, since an untimed observation may have detected the
   weakness earlier, and the partial rule is unchanged. One run names every refusal it reaches.
-  `cases evaluate` refuses a file with an entry completed before its case's detection time, and
+  `cases evaluate` refuses a file with an entry completed before its case's own detection time, and
   `cases attest-detection` refuses an attestation that would become the detection time of a case
   whose current evaluation completed before it. Each names every blocking case and appends
   nothing. `store verify` gains the audit fault `evaluation_before_detection`, reported at the
@@ -454,8 +454,12 @@ All notable project changes will be documented here.
   publish (ADR 0014, Decision 15): a stateless run at an as-of later than the evaluation's
   `completedAt` refuses a failure that a store which ingested it by then publishes, and a store that
   ingested it later refuses an evaluation that a stateless run at an earlier as-of accepts. The
-  documented recipes meet neither, and no golden moved. Amends ADR 0007, ADR 0008, and ADR 0014.
-  Verified by 2,086 tests on Python 3.11, 3.13, and 3.14.
+  documented recipes meet neither, and no golden moved. A store an earlier build wrote with a case
+  evaluated before its own detection time, or attested at an instant after its evaluation, now
+  fails `store verify` and `report vdt --db`, and `cases evaluate` refuses to apply the same file
+  again. Applying that case's entry with a `completedAt` at or after the detection time repairs
+  it, and an attested case can instead be attested earlier with `cases attest-detection --case`.
+  Amends ADR 0007, ADR 0008, and ADR 0014. Verified by 2,090 tests on Python 3.11, 3.13, and 3.14.
 
 ## 0.3.0a0 - 2026-08-23
 

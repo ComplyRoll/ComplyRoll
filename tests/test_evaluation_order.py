@@ -28,6 +28,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from test_reports import (
     FAILED_EVALUATIONS,
@@ -62,7 +63,9 @@ from complyroll.history import (
     fold_all_cases,
     record_ingest,
 )
+from complyroll.history import order as history_order
 from complyroll.history import writers as history_writers
+from complyroll.history.order import case_order_diagnostic, current_groups
 from complyroll.models import CaseStatus
 from complyroll.reports import (
     EvaluationSet,
@@ -891,6 +894,50 @@ class WriterOrderTests(HistoryOrderFixture):
 
             self.assertEqual(outcome.attested, (case,))
 
+    def test_attest_orders_against_the_current_evaluation_and_not_the_first(self) -> None:
+        # The untimed case is evaluated at 08-04 and again at 08-10 before any detection
+        # time is known. The report reads the 08-10 evaluation, so an attestation at 08-07
+        # is in order, and one at 08-11 is refused against 08-10, not 08-04.
+        reevaluated = "2026-08-10T12:00:00Z"
+        self.ingest(self.artifact("untimed", [("lab-untimed", None)]))
+        self.correlate()
+        case = self.only_case()
+        self.evaluate(self.banner_evaluation())
+        again = self.evaluate(self.banner_evaluation(completedAt=reevaluated))
+        self.assertEqual(again.evaluations_appended, 1)
+
+        between = self.attest([case], datetime(2026, 8, 7, tzinfo=UTC))
+
+        self.assertEqual(between.attested, (case,))
+        self.assertEqual([record.tracking_id for record in self.report().records], [case])
+
+        after = datetime(2026, 8, 11, tzinfo=UTC)
+        refused = self.refused(lambda: self.attest([case], after))
+
+        self.assertEqual(
+            as_tuples(refused.diagnostics),
+            [
+                (
+                    "error",
+                    "evaluation_before_detection",
+                    refusal(
+                        case, reevaluated, "2026-08-11T00:00:00Z", "attestation", ATTESTATION_REMEDY
+                    ),
+                    BANNER_RULE,
+                )
+            ],
+        )
+        self.append_around(
+            case,
+            DETECTION_ATTESTED,
+            {
+                "detectedAt": iso_utc(after),
+                "rationale": RATIONALE,
+                "attestedAt": iso_utc(WRITTEN_AT),
+            },
+        )
+        self.assertEqual(self.report_refusal(), rendered(refused.diagnostics))
+
     def test_an_attestation_with_no_evaluation_is_not_ordered(self) -> None:
         self.ingest(self.artifact("untimed", [("lab-untimed", None)]))
         self.correlate()
@@ -902,6 +949,33 @@ class WriterOrderTests(HistoryOrderFixture):
         self.assertEqual(outcome.attested, (case,))
         self.assertEqual(self.sequence, before + 1)
         self.assertEqual(self.report().records[0].tracking_id, case)
+
+    def test_a_store_with_nothing_to_order_rehydrates_no_observation(self) -> None:
+        # An attestation sweep over unevaluated cases, an evaluations file with no entry,
+        # and an audit of a store with no evaluation read no artifact stream. The last
+        # write proves the patched rehydration is the one every order check reaches.
+        self.ingest(
+            self.artifact("banner", [("lab-untimed", None)]),
+            self.artifact("sshd", [("lab-untimed", None)], rule=SSHD_RULE),
+        )
+        self.correlate()
+        cases = tuple(case.tracking_id for case in fold_all_cases(self.repository))
+        nothing = parse_evaluations(b'{"evaluations": []}')
+
+        with mock.patch.object(
+            history_order,
+            "rehydrate_observations",
+            side_effect=AssertionError("rehydrate_observations"),
+        ) as rehydrated:
+            self.assertEqual(audit_history(self.repository), ())
+            self.assertEqual(self.attest(cases, LATE_ATTESTATION).attested, cases)
+            self.assertEqual(self.evaluate(nothing).evaluations_appended, 0)
+            self.assertEqual(audit_history(self.repository), ())
+            rehydrated.assert_not_called()
+            with self.assertRaisesRegex(AssertionError, "rehydrate_observations"):
+                self.evaluate(self.banner_evaluation())
+
+        self.assertEqual(rehydrated.call_count, 1)
 
     def test_verify_and_the_report_name_an_inversion_written_around_the_writers(self) -> None:
         # Plan probe p2: attestations after two cases' evaluations, appended directly. The
@@ -1050,6 +1124,30 @@ class WriterOrderTests(HistoryOrderFixture):
             self.assertEqual((code, out), (1, ""))
             self.assertIn(f"error: {damaged[0].render()}\n", err)
             self.assertNotIn("evaluation_before_detection", err)
+
+    def test_a_case_is_never_ordered_against_another_cases_group(self) -> None:
+        # Every writer pairs a case with its own current group. Against another case's
+        # group the resolver would read that record's detection time and miss this case's
+        # attestation, so the helper refuses the pair instead of answering for it.
+        banner = self.artifact("banner", [("lab-timed", TIMED_AT)])
+        sshd = self.artifact("sshd", [("lab-timed", TIMED_AT)], rule=SSHD_RULE)
+        self.ingest(banner, sshd)
+        self.correlate()
+        first, second = fold_all_cases(self.repository)
+        groups = current_groups(self.repository)
+
+        with self.assertRaises(ValueError) as caught:
+            case_order_diagnostic(
+                first,
+                groups[second.tracking_id],
+                completed_at=datetime(2026, 8, 4, 12, 0, tzinfo=UTC),
+                attested_at=LATE_ATTESTATION,
+            )
+
+        self.assertEqual(
+            str(caught.exception),
+            f"case {first.tracking_id!r} is not the case of group {second.tracking_id!r}",
+        )
 
     def assert_named_alike(
         self, faults: Sequence[HistoryFault], refused: EvaluationOrderError
@@ -1291,6 +1389,58 @@ class CommandOrderTests(unittest.TestCase):
             self.assertEqual(printed.count(message), 1)
             self.assertIn(f"(source system); {SYSTEM_REMEDY}", printed)
             self.assertNotIn("report from history", printed)
+
+    def test_a_stateless_run_no_later_than_the_evaluation_publishes_what_the_store_refuses(
+        self,
+    ) -> None:
+        # The second refuse-versus-publish divergence (ADR 0014 amendment 2026-10-14): the
+        # store detects the failure at the ingest --as-of, after the evaluation, and refuses
+        # it, while a stateless run at an as-of no later than completedAt detects the failure
+        # at that as-of and publishes the same evaluation.
+        evaluations, _ = self.record_failure(FAILURE_EVALUATED_AT)
+        code, _, _ = run(
+            [
+                "cases",
+                "evaluate",
+                "--db",
+                str(self.database),
+                "--evaluations",
+                str(evaluations),
+                "--actor",
+                "tester",
+            ]
+        )
+        self.assertEqual(code, 1)
+
+        code, out, err = run(
+            [
+                "report",
+                "vdt",
+                str(FIXTURES / "failed-truncated.sarif"),
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                FAILURE_EVALUATED_AT,
+                "--evaluations",
+                str(evaluations),
+                "--record-failed-imports",
+            ]
+        )
+
+        # Exit 3: the failure was recorded and its record published, in order.
+        self.assertEqual(code, 3, msg=err)
+        self.assertNotIn("evaluation_before", err)
+        (vulnerability,) = json.loads(out)["vulnerabilities"]
+        self.assertEqual(vulnerability["providerTrackingId"], TRUNCATED_CASE)
+        self.assertEqual(vulnerability["detection"]["detectedAt"], FAILURE_EVALUATED_AT)
+        self.assertEqual(vulnerability["evaluationCompletedAt"], FAILURE_EVALUATED_AT)
+        self.assertEqual(vulnerability["x-complyroll"]["detectedAtSource"], "system")
 
     def test_a_failure_evaluated_after_its_ingest_is_published_on_every_persisted_surface(
         self,

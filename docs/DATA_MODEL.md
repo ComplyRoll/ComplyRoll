@@ -334,8 +334,10 @@ strictly before a detection time that is the record's own (an artifact timestamp
 or a recorded detection process failure) with the ERROR `evaluation_before_detection`. A group
 with only some timestamps keeps its record and gets the WARNING
 `evaluation_before_partial_detection`, because an untimed observation may have detected the
-weakness earlier. `cases evaluate`, `cases attest-detection` and `store verify` apply the same
-check. Reductions and projections are not ordered: `reducedAt` and `estimatedAt` start no clock.
+weakness earlier. `cases evaluate` checks every entry it matches, refuses on the ERROR and prints
+the WARNING. `cases attest-detection` checks only a detection time its own attestation decides, and
+`store verify` reports only the ERROR, at the current evaluation. Reductions and projections are
+not ordered: `reducedAt` and `estimatedAt` start no clock.
 
 ### ResponseAction (planned)
 

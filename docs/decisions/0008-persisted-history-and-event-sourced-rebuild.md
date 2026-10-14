@@ -392,8 +392,8 @@ among those no reading supersedes (R6). These rules bind from this date.
 - `cases attest-detection` refuses an attestation that would become a case's detection
   time when the case's current evaluation completed before it. Every blocking case is
   named and nothing is appended, for `--case` and `--all-missing` alike.
-- The writers therefore never leave an evaluation before its detection time in a case a
-  report would print. `ingest` can: a newer parser version that reads a timestamp from
+- The writers therefore never leave an evaluation before a detection time the record owns
+  in a case a report would print. `ingest` can: a newer parser that reads a timestamp from
   bytes an older one read as untimed moves the detection time later. `ingest` records
   evidence and does not refuse it. `store verify` reports the inversion as the audit fault
   `evaluation_before_detection`, at the current evaluation's sequence with the compiler's

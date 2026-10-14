@@ -260,6 +260,10 @@ Reports must disclose sufficient risk information without unnecessarily exposing
 
 Redaction must be explicit and reviewable. It must not silently omit material risk.
 
+A compiled report and its Markdown twin are the provider's and assessor's working record. They
+include internal resource identifiers and provider rationale, so redact them before sharing with
+an agency. Audience-specific views are a later slice.
+
 ## Authorization and trust-center publishing
 
 The hosted/API phase must include:

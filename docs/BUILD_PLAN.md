@@ -131,34 +131,8 @@ detail rather than as a record of their own.
 
 ### CLI
 
-Implemented:
-
-```text
-complyroll report vdt <artifact...> --class C --package-uri <uri> --from <time> --to <time>
-    [--evaluations <file>] [--detected-at <time>] [--as-of <time>] [--calendar-tz <name>]
-    [-o <report.json>] [--markdown <report.md>]
-complyroll validate <report.json> --schema <vulnerability-detail|accepted-vulnerability|historical-activity>
-complyroll ingest <artifact...> --db <store> [--as-of <time>] [--actor <name>]
-complyroll cases correlate --db <store> [--actor <name>]
-complyroll cases attest-detection --db <store> --detected-at <time> --rationale <text>
-    (--case <tracking-id> | --all-missing) [--actor <name>]
-complyroll cases evaluate --db <store> --evaluations <file> [--actor <name>]
-complyroll cases list --db <store>
-complyroll cases history <tracking-id> --db <store>
-complyroll report vdt --db <store> --class C --package-uri <uri> --from <time> --to <time>
-    [--as-of <time>] [--calendar-tz <name>] [-o <report.json>] [--markdown <report.md>]
-complyroll report avi <artifact...> --class C --package-uri <uri> --from <time> --to <time>
-    [--evaluations <file>] [--detected-at <time>] [--as-of <time>] [--calendar-tz <name>]
-    [-o <report.json>] [--markdown <report.md>]
-complyroll report avi --db <store> --class C --package-uri <uri> --from <time> --to <time>
-    [--as-of <time>] [--calendar-tz <name>] [-o <report.json>] [--markdown <report.md>]
-complyroll report historical <artifact...> --class C --package-uri <uri>
-    [--evaluations <file>] [--detected-at <time>] [--as-of <time>] [--calendar-tz <name>]
-    [-o <report.json>] [--markdown <report.md>]
-complyroll report historical --db <store> --class C --package-uri <uri>
-    [--as-of <time>] [--calendar-tz <name>] [-o <report.json>] [--markdown <report.md>]
-complyroll store verify --db <store>
-```
+Implemented: [`docs/CLI.md`](CLI.md) is the command reference, with every command's synopsis,
+and every command takes `--help`.
 
 Proposed:
 

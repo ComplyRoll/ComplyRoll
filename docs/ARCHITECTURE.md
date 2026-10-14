@@ -215,8 +215,16 @@ src/complyroll/
 The report compiler has two entry paths that share one record compiler (ADR 0007, ADR 0008,
 ADR 0010).
 The stateless path is a pure function of artifacts, an evaluations file, and explicit package
-options. The persisted path reads `observation.recorded` payloads back into observations, folds
-each case stream into its current state (attestation, every evaluation in order, reductions,
+options. The same artifacts, evaluations, options, and `--as-of` instant produce the same bytes
+in any argument order, which is the property an independent assessor is asked to test. Argument
+order is not a fact about the system under assessment, so nothing derived from it reaches the
+report: the artifact manifest, the diagnostics, and the members of a vulnerability that spans
+several files are all ordered by their own content (the ADR 0007 amendment of 2026-08-23). The
+claim is about the compiled report and about the same set of files. The persisted path records
+the same inputs as typed events, so changing an evaluation creates history instead of overwriting
+it. Its event log is deliberately not order-independent, because an append-only log records what
+happened when. To rebuild, it reads `observation.recorded` payloads back into observations,
+folds each case stream into its current state (attestation, every evaluation in order, reductions,
 disposition, identifier override), and hands the result to the same compiler, so the rebuilt
 report is byte-identical to the stateless one for the same inputs; that equality is the
 slice's acceptance test and stays a regression test. ADR 0010 splits that compiler into a

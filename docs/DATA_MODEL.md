@@ -183,6 +183,26 @@ supersedes with INFO `failure_held`. A store that holds a failure stream is sche
 and version 3 once it holds a hold (see ARCHITECTURE.md, Storage direction); a store that never
 records one stays at version 1.
 
+## Report extension (x-complyroll)
+
+Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
+key, at the report level and on each vulnerability, so a future official field cannot collide
+with it (ADR 0007 Decision 8). The report level carries the generator name and version
+(`generator`), the parser versions (`parserVersions`), the rules dataset and schema commits and
+digests (`rulesSource`, `schemaSource`), and the compile diagnostics (`diagnostics`). Each
+vulnerability carries every computed deadline with its rule and force (`deadlines`, each with
+`ruleId`, `ruleName`, and `force`), the grouped observation ids and affected resources
+(`observationIds`, `resources`), the detection-time source (`detectedAtSource`: `artifact`,
+`artifact-partial`, `attestation`, or `system` for a detection process failure), and the
+evaluator and rationale (`evaluator`, `rationale`). The KEV keys and `detectionFailures`
+described above live under the same key.
+
+The JSON is the complete machine record. The Markdown twin renders the same records for a reader,
+with a detail section per vulnerability, and a parity test checks that the twin states every
+observation id, deadline, and artifact the JSON carries. That makes the document the provider's and
+assessor's working record, and `docs/SECURITY.md` requires redacting it before it is shared with an
+agency.
+
 ## Schema validation result
 
 Official report validation produces an immutable result rather than a boolean with discarded

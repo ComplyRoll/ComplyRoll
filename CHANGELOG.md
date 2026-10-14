@@ -103,6 +103,20 @@ All notable project changes will be documented here.
   when it gives neither. The stateless report and `cases evaluate` share the text
   (`EvaluationMatch.ambiguity_remedy`). Every golden is byte-identical. Verified by
   `tests/test_reports.py` and `tests/test_history.py`, each with all three shapes.
+- A SARIF run with no usable driver, or with a driver name the identity rules refuse, returned
+  before its invocations were read, so its failed invocation was never seen. Under
+  `--record-failed-imports` a log whose only failed invocation sat in such a run was recorded as
+  a `content` failure at the as-of instead of an `execution` failure at the invocation's own
+  clock, and a log with a failed invocation in another run took that run's clock even when this
+  one was earlier. The `external_properties_ignored` warning, the invocations and the failed
+  invocation's clock are now read before the driver check (ADR 0014 amendment 2026-10-14,
+  second), so a run refused at its driver also reports `execution_unsuccessful` when an
+  invocation failed, any `source_timestamp_invalid` for its invocations, and
+  `external_properties_ignored` when it carries external references. When no failed invocation
+  declares a usable clock, the `execution` failure is at the as-of. A run with a usable driver
+  reports the same diagnostics in the same order as before, and every golden is byte-identical.
+  Verified by `tests/test_failures.py`, with eight driver shapes and a two-run log, and by
+  `tests/test_cli.py` on the stateless and persisted paths.
 
 ### Added
 
@@ -446,7 +460,8 @@ All notable project changes will be documented here.
   nothing. `store verify` gains the audit fault `evaluation_before_detection`, reported at the
   current evaluation's sequence with the compiler's message, because `ingest` can move a detection
   time later when a newer parser reads a timestamp an older one did not; it runs only on a log with
-  no other fault. It folds every case first, so a log whose case streams do not fold now fails
+  no other fault but `event_metadata_invalid` or `failure_schema_unmarked`, and beside those only
+  when it can fold. It folds every case first, so a log whose case streams do not fold now fails
   `store verify` with `history_invalid`, as `report vdt --db` already did. The writers and
   `store verify` skip a case no report prints: one with no open group (`stale_case`) or no
   resolvable detection time. Only `completedAt` is ordered: a reduction or a projected reduction
@@ -460,6 +475,32 @@ All notable project changes will be documented here.
   again. Applying that case's entry with a `completedAt` at or after the detection time repairs
   it, and an attested case can instead be attested earlier with `cases attest-detection --case`.
   Amends ADR 0007, ADR 0008, and ADR 0014. Verified by 2,090 tests on Python 3.11, 3.13, and 3.14.
+- `cases correlate` now folds every existing case stream of an open group, each one it may
+  extend, before its first append. A stream that does not fold refuses the run with the error
+  `report vdt --db` prints for that stream, and nothing is appended, inside a caller's open
+  transaction too. Before this, correlate read those streams only for their links, so on a store
+  whose case stream records another tracking id it linked new observations onto that stream and
+  exited 0 while every report from the store refused it. Every case writer now folds each case
+  stream it appends to. Correlate still never reads a case no open group names, so damage there
+  does not stop it, while `report vdt --db`, `cases list` and `store verify` still refuse it. On a
+  store whose case streams fold, correlate appends exactly what it did before. Amends ADR 0008
+  (amendment 2026-10-14, second). Verified by `tests/test_history.py` with four damaged-stream
+  shapes, each alone and inside a caller's transaction.
+- `store verify` is documented as the command that reports the content-neutral faults: a
+  metadata envelope outside the rules (`event_metadata_invalid`), an event on a non-case stream
+  it does not belong on (`event_stream_mismatch`, with the contract or count faults only that
+  event causes), and a failure schema marker left low (`failure_schema_unmarked`). No reader and
+  no case writer refuses them, none changes the bytes of any report, and refusing them on read
+  would leave an append-only store unreportable for good. One writer refuses one shape: a
+  failure stream is written whole, so `ingest --record-failed-imports` exits 1 with
+  `history_invalid` rather than resume one that holds an event no failure stream carries. The
+  evaluation order check now also runs when a log's only other faults are
+  `event_metadata_invalid` or `failure_schema_unmarked`, so one tampered metadata envelope no
+  longer hides an inversion from `store verify`; when the check cannot fold such a log, the
+  faults found are reported alone, as before. Amends ADR 0008 (amendment 2026-10-14, second).
+  Verified by `tests/test_cli.py`, where eight shapes fail `store verify` at their sequence while
+  `report vdt --db` and every case writer behave as on a clean twin, and by
+  `tests/test_evaluation_order.py`.
 
 ## 0.3.0a0 - 2026-08-23
 

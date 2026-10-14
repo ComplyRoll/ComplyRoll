@@ -981,6 +981,27 @@ class _ArtifactParse(EvidenceParse):
                 DiagnosticLevel.ERROR, "invalid_run", "run must be an object", path
             )
             return None
+        if "externalPropertyFileReferences" in run:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "external_properties_ignored",
+                "externalPropertyFileReferences is present; external files are never opened",
+                path,
+            )
+        invocations = _sequence(run.get("invocations"))
+        for position, invocation in enumerate(invocations):
+            entry = _mapping(invocation)
+            if entry is not None and entry.get("executionSuccessful") is False:
+                self.diagnostics.add(
+                    DiagnosticLevel.WARNING,
+                    "execution_unsuccessful",
+                    "invocation reports executionSuccessful false; its results are still read",
+                    f"{path}.invocations[{position}]",
+                )
+        # Read before the driver check or any identity check below can refuse the run, so a
+        # failed invocation keeps its declared clock when its run is refused too (ADR 0014).
+        clock = self._run_clock(path, invocations)
+
         tool = _mapping(run.get("tool"))
         driver = _mapping(tool.get("driver")) if tool is not None else None
         driver_name = text_of(driver.get("name")) if driver is not None else ""
@@ -1000,26 +1021,6 @@ class _ArtifactParse(EvidenceParse):
         for position, extension in enumerate(extensions):
             if isinstance(extension, Mapping):
                 components.append((f"extensions[{position}]", extension))
-        if "externalPropertyFileReferences" in run:
-            self.diagnostics.add(
-                DiagnosticLevel.WARNING,
-                "external_properties_ignored",
-                "externalPropertyFileReferences is present; external files are never opened",
-                path,
-            )
-        invocations = _sequence(run.get("invocations"))
-        for position, invocation in enumerate(invocations):
-            entry = _mapping(invocation)
-            if entry is not None and entry.get("executionSuccessful") is False:
-                self.diagnostics.add(
-                    DiagnosticLevel.WARNING,
-                    "execution_unsuccessful",
-                    "invocation reports executionSuccessful false; its results are still read",
-                    f"{path}.invocations[{position}]",
-                )
-        # Read before any identity check below can refuse the run, so a failed invocation
-        # keeps its declared clock when its run is refused too (ADR 0014).
-        clock = self._run_clock(path, invocations)
 
         truncated: set[str] = set()
         scalars: dict[str, str] = {}

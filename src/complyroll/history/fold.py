@@ -536,6 +536,13 @@ def _digest_compares_numerically(history: ArtifactHistory, sha256: str, version:
     return all(_is_numeric_version(item) for item in versions)
 
 
+#: The faults no reader and no case writer refuses on any stream, beside which
+#: `audit_history` still checks evaluation order.
+_ORDER_CHECKED_BESIDE: Final[frozenset[str]] = frozenset(
+    {"event_metadata_invalid", "failure_schema_unmarked"}
+)
+
+
 def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     """Report every domain fault in stored history, without raising on any of them.
 
@@ -587,9 +594,12 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       detection time a report from the store resolves for it, at the sequence of the
       evaluation, with the compiler's message (ADR 0008 amendment 2026-10-14). The writers
       refuse to leave one, but `ingest` can, by superseding an untimed reading with a timed
-      one, and so can a store written around the writers. It is checked only when no
-      other fault was found, because it folds every case and rehydrates observations,
-      which a damaged log cannot do dependably.
+      one, and so can a store written around the writers. It folds every case and
+      rehydrates observations, which a damaged log cannot do dependably, so it is checked
+      only when every other fault found is `event_metadata_invalid` or
+      `failure_schema_unmarked`, the two no reader refuses on any stream. Beside those it
+      is skipped when it cannot fold, and the faults found are reported alone (ADR 0008
+      amendment 2026-10-14, second).
 
     Faults are ordered by sequence and then by code, so one damaged file always describes
     itself the same way. A store-level failure (an unreadable file, a hole in history) is
@@ -675,12 +685,21 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
             else _overfull_message(stream_id, count, found)
         )
         faults.append(HistoryFault(sequence=sequence, code=code, message=message))
-    if faults:
+    if any(fault.code not in _ORDER_CHECKED_BESIDE for fault in faults):
         return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
     # Imported here because `history.order` imports this module.
     from .order import evaluation_order_faults
 
-    return evaluation_order_faults(repository)
+    if not faults:
+        return evaluation_order_faults(repository)
+    try:
+        faults.extend(evaluation_order_faults(repository))
+    except ValueError:
+        # A case stream can fail its fold in a way no fault above names: a `HistoryError`,
+        # an `EventContractError`, or a stream id that names no tracking id. The faults
+        # already found are still reported, as on a log the check does not run on.
+        pass
+    return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
 
 
 def fold_case(repository: EventRepository, tracking_id: str) -> CaseState:

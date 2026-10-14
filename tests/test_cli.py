@@ -4100,6 +4100,64 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         )
         self.assertNotIn("error:", err)
 
+    def test_a_driverless_failed_run_keeps_its_invocation_clock_on_both_paths(self) -> None:
+        # Its invocations are read before the driver check, so the failure is an execution
+        # failure at the invocation's start, not a content failure at the as-of (ADR 0014).
+        started = "2026-08-04T10:00:00Z"
+        log = self.workspace / "driverless.sarif"
+        run_ = {
+            "tool": {},
+            "invocations": [{"executionSuccessful": False, "startTimeUtc": started}],
+            "results": [],
+        }
+        log.write_text(json.dumps({"version": "2.1.0", "runs": [run_]}), encoding="utf-8")
+
+        def assert_invocation_clock(output: Path) -> None:
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [
+                    (item["failureClass"], item["clock"], item["observedAt"])
+                    for item in report["x-complyroll"]["detectionFailures"]
+                ],
+                [("execution", "invocation", started)],
+            )
+            self.assertEqual(
+                [item["detection"]["detectedAt"] for item in report["vulnerabilities"]],
+                [started],
+            )
+
+        with self.subTest(path="stateless"):
+            stateless = self.workspace / "stateless.json"
+            code, _, err = run(
+                [
+                    "report",
+                    "vdt",
+                    str(log),
+                    "--class",
+                    "C",
+                    "--package-uri",
+                    "https://example.test/cpo",
+                    "--from",
+                    "2026-08-01T00:00:00Z",
+                    "--to",
+                    "2026-08-31T23:59:59Z",
+                    "--as-of",
+                    INGESTED_AT,
+                    "--record-failed-imports",
+                    "-o",
+                    str(stateless),
+                ]
+            )
+            self.assertEqual(code, 3, msg=err)
+            assert_invocation_clock(stateless)
+        with self.subTest(path="persisted"):
+            persisted = self.workspace / "persisted.json"
+            code, _, err = self.ingest_flagged(log)
+            self.assertEqual(code, 3, msg=err)
+            self.correlate()
+            self.report(output=persisted)
+            assert_invocation_clock(persisted)
+
     def test_the_documented_sequence_reproduces_the_failed_goldens(self) -> None:
         code, _, _ = self.ingest_flagged(*PERSISTED_ARTIFACTS, *FAILED_ARTIFACTS)
         self.assertEqual(code, 3)

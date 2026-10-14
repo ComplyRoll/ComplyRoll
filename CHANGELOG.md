@@ -103,6 +103,19 @@ All notable project changes will be documented here.
   when it gives neither. The stateless report and `cases evaluate` share the text
   (`EvaluationMatch.ambiguity_remedy`). Every golden is byte-identical. Verified by
   `tests/test_reports.py` and `tests/test_history.py`, each with all three shapes.
+- A SARIF run with no usable driver, or with a driver name the identity rules refuse, returned
+  before its invocations were read, so its failed invocation was never seen. Under
+  `--record-failed-imports` a log whose only failed invocation sat in such a run was recorded as
+  a `content` failure at the as-of instead of an `execution` failure at the invocation's own
+  clock, and a log with a failed invocation in another run took that run's clock even when this
+  one was earlier. The `external_properties_ignored` warning, the invocations and the failed
+  invocation's clock are now read before the driver check (ADR 0014 amendment 2026-10-14,
+  second), so a run refused at its driver also reports `execution_unsuccessful`, any
+  `source_timestamp_invalid` for its invocations, and `external_properties_ignored` when it
+  carries external references. A run with a usable driver reports the same diagnostics in the
+  same order as before, and every golden is byte-identical. Verified by `tests/test_failures.py`,
+  with eight driver shapes and a two-run log, and by `tests/test_cli.py` on the stateless and
+  persisted paths.
 
 ### Added
 

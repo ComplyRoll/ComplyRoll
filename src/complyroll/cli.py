@@ -35,6 +35,7 @@ from .history import (
     CaseNotFoundError,
     CaseState,
     EvaluationMatchError,
+    EvaluationOrderError,
     HistoryError,
     apply_evaluations,
     artifact_history,
@@ -1203,6 +1204,10 @@ def _persisted_run(stream: TextIO, action: Callable[[], int]) -> int:
         return _fail(stream, "case_not_found", str(exc))
     except EvaluationMatchError as exc:
         return _fail(stream, "evaluation_unmatched", str(exc))
+    except EvaluationOrderError as exc:
+        # The writer's lines are the report's lines for the same record, byte for byte.
+        _write_diagnostics(stream, exc.diagnostics)
+        return 1
     except HistoryError as exc:
         return _fail(stream, "history_invalid", str(exc))
     except EventContractError as exc:

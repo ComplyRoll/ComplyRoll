@@ -432,6 +432,29 @@ All notable project changes will be documented here.
   `"timeframe": null` for a rule that carries none. `VDR-TFR-KEV` is the first selected rule with
   no structured timeframe, since its deadline is a date in someone else's document rather than a
   duration from an anchor. Every existing deadline row is unchanged.
+- An evaluation is now ordered against its record's detection time. The compiler refuses a record
+  whose `completedAt` is strictly earlier than a `detectedAt` that is the record's own, whether it
+  comes from an artifact timestamp, an attestation, or a recorded detection process failure, with
+  the ERROR `evaluation_before_detection`. The message names the tracking id, both instants, the
+  source, and a remedy that holds on the stateless path and from history. An evaluation completed
+  at the detection instant is in order. A partly timestamped group is published with the WARNING
+  `evaluation_before_partial_detection`, since an untimed observation may have detected the
+  weakness earlier, and the partial rule is unchanged. One run names every refusal it reaches.
+  `cases evaluate` refuses a file with an entry completed before its case's detection time, and
+  `cases attest-detection` refuses an attestation that would become the detection time of a case
+  whose current evaluation completed before it. Each names every blocking case and appends
+  nothing. `store verify` gains the audit fault `evaluation_before_detection`, reported at the
+  current evaluation's sequence with the compiler's message, because `ingest` can move a detection
+  time later when a newer parser reads a timestamp an older one did not; it runs only on a log with
+  no other fault. It folds every case first, so a log whose case streams do not fold now fails
+  `store verify` with `history_invalid`, as `report vdt --db` already did. Only `completedAt` is
+  ordered: a reduction or a projected reduction dated before detection still publishes. This adds
+  a divergence between the paths, refuse versus publish
+  (ADR 0014, Decision 15): a stateless run at an as-of later than the evaluation's `completedAt`
+  refuses a failure that a store which ingested it by then publishes, and a store that ingested it
+  later refuses an evaluation that a stateless run at an earlier as-of accepts. The documented
+  recipes meet neither, and no golden moved. Amends ADR 0007, ADR 0008, and ADR 0014. Verified by
+  2,082 tests on Python 3.11, 3.13, and 3.14.
 
 ## 0.3.0a0 - 2026-08-23
 

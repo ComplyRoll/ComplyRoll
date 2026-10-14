@@ -378,3 +378,31 @@ among those no reading supersedes (R6). These rules bind from this date.
   opens 1 and 2" above and the `store verify` sentence that follows it. This build opens 1 to
   3. An earlier build refuses a schema 3 store at open, and its `store verify` reports
   `schema_version_unsupported` (ADR 0004, amendment 2026-10-03).
+
+## Amendment 2026-10-14: the writers and the audit order evaluations
+
+- `cases evaluate` resolves each matched case's detection time from the open observation
+  group a report from the store reads, through the compiler's resolver, and refuses the
+  whole file before any append when an entry completed before it, printing the compiler's
+  `evaluation_before_detection` lines. A partly timestamped group is applied and the
+  compiler's WARNING printed. Every matched entry is checked, an unchanged one included.
+- `cases attest-detection` refuses an attestation that would become a case's detection
+  time when the case's current evaluation completed before it. Every blocking case is
+  named and nothing is appended, for `--case` and `--all-missing` alike.
+- The writers therefore never leave an evaluation before its detection time. `ingest` can:
+  a newer parser version that reads a timestamp from bytes an older one read as untimed
+  moves the detection time later. `ingest` records evidence and does not refuse it.
+  `store verify` reports the inversion as the audit fault `evaluation_before_detection`, at
+  the current evaluation's sequence with the compiler's message, and a report from the
+  store refuses the record. The check runs only on a log with no other fault, because it
+  folds cases and rehydrates observations. Unlike a tracking identifier collision, which
+  the audit leaves to the report, this state can arrive through `ingest`, which an operator
+  does not expect to change an evaluated case. The check folds every case, so a log whose
+  case streams do not fold, which a report from the store already refuses as
+  `history_invalid`, now fails `store verify` the same way where it passed before.
+- Decision 5: refuse versus publish joins the ways the two paths may differ. A failure
+  detected at the as-of is detected at the ingest `--as-of` in history and at each
+  report's as-of on the stateless path. An evaluation completed between the two compiles
+  from history and is refused by a later stateless run. One completed before the ingest
+  `--as-of` is refused from history, while a stateless run at an as-of no later than its
+  `completedAt` passes the same check (ADR 0014 amendment of this date).

@@ -957,3 +957,32 @@ amendment holds.
 - Keeping schema 2: a build from before this amendment opens a schema 2 store and admits only
   `failure.recorded` and `observation.recorded` on a failure stream, so it would read a sound
   store as `history_invalid`. At schema 3 it refuses the store at open.
+
+## Amendment 2026-10-14: an evaluation of a system record is ordered too
+
+Decision 10's last paragraph recorded that the compiler did not order an evaluation against
+a system record's detection time. ADR 0007's amendment of this date orders every record,
+and a system record's detection time is one the compiler refuses on. That paragraph is
+superseded: a stateless run whose as-of is later than the `completedAt` of an evaluation of
+an as-of failure refuses the record with `evaluation_before_detection`. The persisted path
+fixes the instant at the ingest `--as-of`, so the same evaluation compiles from history
+when its `completedAt` is at or after that instant, as in the recipe, and is refused there
+when it is earlier.
+
+Decision 15 gains one divergence, refuse versus publish. Its other differences are between
+two published reports; this one is a report on one path and a refusal on the other. It
+arises when the instant one path gives the failure is later than the evaluation's
+`completedAt` and the other path's is not. A stateless run at a later as-of refuses what
+history publishes, and a store that ingested after `completedAt` refuses an evaluation that
+a stateless run at an as-of no later than `completedAt` accepts. The documented recipes
+meet neither. `FailedImportDivergenceTests` pins the first:
+`examples/evaluations-failed.json` evaluates an as-of failure at 2026-08-21T12:00:00Z, and
+at a report as-of of 2026-08-25T12:00:00Z a store populated from the recipe's files
+publishes while the stateless run refuses. `CommandOrderTests` pins the second on
+`cases evaluate`, `report vdt --db` and `store verify`. The refusal reads the same on both
+paths.
+
+Decision 8 names `_resolve_detection_time`. The resolver is now public as
+`resolve_detection_time`, so the history writers resolve a case's detection time as the
+compiler does: from the current open observation group, with the same system-group check
+first.

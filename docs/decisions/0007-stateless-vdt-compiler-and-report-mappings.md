@@ -402,3 +402,35 @@ that has only been mitigated is not resolved. The listing bound is what keeps it
 backwards. Nothing orders `--as-of` against the period end and `--as-of` defaults to now, so an
 August report compiled in September must not pull in a record that was quiet through August and
 became a KEV afterwards. AVI and historical selection are unchanged.
+
+## Amendment 2026-10-14: an evaluation is ordered against its detection time
+
+Decision 6 starts `VER-TFR-EVU` at `detectedAt` and the response clocks at
+`evaluationCompletedAt`. Nothing ordered the two, so a record evaluated before it was
+detected published a response clock that started before the weakness was known.
+
+- The compiler refuses a record whose `completedAt` is strictly earlier than its
+  `detectedAt` when that detection time is the record's own: every observation's source
+  timestamp (`artifact`), an attestation (`attestation`), or a recorded detection process
+  failure (`system`). The ERROR is `evaluation_before_detection`, located at the record's
+  source record id, naming the tracking id, both instants, the source and a remedy. An
+  evaluation completed at the detection instant is in order.
+- A partly timestamped group (`artifact-partial`) is not refused. Its detection time is the
+  earliest known timestamp, and an observation that declares none may have detected the
+  weakness earlier, so the compiler emits the WARNING `evaluation_before_partial_detection`
+  with both instants and publishes the record. The partial rule is unchanged: an
+  attestation still never overrides a known source timestamp.
+- The remedy depends on the source. For `artifact`, supply the artifact that detected it
+  earlier or correct `completedAt`. For `attestation`, attest an earlier detection time or
+  correct `completedAt`. For `system`, the failure is detected when it is recorded: at the
+  ingest `--as-of` in history and at the run's as-of on the stateless path (ADR 0014
+  Decision 15). Evaluate it at or after that instant or correct `completedAt`; on the
+  stateless path an `--as-of` no later than `completedAt` also cures it. Each remedy is one
+  text that the compiler, the writers and `store verify` print alike, so it holds on both
+  paths.
+- One run names every refusal it reaches: `detection_time_missing` first, then each
+  record's errors in group order, the ordering error before `closed_without_disposition`.
+  Tracking identifier uniqueness and the KEV checks still run only on a record set with no
+  error.
+- Only `completedAt` is ordered. `painReductionEvents[].reducedAt` and
+  `projectedNextReduction.estimatedAt` start no clock and are not ordered against detection.

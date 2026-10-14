@@ -612,9 +612,10 @@ A diagnostic keeps the location its adapter gave it, so `invalid_rules` still po
 `stigs[0].rules` inside the checklist, in the report's diagnostics as on standard error. Only a
 diagnostic with no location of its own takes the artifact's name.
 
-The Markdown report adds a table of the failures under Inputs. The two artifacts that could not
-be read are not in the Inputs table above it; `failed-invocation.sarif` is in both, because its
-first run's finding was read:
+The Markdown report adds a table of the failures under Inputs. Two of them are not in the Inputs
+table above it: `failed-truncated.sarif` could not be parsed, and `failed-invalid-rules.cklb`
+parsed but held no usable rules. `failed-invocation.sarif` is in both, because its first run's
+finding was read:
 
 ```text
 | Artifact | SHA-256 | Parser | Class | Observed at | Clock | Tracking ID |
@@ -634,9 +635,11 @@ record: the attestation covers the same six cases as in the first example.
 
 On the stateless path a failure detected at `--as-of` is detected again at each run's `--as-of`,
 so an evaluation file reused for a later run carries a `completedAt` before that run's detection.
-The compiler does not check that order, for this or any evaluation; that is existing behavior,
-recorded here for review. The persisted path fixes the instant once, when `ingest` records the
-failure.
+The compiler refuses that record with `evaluation_before_detection` (ADR 0007 amendment
+2026-10-14). Report such a run with an `--as-of` no later than the evaluation's `completedAt`, or
+from history when `ingest` recorded the failure at an `--as-of` no later than `completedAt`. A
+store that recorded it later refuses the record too; the evaluation must then complete at or
+after the ingest `--as-of`.
 
 The persisted path takes the flag on `ingest` only. Run these commands in order from the
 repository root:
@@ -762,8 +765,9 @@ contiguity, the AUTOINCREMENT counter, the schema objects) and then audits the d
 every payload against its published contract, every observation through the replay reader,
 every event against its stream kind and against the artifact identity its stream names, every
 artifact stream for completeness in both directions (`artifact_incomplete`, `artifact_overfull`) and
-for repeated observation identifiers (`artifact_duplicate_observation`), and every metadata
-envelope. A healthy store prints one line:
+for repeated observation identifiers (`artifact_duplicate_observation`), every case's current
+evaluation against its detection time, and every metadata envelope. A healthy store prints one
+line:
 
 ```text
 ok: 36 event(s) verified

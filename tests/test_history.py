@@ -21,7 +21,7 @@ from typing import Any
 from unittest import mock
 
 from test_replay import bad_rules, pure_execution_failure, record_hold
-from test_reports import TRUNCATED_SHA256, hostile_checklist
+from test_reports import TRUNCATED_SHA256, hostile_checklist, options
 
 from complyroll.adapters import (
     DiagnosticLevel,
@@ -34,6 +34,7 @@ from complyroll.adapters import (
     ingest_stig_artifact,
     system_observation_for,
 )
+from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import (
     FAILURE_HELD,
     FAILURE_STREAM_SCHEMA_VERSION,
@@ -58,6 +59,7 @@ from complyroll.history import (
     CASE_CREATED,
     CASE_DISPOSITION_RECORDED,
     CASE_EVALUATED,
+    CASE_OBSERVATION_LINKED,
     CASE_PAIN_REDUCED,
     DETECTION_ATTESTED,
     FAILURE_RECORDED,
@@ -104,6 +106,7 @@ from complyroll.history.fold import (
 from complyroll.models import CaseStatus, Observation
 from complyroll.reports import EvaluationSet, load_evaluations, parse_evaluations
 from complyroll.reports import vdt as vdt_module
+from complyroll.reports.replay import compile_record_set_from_history
 from complyroll.store import (
     EventStoreBusyError,
     EventStoreError,
@@ -641,6 +644,119 @@ class CorrelationIdempotencyTests(WriterFixture):
         self.assertEqual(outcome.skipped_links, 3)
         self.assertEqual(self.latest_sequence - after_ingest, 2)
         self.assertGreater(after_ingest, before)
+
+
+class CorrelationFoldTests(WriterFixture):
+    """ADR 0008: correlate folds every case stream it may extend before its first append.
+
+    A stream a report refuses stops the run with the report's own error and leaves nothing
+    behind, called alone and inside a caller's open transaction. The damaged stream is the
+    Ubuntu case, the third group correlate visits, behind two groups it creates, so a fold
+    that ran after the first append would already have appended.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ingest()
+        self.groups = {
+            group.tracking_id: group
+            for group in group_open_observations(rehydrate_observations(self.repository))
+        }
+        self.assertEqual(list(self.groups)[2], UBUNTU_CASE)
+
+    def created(self, group: VulnerabilityGroup) -> dict[str, Any]:
+        return history_writers._case_created_payload(group, INGESTED_AT)
+
+    def linked(self, tracking_id: str) -> dict[str, Any]:
+        (observation,) = self.groups[tracking_id].observations
+        return history_writers._link_payload(observation)
+
+    def stage(self, *events: tuple[str, Mapping[str, Any]]) -> None:
+        """Write the Ubuntu case stream underneath the repository, as another tool might."""
+
+        for version, (event_type, payload) in enumerate(events):
+            self.append_unchecked(
+                case_stream_id(UBUNTU_CASE), event_type, payload, expected_version=version
+            )
+
+    def report_refusal(self) -> BaseException:
+        with self.assertRaises((HistoryError, EventContractError)) as caught:
+            compile_record_set_from_history(self.repository, options=options(detected_at=None))
+        return caught.exception
+
+    def refused(self) -> BaseException:
+        """Require correlate to refuse with nothing appended, alone and in a transaction.
+
+        Inside a caller's open transaction the writer's own scope is a no-op, so a run that
+        appended before refusing would commit with the caller's block. The refusal is
+        caught inside the block, the block commits, and still nothing is in the log.
+        """
+
+        before = self.latest_sequence
+        with self.assertRaises((HistoryError, EventContractError)) as caught:
+            self.correlate()
+        self.assertEqual(self.latest_sequence, before)
+        with self.repository.transaction(), self.assertRaises(type(caught.exception)):
+            self.correlate()
+        self.assertEqual(self.latest_sequence, before)
+        return caught.exception
+
+    def test_a_case_stream_correlate_would_extend_that_does_not_fold_is_refused(self) -> None:
+        group = self.groups[UBUNTU_CASE]
+        mismatched = {**self.created(group), "trackingId": "case-ffffffffffffffff"}
+        overlinked = {**self.linked(WINDOWS_CASE), "planted": "x"}
+        shapes: dict[str, tuple[tuple[str, Mapping[str, Any]], ...]] = {
+            "a creation naming another tracking id": ((CASE_CREATED, mismatched),),
+            "a link with a property its contract does not publish": (
+                (CASE_CREATED, self.created(group)),
+                (CASE_OBSERVATION_LINKED, overlinked),
+            ),
+            "an observation copied onto the case stream": (
+                (CASE_CREATED, self.created(group)),
+                (OBSERVATION_RECORDED, group.observations[0].to_canonical_dict()),
+            ),
+        }
+        for label, events in shapes.items():
+            with self.subTest(label):
+                self.setUp()
+                self.stage(*events)
+
+                error = self.refused()
+
+                expected = self.report_refusal()
+                self.assertIs(type(error), type(expected))
+                self.assertEqual(str(error), str(expected))
+
+    def test_damage_on_a_case_stream_correlate_does_not_extend_does_not_stop_it(self) -> None:
+        # A stale case is in no group, so correlate never folds it (ADR 0008 amendment
+        # 2026-10-14 (second)). The report still refuses the store.
+        payload = {**self.case_created_payload(SPARE_CASE), "trackingId": "case-ffffffffffffffff"}
+        self.append_unchecked(case_stream_id(SPARE_CASE), CASE_CREATED, payload, expected_version=0)
+
+        outcome = self.correlate()
+
+        self.assertEqual(len(outcome.created), 6)
+        self.assertEqual(outcome.linked, 6)
+        self.assertIn("records tracking id 'case-ffffffffffffffff'", str(self.report_refusal()))
+
+    def test_a_rescan_links_exactly_its_new_observations(self) -> None:
+        self.correlate()
+        rescan = self.write_artifact(
+            "rescan.xml",
+            ARTIFACTS[2]
+            .read_text(encoding="utf-8")
+            .replace("<target>lab-ubuntu-02</target>", "<target>lab-rescan</target>"),
+        )
+        self.ingest([rescan])
+        before = self.latest_sequence
+
+        outcome = self.correlate()
+
+        self.assertEqual(outcome.created, ())
+        self.assertEqual(outcome.linked, 2)
+        self.assertEqual(outcome.skipped_links, 6)
+        self.assertEqual(self.latest_sequence - before, 2)
+        self.assertAppendsNothing(self.correlate)
 
 
 class AttestationTests(WriterFixture):

@@ -551,6 +551,11 @@ def correlate_cases(
     observation is linked only once, so re-running after a new ingest appends exactly
     the new links.
 
+    Every existing case stream of a group is folded before anything is appended, so a
+    stream that does not fold stops the run with the error a report prints for it, and
+    nothing is written, inside a caller's transaction too (ADR 0008). A case stream no
+    group names is not folded here.
+
     The rehydration and every append run in one store transaction. A second run that starts
     while this one is working contends on the write lock and then reads history including
     everything this run wrote, rather than deciding a case does not exist and creating a
@@ -575,9 +580,17 @@ def _correlate_cases(
     linked = 0
     skipped_links = 0
 
+    # Fold every stream this run may extend before the first append: a refusal after an
+    # append would leave that append in a caller's open transaction.
+    streams: list[tuple[VulnerabilityGroup, str, tuple[EventRecord, ...]]] = []
     for group in groups:
         stream_id = case_stream_id(group.tracking_id)
         existing = repository.read_stream(stream_id)
+        if existing:
+            fold_case_records(repository, group.tracking_id, existing)
+        streams.append((group, stream_id, existing))
+
+    for group, stream_id, existing in streams:
         pending: list[PendingEvent] = []
         if not existing:
             pending.append(

@@ -473,6 +473,17 @@ All notable project changes will be documented here.
   again. Applying that case's entry with a `completedAt` at or after the detection time repairs
   it, and an attested case can instead be attested earlier with `cases attest-detection --case`.
   Amends ADR 0007, ADR 0008, and ADR 0014. Verified by 2,090 tests on Python 3.11, 3.13, and 3.14.
+- `cases correlate` now folds every existing case stream of an open group, each one it may
+  extend, before its first append. A stream that does not fold refuses the run with the error
+  `report vdt --db` prints for that stream, and nothing is appended, inside a caller's open
+  transaction too. Before this, correlate read those streams only for their links, so on a store
+  whose case stream records another tracking id it linked new observations onto that stream and
+  exited 0 while every report from the store refused it. Every case writer now folds each case
+  stream it appends to. Correlate still never reads a case no open group names, so damage there
+  does not stop it, while `report vdt --db`, `cases list` and `store verify` still refuse it. On a
+  store whose case streams fold, correlate appends exactly what it did before. Amends ADR 0008
+  (amendment 2026-10-14, second). Verified by `tests/test_history.py` with three damaged-stream
+  shapes, each alone and inside a caller's transaction.
 
 ## 0.3.0a0 - 2026-08-23
 

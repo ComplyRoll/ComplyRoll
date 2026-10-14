@@ -412,3 +412,18 @@ among those no reading supersedes (R6). These rules bind from this date.
   from history and is refused by a later stateless run. One completed before the ingest
   `--as-of` is refused from history, while a stateless run at an as-of no later than its
   `completedAt` passes the same check (ADR 0014 amendment of this date).
+
+## Amendment 2026-10-14 (second): what the case writers fold and what store verify reports
+
+`cases correlate` folds every existing case stream of an open group, each one it may extend,
+before its first append. A stream that does not fold refuses the run with the error a report
+from the store prints for that stream, and nothing is appended, inside a caller's open
+transaction too. The second 2026-08-22 amendment's "fold, check, and append" now holds for
+correlate: every case writer folds each case stream it appends to before its first append.
+`cases evaluate` folds every case, `cases attest-detection` each case it attests, and
+`cases correlate` each case of an open group. A writer need not fold a case stream it cannot
+extend: correlate never reads a case no open group names, and `cases attest-detection` folds
+only the cases it attests, so damage there does not stop them, while `report --db`,
+`cases list` and `store verify` still refuse it. `ingest` appends only to artifact and failure
+streams, folds no case stream, and records evidence (amendment 2026-10-14); an order inversion
+`ingest` leaves elsewhere is still not a writer refusal.

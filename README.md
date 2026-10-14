@@ -1,278 +1,110 @@
 ![ComplyRoll: FedRAMP 20x VDR evidence compiler](https://raw.githubusercontent.com/ComplyRoll/ComplyRoll/main/assets/complyroll-banner.png)
 
+[![PyPI][pypi-badge]][pypi]
+[![Python][python-badge]][pypi]
+[![License][license-badge]][license]
+[![CI][ci-badge]][ci]
+
 **A local-first evidence compiler for FedRAMP® 20x Vulnerability Detection and Response (VDR).**
 
 ComplyRoll turns scanner observations, validation runs, and operational evidence into traceable
 vulnerability cases, class-aware response clocks, and official-format FedRAMP reports that a
 provider can publish and an independent assessor can recompute.
 
-> **Project status (2026-09-05):** pre-alpha. Phase 0 (hardened ingestion) and Phase 1 are
-> complete: `complyroll report vdt`, `report avi`, and `report historical` compile scanner
-> artifacts into the three schema-valid VER reports, `complyroll validate` checks any report
-> against the pinned official schemas, and the persisted path (`ingest`, `cases`, the `--db` form
-> of each `report` command, `store verify`) records the same work as append-only history and
-> rebuilds each report from it byte for byte. ComplyRoll does not
-> produce a FedRAMP submission package and must not be represented as FedRAMP approved. PyPI
-> carries pre-releases only (`pip install --pre complyroll`); the source checkout below is the
-> development path.
+## Status
 
-## What runs today
+| Phase | Scope | State |
+|---|---|---|
+| 0 | Harden stigroll ingestion and provenance | Complete |
+| 1 | Build VDR cases, policy clocks, and VER exports | Complete |
+| 2 | Add automation, coverage, and change integration | In progress |
+| 3 | Add KSI validation and SDR evidence | Not started |
+| 4 | Integrate trust-center and ongoing certification workflows | Not started |
+
+ComplyRoll is pre-alpha; it does not produce a FedRAMP submission package and must not be
+represented as FedRAMP approved. The PyPI pre-release (`pip install --pre complyroll`) lags
+`main`, so follow this README from a source checkout.
+
+## Why ComplyRoll
+
+FedRAMP 20x is based on measured outcomes and persistent validation. A failed STIG rule or CVE is
+only a source observation. VDR also covers drift, failed validation pipelines, stale security
+decisions, supply-chain exposures, and failures in the detection and response process itself.
+ComplyRoll therefore keeps immutable observations apart from stateful vulnerability cases. A
+case's Potential Agency Impact (PAIN) rating comes from the operator's evaluation and is never
+derived from scanner severity, DISA CAT, or CVSS. Every deadline names its rule in the official
+FedRAMP rules dataset, pinned to one commit, and takes its timeframe from that rule. The KEV clock
+is the one exception: its rule comes from the dataset, but its due date comes from the CISA
+catalog the operator supplies.
+
+## What it does
 
 | Surface | What it does |
 |---|---|
-| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--record-failed-imports] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, ARF, SARIF, and HDF files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. With `--kev`, a CISA Known Exploited Vulnerabilities catalog the operator supplies, each record also carries the KEV clock `VDR-TFR-KEV` sets from that catalog's due dates. With `--record-failed-imports`, an artifact that cannot be parsed or holds no usable content no longer stops the run: it, and any log that reports a failed scanner invocation, becomes a system observation and a vulnerability of its own (`VDR-CSO-FAV`, ADR 0014), and the command writes the report and exits 3. A file that cannot be read, an unsupported or rejected format, a duplicate observation identity, a partial reading, a clean scan, or an unclassified error code still stops the run (ADR 0014 Decision 2). Validated against the bundled official schema before anything is written |
-| `complyroll report avi ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--detected-at T] [--record-failed-imports] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles the same artifacts into an official-format Accepted Vulnerability Information report (`VER-RPT-AVI`): every accepted vulnerability with recorded activity in the report period, each with the acceptance rationale the official item requires, and a count of the active records that belong in the detail report instead. An accepted record whose evaluation carries no rationale stops the compile |
-| `complyroll report historical ARTIFACT... --class C --package-uri URI [--evaluations FILE] [--kev FILE] [--detected-at T] [--record-failed-imports] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles a Historical VER Activity snapshot (`VER-TFR-MRH`) as of `--as-of`, with no report period: every non-accepted vulnerability, disposed ones included, under `activeVulnerabilities` and every accepted one under `acceptedVulnerabilities`, each in its current state |
-| `complyroll ingest ARTIFACT... --db STORE [--as-of T] [--record-failed-imports] [--actor NAME]` | Records each artifact and its observations as typed events (`artifact.ingested`, `observation.recorded`) in an append-only SQLite store, validated against published contracts before they are written. Re-running over the same bytes appends nothing. With `--record-failed-imports`, each detection process failure is recorded on its own stream as a `failure.recorded` event and a system observation, and the run exits 3, while the readings ADR 0014 Decision 2 keeps fatal still stop it with exit 1 and nothing written; a failure another failure stream already holds is recorded as a hold on it, as a `failure.held` event; a store that records a failure is marked schema 2, or 3 once it records a hold, which an earlier build's `ingest`, `cases`, and `report --db` refuse to open |
-| `complyroll cases correlate\|attest-detection\|evaluate\|list\|history --db STORE` | Opens one case per vulnerability, records attested detection times and operator evaluations as events, lists cases, and prints one case's full history. A changed evaluation appends a second `case.evaluated` event; the earlier one stays readable. `cases correlate` folds each existing case stream it may extend before it appends anything, and refuses a store where one does not fold with the error `report vdt --db` prints, appending nothing |
-| `complyroll report vdt --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Vulnerability Detail Report from the event log through the same record compiler as the stateless path. The output is byte-identical to the stateless report for the same inputs, and that equality is a test; a store holding detection process failures matches the stateless run with `--record-failed-imports` when each failure was ingested at the report's `--as-of` or carries a scanner clock, no stream of its digest is superseded, no two input names share a digest, and no `ingest` reported `failure_held_by_another_stream` (ADR 0014) |
-| `complyroll report avi --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Accepted Vulnerability Information report from the same event log through the same record set. The output is byte-identical to the stateless report for the same inputs, and that equality is a test, including one that records the evaluations at two different instants and proves the recording instant never reaches the report. Detection process failures carry the same conditions as `report vdt --db` (ADR 0014) |
-| `complyroll report historical --db STORE --class C --package-uri URI [--kev FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Historical VER Activity snapshot from the same event log; it takes no `--from` or `--to`. The output is byte-identical to the stateless snapshot for the same inputs, and that equality is a test. Detection process failures carry the same conditions as `report vdt --db` (ADR 0014) |
-| `complyroll store verify --db STORE` | Walks the whole log checking event names against the append grammar, positive integer version columns, payload digests, stored JSON against the append rules, sequence and stream-version contiguity, the sequence counter, the schema definitions, and the header's schema marker and application id, then audits the domain (every payload against its published contract, every event against its stream kind and the artifact identity its stream names, every artifact stream for completeness in both directions and for repeated observation identifiers, the current evaluation of each case a report would print against its detection time, every metadata envelope), and exits non-zero on any fault, including on files the normal open refuses. A metadata envelope outside the rules, an event on a non-case stream it does not belong on (with the contract or count faults only that event causes) and a failure schema marker left low are reported here: no report and no case writer refuses them, `ingest --record-failed-imports` refuses only to resume a failure stream that holds such an event, and none changes a report's bytes (ADR 0008) |
-| `complyroll validate REPORT --schema vulnerability-detail\|accepted-vulnerability\|historical-activity` | Validates a report against the pinned official schema, offline, printing JSON Pointers for every failure and the exact schema provenance |
-| `stigroll <files> [--cci-list U_CCI_List.xml] [--format markdown\|csv\|json] [-o FILE]` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output byte-for-byte |
-| `complyroll.adapters.ingest_stig_artifact(path)` | CKLB, CKL, XCCDF, ARF, SARIF, and HDF files become immutable observations with artifact digest, parser identity, timestamps, and structured diagnostics |
-| `complyroll.policy.load_bundled_policy(profile)` | Selects the 36 provider-facing VDR and VER rules for a 20x Class B or Class C profile from the pinned official dataset and calculates evaluation, PAIN response, and acceptance-threshold deadlines with full provenance, in the provider's calendar timezone |
-| `complyroll.store.SQLiteEventStore` | Append-only event log with optimistic concurrency, payload digests, schema and tail-integrity verification, and projection checkpoints. Domain events are written only through `complyroll.events.EventRepository`, which validates every payload against a published contract (ADR 0008) |
+| CKLB, CKL, XCCDF, ARF, SARIF, and HDF files | Become immutable observations with the artifact digest, parser identity, and timestamps |
+| `complyroll report vdt\|avi\|historical` | Compiles the Vulnerability Detail, Accepted Vulnerability Information, or Historical VER Activity report, with a Markdown twin rendered from the same records |
+| `--kev FILE` | Matches each record's CVE identifiers to a CISA KEV catalog the operator supplies and carries the catalog's due date as the `VDR-TFR-KEV` clock, without fetching anything |
+| `--record-failed-imports` | Records an artifact that cannot be parsed or holds no usable content, or a failed scanner invocation, as a system observation and a vulnerability of its own (`VDR-CSO-FAV`), and exits 3 |
+| `complyroll ingest`, `cases`, and `report --db` | Record the same work as append-only history and rebuild each report from it, byte-identical to the stateless report |
+| `complyroll store verify --db STORE` | Audits an event store's bytes and its domain, and exits non-zero on any fault |
+| `complyroll validate REPORT --schema KIND` | Validates a report offline against the pinned official schema, with a JSON Pointer for each failure |
+| `stigroll FILE...` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output |
+| `complyroll.adapters`, `.policy`, `.schemas`, `.store` | Ingest an artifact, calculate a deadline with its rule provenance, validate a report, or open the event store from Python |
 
-The report compiler is stateless by design (ADR 0007): the same artifacts, evaluations, options,
-and `--as-of` instant produce the same bytes, in any argument order, which is the property an
-independent assessor is asked to test. Argument order is not a fact about the system under
-assessment, so nothing derived from it reaches the report: the artifact manifest, the diagnostics,
-and the members of a vulnerability that spans several files are all ordered by their own content.
-The claim is about the compiled report and about the same set of files. The event log is
-deliberately not order-independent, because an append-only log records what happened when. The persisted path (ADR 0008) records the same inputs as typed events and rebuilds
-this same report from the log, so changing an evaluation creates history instead of overwriting
-it. The accepted-vulnerability and historical-activity reports are projections of the same
-period-agnostic record set (ADR 0010), on both paths, which closes Phase 1. Phase 2 opened with
-the SARIF adapter (ADR 0011): `.sarif` logs from Trivy, Grype, Semgrep, CodeQL, Checkov, or any
-other conforming SARIF 2.1.0 producer become observations beside the STIG ones, on both paths,
-with the located file, image, or logical name as the resource and the driver name in the group
-key. A log with no results is not yet evidence and fails ingest until the coverage observation
-lands. Slice 2 is CISA KEV enrichment (ADR 0012): `--kev` takes a catalog the operator
-downloads out of band, matches it to a record's `CVE-` identifiers exactly, and reports the
-due date the catalog published, which keeps running over a fully mitigated weakness because
-`VDR-TFR-KEV` says it must. Nothing is fetched, bundled, or stored, and the report pins the
-catalog by the SHA-256 of the bytes it read. Slice 3 is the HDF adapter (ADR 0013): InSpec runs
-and `saf convert` output in the Heimdall Data Format become observations on the declared target,
-keyed under the root profile, with a failed control OPEN, an errored one ERROR, and impact 0 not
-applicable. Waivers and attestations are recorded as metadata and never change a
-disposition: the results decide it, the one `saf attest apply` appends included, except that
-impact 0 reads not applicable first. An overlay's empty wrapper copies give way to the copy that
-ran. Slice 4 records detection process failures (ADR 0014, `VDR-CSO-FAV`): with
-`--record-failed-imports`, an artifact that cannot be parsed, holds no usable content, or reports
-a failed scanner invocation becomes a system observation and a vulnerability case of its own,
-evaluated like any other, and the run exits 3. Without the flag a failed import still stops the
-run, and a clean log still fails either way. Failures in the response process, stale coverage,
-and missing resources are not built yet. See [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
+Not yet built, among others: coverage and freshness checks (stale coverage, missing resources),
+failures in the response process, change integration, SBOM and cloud sources, and KSI and SDR
+evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. Until coverage lands, a SARIF log
+with no results fails ingest.
+
+Every command and flag: [`docs/CLI.md`][cli].
 
 ## Quick start
 
-From a source checkout:
+From a source checkout, with Python 3.11 or newer:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
-.venv/bin/python -m complyroll version
-.venv/bin/python -m unittest discover -s tests -v
-```
+git clone https://github.com/ComplyRoll/ComplyRoll.git && cd ComplyRoll
+python3 -m venv .venv && . .venv/bin/activate && python3 -m pip install -e .
 
-Compile the synthetic fixtures into a Vulnerability Detail Report and validate it:
-
-```bash
-complyroll report vdt \
-  tests/fixtures/ubuntu-host.cklb \
-  tests/fixtures/windows-host.ckl \
-  tests/fixtures/openscap-results.xml \
-  --class C \
-  --package-uri https://example.test/cpo \
-  --from 2026-08-01T00:00:00Z \
-  --to 2026-08-31T23:59:59Z \
-  --as-of 2026-08-21T12:00:00Z \
-  --detected-at 2026-08-01T00:00:00Z \
-  --evaluations examples/evaluations.json \
-  -o report.json \
-  --markdown report.md
-
+complyroll report vdt tests/fixtures/ubuntu-host.cklb tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml --class C --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z --to 2026-08-31T23:59:59Z --as-of 2026-08-21T12:00:00Z \
+  --detected-at 2026-08-01T00:00:00Z --evaluations examples/evaluations.json \
+  -o report.json --markdown report.md
 complyroll validate report.json --schema vulnerability-detail
 ```
 
-The fixtures declare no assessment timestamp, so `--detected-at` attests one; ComplyRoll never
-substitutes file modification or ingestion time. `--evaluations` supplies the contextual judgement
-a scanner cannot provide (IRV, LEV, PAIN, impact, rationale, evaluator; see
-[`examples/evaluations.json`](examples/evaluations.json)). `--as-of` pins the instant overdue
-flags are computed against, which makes the run reproducible byte for byte; the expected output
-is [`tests/golden/vdt-fixtures.json`](tests/golden/vdt-fixtures.json) and
-[`tests/golden/vdt-fixtures.md`](tests/golden/vdt-fixtures.md).
-
-The report period selects contents: a vulnerability appears when it had activity inside
-`--from`/`--to` (detection, evaluation, a PAIN reduction, or a planned reduction), or when it is
-still undisposed and was detected on or before the period end. Every exclusion is reported as an
-`excluded_by_period` diagnostic and counted in the document, so "nothing happened" is
-distinguishable from "nothing was compiled". Output files are written all-or-nothing: a failed
-Markdown write leaves no JSON behind, a failure while publishing restores the previous files, and a
-rollback that itself fails names the files left in their new state and where their previous
-content was kept.
-
-Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
-key: generator and parser versions, the rules dataset and schema commits and digests, the
-compile diagnostics, every computed deadline with its rule and force, the grouped observation ids
-and affected resources, the detection-time source (`artifact`, `artifact-partial`, `attestation`,
-or `system` for a detection process failure), and the evaluator and rationale. The JSON is the
-complete machine record; the Markdown twin renders the same records for a reader, with a
-per-vulnerability detail section and
-a parity test proving every identifier, deadline, and artifact it prints is in the JSON. That makes the document the provider's and assessor's working record.
-It includes internal resource identifiers and provider rationale, so redact it before sharing
-with an agency; audience-specific views are a later slice.
-
-Record the same work as history, then rebuild the report from the log (ADR 0008):
+The fixtures declare no scan time, so `report vdt` warns `source_timestamp_missing` three times
+and `--detected-at` attests one. Next, record the same work as append-only history and
+rebuild the report from it ([ADR 0008][adr-0008]). The two reports are byte-identical, so `cmp`
+prints nothing:
 
 ```bash
-complyroll ingest \
-  tests/fixtures/ubuntu-host.cklb \
-  tests/fixtures/windows-host.ckl \
-  tests/fixtures/openscap-results.xml \
-  --db complyroll.db \
-  --as-of 2026-08-21T12:00:00Z
-
+complyroll ingest tests/fixtures/ubuntu-host.cklb tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml --db complyroll.db --as-of 2026-08-21T12:00:00Z
 complyroll cases correlate --db complyroll.db
-
-complyroll cases attest-detection \
-  --db complyroll.db \
-  --all-missing \
-  --detected-at 2026-08-01T00:00:00Z \
-  --rationale "The fixtures declare no assessment timestamp; the assessment ran on 1 August."
-
+complyroll cases attest-detection --db complyroll.db --all-missing \
+  --detected-at 2026-08-01T00:00:00Z --rationale "The fixtures declare no assessment timestamp."
 complyroll cases evaluate --db complyroll.db --evaluations examples/evaluations.json
-
-complyroll report vdt \
-  --db complyroll.db \
-  --class C \
-  --package-uri https://example.test/cpo \
-  --from 2026-08-01T00:00:00Z \
-  --to 2026-08-31T23:59:59Z \
-  --as-of 2026-08-21T12:00:00Z \
-  -o report-from-history.json \
-  --markdown report-from-history.md
-
-complyroll store verify --db complyroll.db
+complyroll report vdt --db complyroll.db --class C --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z --to 2026-08-31T23:59:59Z --as-of 2026-08-21T12:00:00Z \
+  -o report-from-history.json --markdown report-from-history.md
+cmp report.json report-from-history.json && cmp report.md report-from-history.md
 ```
 
-`report-from-history.json` and `.md` are byte-identical to `report.json` and `report.md` above:
-both paths run one record compiler, and that equality is a test. Every write is idempotent, so
-re-running any of those commands appends nothing. Change one PAIN rating in a copy of
-`examples/evaluations.json`, run `cases evaluate` again with it, and
-`complyroll cases history <tracking-id> --db complyroll.db` shows both evaluations while the
-report carries the latest one. Nothing can update or delete an event; a correction is a new
-event with its rationale, and `store verify` checks both the bytes (digests, contiguity, the
-sequence counter, the schema) and the domain (every payload against its contract, every event
-against its stream, every artifact stream complete, every metadata envelope well formed).
+The report includes internal resource identifiers and provider rationale, so redact it before
+sharing with an agency. [`examples/README.md`][examples] continues from here with the other two
+reports, SARIF, KEV, HDF, failed imports, and the Python API.
 
-Record a failed import as a vulnerability instead of stopping (ADR 0014). The three extra
-fixtures are a truncated SARIF log, a CKLB with no rules array, and a SARIF log whose second run
-reports a failed invocation:
+## For independent assessors
 
-```bash
-complyroll report vdt \
-  tests/fixtures/ubuntu-host.cklb \
-  tests/fixtures/windows-host.ckl \
-  tests/fixtures/openscap-results.xml \
-  tests/fixtures/failed-truncated.sarif \
-  tests/fixtures/failed-invalid-rules.cklb \
-  tests/fixtures/failed-invocation.sarif \
-  --class C \
-  --package-uri https://example.test/cpo \
-  --from 2026-08-01T00:00:00Z \
-  --to 2026-08-31T23:59:59Z \
-  --as-of 2026-08-21T12:00:00Z \
-  --detected-at 2026-08-01T00:00:00Z \
-  --evaluations examples/evaluations-failed.json \
-  --record-failed-imports \
-  -o report-failed.json \
-  --markdown report-failed.md
-```
-
-The run writes [`tests/golden/vdt-failed.json`](tests/golden/vdt-failed.json) and
-[`tests/golden/vdt-failed.md`](tests/golden/vdt-failed.md) and exits 3, so a pipeline that
-treats any non-zero exit as a failure still stops. Each failure is one vulnerability per failed
-artifact digest, with the detection-time source `system`, a detection time from the failed
-invocation's clock or the run's `--as-of`, and PAIN only from an evaluation that names it by
-source type, record id, and digest. Without the flag the same command exits 1 and writes
-nothing. [`examples/README.md`](examples/README.md) walks through the persisted path.
-
-Roll up the synthetic fixtures with the predecessor command:
-
-```bash
-stigroll tests/fixtures/windows-host.ckl tests/fixtures/ubuntu-host.cklb --format json
-```
-
-Ingest an artifact and inspect its observations and diagnostics:
-
-```python
-from pathlib import Path
-
-from complyroll.adapters import ingest_stig_artifact
-
-result = ingest_stig_artifact(Path("assessment.cklb"))
-if not result.successful:
-    for diagnostic in result.errors:
-        print(diagnostic.code, diagnostic.message)
-else:
-    print(result.observations[0].to_canonical_json())
-```
-
-Calculate a Class C response target with rule provenance:
-
-```python
-from datetime import UTC, datetime
-
-from complyroll.models import PainRating
-from complyroll.policy import CertificationClass, CertificationProfile, load_bundled_policy
-
-policy = load_bundled_policy(CertificationProfile(CertificationClass.C))
-deadline = policy.response_deadline(
-    datetime(2026, 8, 21, 15, 0, tzinfo=UTC),
-    pain=PainRating.N4,
-    is_internet_reachable=True,
-    is_likely_exploitable=True,
-)
-print(deadline.rule_id, deadline.force.value, deadline.due_at.isoformat())
-print(deadline.provenance.commit, deadline.provenance.dataset_sha256)
-```
-
-Validate a report against the pinned official schema:
-
-```python
-from pathlib import Path
-
-from complyroll.schemas import ReportSchema, validate_bundled_report_bytes
-
-result = validate_bundled_report_bytes(
-    ReportSchema.VULNERABILITY_DETAIL, Path("vulnerability-detail.json").read_bytes()
-)
-for issue in result.issues:
-    print(issue.instance_pointer, issue.validator, issue.message)
-print(result.provenance.schema_version, result.provenance.schema_sha256)
-```
-
-## Why this exists
-
-FedRAMP 20x is based on measured outcomes and persistent validation. A failed STIG rule or CVE is
-only a source observation. VDR additionally covers drift, failed validation pipelines, stale
-security decisions, supply-chain exposures, and failures in the detection and response process
-itself. ComplyRoll therefore separates immutable observations from stateful vulnerability cases.
-
-Target pipeline (the stages after observations are not built yet):
-
-```mermaid
-flowchart TD
-    A["STIG, XCCDF, SARIF, SBOM and cloud sources"] --> B["Immutable observations"]
-    B --> C["Grouped vulnerability cases"]
-    C --> D["IRV, LEV and PAIN evaluation"]
-    D --> E["Class-aware deadlines and response history"]
-    E --> F["VER JSON, SDR evidence and human reports"]
-    G["KSI validation and process health"] --> B
-```
+ComplyRoll is meant to be run cold on provider-supplied artifacts: ingest the raw scanner exports,
+recompute the clocks and the report, and compare against what the provider published. Every
+deadline names its rule identifier, force (MUST or SHOULD), certification class, dataset commit,
+and digest. The same artifacts, evaluations, options, and `--as-of` instant produce the same
+bytes in any argument order ([`docs/ARCHITECTURE.md`][architecture] has the details). Assessors
+do not configure or operate ComplyRoll on a provider's behalf; under the 2026 recognition rules,
+advisory work on an offering bars assessing that offering for two years.
 
 ## Non-negotiable rules
 
@@ -284,57 +116,34 @@ flowchart TD
 - Human-readable and machine-readable reports must come from the same normalized records.
 - Historical evaluations and evidence must remain reproducible.
 
-## For independent assessors
+## Documentation
 
-ComplyRoll is meant to be run cold on provider-supplied artifacts: ingest the raw scanner exports,
-recompute the clocks and the report, and compare against what the provider published. Every
-deadline names its rule identifier, force (MUST or SHOULD), certification class, dataset commit,
-and digest. Assessors do not configure or operate ComplyRoll on a provider's behalf; under the
-2026 recognition rules, advisory work on an offering bars assessing that offering for two years.
-
-## Design documents
-
-- [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md): phased implementation plan and exit criteria
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): system boundaries and component design
-- [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md): observation, case, evaluation, and evidence model
-- [`docs/FEDRAMP_2026_MAPPING.md`](docs/FEDRAMP_2026_MAPPING.md): current rule and schema mapping
-- [`docs/SECURITY.md`](docs/SECURITY.md): threat model and evidence-handling requirements
-- [`docs/decisions/`](docs/decisions/): architecture decision records 0001 through 0014
-  (0007 fixes the report mappings: attested detection time, disposition table, clock semantics,
-  overdue wording, the `x-complyroll` extension, and the evaluations file; 0009 adopts Common
-  Definitions 0.3.0, which gives completed PAIN reductions an official slot and remediation its
-  own disposition; 0010 splits the compiler into one period-agnostic record set and three report
-  projections, fixes the acceptance instant to the evaluation's, and makes the historical report
-  a periodless snapshot of the whole population; 0011 adds the SARIF adapter, keyed on the
-  located resource and the driver name rather than on producer fingerprints; 0012 adds CISA
-  KEV enrichment, an operator-supplied catalog that is never fetched, bundled, or stored and
-  is pinned in the report by the digest of its bytes; 0013 adds the HDF adapter, keyed on the
-  declared target and the root profile, with waivers and attestations recorded as metadata and
-  never changing a disposition, which the results decide unless impact 0 reads not applicable
-  first; 0014 records a detection process failure as a system observation and case, opt-in per
-  run with `--record-failed-imports`, with exit 3 and a schema 2 or 3 store)
-- [`examples/`](examples/): the fixture-to-report demo inputs
-- [`AGENTS.md`](AGENTS.md): repository rules and development commands
+- [`examples/README.md`][examples]: worked runs on the synthetic fixtures, Python API included
+- [`docs/CLI.md`][cli]: every command and flag
+- [`docs/BUILD_PLAN.md`][build-plan]: phased implementation plan and exit criteria
+- [`docs/ARCHITECTURE.md`][architecture]: system boundaries and component design
+- [`docs/DATA_MODEL.md`][data-model]: observation, case, evaluation, and evidence model
+- [`docs/FEDRAMP_2026_MAPPING.md`][mapping]: current rule and schema mapping, and the FedRAMP
+  sources ComplyRoll pins
+- [`docs/SECURITY.md`][security-design]: threat model and evidence-handling requirements
+- [`docs/decisions/README.md`][decisions]: index of the architecture decision records
+- [`CHANGELOG.md`][changelog]: notable changes by release
+- [`AGENTS.md`][agents]: repository rules and development commands
 
 ## Dependencies and data
 
-Persistence uses Python's standard-library SQLite binding. Report validation uses the
+ComplyRoll uses the Python standard library plus one declared runtime dependency, the
 major-version-bounded `jsonschema` package with its non-GPL format extra, because the standard
-library does not implement JSON Schema Draft 2020-12 (ADR 0006). Everything else is the standard
-library.
+library does not implement JSON Schema Draft 2020-12 (ADR 0006). The official FedRAMP rules
+dataset and VER schemas are bundled unmodified and pinned to immutable upstream commits with
+SHA-256 digests; see [`NOTICE`][notice] and [`src/complyroll/data/README.md`][data-readme] for
+provenance and license.
 
-The official FedRAMP rules dataset and VER schemas are bundled unmodified and pinned to immutable
-upstream commits with SHA-256 digests; see [`NOTICE`](NOTICE) and
-[`src/complyroll/data/README.md`](src/complyroll/data/README.md) for provenance and license.
+## Contributing and security
 
-Authoritative sources ComplyRoll consumes and pins rather than copies into constants:
-
-- [FedRAMP Consolidated Rules for 2026](https://www.fedramp.gov/2026/)
-- [FedRAMP machine-readable rules](https://github.com/FedRAMP/rules)
-- [FedRAMP JSON schemas](https://github.com/FedRAMP/schemas)
-- [Vulnerability Detection and Response](https://www.fedramp.gov/2026/reference/vulnerability-detection-and-response/)
-- [Vulnerability Evaluation and Reporting](https://www.fedramp.gov/2026/reference/vulnerability-evaluation-and-reporting/)
-- [Key Security Indicators](https://www.fedramp.gov/2026/reference/key-security-indicators/)
+[`CONTRIBUTING.md`][contributing] covers the development setup and the Developer Certificate of
+Origin sign-off every commit carries. Report a vulnerability privately, as
+[`SECURITY.md`][security-policy] describes, rather than in a public issue.
 
 ## Disclaimer
 
@@ -345,12 +154,35 @@ every clock against <https://www.fedramp.gov/2026/> before relying on it.
 
 ## License
 
-ComplyRoll's code is licensed under the Apache License, Version 2.0 (see [`LICENSE`](LICENSE)
-and [`NOTICE`](NOTICE)). The bundled FedRAMP data files are works of the U.S. Government and are
+ComplyRoll's code is licensed under the Apache License, Version 2.0 (see [`LICENSE`][license]
+and [`NOTICE`][notice]). The bundled FedRAMP data files are works of the U.S. Government and are
 not covered by that license. The ComplyRoll name is not licensed (Apache License, Section 6).
 Contributions require a Developer Certificate of Origin sign-off
-([`CONTRIBUTING.md`](CONTRIBUTING.md)).
+([`CONTRIBUTING.md`][contributing]).
 
 FedRAMP® is a registered trademark of the U.S. General Services Administration. ComplyRoll is an
 independent project and is not affiliated with, endorsed by, or approved by GSA or the FedRAMP
 Program Management Office.
+
+[pypi-badge]: https://img.shields.io/pypi/v/complyroll?include_prereleases&label=pypi
+[python-badge]: https://img.shields.io/pypi/pyversions/complyroll
+[license-badge]: https://img.shields.io/badge/license-Apache--2.0-blue.svg
+[ci-badge]: https://github.com/ComplyRoll/ComplyRoll/actions/workflows/ci.yml/badge.svg
+[pypi]: https://pypi.org/project/complyroll/
+[ci]: https://github.com/ComplyRoll/ComplyRoll/actions/workflows/ci.yml
+[adr-0008]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/decisions/0008-persisted-history-and-event-sourced-rebuild.md
+[agents]: https://github.com/ComplyRoll/ComplyRoll/blob/main/AGENTS.md
+[architecture]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/ARCHITECTURE.md
+[build-plan]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/BUILD_PLAN.md
+[changelog]: https://github.com/ComplyRoll/ComplyRoll/blob/main/CHANGELOG.md
+[cli]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/CLI.md
+[contributing]: https://github.com/ComplyRoll/ComplyRoll/blob/main/CONTRIBUTING.md
+[data-model]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/DATA_MODEL.md
+[data-readme]: https://github.com/ComplyRoll/ComplyRoll/blob/main/src/complyroll/data/README.md
+[decisions]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/decisions/README.md
+[examples]: https://github.com/ComplyRoll/ComplyRoll/blob/main/examples/README.md
+[license]: https://github.com/ComplyRoll/ComplyRoll/blob/main/LICENSE
+[mapping]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/FEDRAMP_2026_MAPPING.md
+[notice]: https://github.com/ComplyRoll/ComplyRoll/blob/main/NOTICE
+[security-design]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/SECURITY.md
+[security-policy]: https://github.com/ComplyRoll/ComplyRoll/blob/main/SECURITY.md

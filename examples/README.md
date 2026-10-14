@@ -765,9 +765,9 @@ contiguity, the AUTOINCREMENT counter, the schema objects) and then audits the d
 every payload against its published contract, every observation through the replay reader,
 every event against its stream kind and against the artifact identity its stream names, every
 artifact stream for completeness in both directions (`artifact_incomplete`, `artifact_overfull`) and
-for repeated observation identifiers (`artifact_duplicate_observation`), every case's current
-evaluation against its detection time, and every metadata envelope. A healthy store prints one
-line:
+for repeated observation identifiers (`artifact_duplicate_observation`), the current evaluation of
+each case a report would print against its detection time, and every metadata envelope. A healthy
+store prints one line:
 
 ```text
 ok: 36 event(s) verified

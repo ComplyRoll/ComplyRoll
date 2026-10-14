@@ -385,19 +385,25 @@ among those no reading supersedes (R6). These rules bind from this date.
   group a report from the store reads, through the compiler's resolver, and refuses the
   whole file before any append when an entry completed before it, printing the compiler's
   `evaluation_before_detection` lines. A partly timestamped group is applied and the
-  compiler's WARNING printed. Every matched entry is checked, an unchanged one included.
+  compiler's WARNING printed. Every matched entry of a case a report would print is
+  checked, an unchanged one included. The order check runs before the effective tracking
+  identifier check, as the compiler orders them, so a file refused for both prints the
+  ordering lines.
 - `cases attest-detection` refuses an attestation that would become a case's detection
   time when the case's current evaluation completed before it. Every blocking case is
   named and nothing is appended, for `--case` and `--all-missing` alike.
-- The writers therefore never leave an evaluation before its detection time. `ingest` can:
-  a newer parser version that reads a timestamp from bytes an older one read as untimed
-  moves the detection time later. `ingest` records evidence and does not refuse it.
-  `store verify` reports the inversion as the audit fault `evaluation_before_detection`, at
-  the current evaluation's sequence with the compiler's message, and a report from the
-  store refuses the record. The check runs only on a log with no other fault, because it
-  folds cases and rehydrates observations. Unlike a tracking identifier collision, which
-  the audit leaves to the report, this state can arrive through `ingest`, which an operator
-  does not expect to change an evaluated case. The check folds every case, so a log whose
+- The writers therefore never leave an evaluation before its detection time in a case a
+  report would print. `ingest` can: a newer parser version that reads a timestamp from
+  bytes an older one read as untimed moves the detection time later. `ingest` records
+  evidence and does not refuse it. `store verify` reports the inversion as the audit fault
+  `evaluation_before_detection`, at the current evaluation's sequence with the compiler's
+  message, and a report from the store refuses the record. The check runs only on a log
+  with no other fault, because it folds cases and rehydrates observations. Unlike a
+  tracking identifier collision, which the audit leaves to the report, this state can
+  arrive through `ingest`, which an operator does not expect to change an evaluated case.
+  The writers and the check skip a case no report prints: one with no open group
+  (`stale_case`) or no resolvable detection time. If a later ingest brings its group back,
+  the report and `store verify` check it then. The check folds every case, so a log whose
   case streams do not fold, which a report from the store already refuses as
   `history_invalid`, now fails `store verify` the same way where it passed before.
 - Decision 5: refuse versus publish joins the ways the two paths may differ. A failure

@@ -447,14 +447,15 @@ All notable project changes will be documented here.
   current evaluation's sequence with the compiler's message, because `ingest` can move a detection
   time later when a newer parser reads a timestamp an older one did not; it runs only on a log with
   no other fault. It folds every case first, so a log whose case streams do not fold now fails
-  `store verify` with `history_invalid`, as `report vdt --db` already did. Only `completedAt` is
-  ordered: a reduction or a projected reduction dated before detection still publishes. This adds
-  a divergence between the paths, refuse versus publish
-  (ADR 0014, Decision 15): a stateless run at an as-of later than the evaluation's `completedAt`
-  refuses a failure that a store which ingested it by then publishes, and a store that ingested it
-  later refuses an evaluation that a stateless run at an earlier as-of accepts. The documented
-  recipes meet neither, and no golden moved. Amends ADR 0007, ADR 0008, and ADR 0014. Verified by
-  2,082 tests on Python 3.11, 3.13, and 3.14.
+  `store verify` with `history_invalid`, as `report vdt --db` already did. The writers and
+  `store verify` skip a case no report prints: one with no open group (`stale_case`) or no
+  resolvable detection time. Only `completedAt` is ordered: a reduction or a projected reduction
+  dated before detection still publishes. This adds a divergence between the paths, refuse versus
+  publish (ADR 0014, Decision 15): a stateless run at an as-of later than the evaluation's
+  `completedAt` refuses a failure that a store which ingested it by then publishes, and a store that
+  ingested it later refuses an evaluation that a stateless run at an earlier as-of accepts. The
+  documented recipes meet neither, and no golden moved. Amends ADR 0007, ADR 0008, and ADR 0014.
+  Verified by 2,086 tests on Python 3.11, 3.13, and 3.14.
 
 ## 0.3.0a0 - 2026-08-23
 

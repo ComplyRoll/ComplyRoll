@@ -787,8 +787,10 @@ def _apply_evaluations(
         )
     )
     matched = _match_cases(evaluation_set, cases)
-    _require_unique_effective_ids(cases, matched)
+    # The order check runs before the effective tracking id check, as the compiler orders
+    # them, so a file refused for both prints the report's ordering lines.
     warnings: list[str] = _require_evaluation_order(repository, cases, matched)
+    _require_unique_effective_ids(cases, matched)
     counters = dict.fromkeys(
         (
             "evaluations_appended",

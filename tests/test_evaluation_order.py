@@ -32,10 +32,13 @@ from typing import Any
 from test_reports import (
     FAILED_EVALUATIONS,
     FIXTURES,
+    TRUNCATED_CASE,
+    TRUNCATED_SHA256,
     compile_fixtures,
     evaluation_json,
     evaluations_for,
     options,
+    system_match,
 )
 
 from complyroll.adapters import IngestResult, ingest_stig_artifact
@@ -48,6 +51,7 @@ from complyroll.history import (
     CASE_EVALUATED,
     DETECTION_ATTESTED,
     AttestationOutcome,
+    EvaluationMatchError,
     EvaluationOrderError,
     EvaluationOutcome,
     HistoryFault,
@@ -148,9 +152,13 @@ RATIONALE = "The synthetic results declare no source timestamp."
 ORPHAN_CASE = "case-00000000000000ff"
 #: Another, for a case created with a metadata envelope `store verify` faults.
 SPARE_CASE = "case-00000000000000fe"
+#: A third, for a case stream that is contract-valid but does not fold.
+UNFOLDED_CASE = "case-00000000000000fd"
 #: The instant a failure is recorded at in `CommandOrderTests`, and an evaluation before it.
 FAILURE_RECORDED_AT = "2026-08-21T12:00:00Z"
 FAILURE_EVALUATED_AT = "2026-08-20T12:00:00Z"
+#: An evaluation of that failure a day after it is recorded, which is in order.
+FAILURE_LATER_EVALUATED_AT = "2026-08-22T12:00:00Z"
 
 
 def rendered(diagnostics: Sequence[ReportDiagnostic]) -> list[str]:
@@ -343,6 +351,28 @@ class CompilerOrderTests(unittest.TestCase):
                     [item.code for item in report.diagnostics if "evaluation_before" in item.code],
                     [],
                 )
+
+    def test_a_system_record_evaluated_after_its_detection_is_published(self) -> None:
+        # A detection process failure is detected at the run's as-of on the stateless path,
+        # so an evaluation completed a day later is in order, not only one at that instant.
+        evaluations = evaluations_for(
+            {"match": system_match(TRUNCATED_SHA256), "completedAt": FAILURE_LATER_EVALUATED_AT}
+        )
+
+        report = compile_fixtures(
+            artifacts=(FIXTURES / "failed-truncated.sarif",),
+            evaluations=evaluations,
+            record_failed_imports=True,
+        )
+
+        (vulnerability,) = report.document["vulnerabilities"]
+        self.assertEqual(vulnerability["providerTrackingId"], TRUNCATED_CASE)
+        self.assertEqual(vulnerability["detection"]["detectedAt"], FAILURE_RECORDED_AT)
+        self.assertEqual(vulnerability["evaluationCompletedAt"], FAILURE_LATER_EVALUATED_AT)
+        self.assertEqual(vulnerability["x-complyroll"]["detectedAtSource"], "system")
+        self.assertEqual(
+            [item.code for item in report.diagnostics if "evaluation_before" in item.code], []
+        )
 
     def test_a_partly_timestamped_record_warns_with_both_instants(self) -> None:
         # The attestation is supplied and still does not govern a partial group, so the
@@ -664,6 +694,66 @@ class WriterOrderTests(HistoryOrderFixture):
         by_rule = {group.source_record_id: group.tracking_id for group in groups}
         self.evaluate_around(evaluations, by_rule[BANNER_RULE], by_rule[SSHD_RULE])
         self.assertEqual(self.report_refusal(), rendered(refused.diagnostics))
+
+    def test_evaluate_names_the_ordering_errors_of_a_file_that_also_collides(self) -> None:
+        # Two entries evaluated before detection also claim one trackingId override. The
+        # compiler checks tracking ids only on a record set with no error, so the report
+        # names both ordering errors; `cases evaluate` prints those lines, not the collision.
+        banner = self.artifact("banner", [("lab-timed", TIMED_AT)])
+        sshd = self.artifact("sshd", [("lab-timed", TIMED_AT)], rule=SSHD_RULE)
+        self.ingest(banner, sshd)
+        self.correlate()
+
+        def file_of(completed_at: str) -> str:
+            entries = [
+                json.loads(
+                    evaluation_json(
+                        match={"sourceRecordId": rule, "sourceType": "xccdf"},
+                        completedAt=completed_at,
+                        trackingId="PROVIDER-SHARED-1",
+                    )
+                )["evaluations"][0]
+                for rule in (BANNER_RULE, SSHD_RULE)
+            ]
+            return json.dumps({"evaluations": entries})
+
+        content = file_of(EARLY)
+        evaluations = parse_evaluations(content.encode("utf-8"))
+        with self.assertRaises(ReportCompileError) as compiled:
+            compile_record_set_from_artifacts(
+                [banner, sshd], options=options(detected_at=None), evaluations=evaluations
+            )
+        self.assertEqual(
+            [item.code for item in compiled.exception.diagnostics],
+            ["evaluation_before_detection"] * 2,
+        )
+        lines = rendered(compiled.exception.diagnostics)
+        # The same file dated after detection is refused for the collision alone.
+        later = parse_evaluations(file_of("2026-08-11T12:00:00Z").encode("utf-8"))
+        with self.assertRaises(EvaluationMatchError) as collided:
+            self.evaluate(later)
+        self.assertIn("'PROVIDER-SHARED-1' is claimed by", str(collided.exception))
+
+        refused = self.refused(lambda: self.evaluate(evaluations))
+
+        self.assertEqual(rendered(refused.diagnostics), lines)
+        path = self.directory / "evaluations.json"
+        path.write_text(content, encoding="utf-8")
+        before = self.sequence
+        printed = run(
+            [
+                "cases",
+                "evaluate",
+                "--db",
+                str(self.database),
+                "--evaluations",
+                str(path),
+                "--actor",
+                "tester",
+            ]
+        )
+        self.assertEqual(printed, (1, "", "".join(f"{line}\n" for line in lines)))
+        self.assertEqual(self.sequence, before)
 
     def test_evaluate_applies_a_partial_group_with_the_report_warning(self) -> None:
         self.ingest(self.artifact("partial", [("lab-timed", TIMED_AT), ("lab-untimed", None)]))
@@ -1004,6 +1094,40 @@ class CommandOrderTests(unittest.TestCase):
     def verify(self) -> str:
         return self.succeeds(["store", "verify", "--db", str(self.database)])
 
+    def record_failure(self, completed_at: str) -> tuple[Path, str]:
+        """Record the truncated SARIF's failure at `FAILURE_RECORDED_AT` and open its case.
+
+        Returns an evaluations file that evaluates the failure at `completed_at`, and its
+        content.
+        """
+
+        code, _, err = run(
+            [
+                "ingest",
+                str(FIXTURES / "failed-truncated.sarif"),
+                "--db",
+                str(self.database),
+                "--as-of",
+                FAILURE_RECORDED_AT,
+                "--record-failed-imports",
+                "--actor",
+                "tester",
+            ]
+        )
+        # Exit 3: the failure was recorded rather than stopping the ingest.
+        self.assertEqual(code, 3, msg=err)
+        self.succeeds(["cases", "correlate", "--db", str(self.database), "--actor", "tester"])
+        (entry,) = (
+            item
+            for item in json.loads(FAILED_EVALUATIONS.read_text(encoding="utf-8"))["evaluations"]
+            if item["match"]["sourceRecordId"] == "detection-process-failure"
+        )
+        entry["completedAt"] = completed_at
+        content = json.dumps({"evaluations": [entry]})
+        evaluations = self.directory / "evaluations.json"
+        evaluations.write_text(content, encoding="utf-8")
+        return evaluations, content
+
     def test_an_all_missing_sweep_names_every_blocking_case_and_appends_nothing(self) -> None:
         banner = self.directory / "banner.xml"
         banner.write_text(xccdf("banner", [("lab-untimed", None)], BANNER_RULE), encoding="utf-8")
@@ -1116,29 +1240,7 @@ class CommandOrderTests(unittest.TestCase):
         # holds in history (decision 3), never "report from history".
         database = ["--db", str(self.database)]
         actor = ["--actor", "tester"]
-        code, _, err = run(
-            [
-                "ingest",
-                str(FIXTURES / "failed-truncated.sarif"),
-                *database,
-                "--as-of",
-                FAILURE_RECORDED_AT,
-                "--record-failed-imports",
-                *actor,
-            ]
-        )
-        # Exit 3: the failure was recorded rather than stopping the ingest.
-        self.assertEqual(code, 3, msg=err)
-        self.succeeds(["cases", "correlate", *database, *actor])
-        (entry,) = (
-            item
-            for item in json.loads(FAILED_EVALUATIONS.read_text(encoding="utf-8"))["evaluations"]
-            if item["match"]["sourceRecordId"] == "detection-process-failure"
-        )
-        entry["completedAt"] = FAILURE_EVALUATED_AT
-        content = json.dumps({"evaluations": [entry]})
-        evaluations = self.directory / "evaluations.json"
-        evaluations.write_text(content, encoding="utf-8")
+        evaluations, content = self.record_failure(FAILURE_EVALUATED_AT)
         verified = self.verify()
 
         evaluated = run(["cases", "evaluate", *database, "--evaluations", str(evaluations), *actor])
@@ -1189,6 +1291,64 @@ class CommandOrderTests(unittest.TestCase):
             self.assertEqual(printed.count(message), 1)
             self.assertIn(f"(source system); {SYSTEM_REMEDY}", printed)
             self.assertNotIn("report from history", printed)
+
+    def test_a_failure_evaluated_after_its_ingest_is_published_on_every_persisted_surface(
+        self,
+    ) -> None:
+        # Detected at the ingest --as-of, the failure evaluated a day later is in order: the
+        # writer appends it, `store verify` finds no fault, and the report publishes it.
+        evaluations, _ = self.record_failure(FAILURE_LATER_EVALUATED_AT)
+
+        evaluated = self.succeeds(
+            [
+                "cases",
+                "evaluate",
+                "--db",
+                str(self.database),
+                "--evaluations",
+                str(evaluations),
+                "--actor",
+                "tester",
+            ]
+        )
+
+        self.assertIn("evaluations: 1 appended, 0 skipped", evaluated)
+        self.assertTrue(self.verify().startswith("ok: "))
+        code, out, err = report_vdt(self.database)
+        self.assertEqual(code, 0, msg=err)
+        self.assertNotIn("evaluation_before", err + out)
+        self.assertIn(FAILURE_LATER_EVALUATED_AT, out)
+
+    def test_verify_folds_every_case_in_a_store_with_no_evaluation(self) -> None:
+        # The order check folds every case before it looks for an evaluation, so a case
+        # stream that is contract-valid but does not fold fails `store verify`, as a report
+        # from the store refuses it, although no case in the store is evaluated.
+        store = SQLiteEventStore(self.database)
+        try:
+            EventRepository(store).append(
+                case_stream_id(UNFOLDED_CASE),
+                DETECTION_ATTESTED,
+                {
+                    "detectedAt": "2026-08-10T00:00:00Z",
+                    "rationale": RATIONALE,
+                    "attestedAt": WRITTEN_AT_TEXT,
+                },
+                occurred_at=WRITTEN_AT,
+                metadata=EventMetadata(actor="tester"),
+                expected_version=0,
+            )
+        finally:
+            store.close()
+
+        self.assertEqual(
+            verify_store(self.database),
+            (
+                1,
+                "",
+                f"error: history_invalid: case {UNFOLDED_CASE!r} begins with "
+                "'detection.attested', not 'case.created'\n",
+            ),
+        )
 
 
 if __name__ == "__main__":

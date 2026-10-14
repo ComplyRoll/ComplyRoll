@@ -427,3 +427,24 @@ only the cases it attests, so damage there does not stop them, while `report --d
 `cases list` and `store verify` still refuse it. `ingest` appends only to artifact and failure
 streams, folds no case stream, and records evidence (amendment 2026-10-14); an order inversion
 `ingest` leaves elsewhere is still not a writer refusal.
+
+The content-neutral faults are reported by `store verify` and refused by no reader and no case
+writer. They are defined by shape, because `event_stream_mismatch` and
+`payload_contract_invalid` are refused on a case stream: an event on a non-case stream whose
+type does not belong there, with any `payload_contract_invalid`, `artifact_incomplete` or
+`artifact_overfull` that event alone causes, since the artifact and failure readers read only
+the types that belong on their streams and no reader reads a stream of no kind; an
+`event_metadata_invalid`; and a `failure_schema_unmarked`. The repository never writes one,
+and none changes the bytes of any report. History is append-only, so refusing them on read
+would leave the store unreportable with no repair. `store verify` checks the metadata
+envelope's shape, not who wrote it. Run `store verify` before relying on a store.
+
+`store verify` still checks evaluation order when its only other faults are
+`event_metadata_invalid` or `failure_schema_unmarked`, the two that are content-neutral on any
+stream and never affect a fold. If the check then cannot fold or rehydrate, the faults already
+found are reported alone, as before. Without this, a store with one tampered metadata envelope
+could never again report an inversion from `store verify`, while every report from it refuses
+the record. This supersedes, for those two codes, the 2026-10-14 amendment's "The check runs
+only on a log with no other fault". With the paragraph above it narrows the reading of the
+second 2026-08-22 amendment's metadata bullet: the repository refuses an envelope outside the
+rules at append, and at rest only `store verify` reports it. Neither earlier text is edited.

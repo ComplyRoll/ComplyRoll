@@ -173,8 +173,10 @@ those three match, and a test pins it.
   store verifies that the expected tables, indexes, and triggers are still present.
 - Reads verify that global sequences and stream versions are contiguous, so a deleted event is
   reported as an integrity error instead of being skipped.
-- Reads apply the append rules to event names, version columns, the sequence counter, and both
-  JSON columns. Event IDs, stream identifiers, and event types must be at most 500 characters
+- Reads apply the append rules to event names, version columns, and the sequence counter, and
+  the canonical-JSON checks to both JSON columns. The metadata key rule is applied at append
+  and by `store verify`, not on read (ADR 0008). Event IDs, stream identifiers, and event
+  types must be at most 500 characters
   from the allowed set. The stream version and event version must be stored as integers of at least
   1, and the sequence counter as one integer in one row. Stored JSON must pass the checks `append`
   runs on it (nesting, value count, size, no

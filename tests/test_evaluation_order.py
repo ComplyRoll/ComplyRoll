@@ -47,9 +47,11 @@ from complyroll.cli import main
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import EventMetadata, EventRepository, case_stream_id, iso_utc
 from complyroll.history import (
+    ARTIFACT_INGESTED,
     AUDIT_FAULT_CODES,
     CASE_CREATED,
     CASE_EVALUATED,
+    CASE_OBSERVATION_LINKED,
     DETECTION_ATTESTED,
     AttestationOutcome,
     EvaluationMatchError,
@@ -1084,8 +1086,8 @@ class WriterOrderTests(HistoryOrderFixture):
             self.assertEqual(audit_history(self.repository), ())
             self.assertEqual(verify_store(self.database)[0], 0)
 
-        with self.subTest("another fault is reported alone (open decision E)"):
-            self.open_store("damaged.db")
+        def inverted(name: str) -> str:
+            self.open_store(name)
             self.ingest(untimed)
             self.correlate()
             case = self.only_case()
@@ -1104,22 +1106,70 @@ class WriterOrderTests(HistoryOrderFixture):
                 [fault.code for fault in audit_history(self.repository)],
                 ["evaluation_before_detection"],
             )
+            return case
+
+        # Decision 6: a fault no reader refuses on any stream leaves the order check
+        # running, so one tampered envelope does not hide an inversion for good.
+        envelopes = {
+            "an extra metadata key": {"planted": "x"},
+            "a method outside the rules": {"method": "not-cli"},
+        }
+        for index, (label, envelope) in enumerate(envelopes.items()):
+            with self.subTest(f"a content-neutral fault is reported with it: {label}"):
+                inverted(f"metadata-{index}.db")
+                self.repository.store.append(
+                    case_stream_id(SPARE_CASE),
+                    [
+                        NewEvent(
+                            event_type=CASE_CREATED,
+                            occurred_at=WRITTEN_AT,
+                            payload=orphan_created(SPARE_CASE),
+                            metadata={**self.metadata.to_dict(), **envelope},
+                        )
+                    ],
+                    expected_version=0,
+                )
+
+                damaged = audit_history(self.repository)
+
+                self.assertEqual(
+                    [fault.code for fault in damaged],
+                    ["evaluation_before_detection", "event_metadata_invalid"],
+                )
+                code, out, err = verify_store(self.database)
+                self.assertEqual((code, out), (1, ""))
+                for fault in damaged:
+                    self.assertIn(f"error: {fault.render()}\n", err)
+                self.assertIn("faults: 2 domain fault(s) in", err)
+
+        with self.subTest("a misplaced event is reported alone"):
+            case = inverted("misplaced.db")
+            artifact = next(
+                record.stream_id
+                for record in self.repository.read_all()
+                if record.event_type == ARTIFACT_INGESTED
+            )
+            link = next(
+                record
+                for record in self.repository.read_stream(case_stream_id(case))
+                if record.event_type == CASE_OBSERVATION_LINKED
+            )
             self.repository.store.append(
-                case_stream_id(SPARE_CASE),
+                artifact,
                 [
                     NewEvent(
-                        event_type=CASE_CREATED,
+                        event_type=CASE_OBSERVATION_LINKED,
                         occurred_at=WRITTEN_AT,
-                        payload=orphan_created(SPARE_CASE),
-                        metadata={**self.metadata.to_dict(), "method": "not-cli"},
+                        payload=dict(link.payload),
+                        metadata=self.metadata.to_dict(),
                     )
                 ],
-                expected_version=0,
+                expected_version=len(self.repository.read_stream(artifact)),
             )
 
             damaged = audit_history(self.repository)
 
-            self.assertEqual([fault.code for fault in damaged], ["event_metadata_invalid"])
+            self.assertEqual([fault.code for fault in damaged], ["event_stream_mismatch"])
             code, out, err = verify_store(self.database)
             self.assertEqual((code, out), (1, ""))
             self.assertIn(f"error: {damaged[0].render()}\n", err)

@@ -459,7 +459,8 @@ All notable project changes will be documented here.
   nothing. `store verify` gains the audit fault `evaluation_before_detection`, reported at the
   current evaluation's sequence with the compiler's message, because `ingest` can move a detection
   time later when a newer parser reads a timestamp an older one did not; it runs only on a log with
-  no other fault. It folds every case first, so a log whose case streams do not fold now fails
+  no other fault but `event_metadata_invalid` or `failure_schema_unmarked`, and beside those only
+  when it can fold. It folds every case first, so a log whose case streams do not fold now fails
   `store verify` with `history_invalid`, as `report vdt --db` already did. The writers and
   `store verify` skip a case no report prints: one with no open group (`stale_case`) or no
   resolvable detection time. Only `completedAt` is ordered: a reduction or a projected reduction
@@ -484,6 +485,18 @@ All notable project changes will be documented here.
   store whose case streams fold, correlate appends exactly what it did before. Amends ADR 0008
   (amendment 2026-10-14, second). Verified by `tests/test_history.py` with three damaged-stream
   shapes, each alone and inside a caller's transaction.
+- `store verify` is documented as the one command that reports the content-neutral faults: a
+  metadata envelope outside the rules (`event_metadata_invalid`), an event on a non-case stream
+  it does not belong on (`event_stream_mismatch`, with the contract or count faults only that
+  event causes), and a failure schema marker left low (`failure_schema_unmarked`). No reader and
+  no case writer refuses them, none changes the bytes of any report, and refusing them on read
+  would leave an append-only store unreportable for good. The evaluation order check now also
+  runs when a log's only other faults are `event_metadata_invalid` or `failure_schema_unmarked`,
+  so one tampered metadata envelope no longer hides an inversion from `store verify`; when the
+  check cannot fold such a log, the faults found are reported alone, as before. Amends ADR 0008
+  (amendment 2026-10-14, second). Verified by `tests/test_cli.py`, where eight shapes fail
+  `store verify` at their sequence while `report vdt --db` and every case writer behave as on a
+  clean twin, and by `tests/test_evaluation_order.py`.
 
 ## 0.3.0a0 - 2026-08-23
 

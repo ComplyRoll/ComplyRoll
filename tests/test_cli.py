@@ -1774,6 +1774,38 @@ class PersistedStoreTestCase(unittest.TestCase):
         with SQLiteEventStore(self.database) as store:
             return store.latest_sequence
 
+    @staticmethod
+    def canonical(value: Mapping[str, Any]) -> str:
+        return json.dumps(
+            value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+
+    def raw(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def update(self, work: Callable[[sqlite3.Connection], object]) -> None:
+        """Run `work` with only `events_reject_update` dropped, then rebuild it as stored."""
+
+        with closing(self.raw()) as connection:
+            (restore,) = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'events_reject_update'"
+            ).fetchone()
+            connection.execute("DROP TRIGGER events_reject_update")
+            work(connection)
+            connection.execute(restore)
+
+    def copy_store(self, source: Path, name: str) -> None:
+        """Point the test at a copy of one store, so each damage starts from the same log."""
+
+        self.database = self.workspace / name
+        with (
+            closing(sqlite3.connect(source)) as origin,
+            closing(sqlite3.connect(self.database)) as copy,
+        ):
+            origin.backup(copy)
+
 
 class PersistedSequenceTests(PersistedStoreTestCase):
     """ADR 0008 Decision 6: the documented sequence rebuilds the golden report."""
@@ -5237,16 +5269,6 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertNotIn("Traceback", report_err)
         self.assertIn(f"error: history_invalid: {orphaned}", report_err)
 
-    def copy_store(self, source: Path, name: str) -> None:
-        """Point the test at a copy of one store, so each damage starts from the same log."""
-
-        self.database = self.workspace / name
-        with (
-            closing(sqlite3.connect(source)) as origin,
-            closing(sqlite3.connect(self.database)) as copy,
-        ):
-            origin.backup(copy)
-
     def assert_one_failure_mismatch(self, sequence: int, expected: str) -> None:
         """Require `store verify` and `report vdt --db` to name one failure-stream fault."""
 
@@ -5567,6 +5589,255 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn(f"error: store_integrity: {message}", err)
+
+
+class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
+    """ADR 0008 amendment 2026-10-14 (second): the faults only `store verify` reports.
+
+    Each shape is planted in a copy of one store and set against an untouched copy, its
+    clean twin. `store verify` names the shape's faults at their sequence and exits 1, while
+    `report vdt --db` writes the twin's bytes and the writers an operator runs after a rescan
+    append exactly what they append on the twin. A policy that made a reader or a case writer
+    refuse one of these shapes has to change this test on purpose.
+    """
+
+    #: The rationale the revised attestation records, on the twin and the planted store alike.
+    REVISED = "The rescan of a second host confirmed the 1 August assessment."
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The fixtures with one recorded failure, correlated and attested: a store every
+        # report renders, holding artifact, failure and case streams.
+        code, _out, err = run(
+            [
+                "ingest",
+                *PERSISTED_ARTIFACTS,
+                str(TRUNCATED_FIXTURE),
+                "--record-failed-imports",
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+        self.assertEqual(code, 3, err)
+        self.correlate()
+        self.attest_missing()
+        self.clean = self.database
+        # The Windows checklist from a second host: `cases correlate` links it to the
+        # Windows case, which the example evaluations match and the writers attest again.
+        self.rescan = self.workspace / "windows-rescan.ckl"
+        self.rescan.write_text(
+            (FIXTURES / "windows-host.ckl")
+            .read_text(encoding="utf-8")
+            .replace("lab-win-01", "lab-win-02"),
+            encoding="utf-8",
+        )
+        self.copy_store(self.clean, "twin.db")
+        self.assertEqual(run(["store", "verify", "--db", str(self.database)])[0], 0)
+        self.twin_outputs = self.outputs("twin")
+        self.twin_appended = self.appended()
+        # Every writer has work to do, so an equal count is never two empty runs.
+        self.assertNotIn(0, self.twin_appended.values())
+
+    def outputs(self, name: str) -> tuple[bytes, bytes]:
+        """Write `report vdt --db` as JSON and Markdown and return both files' bytes."""
+
+        output = self.workspace / f"{name}.json"
+        markdown = self.workspace / f"{name}.md"
+        self.report(output=output, markdown=markdown)
+        return output.read_bytes(), markdown.read_bytes()
+
+    def appended(self) -> dict[str, int]:
+        """Ingest the rescan, then run each case writer; return what each command appended."""
+
+        steps: dict[str, Callable[[], object]] = {
+            "ingest": lambda: self.succeeds(
+                ["ingest", str(self.rescan), "--db", str(self.database), "--as-of", INGESTED_AT]
+            ),
+            "cases correlate": self.correlate,
+            "cases evaluate": self.evaluate,
+            "cases attest-detection --case": lambda: self.attest_case(
+                WINDOWS_CASE, rationale=self.REVISED
+            ),
+        }
+        counts: dict[str, int] = {}
+        for command, step in steps.items():
+            before = self.latest_sequence()
+            step()
+            counts[command] = self.latest_sequence() - before
+        return counts
+
+    def verify_faults(self) -> list[tuple[int, str]]:
+        """Require `store verify` to exit 1 and return each fault's sequence and code."""
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual((code, out), (1, ""), msg=err)
+        self.assertNotIn("Traceback", err)
+        faults: list[tuple[int, str]] = []
+        for line in err.splitlines():
+            if line.startswith("error: sequence "):
+                where, fault, _message = line.removeprefix("error: ").split(": ", 2)
+                faults.append((int(where.removeprefix("sequence ")), fault))
+        self.assertIn(f"faults: {len(faults)} domain fault(s) in", err)
+        return faults
+
+    def assert_content_neutral(self, name: str, plant: Callable[[], list[tuple[int, str]]]) -> None:
+        """Plant one shape in a fresh copy and hold every command but `store verify` to the twin."""
+
+        self.copy_store(self.clean, f"{name}.db")
+        expected = plant()
+
+        self.assertEqual(self.verify_faults(), expected)
+        self.assertEqual(self.outputs(name), self.twin_outputs)
+        self.assertEqual(self.appended(), self.twin_appended)
+
+    def record(self, event_type: str, stream_id: str | None = None) -> EventRecord:
+        """Return the first event of a type in the log, on one stream if one is named."""
+
+        return next(
+            record
+            for record in self.records()
+            if record.event_type == event_type and stream_id in (None, record.stream_id)
+        )
+
+    def add_metadata_key(
+        self, event_type: str, stream_id: str | None = None
+    ) -> list[tuple[int, str]]:
+        """Store a key the rules do not know in one event's metadata, which no digest covers."""
+
+        record = self.record(event_type, stream_id)
+
+        def work(connection: sqlite3.Connection) -> None:
+            (stored,) = connection.execute(
+                "SELECT metadata_json FROM events WHERE sequence = ?", (record.sequence,)
+            ).fetchone()
+            connection.execute(
+                "UPDATE events SET metadata_json = ? WHERE sequence = ?",
+                (self.canonical({**json.loads(stored), "planted": "x"}), record.sequence),
+            )
+
+        self.update(work)
+        return [(record.sequence, "event_metadata_invalid")]
+
+    def misplace(
+        self, stream_id: str, event_type: str, payload: Mapping[str, Any], codes: Sequence[str]
+    ) -> list[tuple[int, str]]:
+        """Append one event past the repository in an envelope the rules accept.
+
+        Returns `codes` at the appended event's sequence, the faults it alone causes.
+        """
+
+        with SQLiteEventStore(self.database) as store:
+            (appended,) = store.append(
+                stream_id,
+                [
+                    NewEvent(
+                        event_type=event_type,
+                        occurred_at=datetime(2026, 8, 21, 12, 0, tzinfo=UTC),
+                        payload=dict(payload),
+                        metadata=dict(SMUGGLED_METADATA),
+                    )
+                ],
+                expected_version=len(store.read_stream(stream_id)),
+            )
+        return [(appended.sequence, code) for code in codes]
+
+    def test_a_metadata_envelope_outside_the_rules_changes_no_report_and_no_writer(
+        self,
+    ) -> None:
+        events = {
+            "on the case the writers extend": ("case.created", f"case/{WINDOWS_CASE}"),
+            "on an artifact record": ("artifact.ingested", None),
+            "on an observation": ("observation.recorded", None),
+        }
+        for index, (label, (event_type, stream_id)) in enumerate(events.items()):
+            with self.subTest(label):
+                self.assert_content_neutral(
+                    f"metadata-{index}", partial(self.add_metadata_key, event_type, stream_id)
+                )
+
+    def test_an_event_on_a_non_case_stream_it_does_not_belong_on_changes_nothing_else(
+        self,
+    ) -> None:
+        artifact = self.record("artifact.ingested")
+        failure = self.record("failure.recorded")
+        link = self.record("case.observation_linked", f"case/{WINDOWS_CASE}")
+        shapes: dict[str, tuple[str, str, Mapping[str, Any], tuple[str, ...]]] = {
+            "a case event on an artifact stream": (
+                artifact.stream_id,
+                link.event_type,
+                link.payload,
+                ("event_stream_mismatch",),
+            ),
+            "an invalid case event on an artifact stream": (
+                artifact.stream_id,
+                link.event_type,
+                {**link.payload, "planted": "x"},
+                ("event_stream_mismatch", "payload_contract_invalid"),
+            ),
+            "an unpublished type on a stream of no kind": (
+                "misc/x",
+                "probe.planted",
+                {},
+                ("event_stream_mismatch", "payload_contract_invalid"),
+            ),
+            "an artifact record on a failure stream": (
+                failure.stream_id,
+                artifact.event_type,
+                artifact.payload,
+                ("artifact_incomplete", "event_stream_mismatch"),
+            ),
+        }
+        for index, (label, (stream_id, event_type, payload, codes)) in enumerate(shapes.items()):
+            with self.subTest(label):
+                self.assert_content_neutral(
+                    f"misplaced-{index}",
+                    partial(self.misplace, stream_id, event_type, payload, codes),
+                )
+
+    def test_a_failure_schema_marker_left_low_changes_no_report_and_no_writer(self) -> None:
+        failure = self.record("failure.recorded")
+
+        def plant() -> list[tuple[int, str]]:
+            with closing(self.raw()) as connection:
+                connection.execute("PRAGMA user_version = 1")
+            return [(failure.sequence, "failure_schema_unmarked")]
+
+        self.assert_content_neutral("schema", plant)
+
+    def test_a_failure_schema_marker_left_low_does_not_hide_an_evaluation_order_inversion(
+        self,
+    ) -> None:
+        # The order check runs beside this fault as beside an envelope outside the rules,
+        # so a marker left low does not hide an inversion for good.
+        self.copy_store(self.clean, "schema-order.db")
+        self.evaluate()
+        failure = self.record("failure.recorded")
+        evaluated = self.record("case.evaluated")
+        with SQLiteEventStore(self.database) as store:
+            (inverted,) = store.append(
+                evaluated.stream_id,
+                [
+                    NewEvent(
+                        event_type=evaluated.event_type,
+                        occurred_at=evaluated.occurred_at,
+                        payload={**evaluated.payload, "completedAt": "2020-01-01T00:00:00Z"},
+                        metadata=dict(evaluated.metadata),
+                    )
+                ],
+                expected_version=len(store.read_stream(evaluated.stream_id)),
+            )
+        with closing(self.raw()) as connection:
+            connection.execute("PRAGMA user_version = 1")
+
+        self.assertEqual(
+            self.verify_faults(),
+            [
+                (failure.sequence, "failure_schema_unmarked"),
+                (inverted.sequence, "evaluation_before_detection"),
+            ],
+        )
 
 
 class ReportSourceConflictTests(unittest.TestCase):
@@ -5970,30 +6241,8 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.evaluations.write_text(json.dumps(payload), encoding="utf-8")
 
     @staticmethod
-    def canonical(value: Mapping[str, Any]) -> str:
-        return json.dumps(
-            value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        )
-
-    @staticmethod
     def digest(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-    def raw(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        return connection
-
-    def update(self, work: Callable[[sqlite3.Connection], object]) -> None:
-        """Run `work` with only `events_reject_update` dropped, then rebuild it as stored."""
-
-        with closing(self.raw()) as connection:
-            (restore,) = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'events_reject_update'"
-            ).fetchone()
-            connection.execute("DROP TRIGGER events_reject_update")
-            work(connection)
-            connection.execute(restore)
 
     def insert(self, **overrides: object) -> None:
         """INSERT one row after the last; no trigger guards INSERT."""

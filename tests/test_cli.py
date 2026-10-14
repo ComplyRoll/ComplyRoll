@@ -5484,6 +5484,29 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn("runId", err)
         self.assertIn("faults: 1 domain fault(s) in", err)
 
+    def test_a_metadata_fault_beside_a_case_stream_naming_no_tracking_id_is_named(self) -> None:
+        # A case stream whose id names no tracking id fails its fold with a plain
+        # ValueError, which no audit code names. The metadata fault is still reported.
+        self.populate()
+        sequence = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id="case/not-a-valid-id",
+            metadata={**SMUGGLED_METADATA, "runId": "run-not-a-uuid"},
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertNotIn("Traceback", err)
+        self.assertIn(f"error: sequence {sequence}: event_metadata_invalid:", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
     def test_a_rewritten_payload_is_named_and_exits_one(self) -> None:
         self.populate()
         tamper_with_one_payload(self.database)
@@ -5592,13 +5615,16 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
 
 class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
-    """ADR 0008 amendment 2026-10-14 (second): the faults only `store verify` reports.
+    """ADR 0008 amendment 2026-10-14 (second): the content-neutral faults `store verify` reports.
 
     Each shape is planted in a copy of one store and set against an untouched copy, its
     clean twin. `store verify` names the shape's faults at their sequence and exits 1, while
-    `report vdt --db` writes the twin's bytes and the writers an operator runs after a rescan
-    append exactly what they append on the twin. A policy that made a reader or a case writer
-    refuse one of these shapes has to change this test on purpose.
+    `report vdt --db` writes the twin's bytes, `cases list` and `cases history` exit and
+    print as on the twin, and the writers an operator runs after a rescan append events of
+    the same types to the same streams, in the same order, as on the twin. Each writer
+    stamps everything it appends with one run id, new to the store and to every other
+    writer. A policy that made a reader or a case writer refuse one of these shapes has to
+    change this test on purpose.
     """
 
     #: The rationale the revised attestation records, on the twin and the planted store alike.
@@ -5636,9 +5662,20 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
         self.copy_store(self.clean, "twin.db")
         self.assertEqual(run(["store", "verify", "--db", str(self.database)])[0], 0)
         self.twin_outputs = self.outputs("twin")
+        self.twin_cases = sorted(
+            {
+                record.stream_id.removeprefix("case/")
+                for record in self.records()
+                if record.stream_id.startswith("case/")
+            }
+        )
+        self.assertIn(WINDOWS_CASE, self.twin_cases)
+        self.twin_reads = self.case_reads()
+        # Every read succeeds on the twin, so equal reads are never two refusals.
+        self.assertEqual({code for code, _out in self.twin_reads.values()}, {0})
         self.twin_appended = self.appended()
-        # Every writer has work to do, so an equal count is never two empty runs.
-        self.assertNotIn(0, self.twin_appended.values())
+        # Every writer has work to do, so equal appends are never two empty runs.
+        self.assertNotIn([], self.twin_appended.values())
 
     def outputs(self, name: str) -> tuple[bytes, bytes]:
         """Write `report vdt --db` as JSON and Markdown and return both files' bytes."""
@@ -5648,8 +5685,28 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
         self.report(output=output, markdown=markdown)
         return output.read_bytes(), markdown.read_bytes()
 
-    def appended(self) -> dict[str, int]:
-        """Ingest the rescan, then run each case writer; return what each command appended."""
+    def case_reads(self) -> dict[str, tuple[int, str]]:
+        """Run `cases list`, then `cases history` for each case; return each status and stdout.
+
+        Every case of the twin is read, which covers the case a shape damages and, for a
+        shape on a non-case stream, a case of the store. No shape changes what these print:
+        the key planted beside a case event's actor leaves the actor shown, and every
+        misplaced event lands on a non-case stream, so the reads equal the twin's in full.
+        """
+
+        reads = {"cases list": run(["cases", "list", "--db", str(self.database)])[:2]}
+        for tracking_id in self.twin_cases:
+            argv = ["cases", "history", tracking_id, "--db", str(self.database)]
+            reads[f"cases history {tracking_id}"] = run(argv)[:2]
+        return reads
+
+    def appended(self) -> dict[str, list[tuple[str, str]]]:
+        """Ingest the rescan, then run each case writer; return what each command appended.
+
+        Each command maps to the type and stream of every event it appended, in log order.
+        Every event one command appends carries one run id, which no event stored before the
+        command carries, planted events included, and which no other command reuses.
+        """
 
         steps: dict[str, Callable[[], object]] = {
             "ingest": lambda: self.succeeds(
@@ -5661,12 +5718,31 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
                 WINDOWS_CASE, rationale=self.REVISED
             ),
         }
-        counts: dict[str, int] = {}
+        appended: dict[str, list[tuple[str, str]]] = {}
+        run_ids: dict[str, str] = {}
         for command, step in steps.items():
             before = self.latest_sequence()
             step()
-            counts[command] = self.latest_sequence() - before
-        return counts
+            with closing(self.raw()) as connection:
+                rows = connection.execute(
+                    "SELECT sequence, event_type, stream_id, metadata_json FROM events "
+                    "ORDER BY sequence"
+                ).fetchall()
+            stored = {
+                json.loads(row["metadata_json"]).get("runId")
+                for row in rows
+                if row["sequence"] <= before
+            }
+            added = [row for row in rows if row["sequence"] > before]
+            appended[command] = [(row["event_type"], row["stream_id"]) for row in added]
+            stamped = {json.loads(row["metadata_json"]).get("runId") for row in added}
+            self.assertEqual(len(stamped), 1, msg=f"{command} stamped {stamped}")
+            (run_id,) = stamped
+            self.assertIsInstance(run_id, str, msg=command)
+            self.assertNotIn(run_id, stored, msg=f"{command} reused a stored run id")
+            run_ids[command] = run_id
+        self.assertEqual(len(set(run_ids.values())), len(steps), msg=run_ids)
+        return appended
 
     def verify_faults(self) -> list[tuple[int, str]]:
         """Require `store verify` to exit 1 and return each fault's sequence and code."""
@@ -5690,6 +5766,8 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(self.verify_faults(), expected)
         self.assertEqual(self.outputs(name), self.twin_outputs)
+        # Read before the writers run, which extend the case histories.
+        self.assertEqual(self.case_reads(), self.twin_reads)
         self.assertEqual(self.appended(), self.twin_appended)
 
     def record(self, event_type: str, stream_id: str | None = None) -> EventRecord:

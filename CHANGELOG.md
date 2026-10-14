@@ -110,12 +110,13 @@ All notable project changes will be documented here.
   clock, and a log with a failed invocation in another run took that run's clock even when this
   one was earlier. The `external_properties_ignored` warning, the invocations and the failed
   invocation's clock are now read before the driver check (ADR 0014 amendment 2026-10-14,
-  second), so a run refused at its driver also reports `execution_unsuccessful`, any
-  `source_timestamp_invalid` for its invocations, and `external_properties_ignored` when it
-  carries external references. A run with a usable driver reports the same diagnostics in the
-  same order as before, and every golden is byte-identical. Verified by `tests/test_failures.py`,
-  with eight driver shapes and a two-run log, and by `tests/test_cli.py` on the stateless and
-  persisted paths.
+  second), so a run refused at its driver also reports `execution_unsuccessful` when an
+  invocation failed, any `source_timestamp_invalid` for its invocations, and
+  `external_properties_ignored` when it carries external references. When no failed invocation
+  declares a usable clock, the `execution` failure is at the as-of. A run with a usable driver
+  reports the same diagnostics in the same order as before, and every golden is byte-identical.
+  Verified by `tests/test_failures.py`, with eight driver shapes and a two-run log, and by
+  `tests/test_cli.py` on the stateless and persisted paths.
 
 ### Added
 
@@ -483,20 +484,23 @@ All notable project changes will be documented here.
   stream it appends to. Correlate still never reads a case no open group names, so damage there
   does not stop it, while `report vdt --db`, `cases list` and `store verify` still refuse it. On a
   store whose case streams fold, correlate appends exactly what it did before. Amends ADR 0008
-  (amendment 2026-10-14, second). Verified by `tests/test_history.py` with three damaged-stream
+  (amendment 2026-10-14, second). Verified by `tests/test_history.py` with four damaged-stream
   shapes, each alone and inside a caller's transaction.
-- `store verify` is documented as the one command that reports the content-neutral faults: a
+- `store verify` is documented as the command that reports the content-neutral faults: a
   metadata envelope outside the rules (`event_metadata_invalid`), an event on a non-case stream
   it does not belong on (`event_stream_mismatch`, with the contract or count faults only that
   event causes), and a failure schema marker left low (`failure_schema_unmarked`). No reader and
   no case writer refuses them, none changes the bytes of any report, and refusing them on read
-  would leave an append-only store unreportable for good. The evaluation order check now also
-  runs when a log's only other faults are `event_metadata_invalid` or `failure_schema_unmarked`,
-  so one tampered metadata envelope no longer hides an inversion from `store verify`; when the
-  check cannot fold such a log, the faults found are reported alone, as before. Amends ADR 0008
-  (amendment 2026-10-14, second). Verified by `tests/test_cli.py`, where eight shapes fail
-  `store verify` at their sequence while `report vdt --db` and every case writer behave as on a
-  clean twin, and by `tests/test_evaluation_order.py`.
+  would leave an append-only store unreportable for good. One writer refuses one shape: a
+  failure stream is written whole, so `ingest --record-failed-imports` exits 1 with
+  `history_invalid` rather than resume one that holds an event no failure stream carries. The
+  evaluation order check now also runs when a log's only other faults are
+  `event_metadata_invalid` or `failure_schema_unmarked`, so one tampered metadata envelope no
+  longer hides an inversion from `store verify`; when the check cannot fold such a log, the
+  faults found are reported alone, as before. Amends ADR 0008 (amendment 2026-10-14, second).
+  Verified by `tests/test_cli.py`, where eight shapes fail `store verify` at their sequence while
+  `report vdt --db` and every case writer behave as on a clean twin, and by
+  `tests/test_evaluation_order.py`.
 
 ## 0.3.0a0 - 2026-08-23
 

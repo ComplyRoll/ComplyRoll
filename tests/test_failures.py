@@ -1499,6 +1499,75 @@ class FailedInvocationClockTests(unittest.TestCase):
         self.assertEqual(classification.clock, INVOKED)
         self.assertEqual(mint(result).observed_at, INVOKED)
 
+    def test_the_end_clock_is_kept_when_the_run_driver_is_refused(self) -> None:
+        # A failed invocation that declares only its end keeps that end as the clock when
+        # its run is refused at the driver, as a declared start is kept.
+        invalid, refused = "invalid_run", "identity_input_invalid"
+        shapes: dict[str, tuple[dict[str, Any] | None, str]] = {
+            "no tool": (None, invalid),
+            "blank driver name": ({"driver": {"name": ""}}, invalid),
+            "zero-width driver name": ({"driver": {"name": "Synth\u200b"}}, refused),
+            "control driver name": ({"driver": {"name": "Synth\u0007"}}, refused),
+        }
+        for shape, (tool, code) in shapes.items():
+            with self.subTest(shape=shape):
+                run = make_run(
+                    [],
+                    invocations=[
+                        {"executionSuccessful": False, "endTimeUtc": "2026-08-31T09:30:00Z"}
+                    ],
+                )
+                if tool is None:
+                    del run["tool"]
+                else:
+                    run["tool"] = tool
+                result = ingest_json("synthetic.sarif", make_log(run))
+                self.assertIn(code, [item.code for item in result.errors])
+                self.assertEqual(result.failed_execution_at, INVOKED)
+                self.assertEqual(
+                    classify_ingest(result),
+                    FailureClassification(
+                        EXECUTION,
+                        None,
+                        ("execution_unsuccessful", code, "no_observations"),
+                        clock=INVOKED,
+                    ),
+                )
+                self.assertEqual(mint(result).observed_at, INVOKED)
+
+    def test_an_earlier_failed_end_in_a_driverless_run_sets_the_clock(self) -> None:
+        # With no usable failed start in the log, the earliest failed end across its runs is
+        # the clock, so a driverless run's earlier end wins over a later one in a run with a
+        # usable driver, in either run order. The later run's failed start is unusable.
+        later = make_run(
+            [],
+            invocations=[
+                {
+                    "executionSuccessful": False,
+                    "startTimeUtc": "not a clock",
+                    "endTimeUtc": "2026-08-31T11:00:00Z",
+                }
+            ],
+        )
+        driverless = make_run(
+            [],
+            invocations=[{"executionSuccessful": False, "endTimeUtc": "2026-08-31T09:30:00Z"}],
+        )
+        del driverless["tool"]
+        orders = {"driverless last": (later, driverless), "driverless first": (driverless, later)}
+        for order, runs in orders.items():
+            with self.subTest(order=order):
+                result = ingest_json("synthetic.sarif", make_log(*runs))
+                codes = [item.code for item in result.diagnostics]
+                self.assertIn("invalid_run", codes)
+                self.assertIn("source_timestamp_invalid", codes)
+                self.assertEqual(result.failed_execution_at, INVOKED)
+                classification = classify_ingest(result)
+                assert classification is not None
+                self.assertIs(classification.failure_class, EXECUTION)
+                self.assertEqual(classification.clock, INVOKED)
+                self.assertEqual(mint(result).observed_at, INVOKED)
+
     def test_external_properties_are_named_before_the_failed_invocations(self) -> None:
         # Both are read before the driver check, in the order they were read before it.
         run = make_run(
@@ -1515,6 +1584,37 @@ class FailedInvocationClockTests(unittest.TestCase):
             ],
             ["external_properties_ignored", EXECUTION_UNSUCCESSFUL],
         )
+
+    def test_a_run_refused_at_its_driver_names_its_external_properties(self) -> None:
+        # The warning is read before the driver check too, so a refused run reports it ahead of
+        # its failed invocations, and reports it when it declares no invocations at all.
+        failed = [{"executionSuccessful": False, "startTimeUtc": "2026-08-31T09:30:00Z"}]
+        shapes: dict[str, dict[str, Any] | None] = {
+            "no tool": None,
+            "driver not an object": {"driver": "Synth"},
+            "blank driver name": {"driver": {"name": ""}},
+            "zero-width driver name": {"driver": {"name": "Synth\u200b"}},
+        }
+        for shape, tool in shapes.items():
+            for invocations in (failed, []):
+                with self.subTest(shape=shape, invocations=len(invocations)):
+                    run = make_run([], invocations=invocations, externalPropertyFileReferences={})
+                    if tool is None:
+                        del run["tool"]
+                    else:
+                        run["tool"] = tool
+                    result = ingest_json("synthetic.sarif", make_log(run))
+                    expected = ["external_properties_ignored"]
+                    if invocations:
+                        expected.append(EXECUTION_UNSUCCESSFUL)
+                    self.assertEqual(
+                        [
+                            item.code
+                            for item in result.diagnostics
+                            if item.code in {"external_properties_ignored", EXECUTION_UNSUCCESSFUL}
+                        ],
+                        expected,
+                    )
 
     def test_a_refused_run_still_reports_an_unusable_clock(self) -> None:
         # The clock is read before the driver and identity checks, so a refused run's unusable

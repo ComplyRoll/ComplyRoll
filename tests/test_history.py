@@ -715,6 +715,10 @@ class CorrelationFoldTests(WriterFixture):
                 (CASE_CREATED, self.created(group)),
                 (OBSERVATION_RECORDED, group.observations[0].to_canonical_dict()),
             ),
+            "a stream with nothing left to link": (
+                (CASE_CREATED, self.created(group)),
+                (CASE_OBSERVATION_LINKED, {**self.linked(UBUNTU_CASE), "planted": "x"}),
+            ),
         }
         for label, events in shapes.items():
             with self.subTest(label):
@@ -726,6 +730,54 @@ class CorrelationFoldTests(WriterFixture):
                 expected = self.report_refusal()
                 self.assertIs(type(error), type(expected))
                 self.assertEqual(str(error), str(expected))
+
+    def test_every_existing_case_stream_is_folded_not_only_the_first(self) -> None:
+        # The Ubuntu host's three cases are correlated first, so their streams exist. The
+        # Windows case, the first group correlate visits, still has a creation and a link to
+        # append when the second or the last existing stream is found damaged, so a run
+        # that folded only the first existing stream, or folded after an append, fails here.
+        damages: dict[str, tuple[str, Mapping[str, Any]]] = {
+            "a link with a property its contract does not publish": (
+                CASE_OBSERVATION_LINKED,
+                {**self.linked(WINDOWS_CASE), "planted": "x"},
+            ),
+            "an observation copied onto the case stream": (
+                OBSERVATION_RECORDED,
+                self.groups[WINDOWS_CASE].observations[0].to_canonical_dict(),
+            ),
+        }
+        for position in ("second", "last"):
+            for label, (event_type, payload) in damages.items():
+                with self.subTest(position=position, damage=label):
+                    WriterFixture.setUp(self)
+                    self.ingest([ARTIFACTS[0]])
+                    self.correlate()
+                    self.ingest(ARTIFACTS[1:])
+                    visited = [
+                        group.tracking_id
+                        for group in group_open_observations(
+                            rehydrate_observations(self.repository)
+                        )
+                    ]
+                    existing = [
+                        tracking_id
+                        for tracking_id in visited
+                        if self.repository.read_stream(case_stream_id(tracking_id))
+                    ]
+                    self.assertEqual(visited[0], WINDOWS_CASE)
+                    self.assertEqual(len(existing), 3)
+                    self.assertEqual(existing[:2], [UNEVALUATED_CASE, UBUNTU_CASE])
+                    target = existing[1] if position == "second" else existing[-1]
+                    self.append_unchecked(
+                        case_stream_id(target), event_type, payload, expected_version=2
+                    )
+
+                    error = self.refused()
+
+                    expected = self.report_refusal()
+                    self.assertIs(type(error), type(expected))
+                    self.assertEqual(str(error), str(expected))
+                    self.assertEqual(self.case_event_types(WINDOWS_CASE), ())
 
     def test_damage_on_a_case_stream_correlate_does_not_extend_does_not_stop_it(self) -> None:
         # A stale case is in no group, so correlate never folds it (ADR 0008 amendment

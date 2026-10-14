@@ -435,9 +435,11 @@ type does not belong there, with any `payload_contract_invalid`, `artifact_incom
 `artifact_overfull` that event alone causes, since the artifact and failure readers read only
 the types that belong on their streams and no reader reads a stream of no kind; an
 `event_metadata_invalid`; and a `failure_schema_unmarked`. The repository never writes one,
-and none changes the bytes of any report. History is append-only, so refusing them on read
-would leave the store unreportable with no repair. `store verify` checks the metadata
-envelope's shape, not who wrote it. Run `store verify` before relying on a store.
+and none changes the bytes of any report. One writer refuses one shape: a failure stream is
+written whole, so `ingest --record-failed-imports` exits 1 with `history_invalid` rather than
+resume one that holds an event no failure stream carries. History is append-only, so refusing
+them on read would leave the store unreportable with no repair. `store verify` checks the
+metadata envelope's shape, not who wrote it. Run `store verify` before relying on a store.
 
 `store verify` still checks evaluation order when its only other faults are
 `event_metadata_invalid` or `failure_schema_unmarked`, the two that are content-neutral on any

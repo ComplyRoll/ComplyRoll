@@ -992,8 +992,9 @@ first.
 Decision 6 reads a run's invocations, and its failed invocation's clock, before the driver
 check too. A failed invocation in a run with no usable driver, or with a driver name the
 identity rules refuse, now counts as one in a run refused at a later identity check already
-did: the log takes class `execution` and the earliest failed invocation clock across its runs,
-with `failure.clock` `invocation` when one is declared and `as-of` otherwise. Before this
+did: the log takes class `execution` and the earliest failed invocation start across its runs,
+or the earliest end when no failed invocation declares a usable start (Decision 6), with
+`failure.clock` `invocation` when one is declared and `as-of` otherwise. Before this
 amendment such a run's invocations were never read, so a log whose only failed invocation sat
 in it was recorded as a content failure at the as-of, and a log with a failed invocation in
 another run took that run's clock even when this one was earlier. A log that also yields

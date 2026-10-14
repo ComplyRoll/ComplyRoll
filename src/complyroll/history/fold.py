@@ -694,9 +694,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
         return evaluation_order_faults(repository)
     try:
         faults.extend(evaluation_order_faults(repository))
-    except (HistoryError, EventContractError):
-        # A case stream can fail its fold in a way no fault above names. The faults already
-        # found are still reported, as on a log the check does not run on.
+    except ValueError:
+        # A case stream can fail its fold in a way no fault above names: a `HistoryError`,
+        # an `EventContractError`, or a stream id that names no tracking id. The faults
+        # already found are still reported, as on a log the check does not run on.
         pass
     return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
 

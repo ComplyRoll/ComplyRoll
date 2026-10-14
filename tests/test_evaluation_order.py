@@ -1142,6 +1142,84 @@ class WriterOrderTests(HistoryOrderFixture):
                     self.assertIn(f"error: {fault.render()}\n", err)
                 self.assertIn("faults: 2 domain fault(s) in", err)
 
+        def planted_evaluation(case: str) -> int:
+            """Append the banner evaluation with an extra metadata key, around the writers."""
+
+            stream_id = case_stream_id(case)
+            (entry,) = self.banner_evaluation().entries
+            self.repository.store.append(
+                stream_id,
+                [
+                    NewEvent(
+                        event_type=CASE_EVALUATED,
+                        occurred_at=WRITTEN_AT,
+                        payload=history_writers._evaluation_payload(entry),
+                        metadata={**self.metadata.to_dict(), "planted": "x"},
+                    )
+                ],
+                expected_version=len(self.repository.read_stream(stream_id)),
+            )
+            return self.sequence
+
+        # The tampered envelope can sit on the case's own evaluations too: on the inverted
+        # current evaluation, where both faults share its sequence, or on an earlier one the
+        # writer then superseded. Neither hides the inversion.
+        completions = {"the current": EARLY, "an earlier": "2026-08-04T18:00:00Z"}
+        for index, (label, completed) in enumerate(completions.items()):
+            with self.subTest(f"an extra metadata key on {label} evaluation is reported with it"):
+                self.open_store(f"evaluated-{index}.db")
+                self.ingest(untimed)
+                self.correlate()
+                case = self.only_case()
+                self.attest([case], EARLY_ATTESTATION)
+                planted = planted_evaluation(case)
+                if completed != EARLY:
+                    later = self.banner_evaluation(completedAt=completed)
+                    self.assertEqual(self.evaluate(later).evaluations_appended, 1)
+                current = self.sequence
+                self.append_around(
+                    case,
+                    DETECTION_ATTESTED,
+                    {
+                        "detectedAt": iso_utc(LATE_ATTESTATION),
+                        "rationale": RATIONALE,
+                        "attestedAt": iso_utc(WRITTEN_AT),
+                    },
+                )
+                (state,) = fold_all_cases(self.repository)
+                assert state.current_evaluation is not None
+                self.assertEqual(state.current_evaluation.sequence, current)
+                self.assertEqual(
+                    {record.sequence: record for record in self.repository.read_all()}[
+                        planted
+                    ].event_type,
+                    CASE_EVALUATED,
+                )
+
+                damaged = audit_history(self.repository)
+
+                self.assertEqual(
+                    [(fault.sequence, fault.code) for fault in damaged],
+                    sorted(
+                        [
+                            (current, "evaluation_before_detection"),
+                            (planted, "event_metadata_invalid"),
+                        ]
+                    ),
+                )
+                (order,) = [f for f in damaged if f.code == "evaluation_before_detection"]
+                self.assertEqual(
+                    order.message,
+                    refusal(
+                        case, completed, "2026-08-05T00:00:00Z", "attestation", ATTESTATION_REMEDY
+                    ),
+                )
+                code, out, err = verify_store(self.database)
+                self.assertEqual((code, out), (1, ""))
+                for fault in damaged:
+                    self.assertIn(f"error: {fault.render()}\n", err)
+                self.assertIn("faults: 2 domain fault(s) in", err)
+
         with self.subTest("a misplaced event is reported alone"):
             case = inverted("misplaced.db")
             artifact = next(

@@ -325,7 +325,7 @@ class CompiledDetectionFailure:
 
 @dataclass(frozen=True, slots=True)
 class CompiledVulnerability:
-    """The normalized record both renderers read (README non-negotiable rule 5)."""
+    """The normalized record both renderers read (README non-negotiable rule 6)."""
 
     tracking_id: str
     source_type: str

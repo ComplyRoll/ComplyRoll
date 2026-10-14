@@ -501,6 +501,22 @@ All notable project changes will be documented here.
   Verified by `tests/test_cli.py`, where eight shapes fail `store verify` at their sequence while
   `report vdt --db` and every case writer behave as on a clean twin, and by
   `tests/test_evaluation_order.py`.
+- The README is now a short overview: a phase status table, one line per surface, a quick start that
+  rebuilds the same report from history, and the rules. Its reference material moved: the full
+  command rows, verbatim, to a new `docs/CLI.md`, which also gives the `cases` subcommands their own
+  synopses; report period selection, output writes, the `stigroll` demo, and the Python API snippets
+  to `examples/README.md`; the `x-complyroll` extension to `docs/DATA_MODEL.md`; the ADR summaries
+  to a new `docs/decisions/README.md` index; the FedRAMP source links to
+  `docs/FEDRAMP_2026_MAPPING.md`; and the argument-order paragraph to `docs/ARCHITECTURE.md`. The
+  stale CLI block in `docs/BUILD_PLAN.md` now points to `docs/CLI.md`, and `docs/SECURITY.md`
+  carries the redaction note. The Phase 2 narrative, the longer persisted-path walkthrough, the
+  failed-import walkthrough, and the target pipeline diagram were dropped: `docs/BUILD_PLAN.md`, the
+  ADRs, `examples/README.md`, and `docs/ARCHITECTURE.md` hold them, and the few facts only the
+  README carried were added to `examples/README.md`. Three passages were corrected on the way: the
+  period rule now states the KEV clause ADR 0007 added on 2026-09-25, the Markdown parity test is
+  described in the direction it checks, and the `CompiledVulnerability` docstring cites README
+  non-negotiable rule 6, the same-records rule, instead of rule 5. README links are absolute,
+  because the README is also the PyPI project description, which changes only with the next release.
 
 ## 0.3.0a0 - 2026-08-23
 

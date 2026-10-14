@@ -268,3 +268,14 @@ can publish them with authorization, logging, redaction, and availability contro
   14 days for Class C, both SHOULD) is the operator's to schedule.
 - Do not call a Markdown twin the monthly human-readable report. The twins are renderings of the
   JSON reports under `CDS-CSO-CBF`; `VER-TFR-MHR` is not mapped.
+
+## Sources
+
+Authoritative sources ComplyRoll consumes and pins rather than copies into constants, beside the
+`FedRAMP/rules` dataset linked at the top of this document:
+
+- [FedRAMP Consolidated Rules for 2026](https://www.fedramp.gov/2026/)
+- [FedRAMP JSON schemas](https://github.com/FedRAMP/schemas)
+- [Vulnerability Detection and Response](https://www.fedramp.gov/2026/reference/vulnerability-detection-and-response/)
+- [Vulnerability Evaluation and Reporting](https://www.fedramp.gov/2026/reference/vulnerability-evaluation-and-reporting/)
+- [Key Security Indicators](https://www.fedramp.gov/2026/reference/key-security-indicators/)

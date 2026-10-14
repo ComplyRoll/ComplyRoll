@@ -33,7 +33,27 @@ substitutes file modification or ingestion time for a detection time; without th
 run stops and names the affected tracking identifiers.
 
 `--as-of` fixes the instant the overdue flags are calculated against. Supplying it makes the run
-reproducible byte for byte; omitting it uses the current UTC time.
+reproducible byte for byte; omitting it uses the current UTC time. With the `--as-of` above,
+`report.json` and `report.md` are `tests/golden/vdt-fixtures.json` and
+`tests/golden/vdt-fixtures.md`, byte for byte.
+
+## Report period and output files
+
+The report period selects contents: a vulnerability appears when it had activity inside
+`--from`/`--to` (detection, evaluation, a PAIN reduction, or a planned reduction), or when it is
+still undisposed and was detected on or before the period end. With `--kev`, open KEV work stays
+listed (the ADR 0007 amendment of 2026-09-25). A record appears in the detail report with no other
+activity in the period when it is not accepted, its KEV clock is matched and not satisfied, it was
+detected by the period end, and one of its matched catalog entries was listed on or before the UTC
+date of the period end. Every exclusion is reported as an `excluded_by_period` diagnostic and
+counted in the document, so "nothing happened" is distinguishable from "nothing was compiled".
+
+Output files are written all-or-nothing: a failed Markdown write leaves no JSON behind, a failure
+while publishing restores the previous files, and a rollback that itself fails names the files
+left in their new state and where their previous content was kept.
+
+[ADR 0007](../docs/decisions/0007-stateless-vdt-compiler-and-report-mappings.md) records the
+period and output rules in its 2026-08-21 amendment.
 
 ## Persisted path
 
@@ -104,11 +124,14 @@ case-9bed0d8f88355393  -            V-260469                  1            0  - 
 what it did with them. A second sweep selects nothing, because a case that already carries
 an attestation is not missing a detection time; revising one takes an explicit `--case`.
 
-The report this produces is byte-identical to the stateless one. A store that records
-detection process failures matches its stateless twin under the conditions in Detection process
-failures below (ADR 0014 Decision 15). Re-running any of the first four commands appends
-nothing; edit `examples/evaluations.json` and re-run `cases evaluate` to see a second evaluation
-appear in `complyroll cases history <tracking-id> --db complyroll.db`.
+The report this produces is byte-identical to the stateless one: both paths run one record
+compiler, and that equality is a test. A store that records detection process failures matches
+its stateless twin under the conditions in Detection process failures below (ADR 0014
+Decision 15). Re-running any of the first four commands appends nothing. Change one PAIN rating
+in a copy of `examples/evaluations.json` and re-run `cases evaluate` with it to see a second
+evaluation appear in `complyroll cases history <tracking-id> --db complyroll.db`, while the
+report carries the latest one. Nothing can update or delete an event; a correction is a new
+event with its rationale.
 
 Only `ingest` creates a store, and it never deletes one. A store that does not exist yet is
 built at a temporary path beside the destination and linked into place once the whole run
@@ -249,6 +272,15 @@ human-readable form (CDS-CSO-CBF). It is not the monthly human-readable report
 `VER-TFR-MHR`. ComplyRoll also does not schedule the retrieval cadence `VER-TFR-MRH` sets for
 historical activity (once a month for Class B, every 14 days for Class C, both SHOULD); the
 operator runs `report historical` when it is due.
+
+## The predecessor stigroll command
+
+`stigroll` is the predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its
+original output byte for byte. Roll up the synthetic fixtures with it from the repository root:
+
+```bash
+stigroll tests/fixtures/windows-host.ckl tests/fixtures/ubuntu-host.cklb --format json
+```
 
 ## Other formats
 
@@ -539,8 +571,9 @@ Three synthetic fixtures cover the three failure classes:
   invocation's own `startTimeUtc`.
 
 `examples/evaluations-failed.json` is `evaluations.json` plus one entry that evaluates the parse
-failure. A failure is evaluated like any other vulnerability, and its entry matches on the source
-type, the record id, and the failed artifact's digest as the context key:
+failure. A failure is evaluated like any other vulnerability and gets PAIN only from an
+evaluation. Its entry matches on the source type, the record id, and the failed artifact's digest
+as the context key:
 
 ```json
 {"sourceRecordId": "detection-process-failure", "sourceType": "complyroll.detection-process", "contextKey": "sha256:a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8"}
@@ -559,7 +592,8 @@ an evaluation file that applies today still applies when a failure of another di
 beside it. `cases evaluate` refuses it with the same message, printed under
 `evaluation_unmatched`.
 
-Run this from the repository root. It exits 3:
+Run this from the repository root. It exits 3, so a pipeline that treats any non-zero exit as a
+failure still stops:
 
 ```bash
 complyroll report vdt \
@@ -625,12 +659,12 @@ finding was read:
 | failed-truncated.sarif | a8aca932d8fc | complyroll.sarif 1 | parse | 2026-08-21T12:00:00Z | as-of | case-d3bb8e4fb3b61a5f |
 ```
 
-Each failure is one vulnerability whose detection time has the source `system`, and its
-evaluation window (VER-TFR-EVU) opens at that time. The execution failure was detected at its
-invocation's clock, 2026-08-04T10:00:00Z, so its window closed 2026-08-09T10:00:00Z and it is
-overdue. The other two have no scanner clock, so they were detected at `--as-of`. The content
-failure's window closes 2026-08-26T12:00:00Z. The parse failure was evaluated at PAIN N3, so its
-response target (VDR-TFR-PVR) is 2026-12-27T12:00:00Z. `--detected-at` never applies to a system
+Each failure is one vulnerability per failed artifact digest. Its detection time has the source
+`system`, and its evaluation window (VER-TFR-EVU) opens at that time. The execution failure was
+detected at its invocation's clock, 2026-08-04T10:00:00Z, so its window closed 2026-08-09T10:00:00Z
+and it is overdue. The other two have no scanner clock, so they were detected at `--as-of`. The
+content failure's window closes 2026-08-26T12:00:00Z. The parse failure was evaluated at PAIN N3, so
+its response target (VDR-TFR-PVR) is 2026-12-27T12:00:00Z. `--detected-at` never applies to a system
 record: the attestation covers the same six cases as in the first example.
 
 On the stateless path a failure detected at `--as-of` is detected again at each run's `--as-of`,
@@ -784,3 +818,73 @@ faults: 1 domain fault(s) in 37 verified event(s)
 
 Verifying a WAL-mode store may leave `-shm` and `-wal` sidecar files beside it; the database
 file's own bytes do not change.
+
+## Python API
+
+The commands run on a library you can import directly.
+
+| Entry point | What it does |
+|---|---|
+| `complyroll.adapters.ingest_stig_artifact(path)` | CKLB, CKL, XCCDF, ARF, SARIF, and HDF files become immutable observations with artifact digest, parser identity, timestamps, and structured diagnostics |
+| `complyroll.policy.load_bundled_policy(profile)` | Selects the 36 provider-facing VDR and VER rules for a 20x Class B or Class C profile from the pinned official dataset and calculates evaluation, PAIN response, and acceptance-threshold deadlines with full provenance, in the provider's calendar timezone |
+| `complyroll.store.SQLiteEventStore` | Append-only event log with optimistic concurrency, payload digests, schema and tail-integrity verification, and projection checkpoints. Domain events are written only through `complyroll.events.EventRepository`, which validates every payload against a published contract (ADR 0008) |
+
+Run each snippet below from the repository root with the package installed.
+
+### Ingest one artifact
+
+Ingest an artifact and inspect its observations and diagnostics:
+
+```python
+from pathlib import Path
+
+from complyroll.adapters import ingest_stig_artifact
+
+result = ingest_stig_artifact(Path("tests/fixtures/ubuntu-host.cklb"))
+if not result.successful:
+    for diagnostic in result.errors:
+        print(diagnostic.code, diagnostic.message)
+else:
+    print(result.observations[0].to_canonical_json())
+```
+
+### Calculate a response deadline
+
+Calculate a Class C response target with rule provenance:
+
+```python
+from datetime import UTC, datetime
+
+from complyroll.models import PainRating
+from complyroll.policy import CertificationClass, CertificationProfile, load_bundled_policy
+
+policy = load_bundled_policy(CertificationProfile(CertificationClass.C))
+deadline = policy.response_deadline(
+    datetime(2026, 8, 21, 15, 0, tzinfo=UTC),
+    pain=PainRating.N4,
+    is_internet_reachable=True,
+    is_likely_exploitable=True,
+)
+print(deadline.rule_id, deadline.force.value, deadline.due_at.isoformat())
+print(deadline.provenance.commit, deadline.provenance.dataset_sha256)
+```
+
+### Validate a report
+
+Validate a report against the pinned official schema:
+
+```python
+from pathlib import Path
+
+from complyroll.schemas import ReportSchema, validate_bundled_report_bytes
+
+result = validate_bundled_report_bytes(
+    ReportSchema.VULNERABILITY_DETAIL, Path("tests/golden/vdt-fixtures.json").read_bytes()
+)
+for issue in result.issues:
+    print(issue.instance_pointer, issue.validator, issue.message)
+print(result.provenance.schema_version, result.provenance.schema_sha256)
+```
+
+The golden detail report is valid, so the loop prints nothing and the last line names the schema
+version and its SHA-256.

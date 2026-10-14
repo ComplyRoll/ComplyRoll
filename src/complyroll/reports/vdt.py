@@ -718,11 +718,12 @@ def compile_record_set(
 
     compiled: list[CompiledVulnerability] = []
     missing_detection: list[str] = []
+    errors: list[ReportDiagnostic] = []
     kev_incomplete: list[CompiledVulnerability] = []
     detection_failures: list[CompiledDetectionFailure] = []
 
     for group in groups:
-        detected_at, detected_source = _resolve_detection_time(group, attestation)
+        detected_at, detected_source = resolve_detection_time(group, attestation)
         if detected_at is None:
             missing_detection.append(group.tracking_id)
             continue
@@ -740,16 +741,39 @@ def compile_record_set(
                     location=group.source_record_id,
                 )
             )
-        record = _build_record(
-            group=group,
-            detected_at=detected_at,
-            detected_at_source=detected_source,
-            evaluation=evaluations_by_tracking_id.get(group.tracking_id),
-            policy=policy,
-            snapshot=snapshot,
-            options=options,
-            kev_rule=kev_rule,
-        )
+        evaluation = evaluations_by_tracking_id.get(group.tracking_id)
+        # The order check runs before the record is built, so a record refused for both
+        # reasons names its ordering error before `closed_without_disposition`. Every
+        # record's errors are collected and the loop moves on, so one run names them all.
+        record_errors: list[ReportDiagnostic] = []
+        if evaluation is not None:
+            order = evaluation_order_diagnostic(
+                tracking_id=group.tracking_id,
+                location=group.source_record_id,
+                detected_at=detected_at,
+                detected_source=detected_source,
+                completed_at=evaluation.completed_at,
+            )
+            if order is not None and order.level is DiagnosticLevel.ERROR:
+                record_errors.append(order)
+            elif order is not None:
+                diagnostics.append(order)
+        try:
+            record = _build_record(
+                group=group,
+                detected_at=detected_at,
+                detected_at_source=detected_source,
+                evaluation=evaluation,
+                policy=policy,
+                snapshot=snapshot,
+                options=options,
+                kev_rule=kev_rule,
+            )
+        except ReportCompileError as exc:
+            record_errors.extend(exc.diagnostics)
+        if record_errors:
+            errors.extend(record_errors)
+            continue
         compiled.append(record)
         detection_failures.extend(
             _detection_failure(item, record.tracking_id)
@@ -760,18 +784,19 @@ def compile_record_set(
             kev_incomplete.append(record)
 
     if missing_detection:
-        raise ReportCompileError(
-            (
-                ReportDiagnostic(
-                    level=DiagnosticLevel.ERROR,
-                    code="detection_time_missing",
-                    message=(
-                        "no source timestamp and no --detected-at attestation for: "
-                        + ", ".join(sorted(missing_detection))
-                    ),
+        errors.insert(
+            0,
+            ReportDiagnostic(
+                level=DiagnosticLevel.ERROR,
+                code="detection_time_missing",
+                message=(
+                    "no source timestamp and no --detected-at attestation for: "
+                    + ", ".join(sorted(missing_detection))
                 ),
-            )
+            ),
         )
+    if errors:
+        raise ReportCompileError(errors)
 
     _require_unique_tracking_ids(compiled)
     if catalog is not None:
@@ -1199,7 +1224,7 @@ def _matches(entry: EvaluationInput, group: VulnerabilityGroup) -> bool:
     )
 
 
-def _resolve_detection_time(
+def resolve_detection_time(
     group: VulnerabilityGroup,
     attestation: DetectionAttestation,
 ) -> tuple[datetime | None, str]:
@@ -1209,6 +1234,10 @@ def _resolve_detection_time(
     source timestamp; it never overrides a known one (ADR 0007 amendment). A detection
     process failure is checked first: it is timed by the instant it was recorded, is
     never attested, and never reads as a source artifact's timestamp (ADR 0014).
+
+    The source is `system`, `artifact`, `artifact-partial`, `attestation`, or
+    `missing` with no instant. It is public so the history writers resolve a case's
+    detection time exactly as a report from the store does.
     """
 
     observed_at = group.earliest_observed_at
@@ -1221,6 +1250,70 @@ def _resolve_detection_time(
     if attested is not None:
         return attested.astimezone(UTC), "attestation"
     return None, "missing"
+
+
+#: The remedy a refusal names, by the source of the detection time it is refused against.
+#: The compiler, the history writers and `store verify` print one text per source, so
+#: each must hold on both paths (ADR 0007 amendment 2026-10-14).
+_ORDER_REMEDIES = {
+    "artifact": "supply the artifact that detected it earlier, or correct completedAt",
+    "attestation": "attest an earlier detection time, or correct completedAt",
+    "system": (
+        "a detection process failure is detected when it is recorded, at the ingest "
+        "--as-of in history and at the run's as-of on the stateless path, so evaluate it "
+        "at or after that instant, correct completedAt, or on the stateless path report "
+        "with an --as-of no later than completedAt"
+    ),
+}
+
+
+def evaluation_order_diagnostic(
+    *,
+    tracking_id: str,
+    location: str,
+    detected_at: datetime,
+    detected_source: str,
+    completed_at: datetime,
+) -> ReportDiagnostic | None:
+    """Order one evaluation's `completedAt` against its record's detection time.
+
+    An evaluation completed strictly before a detection time that is the record's own
+    (`artifact`, `attestation` or `system`) is the ERROR `evaluation_before_detection`;
+    one completed at the detection instant is in order. A partly timestamped group's
+    detection time is only the earliest known timestamp, and an observation declaring
+    none may have detected it earlier, so it gets the WARNING
+    `evaluation_before_partial_detection` and the record is published. Only
+    `completedAt` is ordered: a reduction or a projection starts no clock.
+    """
+
+    completed = completed_at.astimezone(UTC)
+    detected = detected_at.astimezone(UTC)
+    if completed >= detected:
+        return None
+    if detected_source == "artifact-partial":
+        return ReportDiagnostic(
+            level=DiagnosticLevel.WARNING,
+            code="evaluation_before_partial_detection",
+            message=(
+                f"{tracking_id} was evaluated at {_iso(completed)}, before its earliest known "
+                f"detection time {_iso(detected)} (source artifact-partial); an observation "
+                "that declares no source timestamp may have detected it earlier, so the "
+                "record is published"
+            ),
+            location=location,
+        )
+    remedy = _ORDER_REMEDIES.get(detected_source)
+    if remedy is None:
+        return None
+    return ReportDiagnostic(
+        level=DiagnosticLevel.ERROR,
+        code="evaluation_before_detection",
+        message=(
+            f"{tracking_id} was evaluated at {_iso(completed)}, before its detection time "
+            f"{_iso(detected)} (source {detected_source}); {remedy}"
+        ),
+        location=location,
+    )
 
 
 def _is_system_group(group: VulnerabilityGroup) -> bool:

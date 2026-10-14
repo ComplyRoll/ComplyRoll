@@ -1520,6 +1520,8 @@ COVERED_AUDIT_CODES = {
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    # Its `store verify` command tests live in `tests/test_evaluation_order.py`.
+    "evaluation_before_detection",
     "event_metadata_invalid",
     "event_stream_mismatch",
     "failure_duplicate_observation",

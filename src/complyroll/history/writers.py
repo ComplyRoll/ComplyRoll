@@ -52,6 +52,7 @@ from complyroll.events import (
 )
 from complyroll.models import CaseStatus, Observation
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet
+from complyroll.reports.vdt import ReportDiagnostic
 from complyroll.store import EventRecord
 
 from .fold import (
@@ -73,6 +74,7 @@ from .fold import (
     fold_case_records,
     rehydrate_observations,
 )
+from .order import EvaluationOrderError, case_order_diagnostic, current_groups
 
 #: Fields that say when an assertion was filed, not what it asserts.
 CLERICAL_FIELDS: Mapping[str, frozenset[str]] = {
@@ -634,6 +636,16 @@ def attest_detection(
 
     Every case this call touches is read and written in one store transaction, so a
     concurrent run cannot read a case as unattested that this one has already attested.
+
+    An attestation that would become a case's detection time is ordered against the
+    case's current evaluation, as a report from the store orders it. Each case that
+    would gain an attestation and carries an evaluation is resolved from its current open
+    group with the new instant, and is refused only when the resolved source is
+    `attestation`: a group the compiler times from a source timestamp is not this
+    command's to refuse, whatever its links say. Every blocking case is named in one
+    `EvaluationOrderError`, in the report's order, and nothing is appended, for an
+    explicit selection and an `--all-missing` sweep alike. A case with no open group,
+    which the report lists as `stale_case`, is not checked.
     """
 
     _require_aware(detected_at, "detected_at")
@@ -671,6 +683,7 @@ def _attest_detection(
     attested: list[str] = []
     skipped: list[str] = []
     not_applicable: list[str] = []
+    pending: list[tuple[str, tuple[EventRecord, ...]]] = []
 
     for tracking_id in _unique(tracking_ids):
         stream_id = case_stream_id(tracking_id)
@@ -684,8 +697,15 @@ def _attest_detection(
         if latest is not None and content_digest(DETECTION_ATTESTED, latest) == wanted:
             skipped.append(tracking_id)
             continue
+        pending.append((tracking_id, tuple(existing)))
+
+    # Every case is checked before the first append, so a refusal names every blocking
+    # case and leaves history as it found it, even inside a caller's open transaction.
+    _require_attestation_order(repository, pending, detected_at=detected_at)
+
+    for tracking_id, existing in pending:
         repository.append(
-            stream_id,
+            case_stream_id(tracking_id),
             DETECTION_ATTESTED,
             payload,
             occurred_at=now,
@@ -722,6 +742,17 @@ def apply_evaluations(
     run leaves history exactly as it found it. Facts the store holds and the file no
     longer states are kept and reported in `EvaluationOutcome.warnings`.
 
+    Every matched entry, an unchanged one included, is ordered against its case's
+    detection time, resolved from the current open group and the case's recorded
+    attestation exactly as a report from the store resolves it. An entry completed
+    before a detection time that is the record's own refuses the whole file before any
+    append, with every `evaluation_before_detection` ERROR the report would raise, in
+    its order (`EvaluationOrderError`). An entry completed before a partly timestamped
+    group's earliest known timestamp is applied, and the report's
+    `evaluation_before_partial_detection` WARNING joins `EvaluationOutcome.warnings`
+    without its level prefix. A case with no open group (`stale_case`) or no resolvable
+    detection time is not checked, since no report prints a detection time for it.
+
     The fold, the checks, and every append run inside one store transaction. Uniqueness
     across cases is a claim about the whole log, and two runs that each folded a store
     without the other's writes could both pass it and both commit the same provider
@@ -756,9 +787,10 @@ def _apply_evaluations(
         )
     )
     matched = _match_cases(evaluation_set, cases)
+    # The order check runs before the effective tracking id check, as the compiler orders
+    # them, so a file refused for both prints the report's ordering lines.
+    warnings: list[str] = _require_evaluation_order(repository, cases, matched)
     _require_unique_effective_ids(cases, matched)
-
-    warnings: list[str] = []
     counters = dict.fromkeys(
         (
             "evaluations_appended",
@@ -948,6 +980,87 @@ def _require_unique_effective_ids(
         )
     if problems:
         raise EvaluationMatchError(problems)
+
+
+def _require_evaluation_order(
+    repository: EventRepository,
+    cases: Sequence[CaseState],
+    matched: Mapping[str, EvaluationInput],
+) -> list[str]:
+    """Refuse a run that would leave an evaluation before its record's detection time.
+
+    Observations are rehydrated once, and every matched entry is checked, whether or not
+    it changes the case. Diagnostics follow the compiler's group order, so a refusal
+    prints the lines `report vdt --db` would print. Returns the partial-detection
+    WARNINGs as warning text, `code: message [location]`.
+    """
+
+    if not matched:
+        return []
+    by_tracking_id = {case.tracking_id: case for case in cases}
+    blocked: list[ReportDiagnostic] = []
+    warnings: list[str] = []
+    for tracking_id, group in current_groups(repository).items():
+        entry = matched.get(tracking_id)
+        case = by_tracking_id.get(tracking_id)
+        if entry is None or case is None:
+            continue
+        attested_at = None if case.attestation is None else case.attestation.detected_at
+        diagnostic = case_order_diagnostic(
+            case, group, completed_at=entry.completed_at, attested_at=attested_at
+        )
+        if diagnostic is None:
+            continue
+        if diagnostic.level is DiagnosticLevel.ERROR:
+            blocked.append(diagnostic)
+        else:
+            warnings.append(_unprefixed(diagnostic))
+    if blocked:
+        raise EvaluationOrderError(blocked)
+    return warnings
+
+
+def _require_attestation_order(
+    repository: EventRepository,
+    pending: Sequence[tuple[str, Sequence[EventRecord]]],
+    *,
+    detected_at: datetime,
+) -> None:
+    """Refuse attestations that would leave a current evaluation before detection.
+
+    Only a case that carries an evaluation is resolved, and observations are rehydrated
+    only when there is one, so a sweep over unevaluated cases reads no artifact stream.
+    """
+
+    evaluated: dict[str, CaseState] = {}
+    for tracking_id, records in pending:
+        case = fold_case_records(repository, tracking_id, records)
+        if case.current_evaluation is not None:
+            evaluated[tracking_id] = case
+    if not evaluated:
+        return
+    blocked: list[ReportDiagnostic] = []
+    for tracking_id, group in current_groups(repository).items():
+        target = evaluated.get(tracking_id)
+        if target is None or target.current_evaluation is None:
+            continue
+        diagnostic = case_order_diagnostic(
+            target,
+            group,
+            completed_at=target.current_evaluation.completed_at,
+            attested_at=detected_at,
+            sources=("attestation",),
+        )
+        if diagnostic is not None and diagnostic.level is DiagnosticLevel.ERROR:
+            blocked.append(diagnostic)
+    if blocked:
+        raise EvaluationOrderError(blocked)
+
+
+def _unprefixed(diagnostic: ReportDiagnostic) -> str:
+    """Return a diagnostic's rendered line without its level, as a writer warning."""
+
+    return diagnostic.render().removeprefix(f"{diagnostic.level.value}: ")
 
 
 def _identification_retained_warning(case: CaseState, entry: EvaluationInput) -> str:
@@ -1171,6 +1284,7 @@ __all__ = [
     "AttestationOutcome",
     "CorrelationOutcome",
     "EvaluationMatchError",
+    "EvaluationOrderError",
     "EvaluationOutcome",
     "FailureOutcome",
     "IngestOutcome",

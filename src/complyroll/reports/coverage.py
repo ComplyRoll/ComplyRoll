@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 from complyroll.models import Observation, ObservationDisposition, ObservationOrigin, ResourceRef
 from complyroll.policy import (
@@ -53,6 +54,17 @@ VERIFYING_DISPOSITIONS = frozenset(
 )
 
 _EARLIEST = datetime.min.replace(tzinfo=UTC)
+
+# Every coverage block prints this text unchanged, so no status reads as more than it is.
+COVERAGE_BASIS = (
+    "VDR-TFR-MVX is read from detection results until Phase 3 validation runs exist. "
+    "Coverage is measured against the provider-supplied inventory named by its SHA-256 "
+    "digest, so an observed resource the inventory omits is listed as unregistered and is "
+    "never expected. Evidence that determined no status (NOT_REVIEWED, ERROR or UNKNOWN) "
+    "examines a resource without verifying it, untimed evidence never anchors a clock, and a "
+    "non-machine resource is verified only by an operator attestation. A current status is "
+    "not a compliance finding."
+)
 
 
 # *--- Types ---*
@@ -151,6 +163,20 @@ class CoverageEvidence:
             self.reference,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return the evidence as the observation fingerprint or the attestation reference."""
+        value: dict[str, Any] = {
+            "kind": self.kind.value,
+            "at": _instant_text(self.at),
+            **_ref_dict(self.resource),
+        }
+        if self.disposition is None:
+            value["reference"] = self.reference
+        else:
+            value["observationId"] = self.reference
+            value["disposition"] = self.disposition.value
+        return value
+
 
 @dataclass(frozen=True, slots=True)
 class CoverageClock:
@@ -185,6 +211,19 @@ class CoverageClock:
     @property
     def due_at(self) -> datetime | None:
         return None if self.deadline is None else self.deadline.due_at
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ruleId": self.rule_id,
+            "contextKey": self.key.context_key,
+            "force": self.force.value,
+            "status": self.status.value,
+            "anchor": None if self.anchor is None else self.anchor.value,
+            "anchorAt": _instant_text(self.anchor_at),
+            "dueAt": _instant_text(self.due_at),
+            "evidence": None if self.evidence is None else self.evidence.to_dict(),
+            "standIn": None if self.stand_in is None else _ref_dict(self.stand_in),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +266,19 @@ class CoverageWindow:
     def closed_at(self) -> datetime:
         return self.deadline.due_at
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ruleId": self.rule_id,
+            "contextKey": self.context_key,
+            "force": self.force.value,
+            "anchor": self.anchor.value,
+            "anchorAt": _instant_text(self.anchor_at),
+            "closedAt": _instant_text(self.closed_at),
+            "resumedAt": _instant_text(self.resumed_at),
+            "evidence": None if self.evidence is None else self.evidence.to_dict(),
+            "standIn": None if self.stand_in is None else _ref_dict(self.stand_in),
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceCoverage:
@@ -247,6 +299,28 @@ class ResourceCoverage:
         """Return True when only operator attestations can verify the entry."""
         return not self.entry.machine_based
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return the entry, what examined it, and its clocks; `untimed` is the count."""
+        entry = self.entry
+        return {
+            **_ref_dict(entry.ref),
+            "machineBased": entry.machine_based,
+            "attested": self.attested,
+            "driftLikely": entry.drift_likely,
+            "sampleGroup": entry.sample_group,
+            "job": entry.job,
+            "expectedSince": _instant_text(entry.expected_since),
+            "decommissionedAt": _instant_text(entry.decommissioned_at),
+            "aliases": [_ref_dict(alias) for alias in entry.aliases],
+            "lastExamined": _instant_text(self.last_examined),
+            "lastVerified": _instant_text(self.last_verified),
+            "examined": self.examined_observations,
+            "untimed": len(self.untimed),
+            "untimedEvidence": [item.to_dict() for item in self.untimed],
+            "afterDecommission": [item.to_dict() for item in self.after_decommission],
+            "clocks": [clock.to_dict() for clock in self.clocks],
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class RuleSummary:
@@ -266,6 +340,18 @@ class RuleSummary:
         if self.expected != counted:
             raise ValueError("expected must equal the clocks counted by status")
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ruleId": self.rule_id,
+            "force": self.force.value,
+            "expected": self.expected,
+            "current": self.current,
+            "stale": self.stale,
+            "missing": self.missing,
+            "unanchored": self.unanchored,
+            "undetermined": self.undetermined,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class UnregisteredResource:
@@ -273,6 +359,9 @@ class UnregisteredResource:
 
     resource: ResourceRef
     observations: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**_ref_dict(self.resource), "observations": self.observations}
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +378,25 @@ class CoverageResult:
     unregistered: tuple[UnregisteredResource, ...]
     # Evidence observed after as-of: listed, never used.
     later: tuple[CoverageEvidence, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the `x-complyroll.coverage` block; keys are sorted when the JSON is written."""
+        inventory = self.inventory
+        return {
+            "inventory": {
+                "name": inventory.name,
+                "sha256": inventory.sha256,
+                "sizeBytes": inventory.size_bytes,
+                "entries": inventory.entry_count,
+            },
+            "asOf": _instant_text(self.as_of),
+            "basis": COVERAGE_BASIS,
+            "summary": [row.to_dict() for row in self.summary],
+            "resources": [item.to_dict() for item in self.resources],
+            "windows": [item.to_dict() for item in self.windows],
+            "unregistered": [item.to_dict() for item in self.unregistered],
+            "later": [item.to_dict() for item in self.later],
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -626,6 +734,14 @@ def _check_anchor(
         raise ValueError("a sample group's verification names its stand-in, and only it")
 
 
+def _instant_text(value: datetime | None) -> str | None:
+    return None if value is None else value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _ref_dict(ref: ResourceRef) -> dict[str, str]:
+    return {"resourceType": ref.resource_type, "resourceId": ref.resource_id}
+
+
 def _utc(value: datetime) -> datetime:
     if not isinstance(value, datetime):
         raise TypeError("an instant must be a datetime")
@@ -635,6 +751,7 @@ def _utc(value: datetime) -> datetime:
 
 
 __all__ = [
+    "COVERAGE_BASIS",
     "DRIFT_LIKELIHOOD_UNKNOWN",
     "MVX_RULE",
     "NMV_RULE",

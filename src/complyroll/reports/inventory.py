@@ -80,7 +80,12 @@ _ENTRY_KEYS = frozenset(
 _ALIAS_KEYS = frozenset({"resourceType", "resourceId"})
 _VERIFICATION_KEYS = frozenset({"at", "reference"})
 # Printable ASCII with no leading or trailing space, so the name prints as one plain label.
+# sampleGroup and job take it too, so `sample-group/<name>` and a job-keyed identity stay far
+# inside the 512-character identity cap.
 _NAME = re.compile(r"[\x21-\x7e]([\x20-\x7e]{0,126}[\x21-\x7e])?")
+# A context key is `<resourceType>:<resourceId>`; no type holds the separator, so every key
+# splits one way. The observation side never produces a type with a colon.
+_TYPE_SEPARATOR = ":"
 _INSTANT = _DATE_RELEASED
 _ABSENT = object()
 
@@ -120,6 +125,11 @@ class InformationResource:
 
     def __post_init__(self) -> None:
         _require_utc_aware(self.expected_since, "expected_since")
+        if any(_TYPE_SEPARATOR in ref.resource_type for ref in self.identities):
+            raise ValueError("a resource type must not contain a colon")
+        for label in (self.sample_group, self.job):
+            if label is not None and _NAME.fullmatch(label) is None:
+                raise ValueError("sample_group and job must follow the inventory name rule")
         if self.decommissioned_at is not None:
             _require_utc_aware(self.decommissioned_at, "decommissioned_at")
             if self.decommissioned_at < self.expected_since:
@@ -275,13 +285,7 @@ def _parse_inventory(value: Any, *, sha256: str, size_bytes: int) -> Inventory:
         raise _refusal("", f"schema must be {INVENTORY_SCHEMA!r}, got {_excerpt(schema)}")
     _schema_version(value)
     _reject_unknown_keys(value, _ROOT_KEYS, "")
-    name = _string(value, "name", "")
-    if _NAME.fullmatch(name) is None:
-        raise _refusal(
-            "",
-            f"name must be 1 to {MAX_NAME_CHARS} printable ASCII characters with no leading or "
-            f"trailing space, got {_excerpt(name)}",
-        )
+    name = _label(_string(value, "name", ""), "name", "")
 
     raw_entries = _required(value, "resources", "")
     if not isinstance(raw_entries, list):
@@ -335,13 +339,13 @@ def _parse_entry(raw_entry: Any, where: str) -> tuple[InformationResource, list[
     if not isinstance(raw_entry, dict):
         raise _refusal(where, f"the entry must be an object, got {_json_type(raw_entry)}")
     _reject_unknown_keys(raw_entry, _ENTRY_KEYS, where)
-    resource_type = _identity(_string(raw_entry, "resourceType", where), "resourceType", where)
+    resource_type = _resource_type(raw_entry, where)
     resource_id = _identity(_string(raw_entry, "resourceId", where), "resourceId", where)
     machine_based = _boolean(raw_entry, "machineBased", where)
     expected_since = _instant(_string(raw_entry, "expectedSince", where), "expectedSince", where)
     drift_likely = _drift_likely(raw_entry, where, machine_based=machine_based)
-    sample_group = _optional_identity(raw_entry, "sampleGroup", where)
-    job = _optional_identity(raw_entry, "job", where)
+    sample_group = _optional_label(raw_entry, "sampleGroup", where)
+    job = _optional_label(raw_entry, "job", where)
     decommissioned_at = _optional_instant(raw_entry, "decommissionedAt", where)
     if decommissioned_at is not None and decommissioned_at < expected_since:
         raise _refusal(where, "decommissionedAt must not be before expectedSince")
@@ -373,7 +377,7 @@ def _aliases(raw_entry: Mapping[str, Any], where: str) -> list[ResourceRef]:
         if not isinstance(item, dict):
             raise _refusal(at, f"the alias must be an object, got {_json_type(item)}")
         _reject_unknown_keys(item, _ALIAS_KEYS, at)
-        resource_type = _identity(_string(item, "resourceType", at), "resourceType", at)
+        resource_type = _resource_type(item, at)
         resource_id = _identity(_string(item, "resourceId", at), "resourceId", at)
         aliases.append(ResourceRef(resource_id=resource_id, resource_type=resource_type))
     return aliases
@@ -459,13 +463,32 @@ def _text(value: str, key: str, where: str, cap: int) -> str:
     return value
 
 
-def _optional_identity(raw: Mapping[str, Any], key: str, where: str) -> str | None:
+def _resource_type(raw: Mapping[str, Any], where: str) -> str:
+    """Return a resourceType, refused when it holds the context key's separator."""
+    value = _identity(_string(raw, "resourceType", where), "resourceType", where)
+    if _TYPE_SEPARATOR in value:
+        raise _refusal(where, f"resourceType must not contain a colon, got {_excerpt(value)}")
+    return value
+
+
+def _label(value: str, key: str, where: str) -> str:
+    """Return a value that follows the name rule, quoted cut when it does not."""
+    if _NAME.fullmatch(value) is None:
+        raise _refusal(
+            where,
+            f"{key} must be 1 to {MAX_NAME_CHARS} printable ASCII characters with no leading or "
+            f"trailing space, got {_excerpt(value)}",
+        )
+    return value
+
+
+def _optional_label(raw: Mapping[str, Any], key: str, where: str) -> str | None:
     value = _optional(raw, key)
     if value is _ABSENT:
         return None
     if not isinstance(value, str):
         raise _refusal(where, f"{key} must be a JSON string, got {_json_type(value)}")
-    return _identity(value, key, where)
+    return _label(value, key, where)
 
 
 def _drift_likely(raw: Mapping[str, Any], where: str, *, machine_based: bool) -> bool | str | None:

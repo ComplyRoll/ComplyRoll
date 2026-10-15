@@ -4,7 +4,7 @@ import json
 import re
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import permutations
@@ -43,6 +43,7 @@ from complyroll.reports import (
     CompiledVdtReport,
     DetectionAttestation,
     EvaluationSet,
+    Inventory,
     KevCatalog,
     ReportCompileError,
     ReportInputError,
@@ -143,6 +144,7 @@ def options(
     period_from: datetime | None = PERIOD_FROM,
     period_to: datetime | None = PERIOD_TO,
     kev_catalog: KevCatalog | None = None,
+    inventory: Inventory | None = None,
 ) -> ReportOptions:
     return ReportOptions(
         certification_class=certification_class,
@@ -153,6 +155,7 @@ def options(
         calendar_timezone=calendar_timezone,
         detected_at_attestation=detected_at,
         kev_catalog=kev_catalog,
+        inventory=inventory,
     )
 
 
@@ -406,15 +409,215 @@ def markdown_detail_sections(
 def markdown_table_rows(section: str, width: int, header: str) -> dict[str, tuple[str, ...]]:
     """Return one Markdown table's data rows, keyed by their first cell."""
 
-    rows: dict[str, tuple[str, ...]] = {}
+    return {cells[0]: cells for cells in markdown_table_list(section, width, header)}
+
+
+def markdown_table_list(section: str, width: int, header: str) -> list[tuple[str, ...]]:
+    """Return one Markdown table's data rows in order, for tables whose first cell repeats."""
+
+    rows: list[tuple[str, ...]] = []
     for line in section.splitlines():
         if not line.startswith("| ") or not line.endswith(" |"):
             continue
         cells = tuple(cell.strip() for cell in line[2:-2].split(" | "))
         if len(cells) != width or cells[0] == header:
             continue
-        rows[cells[0]] = cells
+        rows.append(cells)
     return rows
+
+
+def markdown_subsection(section: str, heading: str) -> str:
+    """Return one `###` subsection body of a section, without its heading line."""
+
+    parts = section.split(f"\n### {heading}\n", 1)
+    if len(parts) == 1:
+        return ""
+    return parts[1].split("\n### ", 1)[0]
+
+
+def coverage_label(item: Mapping[str, object]) -> str:
+    """Return the Markdown cell a resource reference prints as: `type:id`, cell-escaped."""
+
+    return vdt_module._cell(f"{item['resourceType']}:{item['resourceId']}")
+
+
+def coverage_instant(value: object) -> str:
+    """Return the Markdown cell an optional coverage instant prints as."""
+
+    return "n/a" if value is None else str(value)
+
+
+def coverage_evidence(test: unittest.TestCase, evidence: object, cell: str, where: str) -> None:
+    """Assert one Markdown cell or line names the evidence a JSON object carries."""
+
+    if evidence is None:
+        test.assertEqual(cell, "n/a", where)
+        return
+    assert isinstance(evidence, dict)
+    if evidence["kind"] == "attestation":
+        test.assertIn(f"attested: {vdt_module._cell(evidence['reference'])}", cell, where)
+    else:
+        test.assertIn(
+            f"observation {evidence['observationId']} ({evidence['disposition']})", cell, where
+        )
+    test.assertIn(f" on {coverage_label(evidence)}", cell, where)
+    at = evidence["at"]
+    test.assertIn(", untimed" if at is None else f" at {at}", cell, where)
+
+
+def assert_coverage_markdown(
+    test: unittest.TestCase, coverage: Mapping[str, object], section: str
+) -> None:
+    """Assert the Coverage section states every row of the JSON `coverage` block.
+
+    Every summary row, resource, clock, window, unregistered resource and piece of listed
+    evidence in the block must be found in the Markdown with the same values (ADR 0015).
+    """
+
+    inventory = coverage["inventory"]
+    assert isinstance(inventory, dict)
+    test.assertIn(f"SHA-256 {inventory['sha256']}", section)
+    test.assertIn(f"{inventory['entries']} entries, {inventory['sizeBytes']} bytes", section)
+    test.assertIn(f"as of {coverage['asOf']}", section)
+    test.assertIn(str(coverage["basis"]), section)
+
+    summary = coverage["summary"]
+    assert isinstance(summary, list)
+    rows = markdown_table_rows(markdown_subsection(section, "Coverage by rule"), 8, "Rule")
+    test.assertEqual(len(rows), len(summary))
+    for item in summary:
+        test.assertEqual(
+            rows[item["ruleId"]][1:],
+            (
+                item["force"],
+                *(
+                    str(item[key])
+                    for key in (
+                        "expected",
+                        "current",
+                        "stale",
+                        "missing",
+                        "unanchored",
+                        "undetermined",
+                    )
+                ),
+            ),
+            item["ruleId"],
+        )
+
+    resources = coverage["resources"]
+    assert isinstance(resources, list)
+    table = markdown_table_rows(markdown_subsection(section, "Resources"), 13, "Resource")
+    test.assertEqual(len(table), len(resources))
+    clock_rows = markdown_table_list(markdown_subsection(section, "Clocks"), 9, "Resource")
+    test.assertEqual(len(clock_rows), sum(len(item["clocks"]) for item in resources))
+    untimed_lines = markdown_subsection(section, "Untimed evidence")
+    decommission_lines = markdown_subsection(section, "Evidence after decommissioning")
+    for item in resources:
+        label = coverage_label(item)
+        row = table.get(label)
+        test.assertIsNotNone(row, f"the Resources table omits {label}")
+        assert row is not None
+        drift = item["driftLikely"]
+        test.assertEqual(
+            row[1:12],
+            (
+                "attested" if item["attested"] else "machine",
+                ", ".join(coverage_label(alias) for alias in item["aliases"]) or "n/a",
+                {True: "yes", False: "no", None: "n/a"}.get(drift, str(drift)),
+                vdt_module._cell(item["sampleGroup"] or "n/a"),
+                vdt_module._cell(item["job"] or "n/a"),
+                item["expectedSince"],
+                coverage_instant(item["decommissionedAt"]),
+                coverage_instant(item["lastExamined"]),
+                coverage_instant(item["lastVerified"]),
+                str(item["examined"]),
+                str(item["untimed"]),
+            ),
+            label,
+        )
+        test.assertEqual(item["untimed"], len(item["untimedEvidence"]), label)
+        statuses = row[12].split("; ")
+        test.assertEqual(len(statuses), len(item["clocks"]), label)
+        for clock, status in zip(item["clocks"], statuses, strict=True):
+            expected = f"{clock['ruleId']} {clock['force']} {clock['status']}"
+            # A missing clock names the untimed evidence beside it, so a checklist-only
+            # resource never reads as unexamined.
+            if clock["status"] == "missing" and item["untimed"]:
+                expected += f" ({item['untimed']} untimed)"
+            test.assertEqual(status, expected, label)
+            matches = [
+                cells for cells in clock_rows if cells[0] == label and cells[1] == clock["ruleId"]
+            ]
+            test.assertEqual(len(matches), 1, f"{label} {clock['ruleId']} clock row")
+            cells = matches[0]
+            test.assertEqual(
+                cells[2:7],
+                (
+                    clock["force"],
+                    clock["status"],
+                    clock["anchor"] or "n/a",
+                    coverage_instant(clock["anchorAt"]),
+                    coverage_instant(clock["dueAt"]),
+                ),
+                f"{label} {clock['ruleId']}",
+            )
+            coverage_evidence(test, clock["evidence"], cells[7], f"{label} {clock['ruleId']}")
+            stand_in = clock["standIn"]
+            test.assertEqual(cells[8], "n/a" if stand_in is None else coverage_label(stand_in))
+        for evidence in item["untimedEvidence"]:
+            key = evidence["observationId"]
+            line = [text for text in untimed_lines.splitlines() if key in text]
+            test.assertEqual(len(line), 1, f"{label} untimed {evidence['observationId']}")
+            test.assertTrue(line[0].startswith(f"- **{label}:** "), line[0])
+            coverage_evidence(test, evidence, line[0], label)
+        for evidence in item["afterDecommission"]:
+            key = evidence.get("observationId") or evidence["reference"]
+            line = [text for text in decommission_lines.splitlines() if key in text]
+            test.assertEqual(len(line), 1, f"{label} after decommissioning {key}")
+            test.assertTrue(line[0].startswith(f"- **{label}:** "), line[0])
+            coverage_evidence(test, evidence, line[0], label)
+
+    windows = coverage["windows"]
+    assert isinstance(windows, list)
+    window_rows = markdown_table_list(markdown_subsection(section, "Windows"), 9, "Rule")
+    test.assertEqual(len(window_rows), len(windows))
+    for window, cells in zip(windows, window_rows, strict=True):
+        test.assertEqual(
+            cells[:7],
+            (
+                window["ruleId"],
+                vdt_module._cell(window["contextKey"]),
+                window["force"],
+                window["anchor"],
+                window["anchorAt"],
+                window["closedAt"],
+                coverage_instant(window["resumedAt"]),
+            ),
+        )
+        coverage_evidence(test, window["evidence"], cells[7], f"window {window['contextKey']}")
+        stand_in = window["standIn"]
+        test.assertEqual(cells[8], "n/a" if stand_in is None else coverage_label(stand_in))
+
+    unregistered = coverage["unregistered"]
+    assert isinstance(unregistered, list)
+    observed = markdown_table_rows(
+        markdown_subsection(section, "Unregistered resources"), 2, "Resource"
+    )
+    test.assertEqual(len(observed), len(unregistered))
+    for item in unregistered:
+        test.assertEqual(observed[coverage_label(item)][1], str(item["observations"]))
+
+    later = coverage["later"]
+    assert isinstance(later, list)
+    later_lines = [
+        line
+        for line in markdown_subsection(section, "Evidence after as-of").splitlines()
+        if line.startswith("- ")
+    ]
+    test.assertEqual(len(later_lines), len(later))
+    for evidence, line in zip(later, later_lines, strict=True):
+        coverage_evidence(test, evidence, line, "later evidence")
 
 
 VDT_DETAIL_SECTIONS = (("Vulnerability details", "vulnerabilities"),)
@@ -502,6 +705,16 @@ def assert_markdown_carries_the_json(
         test.assertIsNotNone(row, f"the Inputs table omits {artifact['name']}")
         assert row is not None
         test.assertEqual(row[2], f"{artifact['parser']} {artifact['parserVersion']}")
+
+    # With an inventory the Coverage section carries every row of the block (ADR 0015);
+    # without one there is no section at all.
+    coverage = report.document["x-complyroll"].get("coverage")
+    section = markdown_section(markdown, "Coverage")
+    if coverage is None:
+        test.assertNotIn("\n## Coverage\n", markdown)
+    else:
+        test.assertIn("\n## Inputs\n", markdown.split("\n## Coverage\n", 1)[0])
+        assert_coverage_markdown(test, coverage, section)
 
 
 def detection_failures(report: CompiledReport) -> list[dict[str, object]]:

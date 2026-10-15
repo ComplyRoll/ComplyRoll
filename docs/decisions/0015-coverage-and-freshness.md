@@ -151,3 +151,18 @@ source type the two were the same set; this slice adds others. The loop now sele
 `complyroll.detection-process` observations alone, so a system observation of any other reserved
 type compiles as an ordinary record and is never listed in `detectionFailures`. No output moves,
 since no other system type exists yet; a regression test builds one.
+
+### 2026-10-15: the inventory is a per-run report input
+
+`--inventory FILE` on `report vdt`, `report avi` and `report historical` reads one
+`complyroll.inventory` document through the bounded reader, on the stateless path and beside
+`--db` alike. No store holds an inventory, so it is never a second source of truth, and it is
+never stored. A second `--inventory` is refused, and a refused file stops the run before anything
+is written, as a KEV catalog does. The five coverage rules are resolved only when an inventory is
+given; a pinned dataset that lacks any of them stops that run with ERROR
+`coverage_rule_unavailable`, which names each missing rule. Coverage is derived in the record
+compiler from the observations both paths hand it, so the persisted report equals the stateless
+one byte for byte. `x-complyroll.coverage` and the Markdown `## Coverage` section appear only
+with an inventory, so every report compiled without one is unchanged. A resource type may not
+hold a colon, so a `type:id` context key reads one way, and `sampleGroup` and `job` follow the
+inventory name rule, so the identities later built from them stay inside the 512-character cap.

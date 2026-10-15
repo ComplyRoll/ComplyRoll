@@ -383,8 +383,6 @@ class InventoryLoaderTests(unittest.TestCase):
                     manual_entry(
                         long,
                         resourceType="t" * 512,
-                        sampleGroup="g" * 512,
-                        job="j" * 512,
                         aliases=[{"resourceType": "a" * 512, "resourceId": "i" * 512}],
                         verifications=[{"at": SINCE_TEXT, "reference": "r" * 512}],
                     )
@@ -393,8 +391,6 @@ class InventoryLoaderTests(unittest.TestCase):
         )
         self.assertEqual(entry.resource_id, long)
         self.assertEqual(entry.resource_type, "t" * 512)
-        self.assertEqual(entry.sample_group, "g" * 512)
-        self.assertEqual(entry.job, "j" * 512)
         self.assertEqual(
             entry.aliases[0], ResourceRef(resource_id="i" * 512, resource_type="a" * 512)
         )
@@ -413,6 +409,28 @@ class InventoryLoaderTests(unittest.TestCase):
         )
         self.assertEqual(entry.resource_id, "proc\u00e9dure de r\u00e9ponse")
         self.assertEqual(entry.verifications[0].reference, "exercice \u00e0 blanc")
+
+    def test_sample_group_and_job_take_the_name_rule_up_to_its_bound(self) -> None:
+        # A group or job name joins a published identity (sample-group/<name>, and PR 3's
+        # job-keyed cases), so it takes the name rule and stays far inside the 512 cap.
+        for value in ("g" * MAX_NAME_CHARS, "web tier", "x", "nightly-openscap/v2"):
+            with self.subTest(value=value):
+                entry = only_entry(document([machine_entry(sampleGroup=value, job=value)]))
+                self.assertEqual((entry.sample_group, entry.job), (value, value))
+
+    def test_a_colon_is_accepted_in_a_resource_id(self) -> None:
+        entry = only_entry(
+            document(
+                [
+                    machine_entry(
+                        "arn:aws:ec2:host-01",
+                        aliases=[{"resourceType": "host", "resourceId": "a:b"}],
+                    )
+                ]
+            )
+        )
+        self.assertEqual(entry.resource_id, "arn:aws:ec2:host-01")
+        self.assertEqual(entry.aliases[0].resource_id, "a:b")
 
     def test_one_identifier_under_two_types_is_two_entries(self) -> None:
         inventory = parse_inventory(document([machine_entry("shared"), manual_entry("shared")]))
@@ -573,6 +591,15 @@ class InventoryInvariantTests(unittest.TestCase):
                 {"aliases": (alias, ResourceRef(resource_id="a", resource_type="host"))},
             ),
             "repeated alias": (host, {"aliases": (alias, alias)}),
+            "colon in the type": (host, {"resource_type": "host:linux"}),
+            "colon in an alias type": (
+                host,
+                {"aliases": (ResourceRef(resource_id="b", resource_type="host:linux"),)},
+            ),
+            "sample group over the name bound": (host, {"sample_group": "g" * 129}),
+            "sample group with a leading space": (host, {"sample_group": " web"}),
+            "job that is not printable ASCII": (host, {"job": "t\u00e2che"}),
+            "empty job": (host, {"job": ""}),
             "alias of itself": (host, {"aliases": (host.ref,)}),
             "unsorted verifications": (
                 procedure,
@@ -822,6 +849,50 @@ class InventoryRefusalTests(unittest.TestCase):
                 for label, text in PROHIBITED_TEXT.items():
                     cases[label] = with_entry(key, text)
                 self.assert_each_refused(cases, f"inventory resources[0]: {key}")
+
+    def test_sample_group_and_job_take_the_name_rule(self) -> None:
+        for key in ("sampleGroup", "job"):
+            with self.subTest(key=key):
+                cases = {
+                    "129 characters": with_entry(key, "n" * 129),
+                    "leading space": with_entry(key, " web-tier"),
+                    "trailing space": with_entry(key, "web-tier "),
+                    "non-ascii": with_entry(key, "fronti\u00e8re"),
+                    "tab": with_entry(key, "web\ttier"),
+                    "newline": with_entry(key, "web-tier\n"),
+                }
+                self.assert_each_refused(
+                    cases,
+                    f"inventory resources[0]: {key} must be 1 to {MAX_NAME_CHARS} printable "
+                    "ASCII characters with no leading or trailing space, got ",
+                )
+
+    def test_a_long_group_name_is_quoted_cut(self) -> None:
+        message = self.assert_refused(with_entry("sampleGroup", "g" * (1024 * 1024)))
+        self.assertIn("g" * 32, message)
+        self.assertNotIn("g" * 100, message)
+
+    def test_a_colon_in_resource_type_is_refused(self) -> None:
+        for value in ("host:linux", ":host", "host:", ":"):
+            with self.subTest(value=value):
+                message = self.assert_refused(with_entry("resourceType", value))
+                self.assertEqual(
+                    message,
+                    f"inventory resources[0]: resourceType must not contain a colon, got {value!r}",
+                )
+                message = self.assert_refused(with_alias("resourceType", value))
+                self.assertEqual(
+                    message,
+                    "inventory resources[0].aliases[0]: resourceType must not contain a colon, "
+                    f"got {value!r}",
+                )
+
+    def test_the_identity_rule_runs_before_the_colon_rule(self) -> None:
+        # An over-cap type holding a colon is described by its length, never quoted.
+        message = self.assert_refused(with_entry("resourceType", ":" * 513))
+        self.assertEqual(
+            message, "inventory resources[0]: resourceType is 513 characters; maximum is 512"
+        )
 
     def test_an_over_cap_identifier_is_refused_without_being_quoted(self) -> None:
         message = self.assert_refused(with_entry("resourceId", "x" * (1024 * 1024)))

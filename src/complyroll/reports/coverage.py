@@ -600,7 +600,7 @@ def _anchors(verifying: Iterable[tuple[datetime, CoverageEvidence]]) -> list[_An
 def _group_anchors(
     members: list[InformationResource], anchors: dict[ResourceRef, list[_Anchor]]
 ) -> list[_Anchor]:
-    """Return a group's anchors: any verified member stands in, the first member on a tie."""
+    """Return a group's anchors: any verified member stands in, the least pair on a tie."""
     chosen: dict[datetime, _Anchor] = {}
     # Inventory entries are sorted, so the first member to claim an instant is the least.
     for member in members:
@@ -655,11 +655,12 @@ def _run(
     if lapsed:
         windows.append(_window(key, current, deadline, resumed_at=None))
 
-    # Never examined is missing and never verified is undetermined, past due or not; stale
-    # needs a verification behind it.
+    # `current` is now the verification that anchors the clock at as-of, or None when the clock
+    # runs from the declaration. Never examined is missing, and examined with nothing anchoring
+    # the clock is undetermined, past due or not, so stale and current both need a verification.
     if not examined:
         status = CoverageStatus.MISSING
-    elif not anchors:
+    elif current is None:
         status = CoverageStatus.UNDETERMINED
     elif lapsed:
         status = CoverageStatus.STALE

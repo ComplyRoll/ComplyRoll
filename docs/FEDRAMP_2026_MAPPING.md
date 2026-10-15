@@ -217,9 +217,13 @@ Each clock takes the first status that applies:
 |---|---|
 | `unanchored` | `expectedSince` is after as-of, so the clock has not started |
 | `missing` | Never examined within the cutoff; untimed evidence alone is still `missing` |
-| `undetermined` | Examined, never verified |
-| `stale` | Verified at least once, and the current window lapsed with no verification since |
-| `current` | Verified, and the current window has not lapsed |
+| `undetermined` | Examined, but no verification anchors the clock |
+| `stale` | Anchored on a verification, and the current window lapsed with no verification since |
+| `current` | Anchored on a verification, and the current window has not lapsed |
+
+No verification anchors a clock when the resource was never verified, or was verified only before
+`expectedSince` by a verification whose window closed before it. That clock runs from
+`expectedSince`, labeled `declared`, and reads `undetermined` before and after its window lapses.
 
 A `missing` status with untimed evidence prints the untimed count beside it, so a checklist-only
 host never reads as unexamined. A `current` status is not a compliance finding, and every block

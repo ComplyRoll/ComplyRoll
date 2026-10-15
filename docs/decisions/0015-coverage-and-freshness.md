@@ -247,13 +247,17 @@ as-of or after decommissioning describes another moment.
 ### Decision 11 (2026-10-15): status precedence
 
 Each clock takes the first status that applies: `unanchored` (`expectedSince` after as-of),
-`missing` (never examined within the cutoff), `undetermined` (examined, never verified), `stale`
-(verified at least once and the current window lapsed), else `current`. Four calls follow from
+`missing` (never examined within the cutoff), `undetermined` (examined, but no verification
+anchors the clock at as-of), `stale` (a verification anchors it and the current window lapsed),
+else `current`, so `stale` and `current` both need an anchoring verification. Four calls follow from
 the order. A resource with only untimed evidence is `missing`, and both projections print the
 untimed count beside that status, so a checklist-only host never reads as unexamined. `missing`
 and `undetermined` hold inside the first window too. A resource verified only before
-`expectedSince`, with a lapsed window, reads `stale`. A verified, decommissioned resource whose
-due date falls after decommissioning stays `current` however late as-of is, since there is no
+`expectedSince`, by a verification whose window closed before it, reads `undetermined` on a
+`declared` anchor with no evidence, inside the declared window and after it lapses, as a resource
+examined and never verified does; a verification whose window reaches `expectedSince` anchors the
+clock, and a later verification resumes it. A decommissioned resource whose clock a verification
+anchors, falling due after decommissioning, stays `current` however late as-of is, since there is no
 decommissioned status; the row carries `decommissionedAt`. A `current` status is not a
 compliance finding, and the block's fixed basis text says so.
 Why: each status claims only what the evidence shows, and the order puts the least evidence first.
@@ -262,7 +266,8 @@ Why: each status claims only what the evidence shows, and the order puts the lea
 
 A `sampleGroup` adds one `VDR-TFR-PSD` clock for the group, named `logical:sample-group/<name>`
 and satisfied by any verified member. The member whose verification anchors it is named as the
-stand-in, and on a tie the first member in inventory order stands in. The group clock runs from
+stand-in. On a tie the member with the least pair stands in: the inventory sorts entries by type,
+then id, by code point, so file order never decides it. The group clock runs from
 its earliest member's `expectedSince` and stops only when every member is decommissioned, at the
 latest member's instant. Members keep their own clocks, and the summary counts a group clock once.
 Why: `VDR-CSO-SIR` makes sampling a MAY, so sampling must not hide a member, and counting a shared
@@ -325,4 +330,7 @@ observation and case: `--record-coverage-gaps`, `cases coverage`, the `coverage.
 and stream kind, store schema 4, and their audits. Out of the slice: `VDR-TFR-MVF` (Rev5) and
 Classes A and D, which no modeled profile selects; OSCAL and workbook inventories; moving
 digest-keyed failure cases onto a `job`; and `results_unknown` beside productive runs.
+A decommissioned entry keeps its clocks, and the summary counts them at every later as-of, so one
+never examined counts as `expected` and `missing` for good; whether retirement drops an entry from
+`expected` is decided with the gap cases in PR 3.
 Why: PR 2 changes no store and opens no case, so it merges on its own.

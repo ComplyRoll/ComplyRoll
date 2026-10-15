@@ -695,11 +695,20 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual((summary[PSD_RULE].expected, summary[PSD_RULE].current), (1, 1))
         self.assertEqual((summary[MVX_RULE].expected, summary[MVX_RULE].missing), (2, 1))
 
-    def test_members_verified_at_one_instant_name_the_first_member(self) -> None:
-        inventory = inventory_of(host("a", group="web-tier"), host("b", group="web-tier"))
+    def test_members_verified_at_one_instant_name_the_least_pair(self) -> None:
         at = SINCE + DAY
+        # Declared b first: the inventory sorts by type, then id, so `a` stands in.
+        inventory = inventory_of(host("b", group="web-tier"), host("a", group="web-tier"))
         result = derive([observation("b", at=at), observation("a", at=at)], inventory, at)
         self.assertEqual(clock_of(result, PSD_RULE, "b").stand_in, ResourceRef("a", "host"))
+
+        # `Z` sorts before `host` by code point, so `Z:b` beats `host:a` despite its later id.
+        mixed = inventory_of(
+            host("a", group="web-tier"), host("b", group="web-tier", resourceType="Z")
+        )
+        scans = [observation("a", at=at), observation("b", at=at, resource_type="Z")]
+        result = derive(scans, mixed, at)
+        self.assertEqual(clock_of(result, PSD_RULE, "a").stand_in, ResourceRef("b", "Z"))
 
     def test_the_latest_member_verification_anchors_the_group(self) -> None:
         inventory = inventory_of(host("a", group="web-tier"), host("b", group="web-tier"))
@@ -928,16 +937,114 @@ class ExpectedSinceTests(unittest.TestCase):
         inventory = inventory_of(host(expectedSince=text(expected)))
         evidence = [observation(at=verified)]
 
+        # No verification anchors the clock, so it is undetermined, never current or stale.
         within = derive(evidence, inventory, expected)
         clock = clock_of(within)
         self.assertEqual(windows_of(within), [])
-        self.assertEqual((clock.anchor, clock.anchor_at), (AnchorKind.DECLARED, expected))
-        self.assertIs(clock.status, CoverageStatus.CURRENT)
+        self.assertEqual(
+            (clock.status, clock.anchor, clock.anchor_at, clock.evidence),
+            (CoverageStatus.UNDETERMINED, AnchorKind.DECLARED, expected, None),
+        )
         self.assertEqual(resource_of(within).last_verified, verified)
 
-        lapsed = derive(evidence, inventory, due(MVX_RULE, expected) + MICROSECOND)
-        self.assertEqual(windows_of(lapsed), [(expected, due(MVX_RULE, expected), None)])
-        self.assertIs(clock_of(lapsed).status, CoverageStatus.STALE)
+        lapse = due(MVX_RULE, expected)
+        lapsed = derive(evidence, inventory, lapse + MICROSECOND)
+        clock = clock_of(lapsed)
+        self.assertEqual(windows_of(lapsed), [(expected, lapse, None)])
+        self.assertEqual(
+            (clock.status, clock.anchor, clock.evidence),
+            (CoverageStatus.UNDETERMINED, AnchorKind.DECLARED, None),
+        )
+        self.assertEqual(resource_of(lapsed).last_verified, verified)
+
+        # A later verification still resumes the declared window and anchors the clock.
+        resumed_at = lapse + DAY
+        resumed = derive([*evidence, observation(at=resumed_at)], inventory, resumed_at)
+        clock = clock_of(resumed)
+        self.assertEqual(windows_of(resumed), [(expected, lapse, resumed_at)])
+        self.assertEqual(
+            (clock.status, clock.anchor, clock.anchor_at),
+            (CoverageStatus.CURRENT, AnchorKind.VERIFICATION, resumed_at),
+        )
+
+    def test_a_verification_before_expected_since_anchors_only_if_its_window_reaches_it(
+        self,
+    ) -> None:
+        verified = SINCE
+        evidence = [observation(at=verified)]
+        reach = due(MVX_RULE, verified)
+        cases = (
+            ("inside the window", verified + period(MVX_RULE) / 2, True),
+            ("window closes at expectedSince", reach, True),
+            ("window closes before expectedSince", reach + MICROSECOND, False),
+        )
+        for name, expected, anchors in cases:
+            with self.subTest(name):
+                inventory = inventory_of(host(expectedSince=text(expected)))
+                clock = clock_of(derive(evidence, inventory, expected))
+                if anchors:
+                    self.assertEqual(
+                        (clock.status, clock.anchor, clock.anchor_at, clock.due_at),
+                        (CoverageStatus.CURRENT, AnchorKind.VERIFICATION, verified, reach),
+                    )
+                    self.assertEqual(
+                        clock.evidence.reference if clock.evidence else None,
+                        evidence[0].observation_id,
+                    )
+                else:
+                    self.assertEqual(
+                        (clock.status, clock.anchor, clock.anchor_at, clock.evidence),
+                        (CoverageStatus.UNDETERMINED, AnchorKind.DECLARED, expected, None),
+                    )
+
+    def test_a_verification_long_before_expected_since_reads_as_no_verification(self) -> None:
+        # The audit's probe: Class B, UTC, and a 2024 PASS against a 2026 expectation.
+        expected = datetime(2026, 1, 1, tzinfo=UTC)
+        verified = datetime(2024, 1, 1, tzinfo=UTC)
+        inventory = inventory_of(
+            host("old", expectedSince=text(expected)),
+            host("never", expectedSince=text(expected)),
+            host("err", expectedSince=text(expected)),
+        )
+        evidence = [
+            observation("old", at=verified),
+            observation("err", at=expected, disposition=ERROR),
+        ]
+        lapsed = due(PCD_RULE, expected) + MICROSECOND
+        for as_of in (datetime(2026, 1, 2, tzinfo=UTC), lapsed):
+            with self.subTest(as_of=as_of.isoformat()):
+                result = derive(evidence, inventory, as_of)
+                summary = {row.rule_id: row for row in result.summary}
+                for rule_id in (MVX_RULE, PCD_RULE):
+                    self.assertEqual(
+                        {
+                            name: clock_of(result, rule_id, name).status
+                            for name in ("old", "never", "err")
+                        },
+                        {
+                            "old": CoverageStatus.UNDETERMINED,
+                            "never": CoverageStatus.MISSING,
+                            "err": CoverageStatus.UNDETERMINED,
+                        },
+                    )
+                    old = clock_of(result, rule_id, "old")
+                    self.assertEqual(
+                        (old.anchor, old.anchor_at, old.evidence),
+                        (AnchorKind.DECLARED, expected, None),
+                    )
+                    self.assertEqual(
+                        summary[rule_id],
+                        RuleSummary(
+                            rule_id=rule_id,
+                            force=policy().rule(rule_id).force,
+                            expected=3,
+                            missing=1,
+                            undetermined=2,
+                        ),
+                    )
+                    closed = [(expected, due(rule_id, expected), None)] if as_of == lapsed else []
+                    self.assertEqual(windows_of(result, rule_id, "host:old"), closed)
+                self.assertEqual(resource_of(result, "old").last_verified, verified)
 
     def test_a_verification_before_expected_since_anchors_when_its_window_reaches_it(self) -> None:
         verified = SINCE

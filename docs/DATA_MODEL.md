@@ -224,9 +224,11 @@ The reader refuses and never repairs:
 - `resourceType` is an open vocabulary, so `Host` never matches `host`. A colon is refused in an
   entry's type and an alias's type, so a `type:id` context key splits one way.
 - `name`, `sampleGroup`, and `job` follow the name rule (`MAX_NAME_CHARS`, 128).
-- An instant is RFC 3339 with an offset, at most 64 characters, matched against an ASCII pattern
-  before it is parsed, normalized to UTC, and held between the years 1970 and 9000 UTC, which is
-  the KEV `dateReleased` rule.
+- An instant is an RFC 3339 subset with an uppercase `T` and either an uppercase `Z` or a numeric
+  offset, at most 64 characters, matched against an ASCII pattern before it is parsed, normalized
+  to UTC, and held between the years 1970 and 9000 UTC, which is the KEV `dateReleased` rule.
+  Fractional seconds are truncated to microseconds, so two instants that differ only beyond the
+  sixth fractional digit compare equal, `--as-of` included.
 - A JSON null reads as absent on every optional field, where the KEV reader refuses it.
 - `verifications` is refused on a machine entry, even as an empty array.
 - A repeated pair, an alias that names another entry, and an alias that repeats another alias or
@@ -251,7 +253,7 @@ period selects from it, because coverage is measured at as-of:
 | `asOf` | The run's as-of instant in UTC; evidence observed later is never used |
 | `basis` | Fixed text saying what a status can and cannot claim |
 | `summary` | One row per rule, all five in rule-id order, with `expected` and a count per status |
-| `resources` | One row per entry, in inventory order |
+| `resources` | One row per entry, sorted by type, then id |
 | `windows` | Every window that closed with no verification, by rule, subject, and close |
 | `unregistered` | Observed resources no entry names, each with its `observations` count |
 | `later` | Evidence observed after `asOf`, listed and never used |

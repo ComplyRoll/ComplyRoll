@@ -107,7 +107,10 @@ The standard-library ingestion layer currently enforces:
   format, surrogate, or line-separator code point, or blank. So an inventory pair can only name
   what an observation can carry. A resource type may not hold a colon, `name`, `sampleGroup`,
   and `job` must be 1 to 128 printable ASCII characters, and every instant is matched against the
-  KEV catalog's ASCII pattern and held between 1970 and 9000 UTC before it is used. A JSON `null`
+  KEV catalog's ASCII pattern and held between 1970 and 9000 UTC before it is used. That pattern
+  is an RFC 3339 subset with an uppercase `T` and either an uppercase `Z` or a numeric offset,
+  and fractional seconds are truncated to microseconds, so two instants that differ only beyond
+  the sixth fractional digit compare equal, `--as-of` included. A JSON `null`
   in an optional field reads as absent. Any failure refuses the run as `invalid_input` with a
   message that starts "inventory", and publishes nothing
 - Inventory error messages quote only values that have passed validation, or a `repr` cut to 64

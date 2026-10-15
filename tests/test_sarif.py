@@ -4498,6 +4498,11 @@ def clean_run(**extra: Any) -> dict[str, Any]:
     return make_run((), **extra)
 
 
+def succeeded(**clock: Any) -> dict[str, Any]:
+    """Build one invocation that declares executionSuccessful true, with the given clocks."""
+    return {"executionSuccessful": True, **clock}
+
+
 class SarifCleanRunTests(unittest.TestCase):
     """A run with no results is a PASS observation of its scope (ADR 0015 decision 1)."""
 
@@ -4552,10 +4557,17 @@ class SarifCleanRunTests(unittest.TestCase):
         self.assertEqual(metadata(item)["automation_category"], "nightly")
 
     def test_a_clean_run_takes_the_run_clock(self) -> None:
-        run = clean_run(invocations=[{"startTimeUtc": LATE, "endTimeUtc": EARLY}])
+        run = clean_run(invocations=[succeeded(startTimeUtc=LATE, endTimeUtc=EARLY)])
         output = ingest_document(make_log(run))
         self.assertEqual(only_observation(output).observed_at, parse_timestamp(LATE))
         self.assertNotIn("source_timestamp_missing", diagnostic_codes(output))
+
+    def test_a_clean_run_keeps_the_run_clock_offset(self) -> None:
+        run = clean_run(invocations=[succeeded(startTimeUtc="2026-09-04T08:30:00+02:00")])
+        item = only_observation(ingest_document(make_log(run)))
+        assert item.observed_at is not None
+        self.assertEqual(item.observed_at.utcoffset(), timedelta(hours=2))
+        self.assertEqual(item.observed_at.isoformat(), "2026-09-04T08:30:00+02:00")
 
     def test_a_clockless_clean_run_warns_and_has_no_observed_at(self) -> None:
         for invocations in (None, [], [{"executionSuccessful": True}]):
@@ -4570,7 +4582,7 @@ class SarifCleanRunTests(unittest.TestCase):
                 self.assertEqual(missing.message, MISSING_CLOCK_MESSAGE)
 
     def test_an_invalid_run_clock_is_diagnosed_and_the_run_is_clockless(self) -> None:
-        run = clean_run(invocations=[{"startTimeUtc": "2026-09-01"}])
+        run = clean_run(invocations=[succeeded(startTimeUtc="2026-09-01")])
         output = ingest_document(make_log(run))
         self.assertIsNone(only_observation(output).observed_at)
         self.assertIn("source_timestamp_invalid", diagnostic_codes(output))
@@ -4597,9 +4609,46 @@ class SarifCleanRunTests(unittest.TestCase):
         self.assertEqual(output.failed_execution_at, parse_timestamp(EARLY))
         self.assertEqual(output.observations, ())
 
-    def test_a_null_executionsuccessful_is_not_a_failure(self) -> None:
-        output = ingest_document(make_log(clean_run(invocations=[{"executionSuccessful": None}])))
+    def test_an_invocation_without_an_explicit_true_backs_no_clean_run(self) -> None:
+        # Absent, null, non-boolean and non-object invocations are neither a success nor a
+        # failure: the run is not failed, but its empty results claim nothing.
+        for invocations in (
+            [{}],
+            [{"executionSuccessful": None}],
+            [{"executionSuccessful": 1}],
+            [{"executionSuccessful": "true"}],
+            ["not an invocation"],
+            [{"executionSuccessful": True}, {"startTimeUtc": EARLY}],
+        ):
+            with self.subTest(invocations=invocations):
+                output = ingest_document(make_log(clean_run(invocations=invocations)))
+                self.assertEqual(output.observations, ())
+                self.assertFalse(output.successful)
+                self.assertIsNone(output.failed_execution_at)
+                self.assertEqual(
+                    [item.code for item in output.diagnostics],
+                    ["run_clean", "execution_unverified", "no_observations"],
+                )
+                unverified = only_diagnostic(output, "execution_unverified")
+                self.assertIs(unverified.level, DiagnosticLevel.WARNING)
+                self.assertEqual(
+                    unverified.message,
+                    "an invocation does not declare executionSuccessful true; a run with no "
+                    "results is not a clean run (1 occurrence: runs[0])",
+                )
+
+    def test_an_unverified_invocation_still_reads_the_results_it_has(self) -> None:
+        # The strict reading guards the clean run alone; a run with results is read as before.
+        output = ingest_document(make_log(make_run([make_result()], invocations=[{}])))
+        self.assertTrue(output.successful)
+        self.assertEqual(only_observation(output).source_record_id, "R1")
+        self.assertNotIn("execution_unverified", diagnostic_codes(output))
+        self.assertNotIn("execution_unsuccessful", diagnostic_codes(output))
+
+    def test_a_run_with_no_invocations_claims_nothing_and_is_a_clean_run(self) -> None:
+        output = ingest_document(make_log(clean_run()))
         self.assertEqual(only_observation(output).source_record_id, CLEAN_RUN_RECORD_ID)
+        self.assertNotIn("execution_unverified", diagnostic_codes(output))
 
     def test_the_failed_invocation_fixture_mints_only_its_finding(self) -> None:
         output = ingest_fixture("failed-invocation.sarif")
@@ -4618,8 +4667,10 @@ class SarifCleanRunTests(unittest.TestCase):
         self.assertEqual(diagnostic_codes(output), ["run_clean"])
 
     def test_two_clean_runs_of_one_scope_fold_into_one_observation(self) -> None:
-        run = clean_run(invocations=[{"startTimeUtc": LATE}])
-        output = ingest_document(make_log(run, clean_run(invocations=[{"startTimeUtc": EARLY}])))
+        run = clean_run(invocations=[succeeded(startTimeUtc=LATE)])
+        output = ingest_document(
+            make_log(run, clean_run(invocations=[succeeded(startTimeUtc=EARLY)]))
+        )
         item = only_observation(output)
         self.assertEqual(metadata(item)["occurrence_count"], "2")
         self.assertEqual(metadata(item)["run_indexes"], "[0,1]")
@@ -4646,24 +4697,97 @@ class SarifCleanRunTests(unittest.TestCase):
         )
         self.assertEqual(len({item.observation_id for item in output.observations}), 4)
 
-    def test_a_clean_run_folds_with_a_result_that_spells_its_record_id(self) -> None:
-        # A rule id equal to the clean run's record id, with no usable location, shares its
-        # identity exactly as two such results would; the worst disposition wins the fold.
-        result = make_result(rule_id=CLEAN_RUN_RECORD_ID, uri=None)
-        output = ingest_document(make_log(clean_run(), make_run([result])))
+    def test_a_repository_names_the_scan_scope_when_no_image_does(self) -> None:
+        provenance = [{"repositoryUri": "https://example.test/repo-a/", "revisionId": "aaaa"}]
+        output = ingest_document(make_log(clean_run(versionControlProvenance=provenance)))
         item = only_observation(output)
-        self.assertIs(item.disposition, ObservationDisposition.OPEN)
-        self.assertEqual(metadata(item)["occurrence_count"], "2")
-        self.assertNotIn("duplicate_observation_identity", diagnostic_codes(output))
+        self.assertEqual(item.resource.resource_type, "scan")
+        self.assertEqual(item.resource.resource_id, "https://example.test/repo-a")
+        self.assertEqual(metadata(item)["repository_uri"], "https://example.test/repo-a")
+        self.assertEqual(metadata(item)["revision_id"], "aaaa")
+
+    def test_an_image_names_the_scope_before_a_repository_does(self) -> None:
+        provenance = [{"repositoryUri": "https://example.test/repo-a"}]
+        run = clean_run(properties={"imageName": IMAGE}, versionControlProvenance=provenance)
+        item = only_observation(ingest_document(make_log(run)))
+        self.assertEqual((item.resource.resource_type, item.resource.resource_id), ("image", IMAGE))
+
+    def test_clean_runs_of_two_repositories_keep_both_repositories(self) -> None:
+        runs = [
+            clean_run(versionControlProvenance=[{"repositoryUri": uri, "revisionId": revision}])
+            for uri, revision in (
+                ("https://example.test/repo-a", "aaaa"),
+                ("https://example.test/repo-b", "bbbb"),
+            )
+        ]
+        output = ingest_document(make_log(*runs))
+        self.assertEqual(
+            [
+                (
+                    item.resource.resource_id,
+                    metadata(item)["revision_id"],
+                    metadata(item)["run_indexes"],
+                )
+                for item in output.observations
+            ],
+            [
+                ("https://example.test/repo-a", "aaaa", "[0]"),
+                ("https://example.test/repo-b", "bbbb", "[1]"),
+            ],
+        )
+        self.assertNotIn("results_collapsed", diagnostic_codes(output))
+
+    # A-2 of the 2026-10-15 audit: a producer naming the rule sarif.run must not dress a
+    # finding as a run that reported nothing, and must not hide a clean run behind a PASS.
+    def test_a_result_that_spells_the_record_id_takes_the_observation(self) -> None:
+        result = make_result(rule_id=CLEAN_RUN_RECORD_ID, uri=None, text="real finding")
+        for clean_index, runs in (
+            (0, (clean_run(), make_run([result]))),
+            (1, (make_run([result]), clean_run())),
+        ):
+            with self.subTest(clean_index=clean_index):
+                output = ingest_document(make_log(*runs))
+                item = only_observation(output)
+                self.assertIs(item.disposition, ObservationDisposition.OPEN)
+                self.assertEqual(item.description, "real finding")
+                self.assertNotEqual(item.description, CLEAN_RUN_DESCRIPTION)
+                self.assertEqual(metadata(item)["occurrence_count"], "1")
+                self.assertNotIn("duplicate_observation_identity", diagnostic_codes(output))
+                self.assertNotIn("results_collapsed", diagnostic_codes(output))
+                superseded = only_diagnostic(output, "clean_run_superseded")
+                self.assertIs(superseded.level, DiagnosticLevel.INFO)
+                self.assertEqual(
+                    superseded.message,
+                    "a result shares the clean run's identity; the run's PASS yields to it "
+                    f"(1 occurrence: runs[{clean_index}])",
+                )
+
+    def test_a_superseded_clean_run_contributes_no_run_index(self) -> None:
+        result = make_result(rule_id=CLEAN_RUN_RECORD_ID, uri=None)
+        item = only_observation(ingest_document(make_log(clean_run(), make_run([result]))))
+        self.assertEqual(metadata(item)["run_indexes"], "[1]")
+
+    def test_a_result_that_spells_the_record_id_under_another_scope_is_its_own(self) -> None:
+        # The image-scoped clean run and a locationless result resolve to different
+        # resources, so both stand: the fold shares a record id, not an identity.
+        result = make_result(rule_id=CLEAN_RUN_RECORD_ID, uri=None)
+        output = ingest_document(
+            make_log(clean_run(properties={"imageName": IMAGE}), make_run([result]))
+        )
+        self.assertEqual(
+            [(item.resource.resource_type, item.disposition) for item in output.observations],
+            [("image", ObservationDisposition.PASS), ("scan", ObservationDisposition.OPEN)],
+        )
+        self.assertNotIn("clean_run_superseded", diagnostic_codes(output))
 
     def test_a_clean_run_never_correlates_into_a_case(self) -> None:
-        output = ingest_document(make_log(clean_run(invocations=[RUN_CLOCK])))
+        output = ingest_document(make_log(clean_run(invocations=[succeeded(**RUN_CLOCK)])))
         result = correlate_observations(output.observations)
         self.assertEqual(result.groups, ())
         self.assertEqual([item.source_record_id for item in result.excluded], [CLEAN_RUN_RECORD_ID])
 
     def test_the_same_bytes_derive_the_same_identity_at_any_ingest_time(self) -> None:
-        payload = make_log(clean_run(invocations=[RUN_CLOCK]))
+        payload = make_log(clean_run(invocations=[succeeded(**RUN_CLOCK)]))
         first = only_observation(ingest_document(payload))
         second = only_observation(ingest_document(payload, ingested_at=SECOND_INGEST))
         self.assertEqual(first.observation_id, second.observation_id)

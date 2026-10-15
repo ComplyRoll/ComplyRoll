@@ -1150,6 +1150,20 @@ class DispatcherClassificationTests(unittest.TestCase):
             FailureClassification(EXECUTION, None, ("execution_unsuccessful", "no_observations")),
         )
 
+    def test_a_clean_run_under_an_unverified_invocation_is_the_content_class(self) -> None:
+        # The invocation declares neither success nor failure, so the run is not failed and
+        # its empty results claim nothing: the log held no usable content (ADR 0015).
+        run = make_run([], invocations=[{"startTimeUtc": "2026-09-01T00:00:00Z"}])
+        result = ingest_json("synthetic.sarif", make_log(run))
+        self.assertEqual(
+            [item.code for item in result.diagnostics],
+            ["run_clean", "execution_unverified", "no_observations"],
+        )
+        self.assertIsNone(result.failed_execution_at)
+        self.assertEqual(
+            self.classify(result), FailureClassification(CONTENT, None, ("no_observations",))
+        )
+
 
 # *--- Structured Fields ---*
 

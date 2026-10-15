@@ -340,7 +340,9 @@ info: run_clean: run reports no results (1 occurrence: runs[0]) [clean-run.sarif
 The observation's description says what it is not: the run found nothing it was configured to
 report, which is not evidence that the image is free of vulnerabilities. A run with no results
 whose invocation reports `executionSuccessful: false` mints nothing; it is the failed invocation
-of the detection process failures section (ADR 0015 decision 1).
+of the detection process failures section. One whose invocation never declares
+`executionSuccessful: true` mints nothing either and is `execution_unverified` beside
+`no_observations` (ADR 0015 decision 1).
 
 ## Known exploited vulnerabilities
 

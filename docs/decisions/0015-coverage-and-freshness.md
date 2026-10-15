@@ -29,14 +29,20 @@ and the first gap the adapter's users met.
 ## Decision 1: a clean SARIF run is an artifact-origin PASS observation of its scope
 
 At the `run_clean` site in `adapters/sarif.py`, a run whose `results` member is an empty array
-yields one observation when none of its invocations declares `executionSuccessful: false`:
+yields one observation when every invocation it declares carries `executionSuccessful: true`. A
+run with no `invocations` member makes no claim either way and still yields it. Only the JSON
+booleans count: an invocation whose flag is absent, null or any other type is WARNING
+`execution_unverified` and backs no clean run, while its results, when it has any, are still
+read as before. The observation:
 
 - `source_type` `sarif`, `source_tool` the driver name, `source_record_id` `sarif.run`,
   `context_key` the run's automation key exactly as ADR 0011 Decision 2 builds it (`driver`, or
   `driver|category`).
 - Resource: `image:<name>` when the run names an image through `properties.imageName` or its
-  first `repoDigests` entry, else `scan:<driver>`. No new resource type: the vocabulary of ADR
-  0011 (image, file, logical, scan) is unchanged.
+  first `repoDigests` entry; else `scan:<repository uri>` when `versionControlProvenance[0]`
+  names a repository, so two clean runs of two repositories by one driver are two observations
+  that each keep their own `repository_uri` and `revision_id`; else `scan:<driver>`. No new
+  resource type: the vocabulary of ADR 0011 (image, file, logical, scan) is unchanged.
 - `observed_at`: the run clock of ADR 0011 Decision 8 (earliest invocation start, else earliest
   end), else absent with the shared `source_timestamp_missing` WARNING. Ingest time is never
   substituted.
@@ -58,15 +64,23 @@ ordinary ADR 0011 Decision 9 fold, so:
 - Two clean runs of one scope in one log fold into one observation (`occurrence_count` 2,
   `run_indexes` both), the way two results that share an identity do, instead of tripping the
   dispatcher's `duplicate_observation_identity` and refusing the log.
-- A result whose rule id is spelled `sarif.run` and resolves to the same resource folds with it,
-  the worst disposition winning; a producer cannot keep a clean run out by naming a rule.
+- A result whose rule id is spelled `sarif.run` and resolves to the same resource shares its
+  fold, and the producer's result takes the observation: the clean candidate yields with INFO
+  `clean_run_superseded`, contributing no title, text, run index or occurrence. A producer
+  naming that rule can neither dress a finding as a run that reported nothing nor make a clean
+  run refuse the log. Under a different resource (an image-scoped clean run beside a
+  locationless result) both stand as two observations.
 - It counts against the per-artifact observation cap and byte budget.
 
 The failed-invocation guard keeps ADR 0014 where it is: a run with no results whose invocation
 failed mints nothing from this decision and stays `run_clean` plus `execution_unsuccessful`
 plus, when nothing else yields, `no_observations`, which is the execution class with
-`--record-failed-imports`. INFO `run_clean` is raised in both cases with its existing message. A
-run whose `results` member is absent or null is `results_unknown` and never a clean run.
+`--record-failed-imports`. A run with no results whose invocation is unverified mints nothing
+either and stays `run_clean` plus `execution_unverified` plus, when nothing else yields,
+`no_observations`: the log held no usable content, which is the content class with the flag and
+fatal without it, as it was before this record. INFO `run_clean` is raised in every case with its
+existing message. A run whose `results` member is absent or null is `results_unknown` and never a
+clean run.
 
 Consequences:
 
@@ -78,9 +92,10 @@ Consequences:
 - A clean run beside a refused run is withheld by the ERROR and the reading is refused as a
   partial reading, as a log with a finding beside a refused run is. Before this decision that
   log was the content class.
-- `UnmintableReason.CLEAN_SCAN` is unreachable and retired (ADR 0014, amendment 2026-10-15):
-  every `run_clean` either folds an observation or sits beside `execution_unsuccessful`, which
-  the execution class claims first. The classifier reads codes alone again.
+- `UnmintableReason.CLEAN_SCAN` is retired (ADR 0014, amendment 2026-10-15): a `run_clean`
+  either folds an observation, sits beside `execution_unsuccessful`, which the execution class
+  claims first, or sits beside `execution_unverified`, where the reading held nothing usable and
+  is the content class. The classifier reads codes alone again.
 - ADR 0011 Decision 13 and its 2026-09-30 amendment are amended; backlog item 9 is complete.
 - Every existing golden is byte-identical: `tests/fixtures/failed-invocation.sarif` run 1 is
   guarded, and no other fixture has an empty results array. The new fixture
@@ -99,5 +114,16 @@ Rejected alternatives:
   without `automationDetails` produces, would then refuse the whole log.
 - A fifth resource type for a run's scope. The inventory of PR 2 names images and hosts, not
   runs, and the `scan:<driver>` fallback already exists for a result without a location.
+- Reading an absent `executionSuccessful` as success. The flag is required by the SARIF schema,
+  and a run with `exitCode` 2 and an error notification but no flag would otherwise mint a PASS
+  claiming the tool ran clean. Reading it as a failure was rejected too: that would turn every
+  such run with results into an execution failure, which main never did.
+- Letting the clean candidate fold with a result that spells `sarif.run` on equal terms. The
+  fold's primary is chosen by content order, so the clean run's title and fixed text could
+  replace a real finding's in the report. Refusing the collision was rejected because a producer
+  could then keep any clean run out of the store by naming the rule.
+- Keying the repository into the context instead of the resource. The resource is the scope the
+  run names, as it is for the image case, and results of that run already use the repository as
+  their file resource prefix.
 - Dropping INFO `run_clean` once the run mints. The note is what an operator sees on standard
   error, and keeping one code and one message keeps the guarded run's output unchanged.

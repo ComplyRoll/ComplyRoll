@@ -273,6 +273,9 @@ class _RunScope:
     # Whether any invocation declared executionSuccessful false: such a run's empty results
     # are not a clean run (the failed invocation is ADR 0014's to record).
     execution_failed: bool
+    # Whether any invocation left executionSuccessful absent or non-boolean. Its results are
+    # still read, but its empty results claim nothing, so no clean run is minted either.
+    execution_unverified: bool
     scalars: dict[str, str]
     lists: dict[str, tuple[str, ...]]
     truncated: set[str]
@@ -328,6 +331,8 @@ class _Candidate:
     messages: list[tuple[_RegionKey, str]]
     suppressed: str
     truncated: set[str]
+    # True for the one candidate a clean run mints; a producer's result always outranks it.
+    clean_run: bool = False
 
 
 # *--- JSON Access ---*
@@ -977,8 +982,18 @@ class _ArtifactParse(EvidenceParse):
             return
         if not results:
             self.diagnostics.add(DiagnosticLevel.INFO, "run_clean", "run reports no results", path)
-            if not scope.execution_failed:
-                self._clean_run(scope)
+            if scope.execution_failed:
+                return
+            if scope.execution_unverified:
+                self.diagnostics.add(
+                    DiagnosticLevel.WARNING,
+                    "execution_unverified",
+                    "an invocation does not declare executionSuccessful true; "
+                    "a run with no results is not a clean run",
+                    path,
+                )
+                return
+            self._clean_run(scope)
             return
         if len(results) > self.limits.max_results_per_run:
             raise InputLimitError(
@@ -1007,9 +1022,13 @@ class _ArtifactParse(EvidenceParse):
             )
         invocations = _sequence(run.get("invocations"))
         execution_failed = False
+        execution_unverified = False
         for position, invocation in enumerate(invocations):
             entry = _mapping(invocation)
-            if entry is not None and entry.get("executionSuccessful") is False:
+            # Only the JSON booleans count: a missing, null, or non-boolean flag is neither a
+            # success nor a failure, and only an explicit true can back a clean run.
+            flag = entry.get("executionSuccessful") if entry is not None else None
+            if flag is False:
                 execution_failed = True
                 self.diagnostics.add(
                     DiagnosticLevel.WARNING,
@@ -1017,6 +1036,8 @@ class _ArtifactParse(EvidenceParse):
                     "invocation reports executionSuccessful false; its results are still read",
                     f"{path}.invocations[{position}]",
                 )
+            elif flag is not True:
+                execution_unverified = True
         # Read before the driver check or any identity check below can refuse the run, so a
         # failed invocation keeps its declared clock when its run is refused too (ADR 0014).
         clock = self._run_clock(path, invocations)
@@ -1117,6 +1138,7 @@ class _ArtifactParse(EvidenceParse):
             repository_uri=repository_uri,
             clock=clock,
             execution_failed=execution_failed,
+            execution_unverified=execution_unverified,
             scalars=scalars,
             lists=lists,
             truncated=truncated,
@@ -1162,8 +1184,12 @@ class _ArtifactParse(EvidenceParse):
         # Ingest time is never substituted for a run that declares no clock (decision 8).
         if scope.clock is None:
             self.diagnostics.add_fixed(missing_time_diagnostic(self.artifact))
+        # The scope the run names is the resource, so clean runs of two repositories by one
+        # driver never fold into one record that keeps only the first repository's evidence.
         if scope.image_name:
             resource_type, resource_id = RESOURCE_TYPE_IMAGE, scope.image_name
+        elif scope.repository_uri:
+            resource_type, resource_id = RESOURCE_TYPE_SCAN, scope.repository_uri
         else:
             resource_type, resource_id = RESOURCE_TYPE_SCAN, scope.driver_name
         candidate = _Candidate(
@@ -1194,6 +1220,7 @@ class _ArtifactParse(EvidenceParse):
             messages=[],
             suppressed="",
             truncated=truncated,
+            clean_run=True,
         )
         self._fold(
             (scope.driver_name, CLEAN_RUN_RECORD_ID, resource_type, resource_id, scope.context_key),
@@ -1718,6 +1745,20 @@ class _ArtifactParse(EvidenceParse):
     def _assemble(self, key: _FoldKey, candidates: list[_Candidate]) -> Observation:
         """Fold every candidate that shares an identity into one bounded observation."""
         driver_name, record_id, resource_type, resource_id, context_key = key
+        # SECURITY: A result whose rule id spells the clean run's record id never borrows the
+        # run's PASS title or text: the producer's result is the observation and the clean
+        # candidate yields, so a finding cannot be dressed as a run that reported nothing.
+        results = [candidate for candidate in candidates if not candidate.clean_run]
+        if results and len(results) < len(candidates):
+            for candidate in candidates:
+                if candidate.clean_run:
+                    self.diagnostics.add(
+                        DiagnosticLevel.INFO,
+                        "clean_run_superseded",
+                        "a result shares the clean run's identity; the run's PASS yields to it",
+                        candidate.path,
+                    )
+            candidates = results
         ordered = sorted(candidates, key=lambda candidate: candidate.order)
         primary = ordered[0]
         path = primary.path

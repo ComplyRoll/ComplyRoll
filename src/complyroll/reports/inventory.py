@@ -110,7 +110,7 @@ class InformationResource:
     resource_id: str
     machine_based: bool
     expected_since: datetime
-    # True, False, DRIFT_UNKNOWN, or None when a non-machine entry declares nothing.
+    # True, False or DRIFT_UNKNOWN on a machine entry; always None on a non-machine entry.
     drift_likely: bool | str | None = None
     sample_group: str | None = None
     job: str | None = None
@@ -129,6 +129,8 @@ class InformationResource:
             raise ValueError("drift_likely must be True, False, DRIFT_UNKNOWN, or None")
         if self.machine_based and drift is None:
             raise ValueError("a machine-based resource must declare drift_likely")
+        if not self.machine_based and drift is not None:
+            raise ValueError("only a machine-based resource declares drift_likely")
         if self.machine_based and self.verifications:
             raise ValueError("only a non-machine resource carries attested verifications")
         keys = [_ref_key(alias) for alias in self.aliases]
@@ -337,7 +339,7 @@ def _parse_entry(raw_entry: Any, where: str) -> tuple[InformationResource, list[
     resource_id = _identity(_string(raw_entry, "resourceId", where), "resourceId", where)
     machine_based = _boolean(raw_entry, "machineBased", where)
     expected_since = _instant(_string(raw_entry, "expectedSince", where), "expectedSince", where)
-    drift_likely = _drift_likely(raw_entry, where, required=machine_based)
+    drift_likely = _drift_likely(raw_entry, where, machine_based=machine_based)
     sample_group = _optional_identity(raw_entry, "sampleGroup", where)
     job = _optional_identity(raw_entry, "job", where)
     decommissioned_at = _optional_instant(raw_entry, "decommissionedAt", where)
@@ -466,12 +468,15 @@ def _optional_identity(raw: Mapping[str, Any], key: str, where: str) -> str | No
     return _identity(value, key, where)
 
 
-def _drift_likely(raw: Mapping[str, Any], where: str, *, required: bool) -> bool | str | None:
+def _drift_likely(raw: Mapping[str, Any], where: str, *, machine_based: bool) -> bool | str | None:
     value = _optional(raw, "driftLikely")
     if value is _ABSENT:
-        if required:
+        if machine_based:
             raise _refusal(where, "driftLikely is required when machineBased is true")
         return None
+    # Drift clocks are detection cadence rules, and an attested procedure is not detection.
+    if not machine_based:
+        raise _refusal(where, "driftLikely is for entries whose machineBased is true")
     if isinstance(value, bool) or value == DRIFT_UNKNOWN:
         return value
     got = _excerpt(value) if isinstance(value, str) else _json_type(value)

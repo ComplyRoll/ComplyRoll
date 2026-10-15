@@ -14,6 +14,16 @@ from complyroll.models import PainRating
 
 from .source import RuleSourceSnapshot, load_bundled_rule_source_snapshot
 
+# The detection cadence rules coverage reads, in rule-id order. They are resolved lazily,
+# never through required_rule_ids, so a run without an inventory never depends on them.
+COVERAGE_RULE_IDS = (
+    "VDR-TFR-MVX",
+    "VDR-TFR-NMV",
+    "VDR-TFR-PCD",
+    "VDR-TFR-PDD",
+    "VDR-TFR-PSD",
+)
+
 
 class PolicyDataError(ValueError):
     """The verified policy snapshot has an unsupported or malformed rule shape."""
@@ -234,6 +244,17 @@ class SelectedPolicy:
         """Return the class-aware evaluation deadline from VER-TFR-EVU."""
 
         return self.deadline_for_rule("VER-TFR-EVU", detected_at)
+
+    def coverage_deadline(self, rule_id: str, anchor: datetime) -> PolicyDeadline:
+        """Return the class-aware due date of one coverage clock from its anchor.
+
+        Only the five detection cadence rules qualify. A policy that does not select the
+        rule raises PolicyRuleNotFoundError, as every other missing rule does.
+        """
+
+        if rule_id not in COVERAGE_RULE_IDS:
+            raise ValueError(f"{rule_id!r} is not a coverage rule")
+        return self.deadline_for_rule(rule_id, anchor)
 
     def acceptance_deadline(self, evaluated_at: datetime) -> PolicyDeadline:
         """Return the categorization threshold from VER-TFR-MAV.

@@ -302,10 +302,9 @@ class InventoryLoaderTests(unittest.TestCase):
                 self.assertIs(type(entry.drift_likely), type(value))
         self.assertEqual(DRIFT_UNKNOWN, "unknown")
 
-    def test_drift_likely_is_optional_on_a_non_machine_entry(self) -> None:
+    def test_drift_likely_reads_absent_and_null_alike_on_a_non_machine_entry(self) -> None:
         self.assertIsNone(only_entry(document([manual_entry()])).drift_likely)
-        entry = only_entry(document([manual_entry(driftLikely=DRIFT_UNKNOWN)]))
-        self.assertEqual(entry.drift_likely, DRIFT_UNKNOWN)
+        self.assertIsNone(only_entry(document([manual_entry(driftLikely=None)])).drift_likely)
 
     def test_optional_fields_read_absent_and_null_alike(self) -> None:
         nulls = {
@@ -561,6 +560,8 @@ class InventoryInvariantTests(unittest.TestCase):
             "machine without drift": (host, {"drift_likely": None}),
             "drift of another value": (host, {"drift_likely": "likely"}),
             "drift of an integer": (host, {"drift_likely": 1}),
+            "drift on a non-machine": (procedure, {"drift_likely": False}),
+            "unknown drift on a non-machine": (procedure, {"drift_likely": DRIFT_UNKNOWN}),
             "verifications on a machine": (host, {"verifications": (verification,)}),
             "decommissioned before expected": (
                 host,
@@ -864,9 +865,21 @@ class InventoryRefusalTests(unittest.TestCase):
                 "zero": with_entry("driftLikely", 0),
                 "list": with_entry("driftLikely", []),
                 "object": with_entry("driftLikely", {}),
-                "on a non-machine entry": with_entry("driftLikely", "no", index=1),
             },
             'driftLikely must be true, false or "unknown"',
+        )
+
+    def test_drift_likely_is_refused_on_a_non_machine_entry(self) -> None:
+        # A drift clock is a detection cadence rule; an attested procedure is not detection.
+        self.assert_each_refused(
+            {
+                "true": with_entry("driftLikely", True, index=1),
+                "false": with_entry("driftLikely", False, index=1),
+                "unknown": with_entry("driftLikely", DRIFT_UNKNOWN, index=1),
+                "another string": with_entry("driftLikely", "no", index=1),
+                "an integer": with_entry("driftLikely", 1, index=1),
+            },
+            "inventory resources[1]: driftLikely is for entries whose machineBased is true",
         )
 
     def test_instant_rules(self) -> None:

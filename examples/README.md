@@ -341,8 +341,9 @@ The observation's description says what it is not: the run found nothing it was 
 report, which is not evidence that the image is free of vulnerabilities. A run with no results
 whose invocation reports `executionSuccessful: false` mints nothing; it is the failed invocation
 of the detection process failures section. One whose invocation never declares
-`executionSuccessful: true` mints nothing either and is `execution_unverified` beside
-`no_observations` (ADR 0015 decision 1).
+`executionSuccessful: true` mints nothing either and is `execution_unverified`; with nothing else
+in the log it fails with `no_observations` and `clean_run_unverified`, and the second code is
+what names the cause in a recorded failure (ADR 0015 decision 1 and its PR 2 section).
 
 ## Known exploited vulnerabilities
 

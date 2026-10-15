@@ -613,8 +613,8 @@ class CompiledRecordSet:
     diagnostics after the ones held here, so the diagnostics on the set are exactly
     the ones the compile itself raised: ingest diagnostics in their total order, then
     unresolved observations, then partial detection times in group order.
-    `detection_failures` lists every system observation in the set, whether or not a
-    projection's period later reports its record.
+    `detection_failures` lists every detection-process system observation in the set,
+    whether or not a projection's period later reports its record.
     """
 
     records: tuple[CompiledVulnerability, ...]
@@ -775,10 +775,13 @@ def compile_record_set(
             errors.extend(record_errors)
             continue
         compiled.append(record)
+        # Only the failure type carries the metadata `_detection_failure` reads; any other
+        # reserved source type is a record like any other and is never listed (ADR 0015).
         detection_failures.extend(
             _detection_failure(item, record.tracking_id)
             for item in group.observations
             if item.origin is ObservationOrigin.SYSTEM
+            and item.source_type == DETECTION_FAILURE_SOURCE_TYPE
         )
         if kev_rule is not None and any(cve_may_be_missing(item) for item in group.observations):
             kev_incomplete.append(record)
@@ -1327,7 +1330,7 @@ def _is_system_group(group: VulnerabilityGroup) -> bool:
 
 
 def _detection_failure(observation: Observation, tracking_id: str) -> CompiledDetectionFailure:
-    """Describe one system observation for `detectionFailures`, read from its metadata."""
+    """Describe one detection-process observation for `detectionFailures`, from its metadata."""
 
     metadata = dict(observation.source_metadata)
     observed_at = observation.observed_at

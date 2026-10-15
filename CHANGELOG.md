@@ -351,6 +351,13 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- A SARIF log that yields nothing and has a run with no results under an unverified invocation
+  (an `executionSuccessful` that is absent, null or not a boolean, or an `invocations` member
+  that is not an array) now raises ERROR `clean_run_unverified` beside `no_observations`. The
+  content-class failure `--record-failed-imports` records lists both codes, so the record names
+  its cause instead of reading like a log with no runs. A productive run beside such a run still
+  imports, and a failed invocation never raises the code. ADR 0014 carries a second dated
+  amendment of 2026-10-15 and ADR 0015 opens its PR 2 section with it.
 - Repositioned the one-line description. "Evidence automation for continuous authorization" used
   Rev5 and continuous-monitoring vocabulary for a tool that implements the 2026 Vulnerability
   Detection and Response and Vulnerability Evaluation and Reporting rules. The package, the

@@ -4589,9 +4589,12 @@ class SarifCleanRunTests(unittest.TestCase):
         self.assertIn("source_timestamp_missing", diagnostic_codes(output))
 
     def test_a_failed_invocation_mints_no_clean_run(self) -> None:
+        # A failed invocation beside an unverified one in the same run is the failure, so
+        # the run never names the unverified cause (clean_run_unverified).
         for invocations in (
             [{"executionSuccessful": False}],
             [{"executionSuccessful": True}, {"executionSuccessful": False, "startTimeUtc": EARLY}],
+            [{"executionSuccessful": False}, {}],
         ):
             with self.subTest(invocations=invocations):
                 output = ingest_document(make_log(clean_run(invocations=invocations)))
@@ -4627,7 +4630,12 @@ class SarifCleanRunTests(unittest.TestCase):
                 self.assertIsNone(output.failed_execution_at)
                 self.assertEqual(
                     [item.code for item in output.diagnostics],
-                    ["run_clean", "execution_unverified", "no_observations"],
+                    [
+                        "run_clean",
+                        "execution_unverified",
+                        "no_observations",
+                        "clean_run_unverified",
+                    ],
                 )
                 unverified = only_diagnostic(output, "execution_unverified")
                 self.assertIs(unverified.level, DiagnosticLevel.WARNING)
@@ -4646,9 +4654,73 @@ class SarifCleanRunTests(unittest.TestCase):
                 self.assertEqual(output.observations, ())
                 self.assertEqual(
                     [item.code for item in output.diagnostics],
-                    ["run_clean", "execution_unverified", "no_observations"],
+                    [
+                        "run_clean",
+                        "execution_unverified",
+                        "no_observations",
+                        "clean_run_unverified",
+                    ],
                 )
                 self.assertIsNone(output.failed_execution_at)
+
+    def test_an_unverified_empty_run_names_its_cause_once_in_fixed_text(self) -> None:
+        # The stored failure keeps codes only, so the cause is an ERROR code of its own,
+        # raised once per log beside no_observations, never per run.
+        output = ingest_document(
+            make_log(clean_run(invocations=[{}]), clean_run(invocations="ok", driver="Other")),
+            name="unverified.sarif",
+        )
+        self.assertEqual(output.observations, ())
+        self.assertFalse(output.successful)
+        self.assertEqual(
+            [(item.level, item.code) for item in output.errors],
+            [
+                (DiagnosticLevel.ERROR, "no_observations"),
+                (DiagnosticLevel.ERROR, "clean_run_unverified"),
+            ],
+        )
+        cause = only_diagnostic(output, "clean_run_unverified")
+        self.assertEqual(
+            cause.message,
+            "SARIF log has a run with no results under an unverified invocation, which is not "
+            "a clean run",
+        )
+        self.assertEqual(cause.location, "unverified.sarif")
+        self.assertIn("runs[0], runs[1]", only_diagnostic(output, "execution_unverified").message)
+
+    def test_an_unverified_empty_run_beside_a_productive_run_imports(self) -> None:
+        # The productive run keeps the reading successful exactly as before this code.
+        output = ingest_document(make_log(clean_run(invocations=[{}]), make_run([make_result()])))
+        self.assertTrue(output.successful)
+        self.assertEqual(only_observation(output).source_record_id, "R1")
+        self.assertIn("execution_unverified", diagnostic_codes(output))
+        self.assertNotIn("clean_run_unverified", diagnostic_codes(output))
+        self.assertNotIn("no_observations", diagnostic_codes(output))
+
+    def test_an_unverified_empty_run_beside_skipped_or_refused_runs_names_its_cause(self) -> None:
+        unknown = make_run()
+        del unknown["results"]
+        refused = make_run()
+        refused["results"] = "none"
+        cases = {
+            "results unknown": (unknown, ["no_observations", "clean_run_unverified"]),
+            "refused": (refused, ["invalid_run", "no_observations", "clean_run_unverified"]),
+        }
+        for label, (other, errors) in cases.items():
+            with self.subTest(label):
+                output = ingest_document(make_log(clean_run(invocations=[{}]), other))
+                self.assertEqual(output.observations, ())
+                self.assertEqual([item.code for item in output.errors], errors)
+
+    def test_no_empty_run_means_no_unverified_cause(self) -> None:
+        # Null results and a log with no runs read nothing, but no run claimed a clean scan.
+        unknown = make_run()
+        del unknown["results"]
+        for label, payload in (("results unknown", make_log(unknown)), ("no runs", make_log())):
+            with self.subTest(label):
+                output = ingest_document(payload)
+                self.assertIn("no_observations", diagnostic_codes(output))
+                self.assertNotIn("clean_run_unverified", diagnostic_codes(output))
 
     def test_an_unverified_invocation_still_reads_the_results_it_has(self) -> None:
         # The strict reading guards the clean run alone; a run with results is read as before.

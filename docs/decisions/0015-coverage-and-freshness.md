@@ -128,3 +128,26 @@ Rejected alternatives:
   their file resource prefix.
 - Dropping INFO `run_clean` once the run mints. The note is what an operator sees on standard
   error, and keeping one code and one message keeps the guarded run's output unchanged.
+
+## PR 2: the inventory and the coverage evidence
+
+### 2026-10-15: an unverified empty run names its cause
+
+Decision 1 leaves a run with no results under an unverified invocation as `run_clean` plus
+`execution_unverified` plus, when nothing else yields, `no_observations`, which is the content
+class. The recorded failure carried `no_observations` alone, so it never said why the log held
+nothing. The SARIF adapter now raises ERROR `clean_run_unverified` beside `no_observations` when
+the reading yields nothing and at least one run had no results under an unverified invocation.
+It is a content code (ADR 0014, second amendment of 2026-10-15), the record's `failure.codes`
+name both, and a run whose invocation failed never raises it. Raising it per run at the
+`run_clean` site was rejected: a productive run beside an unverified empty run is a successful
+reading, and it would have become a refused log.
+
+### 2026-10-15: only the failure type is listed as a detection failure
+
+The compiler handed every system observation to `_detection_failure`, which reads the
+`artifact.*` and `failure.*` metadata only a detection-process record carries. With one system
+source type the two were the same set; this slice adds others. The loop now selects
+`complyroll.detection-process` observations alone, so a system observation of any other reserved
+type compiles as an ordinary record and is never listed in `detectionFailures`. No output moves,
+since no other system type exists yet; a regression test builds one.

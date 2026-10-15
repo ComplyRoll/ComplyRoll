@@ -15,8 +15,20 @@ from unittest import mock
 from complyroll import __version__
 from complyroll.adapters import DiagnosticLevel, IngestResult, ingest_stig_artifact
 from complyroll.adapters.common import MAX_METADATA_VALUE_CHARS, TRUNCATION_MARKER
+from complyroll.adapters.failures import (
+    DETECTION_FAILURE_SOURCE_TYPE,
+    classify_ingest,
+    system_observation_for,
+)
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
-from complyroll.models import CaseStatus
+from complyroll.models import (
+    CaseStatus,
+    Observation,
+    ObservationDisposition,
+    ObservationOrigin,
+    ResourceRef,
+    SourceSeverity,
+)
 from complyroll.policy import CertificationClass
 from complyroll.reports import (
     FINAL_DISPOSITIONS,
@@ -3758,6 +3770,90 @@ class DetectionFailureIdentityTests(unittest.TestCase):
             [item["providerTrackingId"] for item in report.document["vulnerabilities"]],
             [TRUNCATED_CASE],
         )
+
+
+class SystemObservationGateTests(unittest.TestCase):
+    """Only the detection-process source type is listed in `detectionFailures`.
+
+    A system observation of any other reserved type carries none of the `artifact.*` or
+    `failure.*` metadata the listing reads, so the compiler must never hand it there.
+    """
+
+    SOURCE_TYPE = "complyroll.synthetic-other"
+
+    def other_system_observation(self) -> Observation:
+        """Return a system observation of a reserved type that is not a detection failure."""
+
+        observation = Observation(
+            observation_id="pending",
+            source_type=self.SOURCE_TYPE,
+            source_tool="complyroll",
+            parser_name="complyroll.synthetic-other",
+            parser_version="1",
+            source_record_id="synthetic-other",
+            resource=ResourceRef(resource_id="lab-host-01", resource_type="host"),
+            observed_at=datetime(2026, 8, 10, 9, 0, tzinfo=UTC),
+            ingested_at=AS_OF,
+            disposition=ObservationDisposition.OPEN,
+            source_severity=SourceSeverity.UNKNOWN,
+            title="synthetic system observation of another reserved type",
+            description="",
+            source_artifact_digest="",
+            source_artifact_name="",
+            source_identifiers=(),
+            source_metadata=(("synthetic.note", "no artifact or failure keys"),),
+            evidence_ids=("synthetic:lab-host-01",),
+            context_key="synthetic:lab-host-01",
+            origin=ObservationOrigin.SYSTEM,
+        )
+        return replace(observation, observation_id=observation.derived_observation_id)
+
+    def record_set(self, *extra: Observation) -> CompiledRecordSet:
+        results = [ingest_stig_artifact(path, ingested_at=AS_OF) for path in ARTIFACTS]
+        return compile_record_set(
+            artifacts=tuple(compiled_artifact(result) for result in results),
+            observations=(
+                *(observation for result in results for observation in result.observations),
+                *extra,
+            ),
+            ingest_diagnostics=(),
+            evaluations_by_tracking_id={},
+            attestation=DetectionAttestation(default=DETECTED_AT),
+            options=options(),
+        )
+
+    def test_another_reserved_type_compiles_and_is_not_a_detection_failure(self) -> None:
+        other = self.other_system_observation()
+        record_set = self.record_set(other)
+
+        self.assertEqual(record_set.detection_failures, ())
+        (record,) = [item for item in record_set.records if item.source_type == self.SOURCE_TYPE]
+        self.assertEqual(record.observation_ids, (other.observation_id,))
+        self.assertEqual(record.detected_at_source, "system")
+        report = project_vdt(record_set)
+        self.assertTrue(report.validation.is_valid)
+        self.assertNotIn("detectionFailures", report.document["x-complyroll"])
+
+    def test_beside_a_detection_failure_only_the_failure_is_listed(self) -> None:
+        failed = ingest_stig_artifact(FIXTURES / "failed-truncated.sarif", ingested_at=AS_OF)
+        classification = classify_ingest(failed)
+        if classification is None:
+            raise AssertionError("the truncated fixture must classify as a failure")
+        failure = system_observation_for(
+            failed, classification, name="failed-truncated.sarif", observed_at=AS_OF
+        )
+        record_set = self.record_set(self.other_system_observation(), failure)
+
+        self.assertEqual(
+            [(item.sha256, item.tracking_id) for item in record_set.detection_failures],
+            [(TRUNCATED_SHA256, TRUNCATED_CASE)],
+        )
+        reserved = sorted(
+            item.source_type
+            for item in record_set.records
+            if item.source_type.startswith("complyroll.")
+        )
+        self.assertEqual(reserved, [DETECTION_FAILURE_SOURCE_TYPE, self.SOURCE_TYPE])
 
 
 class GoldenFailedVdtReportTests(unittest.TestCase):

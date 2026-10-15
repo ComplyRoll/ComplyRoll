@@ -1157,12 +1157,55 @@ class DispatcherClassificationTests(unittest.TestCase):
         result = ingest_json("synthetic.sarif", make_log(run))
         self.assertEqual(
             [item.code for item in result.diagnostics],
-            ["run_clean", "execution_unverified", "no_observations"],
+            ["run_clean", "execution_unverified", "no_observations", "clean_run_unverified"],
         )
         self.assertIsNone(result.failed_execution_at)
         self.assertEqual(
-            self.classify(result), FailureClassification(CONTENT, None, ("no_observations",))
+            self.classify(result),
+            FailureClassification(CONTENT, None, ("clean_run_unverified", "no_observations")),
         )
+
+    def test_the_recorded_unverified_failure_names_its_cause(self) -> None:
+        # The failure record keeps codes, not messages, so the code is what names the cause.
+        run = make_run([], invocations=[{}])
+        record = mint(ingest_json("synthetic.sarif", make_log(run)), name="synthetic.sarif")
+        self.assertEqual(metadata(record)["failure.class"], "content")
+        self.assertEqual(
+            json.loads(metadata(record)["failure.codes"]),
+            ["clean_run_unverified", "no_observations"],
+        )
+
+    def test_the_recorded_failed_invocation_does_not_name_the_unverified_cause(self) -> None:
+        run = make_run([], invocations=[{"executionSuccessful": False}])
+        record = mint(ingest_json("synthetic.sarif", make_log(run)), name="synthetic.sarif")
+        self.assertEqual(metadata(record)["failure.class"], "execution")
+        self.assertEqual(
+            json.loads(metadata(record)["failure.codes"]),
+            ["execution_unsuccessful", "no_observations"],
+        )
+
+    def test_a_failed_invocation_beside_an_unverified_empty_run_names_both(self) -> None:
+        # The failed invocation decides the class; the other run's cause stays in the codes.
+        failed = make_run([], invocations=[{"executionSuccessful": False}])
+        unverified = make_run([], driver="Other", invocations=[{}])
+        result = ingest_json("synthetic.sarif", make_log(failed, unverified))
+        self.assertEqual(
+            self.classify(result),
+            FailureClassification(
+                EXECUTION,
+                None,
+                ("clean_run_unverified", "execution_unsuccessful", "no_observations"),
+            ),
+        )
+
+    def test_a_productive_run_beside_an_unverified_empty_run_is_a_successful_reading(
+        self,
+    ) -> None:
+        run = make_run([], invocations=[{}])
+        result = ingest_json("synthetic.sarif", make_log(run, make_run([make_result()])))
+        self.assertTrue(result.successful)
+        self.assertIn("execution_unverified", [item.code for item in result.diagnostics])
+        self.assertIsNone(classify_ingest(result))
 
 
 # *--- Structured Fields ---*
@@ -2068,10 +2111,15 @@ class VocabularyWalkTests(unittest.TestCase):
         self.assertEqual(CLASS_CODES, PARSE_CODES | CONTENT_CODES)
         self.assertNotIn(EXECUTION_UNSUCCESSFUL, CLASS_CODES | UNMINTABLE_CODES)
 
+    def test_clean_run_unverified_is_a_content_code_raised_once_by_the_sarif_reading(self) -> None:
+        self.assertIn("clean_run_unverified", CONTENT_CODES)
+        sites = [site for site in self.sites if site.code == "clean_run_unverified"]
+        self.assertEqual([(site.module, site.function) for site in sites], [("sarif.py", "run")])
+
     def test_the_unmintable_reasons_are_the_six_checked_and_read_elsewhere(self) -> None:
         # clean_scan left the vocabulary with ADR 0015 decision 1: the SARIF adapter folds an
-        # observation at every run_clean site unless the run's invocation failed, and that
-        # reading carries execution_unsuccessful, which the execution class claims first.
+        # observation at every run_clean site unless the run's invocation failed, which the
+        # execution class claims first, or is unverified, which raises clean_run_unverified.
         self.assertEqual(
             [reason.value for reason in UnmintableReason],
             [

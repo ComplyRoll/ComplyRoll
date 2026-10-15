@@ -1015,3 +1015,22 @@ failure worth a record when the operator asks for one. `UnmintableReason.CLEAN_S
 and `classify_ingest` reads codes alone again; the first six reasons are checked in the order
 listed and `read_elsewhere` is still assigned only by the caller. The sentence under Decision 1
 that "an empty result is not a clean scan" describes the null-results run and still holds.
+
+## Amendment 2026-10-15 (second): an unverified empty run names its cause
+
+The amendment above leaves one content failure that names no cause. A SARIF log whose empty run
+sits under an invocation that never declared `executionSuccessful: true`, with nothing else in
+the log yielding, recorded `failure.codes` `["no_observations"]`, the same list as a log with no
+runs at all, while the reason lived only in WARNING `execution_unverified`, which a record does
+not keep. When a reading yields no observation and at least one of its runs had an empty
+`results` array under such an invocation, the adapter now also raises ERROR
+`clean_run_unverified` beside `no_observations`, once per log, in fixed text with no producer
+input. The code joins `CONTENT_CODES`, so the list under Decision 1 gains it and the class is
+still `content`: the record's codes are `["clean_run_unverified", "no_observations"]`, and
+without the flag the reading stays fatal with both ERRORs. A run whose invocation failed never
+raises it, since `execution_unsuccessful` already names that run. A log with a failed run beside
+an unverified empty run is the execution class and keeps both codes, as the execution class keeps
+every ERROR code of its reading. A productive run beside an unverified empty run is still a
+successful reading with WARNING `execution_unverified` and no ERROR, because the code is raised
+only where `no_observations` is. No golden moves: no fixture has an empty run under an
+unverified invocation.

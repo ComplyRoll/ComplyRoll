@@ -120,6 +120,22 @@ All notable project changes will be documented here.
 
 ### Added
 
+- A SARIF run that reports no results is now evidence instead of an error (ADR 0015 decision 1,
+  backlog item 9). A run with `results: []` and no invocation declaring
+  `executionSuccessful: false` yields one artifact-origin PASS observation of the scope it names
+  (`image:<name>` when the run declares an image, else `scan:<driver>`), with record id
+  `sarif.run`, the driver's automation key as its context, the run clock as `observed_at` or the
+  usual missing-timestamp warning, and a fixed description saying the tool ran and found nothing
+  it was configured to report, which is not evidence that the scope is clean. The observation's
+  identity is the ordinary artifact fingerprint, so the same bytes re-ingest as
+  `already_recorded`, it rides the artifact stream with no contract or schema change, and
+  correlation never turns it into a case. A clean log therefore ingests on both paths and exits
+  0, with or without `--record-failed-imports`, instead of failing the whole run with
+  `no_observations`; the `clean_scan` refusal of ADR 0014 Decision 2 is unreachable and retired.
+  A run with no results whose invocation failed still mints nothing and stays the execution
+  failure ADR 0014 records, so every existing golden is byte-identical. New fixture
+  `tests/fixtures/clean-run.sarif`; ADR 0011 Decision 13 and ADR 0014 Decision 2 carry dated
+  amendments.
 - An ARF fixture and adapter tests. ARF was advertised in the README, the help text, and the
   adapter docstring with no fixture and no parse-level test behind it. The fixture nests its
   `TestResult` five levels down behind a sibling OVAL report, splits the asset identity between

@@ -647,3 +647,32 @@ fails ingest with or without the flag. Turning it into a coverage observation re
 item 9's work for the coverage and freshness slice. A log whose every run reports null results
 carries `results_unknown` and no `run_clean`, so it is not a clean scan; with the flag it is a
 `content` failure.
+
+## Amendment 2026-10-15: a clean run is a PASS observation of its scope
+
+Decision 13 said a clean scan is not yet evidence, and the 2026-09-30 amendment repeated it. ADR
+0015 decision 1 supersedes both sentences. A run whose `results` is an empty array, and none of
+whose invocations declares `executionSuccessful: false`, now yields one observation of the run:
+`source_record_id` `sarif.run`, the driver name as `source_tool` and in the context key exactly
+as Decision 2 builds it, resource `image:<name>` when the run names an image and `scan:<driver>`
+otherwise (no fifth resource type), disposition PASS, severity UNKNOWN, `observed_at` from the
+Decision 8 run clock or absent with the shared `source_timestamp_missing` WARNING, and the run's
+scalars as metadata inside the Decision 9 vocabulary. The title is "`<driver>` run reported no
+results" and the description is fixed text saying the tool ran against the scope it named and
+found nothing it was configured to report, which is not evidence that the scope is free of
+vulnerabilities. INFO `run_clean` is still raised for the run.
+
+The observation joins the Decision 9 fold under its own record id, so its identity is the
+ordinary ADR 0002 artifact fingerprint, the same bytes re-ingest as `already_recorded`, two clean
+runs of one scope in one log fold into one observation with `occurrence_count` 2, and a result
+whose rule id is spelled `sarif.run` with no usable location folds with it rather than refusing
+the log. Because the observation is PASS, correlation never groups it and no report lists it; its
+use is the coverage evidence of the slice that follows. A log with a clean run beside a refused
+run now withholds the clean observation and is refused as a partial reading, as a log with a
+finding beside a refused run is.
+
+The guard keeps the failed invocation where the 2026-09-30 amendment put it: a run with no
+results and a failed invocation mints nothing from this decision, so run 1 of
+`tests/fixtures/failed-invocation.sarif` still carries `run_clean`, `execution_unsuccessful`
+and `no_observations`, and `vdt-failed` and `historical-failed` are byte-identical. No SARIF
+golden moved. The new fixture `tests/fixtures/clean-run.sarif` holds one clocked image run.

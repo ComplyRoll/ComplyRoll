@@ -142,8 +142,9 @@ warning, as before.
 
 The response half is not covered: a broken remediation or response workflow, and a vulnerability
 whose detection time is never attested, are the Phase 2 deliverable "Response-process and
-attestation failures". Stale coverage, missing resources, and a clean scan as coverage evidence
-belong to the coverage and freshness checks. Some detection failures still stop the run with the
+attestation failures". Stale coverage and missing resources belong to the coverage and freshness
+checks; a clean SARIF run is already evidence, as a PASS observation of its scope (ADR 0015
+decision 1). Some detection failures still stop the run with the
 flag, because no honest record can be built for them: a file that could not be read, an
 unsupported or rejected format, a reading that repeats an observation identity, a reading that
 found some usable results beside its errors (kept or withheld), and an error code ComplyRoll has

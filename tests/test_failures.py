@@ -734,8 +734,7 @@ class PrecedenceTests(unittest.TestCase):
 
     def test_every_unmintable_reason_takes_precedence_over_execution(self) -> None:
         # Each reading also reports a failed invocation with its clock, which would make it
-        # the execution class if no reason applied first. A clean scan is absent because a
-        # failed invocation is itself what keeps a reading from being one.
+        # the execution class if no reason applied first.
         failed = (warning(EXECUTION_UNSUCCESSFUL),)
         cases = (
             (
@@ -869,15 +868,16 @@ class UnmintableReasonTests(unittest.TestCase):
                     tuple(sorted({code, "no_observations"})),
                 )
 
-    def test_a_clean_scan_is_refused(self) -> None:
-        self.assert_refused(
-            reading(error("no_observations"), info("run_clean")),
-            UnmintableReason.CLEAN_SCAN,
-            ("no_observations",),
-        )
-
-    def test_a_clean_run_beside_an_unknown_or_failed_run_is_not_a_clean_scan(self) -> None:
+    # The clean_scan reason is retired (ADR 0015 decision 1): a clean SARIF run folds an
+    # observation, so no adapter reading pairs no_observations with an INFO run_clean any more.
+    # The classifier stays total over synthetic readings and reads codes alone: a run_clean
+    # note at any level changes nothing.
+    def test_a_run_clean_note_no_longer_names_a_reason(self) -> None:
         cases = {
+            "info beside no_observations": (
+                reading(error("no_observations"), info("run_clean")),
+                FailureClassification(CONTENT, None, ("no_observations",)),
+            ),
             "results unknown": (
                 reading(error("no_observations"), info("run_clean"), warning("results_unknown")),
                 FailureClassification(CONTENT, None, ("no_observations",)),
@@ -932,7 +932,7 @@ class UnmintableReasonTests(unittest.TestCase):
                 UnmintableReason.PARTIAL_READING,
             ),
             (
-                "unknown_code before clean_scan",
+                "unknown_code before any class",
                 reading(error("no_observations"), error("cci_map_empty"), info("run_clean")),
                 UnmintableReason.UNKNOWN_CODE,
             ),
@@ -2053,6 +2053,24 @@ class VocabularyWalkTests(unittest.TestCase):
         self.assertEqual(PARSE_CODES & CONTENT_CODES, frozenset())
         self.assertEqual(CLASS_CODES, PARSE_CODES | CONTENT_CODES)
         self.assertNotIn(EXECUTION_UNSUCCESSFUL, CLASS_CODES | UNMINTABLE_CODES)
+
+    def test_the_unmintable_reasons_are_the_six_checked_and_read_elsewhere(self) -> None:
+        # clean_scan left the vocabulary with ADR 0015 decision 1: the SARIF adapter folds an
+        # observation at every run_clean site unless the run's invocation failed, and that
+        # reading carries execution_unsuccessful, which the execution class claims first.
+        self.assertEqual(
+            [reason.value for reason in UnmintableReason],
+            [
+                "no_digest",
+                "unsupported",
+                "format_rejected",
+                "duplicate_identity",
+                "partial_reading",
+                "unknown_code",
+                "read_elsewhere",
+            ],
+        )
+        self.assertFalse(hasattr(UnmintableReason, "CLEAN_SCAN"))
 
     def test_helper_passed_codes_resolve_through_their_call_sites(self) -> None:
         helper = {site.code for site in self.sites if site.function == "_error_result"}

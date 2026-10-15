@@ -323,9 +323,24 @@ info: results_collapsed: result folded into an observation that shares its ident
 warning: source_timestamp_missing: source artifact does not declare an observation timestamp; observed_at is unknown [trivy-image.sarif]
 ```
 
-A log whose runs carry no results is not yet evidence: it fails with `no_observations`, and on
-the persisted path it fails the whole `ingest` run that includes it. Leave clean logs out until
-the coverage observation lands (build plan backlog item 9).
+A log whose run carries no results is evidence that the tool ran. `tests/fixtures/clean-run.sarif`
+is one ExampleScan run over an image with `results: []` under a successful invocation. It ingests
+on both paths and exits 0, with one PASS observation of the image it names (record `sarif.run`,
+observed at the invocation's start) and nothing for a report to list; the inputs table counts it
+and the diagnostics keep the `run_clean` note:
+
+```text
+| clean-run.sarif | ee91754fbc49 | complyroll.sarif 1 | 1 |
+```
+
+```text
+info: run_clean: run reports no results (1 occurrence: runs[0]) [clean-run.sarif]
+```
+
+The observation's description says what it is not: the run found nothing it was configured to
+report, which is not evidence that the image is free of vulnerabilities. A run with no results
+whose invocation reports `executionSuccessful: false` mints nothing; it is the failed invocation
+of the detection process failures section (ADR 0015 decision 1).
 
 ## Known exploited vulnerabilities
 
@@ -785,11 +800,10 @@ A store that records a hold, a failure that another failure stream of its digest
 moves on to schema version 3. An earlier build refuses it the same way, naming schema 3 as newer
 than the schema it supports.
 
-The clean log described under Other formats is not a detection failure: it still fails with
-`no_observations`, with or without the flag, until the coverage observation lands. A SARIF log
-that yields nothing and has a run with no `results` array, or a null one, is not a clean scan:
-that run's results are unknown (`results_unknown`), so with the flag the log is a `content`
-failure.
+The clean log described under Other formats is not a detection failure: it imports as a PASS
+observation with or without the flag, and records no failure. A SARIF log that yields nothing and
+has a run with no `results` array, or a null one, is not a clean run: that run's results are
+unknown (`results_unknown`), so with the flag the log is a `content` failure.
 
 ## Verifying the log
 

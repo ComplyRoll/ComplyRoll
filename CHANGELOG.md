@@ -120,6 +120,30 @@ All notable project changes will be documented here.
 
 ### Added
 
+- Coverage and freshness evidence against an information resource inventory (ADR 0015, PR 2).
+  `complyroll report vdt`, `report avi`, and `report historical` take `--inventory FILE`, a
+  `complyroll.inventory` JSON document listing the resources the provider expects its detection
+  processes to reach. It is read locally through a bounded reader (8 MiB, 20,000 resources, JSON
+  depth 16, every field checked, a JSON null read as absent), never stored, allowed beside
+  `--db`, and named in the report by its raw-byte SHA-256, size, and entry count. Each entry's
+  attributes select its clocks from the pinned dataset: `VDR-TFR-MVX` for a machine entry,
+  `VDR-TFR-NMV` for a non-machine entry, which only operator attestations verify, `VDR-TFR-PDD`
+  or `VDR-TFR-PCD` by `driftLikely`, and `VDR-TFR-PSD` per sample group. A clock anchors on the
+  latest verification at or before `--as-of`, else on the entry's `expectedSince`, and a lapse
+  is one window. Examined is not verified: NOT_REVIEWED, ERROR, and UNKNOWN never verify, and
+  untimed evidence, which includes every CKL and STIG Viewer CKLB observation, never anchors a
+  clock. Each clock reads `unanchored`, `missing`, `undetermined`, `stale`, or `current`, the
+  first that applies, and observed resources the inventory omits are listed as unregistered.
+  Every report gains the `x-complyroll.coverage` block and a Markdown `## Coverage` section after
+  Inputs, with fixed text saying a current status is not a compliance finding, and the persisted
+  report is byte-identical to the stateless one. An unknown drift likelihood takes
+  `VDR-TFR-PDD` with WARNING `drift_likelihood_unknown`, once per entry. A second `--inventory`
+  (`invalid_option`), a refused file (`invalid_input`), and a pinned dataset that lacks a
+  coverage rule (`coverage_rule_unavailable`) each exit 1 and write nothing. A lapsed window
+  opens no case and changes no exit code yet; that is ADR 0015's next pull request. New
+  `examples/inventory.json` and four goldens: `tests/golden/vdt-coverage.{json,md}` on the
+  official fixture set, and `tests/golden/vdt-coverage-timed.{json,md}` on two clocked SARIF
+  logs and `tests/fixtures/inventory-timed.json`. Every existing golden is byte-identical.
 - A SARIF run that reports no results is now evidence instead of an error (ADR 0015 decision 1,
   backlog item 9). A run with `results: []` whose every invocation declares
   `executionSuccessful: true` yields one artifact-origin PASS observation of the scope it names

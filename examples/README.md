@@ -447,6 +447,116 @@ regenerate an old report, use the catalog that was current at its `--as-of`; the
 a refusal, and a run given no catalog produces exactly the bytes it produced before, with no
 `kev` key anywhere.
 
+## Coverage against an inventory
+
+`VDR-TFR-MVX`, `VDR-TFR-NMV`, `VDR-TFR-PDD`, `VDR-TFR-PCD`, and `VDR-TFR-PSD` ask a provider to
+reach each information resource with detection on a cadence. ComplyRoll cannot know which
+resources a provider has, so the provider lists them in an inventory and passes it with
+`--inventory`. Like a KEV catalog, the inventory is a per-run input, read from a local file and
+never written to the store, and the report names it by its SHA-256 (ADR 0015).
+
+`examples/inventory.json` declares a synthetic boundary named `example-boundary` with seven
+entries. Compile the first report on this page with it:
+
+```bash
+complyroll report vdt \
+  tests/fixtures/ubuntu-host.cklb \
+  tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-31T23:59:59Z \
+  --as-of 2026-08-21T12:00:00Z \
+  --detected-at 2026-08-01T00:00:00Z \
+  --evaluations examples/evaluations.json \
+  --inventory examples/inventory.json \
+  -o vdt-coverage.json \
+  --markdown vdt-coverage.md
+```
+
+These are `tests/golden/vdt-coverage.json` and `tests/golden/vdt-coverage.md`, byte for byte.
+Their official fields equal those of `vdt-fixtures.json`: the inventory adds the
+`x-complyroll.coverage` block and a Markdown `## Coverage` section and changes nothing else.
+Standard error carries the three `source_timestamp_missing` warnings and one
+`drift_likelihood_unknown` warning. The same report compiles from a store: run the sequence
+under Persisted path and add `--inventory examples/inventory.json` to its `report vdt --db`
+command. The inventory sits beside `--db` because no store holds one.
+
+The Coverage section opens with a count per rule:
+
+```text
+| Rule | Force | Expected | Current | Stale | Missing | Unanchored | Undetermined |
+|---|---|---:|---:|---:|---:|---:|---:|
+| VDR-TFR-MVX | MUST | 4 | 0 | 0 | 3 | 1 | 0 |
+| VDR-TFR-NMV | MUST | 3 | 1 | 1 | 1 | 0 | 0 |
+| VDR-TFR-PCD | SHOULD | 1 | 0 | 0 | 1 | 0 | 0 |
+| VDR-TFR-PDD | SHOULD | 3 | 0 | 0 | 2 | 1 | 0 |
+| VDR-TFR-PSD | SHOULD | 1 | 0 | 1 | 0 | 0 | 0 |
+```
+
+Each entry is placed to show one reading:
+
+- `host:ubuntu-web-01` is the host `ubuntu-host.cklb` calls `lab-ubuntu-01`, so the entry lists
+  that name as an alias, and the checklist's six observations reach it only through the alias.
+  The checklist declares no assessment time, so its observations are untimed: they never examine
+  the host or anchor a clock, and its `VDR-TFR-MVX` and `VDR-TFR-PDD` clocks read
+  `missing (6 untimed)`. The count beside the status keeps a checklist-only host from reading as
+  unexamined.
+- `host:lab-win-01` declares `driftLikely` false, so it carries `VDR-TFR-PCD` instead of
+  `VDR-TFR-PDD`. Its two observations from `windows-host.ckl` are untimed too, so both clocks
+  read `missing (2 untimed)`.
+- `host:lab-rhel-01` declares `driftLikely` `"unknown"`, which takes `VDR-TFR-PDD` and raises the
+  warning, and was decommissioned on 2026-08-10. Nothing ever examined it, so both clocks are
+  `missing`, and the windows that closed before it was decommissioned are listed.
+- `host:lab-ubuntu-03` is expected from 2026-09-01, after `--as-of`, so its clocks are
+  `unanchored`, with no due date and no window.
+- `logical:incident-response-procedure` is not machine-based, so only its attested
+  `verifications` can verify it. The tabletop of 2026-08-03 makes `VDR-TFR-NMV` `current`, due
+  three calendar months later at 2026-11-03T17:00:00Z. Its second tabletop, on 2026-09-02, is
+  after `--as-of`, so it is listed under Evidence after as-of and never used.
+- `logical:contingency-plan` has no verification, so its `VDR-TFR-NMV` clock is `missing`.
+- Those two share the sample group `ir-runbooks`, so one `VDR-TFR-PSD` clock,
+  `logical:sample-group/ir-runbooks`, covers both. The procedure's 2026-08-03 tabletop stands in
+  for the group, the group's window fell due three days later, and nothing has verified a member
+  since, so the clock is `stale` on both member rows. The group shows two windows: the declared
+  one from 2026-07-01, which closed on 2026-07-04 and resumed at the tabletop, and the one that
+  closed on 2026-08-06 and has not resumed.
+- `logical:backup-restore-procedure` was last attested on 2026-04-15, so its `VDR-TFR-NMV`
+  window closed at 2026-07-15T16:00:00Z and the clock is `stale`.
+- `host:lab-ubuntu-02`, which `openscap-results.xml` scanned, is left out of the inventory on
+  purpose, so its three observations are listed as unregistered rather than dropped.
+
+A `current` status is not a compliance finding, and a lapsed window here is evidence, not a
+vulnerability case; the report says so in fixed text above the tables.
+
+The official fixture set can only show what untimed evidence reaches. Every observation in those
+three files is untimed, so no machine clock can anchor on them, and no machine entry above can be
+`current`, `stale`, or `undetermined`. A second pair under `tests/golden/`,
+`vdt-coverage-timed.json` and `.md`, covers those statuses with two SARIF logs that declare their
+own clocks and the test fixture `tests/fixtures/inventory-timed.json`:
+
+```bash
+complyroll report vdt \
+  tests/fixtures/codeql-repo.sarif \
+  tests/fixtures/clean-run.sarif \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --calendar-tz UTC \
+  --as-of 2026-09-03T12:00:00Z \
+  --from 2026-09-01T00:00:00Z \
+  --to 2026-09-30T23:59:59Z \
+  --inventory tests/fixtures/inventory-timed.json \
+  -o vdt-coverage-timed.json \
+  --markdown vdt-coverage-timed.md
+```
+
+There `helpers.js` is `current`, verified by an open CodeQL result. The clean-run image is
+`stale`: its PASS observation of 2026-08-05 verified it, and nothing has since. `legacy.js`,
+examined only by a result whose disposition is unknown, is `undetermined`. `index.js` was never
+scanned, yet its sample group's `VDR-TFR-PSD` clock is `current`, because `render.js` stands in,
+reached through an alias that matches the repository URL the scanner reports.
+
 ## InSpec and HDF
 
 InSpec writes its results as HDF with `inspec exec --reporter json`, and the MITRE SAF CLI's

@@ -1,6 +1,6 @@
 # FedRAMP 2026 mapping
 
-Status date: **2026-09-25**
+Status date: **2026-10-15**
 
 This document is a design mapping, not a replacement for official rules. Runtime policy must use
 a pinned copy of the canonical [`FedRAMP/rules`](https://github.com/FedRAMP/rules) dataset.
@@ -22,8 +22,9 @@ while the parsed JSON is identical.
 `VDR-TFR-NMV` carries a structured three-month `MUST` timeframe since rules `2026.09.13.01`, and
 the policy layer exposes it through `SelectedRule.timeframe` and `deadline_for_rule`. The reports
 do not turn it into a per-vulnerability deadline: the rule is a recurrence clock on each
-non-machine-based information resource, and ComplyRoll has no information resource records yet,
-so that clock is scheduled with the Phase 2 coverage and freshness work.
+non-machine-based information resource. Before ADR 0015 ComplyRoll held no information resource
+records, so the clock was deferred. It now runs, with the four other coverage rules, on each
+resource of an inventory supplied with `--inventory` (see Coverage and freshness, below).
 
 `VDR-TFR-KEV` is implemented (ADR 0012). It is the one selected rule with no structured
 timeframe, because its deadline is published in the CISA Known Exploited Vulnerabilities
@@ -142,14 +143,94 @@ warning, as before.
 
 The response half is not covered: a broken remediation or response workflow, and a vulnerability
 whose detection time is never attested, are the Phase 2 deliverable "Response-process and
-attestation failures". Stale coverage and missing resources belong to the coverage and freshness
-checks; a clean SARIF run is already evidence, as a PASS observation of its scope (ADR 0015
-decision 1). Some detection failures still stop the run with the
+attestation failures". Stale coverage and missing resources are measured by the coverage and
+freshness checks below, as evidence and not yet as cases. A clean SARIF run is already evidence,
+as a PASS observation of its scope (ADR 0015 decision 1). Some detection failures still stop the
+run with the
 flag, because no honest record can be built for them: a file that could not be read, an
 unsupported or rejected format, a reading that repeats an observation identity, a reading that
 found some usable results beside its errors (kept or withheld), and an error code ComplyRoll has
 not classified. A recorded failure is evidence that the provider's process noticed it. It is not
 a determination that the provider meets `VDR-CSO-FAV`.
+
+## Coverage and freshness
+
+Five rules ask a provider to run its detection on a cadence. The dataset names them Persistent
+Machine Verification and Validation for 20x (`VDR-TFR-MVX`), Non-Machine Verification and
+Validation (`VDR-TFR-NMV`), Persistently Complete Detection (`VDR-TFR-PCD`), Persistent Drift
+Detection (`VDR-TFR-PDD`), and Persistent Sample Detection (`VDR-TFR-PSD`). Their clocks were
+deferred while ComplyRoll held no information resource records, and they are now scheduled
+(ADR 0015). A run given `--inventory` measures each resource the provider declares against the
+clocks its attributes select, and every report carries the result in `x-complyroll.coverage` and
+a Markdown Coverage section. The values below are what the pinned dataset returns today; the
+code reads each one from it.
+
+| Inventory entry | Rule | Class B | Class C |
+|---|---|---|---|
+| `machineBased` true | `VDR-TFR-MVX` | 7 days, MUST | 3 days, MUST |
+| `machineBased` false | `VDR-TFR-NMV` | 3 months, MUST | 3 months, MUST |
+| `driftLikely` true or `"unknown"` | `VDR-TFR-PDD` | 1 month, SHOULD | 14 days, SHOULD |
+| `driftLikely` false | `VDR-TFR-PCD` | 6 months, SHOULD | 1 month, SHOULD |
+| `sampleGroup` set | `VDR-TFR-PSD`, per group | 7 days, SHOULD | 3 days, SHOULD |
+
+`VDR-TFR-MVX` is scoped to 20x. Its Rev5 counterpart, `VDR-TFR-MVF`, is never selected, because
+only 20x Classes B and C are modeled. An unknown drift likelihood takes the shorter drift window
+and raises WARNING `drift_likelihood_unknown`.
+
+How a clock reads the evidence:
+
+- **Matching is exact.** An observation counts for an entry when its resource type and id equal
+  the entry's or one of its aliases. Nothing is normalized or guessed.
+- **Examined is not verified.** A matching artifact observation with a source time examines the
+  resource. It verifies a machine resource only when the tool determined a status: OPEN, PASS,
+  or NOT_APPLICABLE. NOT_REVIEWED, ERROR, and UNKNOWN examine without verifying, so an HDF
+  profile that never loaded, which yields ERROR observations, does not satisfy `VDR-TFR-MVX`.
+- **Untimed evidence never anchors a clock.** Evidence with no source time is listed on the
+  resource and never examines it, and ingest time is never substituted. CKL evidence is always
+  untimed, because a CKL's `releaseinfo` date is the benchmark's release, not the assessment. A
+  STIG Viewer 3.x CKLB export carries no clock at any level, so CKLB evidence is untimed too; the
+  adapter's root clock keys serve only hand-built files. Neither checklist anchors a clock.
+- **A non-machine resource is verified only by attestation.** Its operator-attested
+  `verifications` verify it, labeled attested wherever they appear, and artifact evidence about
+  it examines and never verifies. It carries `VDR-TFR-NMV` and, with a `sampleGroup`,
+  `VDR-TFR-PSD`. `VDR-TFR-PDD` and `VDR-TFR-PCD` are detection cadence rules, so `driftLikely`
+  is refused on a non-machine entry.
+- **The anchor is a real verification.** A clock runs from the latest verification at or before
+  as-of, else from the entry's `expectedSince`, labeled `declared`. Days are exact elapsed time,
+  months are calendar months in `--calendar-tz` with month-end clamping, and overdue is strict:
+  as-of must be after the due date.
+- **A lapse is one window.** A window closes when a due date passes with no verification, and the
+  next window runs from the next actual verification, never from the missed due date (ADR 0007
+  Decision 6).
+- **As-of is a cutoff.** Evidence observed after as-of is listed and never used.
+- **Sampling hides no member.** `VDR-CSO-SIR` lets a provider sample (MAY). A group's
+  `VDR-TFR-PSD` clock is satisfied by any verified member and names the member that stood in,
+  and every member keeps its own clocks.
+- **Decommissioning stops the clocks.** Evidence after `decommissionedAt` is listed and never
+  anchors.
+- **Omissions show.** Observed resources the inventory does not name are listed as unregistered
+  with their observation counts.
+
+Each clock takes the first status that applies:
+
+| Status | Meaning |
+|---|---|
+| `unanchored` | `expectedSince` is after as-of, so the clock has not started |
+| `missing` | Never examined within the cutoff; untimed evidence alone is still `missing` |
+| `undetermined` | Examined, never verified |
+| `stale` | Verified at least once, and the current window lapsed with no verification since |
+| `current` | Verified, and the current window has not lapsed |
+
+A `missing` status with untimed evidence prints the untimed count beside it, so a checklist-only
+host never reads as unexamined. A `current` status is not a compliance finding, and every block
+says so in fixed text, together with the reading that `VDR-TFR-MVX` comes from detection results
+until Phase 3 validation runs exist. Force is printed on every clock and window, so a lapsed
+SHOULD window never reads as a MUST violation.
+
+Still deferred, to ADR 0015's third pull request or later: a window that closed with no
+verification becoming a `VDR-CSO-FAV` system observation and case, on the stateless path and in
+the store at schema 4. Until then the coverage block lists the window, and nothing opens a case or
+changes an exit code. `VDR-TFR-MVF` and Class D stay out of scope.
 
 ## Class C operational mapping
 
@@ -158,11 +239,11 @@ from the pinned canonical dataset.
 
 | Rule concept | Current Class C expectation | ComplyRoll behavior |
 |---|---:|---|
-| Machine verification/validation | 3 days, MUST | Coverage and freshness clock |
-| Representative machine detection | 3 days, SHOULD | Sampling record and freshness clock |
-| Drift-prone resource detection | 14 days, SHOULD | Inventory coverage clock |
-| Non-drift-prone resource detection | 1 month, SHOULD | Inventory coverage clock |
-| Non-machine verification/validation | 3 months, MUST | Review schedule |
+| Machine verification/validation | 3 days, MUST | `VDR-TFR-MVX` clock per machine entry |
+| Representative machine detection | 3 days, SHOULD | `VDR-TFR-PSD` clock per sample group |
+| Drift-prone resource detection | 14 days, SHOULD | `VDR-TFR-PDD` clock per inventory entry |
+| Non-drift-prone resource detection | 1 month, SHOULD | `VDR-TFR-PCD` clock per inventory entry |
+| Non-machine verification/validation | 3 months, MUST | `VDR-TFR-NMV` clock on attestations |
 | Complete evaluation | 5 days from detection, SHOULD | Evaluation due date |
 | Human-readable activity report | Monthly, MUST | Not mapped; the Markdown twins are renderings of the JSON reports, not this report (ADR 0010) |
 | Historical JSON activity | Every 14 days, SHOULD | `report historical` compiles the whole-population snapshot as of a given instant; the cadence is the operator's |
@@ -269,6 +350,9 @@ can publish them with authorization, logging, redaction, and availability contro
   14 days for Class C, both SHOULD) is the operator's to schedule.
 - Do not call a Markdown twin the monthly human-readable report. The twins are renderings of the
   JSON reports under `CDS-CSO-CBF`; `VER-TFR-MHR` is not mapped.
+- Do not read a `current` coverage status as compliance with a detection rule, a clean run as a
+  clean scope, or an examined resource as a verified one. Coverage is only as complete as the
+  inventory the provider supplied.
 
 ## Sources
 

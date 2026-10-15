@@ -95,6 +95,25 @@ The standard-library ingestion layer currently enforces:
   to 64 characters, so an 8 MiB field cannot become an 8 MiB stderr line. A second `--kev` is
   refused rather than silently applying the last one, and naming the catalog as an output is
   refused as an input overwrite
+- For an information resource inventory supplied with `--inventory` (ADR 0015), 8 MiB maximum
+  (`MAX_INVENTORY_BYTES`), at most 20,000 resources (`MAX_INVENTORY_RESOURCES`), and 16 levels
+  of JSON nesting, with the standard 500,000-value bound unchanged. The inventory is a new
+  untrusted input, read through the same bounded reader as an artifact. ComplyRoll never fetches
+  it and never writes it to the event store, and a report records its SHA-256, size, and entry
+  count, never its bytes
+- The inventory is validated field by field before any value is used. Unknown keys are refused at
+  every level, and every field is type-checked before any pattern runs. Identity text takes the
+  adapters' rule and is refused, never repaired: over 512 characters, or holding a control,
+  format, surrogate, or line-separator code point, or blank. So an inventory pair can only name
+  what an observation can carry. A resource type may not hold a colon, `name`, `sampleGroup`,
+  and `job` must be 1 to 128 printable ASCII characters, and every instant is matched against the
+  KEV catalog's ASCII pattern and held between 1970 and 9000 UTC before it is used. A JSON `null`
+  in an optional field reads as absent. Any failure refuses the run as `invalid_input` with a
+  message that starts "inventory", and publishes nothing
+- Inventory error messages quote only values that have passed validation, or a `repr` cut to 64
+  characters, and an identifier refused for its length or its code points is described, never
+  echoed. A second `--inventory` is refused as `invalid_option` rather than silently applying the
+  last one, and naming the inventory as an output is refused as an input overwrite
 
 Callers may lower these limits for their environment. Raising them is an explicit caller decision.
 Compatibility CSV output neutralizes formula-leading cells, and Markdown table output escapes raw
@@ -263,6 +282,10 @@ Redaction must be explicit and reviewable. It must not silently omit material ri
 A compiled report and its Markdown twin are the provider's and assessor's working record. They
 include internal resource identifiers and provider rationale, so redact them before sharing with
 an agency. Audience-specific views are a later slice.
+
+A report compiled with `--inventory` carries more of the same: every inventory resource and alias,
+the `job` and `sampleGroup` names, the operator's attestation references, and the observed
+resources the inventory omits. Redact the coverage block and its Markdown section the same way.
 
 ## Authorization and trust-center publishing
 

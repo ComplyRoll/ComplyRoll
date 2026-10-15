@@ -2005,6 +2005,125 @@ class PersistedSarifRoundTripTests(PersistedStoreTestCase):
         self.assertIn("0.1.1", out)
 
 
+class CleanSarifLogTests(PersistedStoreTestCase):
+    """A SARIF log with no results imports on both paths and is evidence, not a case.
+
+    `clean-run.sarif` is one clocked run with an empty `results` array under a successful
+    invocation, so it yields one PASS observation of the image it scanned (ADR 0015
+    decision 1) and nothing for a report to list.
+    """
+
+    CLEAN = FIXTURES / "clean-run.sarif"
+    INGESTED_AT = "2026-09-15T12:00:00Z"
+    OPTIONS = (
+        "--class",
+        "C",
+        "--package-uri",
+        "https://example.test/cpo",
+        "--from",
+        "2026-08-01T00:00:00Z",
+        "--to",
+        "2026-08-31T23:59:59Z",
+        "--as-of",
+        "2026-09-15T12:00:00Z",
+    )
+
+    def ingest_clean(self) -> tuple[str, str]:
+        return self.succeeds(
+            [
+                "ingest",
+                str(self.CLEAN),
+                "--db",
+                str(self.database),
+                "--as-of",
+                self.INGESTED_AT,
+                "--actor",
+                "golden",
+            ]
+        )
+
+    def test_the_clean_log_ingests_once_and_is_idempotent(self) -> None:
+        out, err = self.ingest_clean()
+
+        self.assertEqual(out, "clean-run.sarif: recorded 1 observation(s)\n")
+        self.assertEqual(
+            err,
+            "info: run_clean: run reports no results (1 occurrence: runs[0]) [clean-run.sarif]\n",
+        )
+        recorded = [
+            record.payload
+            for record in self.records()
+            if record.event_type == "observation.recorded"
+        ]
+        self.assertEqual([item["source_record_id"] for item in recorded], ["sarif.run"])
+        self.assertEqual(recorded[0]["disposition"], "pass")
+        before = self.latest_sequence()
+
+        out, _ = self.ingest_clean()
+
+        self.assertEqual(out, "clean-run.sarif: already_recorded\n")
+        self.assertEqual(self.latest_sequence(), before)
+
+    def test_the_clean_log_ingests_with_the_failed_import_flag_and_records_no_failure(self) -> None:
+        out, err = self.succeeds(
+            [
+                "ingest",
+                str(self.CLEAN),
+                "--db",
+                str(self.database),
+                "--as-of",
+                self.INGESTED_AT,
+                "--actor",
+                "golden",
+                "--record-failed-imports",
+            ]
+        )
+
+        self.assertEqual(out, "clean-run.sarif: recorded 1 observation(s)\n")
+        self.assertNotIn("detection_failure_recorded", err)
+        self.assertEqual(
+            [record.event_type for record in self.records() if "failure" in record.event_type], []
+        )
+
+    def test_both_paths_report_the_clean_log_as_no_vulnerabilities(self) -> None:
+        self.ingest_clean()
+        self.succeeds(["cases", "correlate", "--db", str(self.database), "--actor", "golden"])
+        persisted = self.workspace / "persisted.json"
+        stateless = self.workspace / "stateless.json"
+        self.succeeds(
+            ["report", "vdt", "--db", str(self.database), *self.OPTIONS, "-o", str(persisted)]
+        )
+        _, err = self.succeeds(
+            ["report", "vdt", str(self.CLEAN), *self.OPTIONS, "-o", str(stateless)]
+        )
+
+        self.assertIn("info: run_clean", err)
+        self.assertEqual(persisted.read_bytes(), stateless.read_bytes())
+        document = json.loads(stateless.read_text(encoding="utf-8"))
+        self.assertEqual(document["vulnerabilities"], [])
+        self.assertEqual(document["x-complyroll"]["parserVersions"], {"complyroll.sarif": "1"})
+
+    def test_the_stateless_report_with_the_flag_exits_zero_and_records_nothing(self) -> None:
+        output = self.workspace / "report.json"
+
+        code, _, err = run(
+            [
+                "report",
+                "vdt",
+                str(self.CLEAN),
+                *self.OPTIONS,
+                "--record-failed-imports",
+                "-o",
+                str(output),
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertNotIn("detection_failure_recorded", err)
+        document = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(document["vulnerabilities"], [])
+
+
 class PersistedHdfRoundTripTests(PersistedStoreTestCase):
     """An HDF document ingested into a store reports exactly as it reports statelessly.
 

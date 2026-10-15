@@ -1114,20 +1114,32 @@ class DispatcherClassificationTests(unittest.TestCase):
                 else:
                     self.assertEqual(self.classify(result), expected)
 
-    def test_a_clean_sarif_run_is_a_clean_scan(self) -> None:
+    # A clean SARIF run is a PASS observation of its scope (ADR 0015 decision 1), so the
+    # reading succeeds and there is no failure to classify.
+    def test_a_clean_sarif_run_is_a_successful_reading(self) -> None:
         result = ingest_json("synthetic.sarif", make_log(make_run([])))
-        self.assertEqual(
-            self.classify(result),
-            FailureClassification(None, UnmintableReason.CLEAN_SCAN, ("no_observations",)),
-        )
+        self.assertTrue(result.successful)
+        self.assertEqual([item.source_record_id for item in result.observations], ["sarif.run"])
+        self.assertIsNone(classify_ingest(result))
 
-    def test_a_clean_run_beside_a_run_without_results_is_the_content_class(self) -> None:
+    def test_a_clean_run_beside_a_run_without_results_is_a_successful_reading(self) -> None:
         unknown = make_run([])
         del unknown["results"]
         result = ingest_json("synthetic.sarif", make_log(make_run([]), unknown))
         self.assertIn("results_unknown", [item.code for item in result.diagnostics])
+        self.assertTrue(result.successful)
+        self.assertIsNone(classify_ingest(result))
+
+    def test_a_clean_run_beside_a_refused_run_is_a_partial_reading(self) -> None:
+        # The clean run's observation is withheld by the other run's ERROR, exactly as a
+        # finding would be, so the reading is refused rather than minted beside it.
+        invalid = make_run([])
+        invalid["results"] = "none"
+        result = ingest_json("synthetic.sarif", make_log(make_run([]), invalid))
+        self.assertTrue(result.withheld)
         self.assertEqual(
-            self.classify(result), FailureClassification(CONTENT, None, ("no_observations",))
+            self.classify(result),
+            FailureClassification(None, UnmintableReason.PARTIAL_READING, ("invalid_run",)),
         )
 
     def test_a_clean_run_with_a_failed_invocation_is_the_execution_class(self) -> None:

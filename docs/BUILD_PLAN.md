@@ -286,4 +286,7 @@ Target: after the local engine is stable
    `execution`, beside the `parse` and `content` classes, and the run exits 3). The clean scan is
    not started and belongs to the coverage and freshness slice; it is the first gap the adapter's
    users will meet, because a clean log still fails the whole `ingest` run that includes it, with
-   or without the flag.
+   or without the flag. **Complete, 2026-10-15** (ADR 0015 decision 1: a run with `results: []`
+   under a successful invocation is one artifact-origin PASS observation of the scope it names,
+   not the system-origin observation this item asked for, because it is bound to the log's
+   bytes, ADR 0002; the log ingests on both paths and the `clean_scan` refusal is retired).

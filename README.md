@@ -53,8 +53,9 @@ catalog the operator supplies.
 
 Not yet built, among others: coverage and freshness checks (stale coverage, missing resources),
 failures in the response process, change integration, SBOM and cloud sources, and KSI and SDR
-evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. Until coverage lands, a SARIF log
-with no results fails ingest.
+evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. A SARIF log with no results
+ingests as a PASS observation of the scope it names, which is evidence that the tool ran, not
+that the scope is clean.
 
 Every command and flag: [`docs/CLI.md`][cli].
 

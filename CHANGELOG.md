@@ -120,6 +120,26 @@ All notable project changes will be documented here.
 
 ### Added
 
+- A SARIF run that reports no results is now evidence instead of an error (ADR 0015 decision 1,
+  backlog item 9). A run with `results: []` whose every invocation declares
+  `executionSuccessful: true` yields one artifact-origin PASS observation of the scope it names
+  (`image:<name>` when the run declares an image, `scan:<repository uri>` when it names a
+  repository and no image, else `scan:<driver>`), with record id
+  `sarif.run`, the driver's automation key as its context, the run clock as `observed_at` or the
+  usual missing-timestamp warning, and a fixed description saying the tool ran and found nothing
+  it was configured to report, which is not evidence that the scope is clean. The observation's
+  identity is the ordinary artifact fingerprint, so the same bytes re-ingest as
+  `already_recorded`, it rides the artifact stream with no contract or schema change, and
+  correlation never turns it into a case. A clean log therefore ingests on both paths and exits
+  0, with or without `--record-failed-imports`, instead of failing the whole run with
+  `no_observations`; the `clean_scan` refusal of ADR 0014 Decision 2 is unreachable and retired.
+  A run with no results whose invocation failed still mints nothing and stays the execution
+  failure ADR 0014 records; one whose invocation never declares `executionSuccessful: true` is
+  WARNING `execution_unverified`, mints nothing, and stays `no_observations`. A result whose rule
+  id spells `sarif.run` takes its observation over the clean candidate (INFO
+  `clean_run_superseded`). Every existing golden is byte-identical. New fixture
+  `tests/fixtures/clean-run.sarif`; ADR 0011 Decision 13 and ADR 0014 Decision 2 carry dated
+  amendments.
 - An ARF fixture and adapter tests. ARF was advertised in the README, the help text, and the
   adapter docstring with no fixture and no parse-level test behind it. The fixture nests its
   `TestResult` five levels down behind a sibling OVAL report, splits the asset identity between

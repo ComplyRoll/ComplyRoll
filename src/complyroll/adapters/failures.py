@@ -85,9 +85,6 @@ UNMINTABLE_CODES = frozenset(
 
 _UNSUPPORTED_ARTIFACT = "unsupported_artifact"
 _DUPLICATE_IDENTITY = "duplicate_observation_identity"
-_NO_OBSERVATIONS = "no_observations"
-_RUN_CLEAN = "run_clean"
-_RESULTS_UNKNOWN = "results_unknown"
 
 # *--- Types ---*
 
@@ -103,10 +100,12 @@ class FailureClass(str, Enum):
 class UnmintableReason(str, Enum):
     """Why a failed reading stays fatal instead of minting a system record (decision 2).
 
-    classify_ingest checks the first seven in the order listed. READ_ELSEWHERE is never
+    classify_ingest checks the first six in the order listed. READ_ELSEWHERE is never
     returned by it: only a caller that sees every reading of a run, or the store, knows the
     same bytes also read successfully, and it assigns the reason with
-    FailureClassification.read_elsewhere.
+    FailureClassification.read_elsewhere. A clean SARIF run is an artifact observation of its
+    scope (ADR 0015 decision 1), so the clean_scan reason this vocabulary once held is retired:
+    no reading reaches no_observations through a clean run any more.
     """
 
     NO_DIGEST = "no_digest"
@@ -115,7 +114,6 @@ class UnmintableReason(str, Enum):
     DUPLICATE_IDENTITY = "duplicate_identity"
     PARTIAL_READING = "partial_reading"
     UNKNOWN_CODE = "unknown_code"
-    CLEAN_SCAN = "clean_scan"
     READ_ELSEWHERE = "read_elsewhere"
 
 
@@ -174,9 +172,7 @@ class FailureClassification:
 # *--- Helper Functions ---*
 
 
-def _unmintable_reason(
-    result: IngestResult, errors: frozenset[str], present: frozenset[str]
-) -> UnmintableReason | None:
+def _unmintable_reason(result: IngestResult, errors: frozenset[str]) -> UnmintableReason | None:
     """Return the first reason a reading with an ERROR cannot mint, in decision 2's order."""
     if result.artifact is None:
         return UnmintableReason.NO_DIGEST
@@ -194,17 +190,6 @@ def _unmintable_reason(
     # earlier reason caught counts here too, so it can never fall into a class.
     if not errors <= CLASS_CODES:
         return UnmintableReason.UNKNOWN_CODE
-    # A clean scan is the coverage slice's to report, not a detection failure.
-    clean_run = any(
-        item.level is DiagnosticLevel.INFO and item.code == _RUN_CLEAN
-        for item in result.diagnostics
-    )
-    if (
-        errors == {_NO_OBSERVATIONS}
-        and clean_run
-        and not present & {EXECUTION_UNSUCCESSFUL, _RESULTS_UNKNOWN}
-    ):
-        return UnmintableReason.CLEAN_SCAN
     return None
 
 
@@ -256,7 +241,7 @@ def classify_ingest(result: IngestResult) -> FailureClassification | None:
             clock=result.failed_execution_at,
         )
 
-    reason = _unmintable_reason(result, errors, present)
+    reason = _unmintable_reason(result, errors)
     if reason is not None:
         return FailureClassification.unmintable(reason, errors)
 

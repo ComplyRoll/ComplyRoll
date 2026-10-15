@@ -53,3 +53,7 @@ read a record's amendments before relying on it.
   failures](0014-system-generated-observations.md): records a detection process failure as a
   system observation and case, opt-in per run with `--record-failed-imports`, with exit 3 and a
   schema 2 or 3 store.
+- [ADR 0015: Coverage and freshness evidence](0015-coverage-and-freshness.md): a SARIF run with
+  no results is an artifact-origin PASS observation of the scope it names, guarded on invocation
+  success; grows by a dated section with the inventory, coverage evidence, and coverage-gap
+  pull requests.

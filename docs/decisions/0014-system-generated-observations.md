@@ -1001,3 +1001,17 @@ another run took that run's clock even when this one was earlier. A log that als
 results in another run is still refused as a partial reading. ADR 0011 Decision 13 is
 unchanged except that its "its results are still read" does not hold for a run refused at its
 driver.
+
+## Amendment 2026-10-15: the `clean_scan` reason is retired
+
+Decision 2 listed `clean_scan` as the reason a reading whose only ERROR is `no_observations`,
+with an INFO `run_clean` and neither `execution_unsuccessful` nor `results_unknown`, stays fatal.
+ADR 0015 decision 1 makes the clean run an artifact observation at the `run_clean` site. A clean
+run that mints keeps `no_observations` away; a clean run that does not mint is one whose
+invocation failed, which carries `execution_unsuccessful` and is the execution class, or one
+whose invocation never declared `executionSuccessful: true`, which carries WARNING
+`execution_unverified` and is the content class: the log held nothing usable, and that is a
+failure worth a record when the operator asks for one. `UnmintableReason.CLEAN_SCAN` is removed
+and `classify_ingest` reads codes alone again; the first six reasons are checked in the order
+listed and `read_elsewhere` is still assigned only by the caller. The sentence under Decision 1
+that "an empty result is not a clean scan" describes the null-results run and still holds.

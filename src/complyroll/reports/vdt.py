@@ -51,6 +51,7 @@ from complyroll.models import (
     ResourceRef,
 )
 from complyroll.policy import (
+    COVERAGE_RULE_IDS,
     CertificationClass,
     CertificationProfile,
     PolicyDeadline,
@@ -70,7 +71,18 @@ from complyroll.schemas import (
     validate_bundled_report,
 )
 
+from .coverage import (
+    COVERAGE_BASIS,
+    DRIFT_LIKELIHOOD_UNKNOWN,
+    PDD_RULE,
+    CoverageEvidence,
+    CoverageResult,
+    CoverageStatus,
+    ResourceCoverage,
+    derive_coverage,
+)
 from .evaluations import EvaluationInput, EvaluationSet, ReportInputError
+from .inventory import Inventory
 from .kev import KEV_STALE_AFTER, KevCatalog, KevClock, KevStatus, cve_may_be_missing, kev_clock
 
 DISCLAIMER = (
@@ -144,6 +156,10 @@ class ReportOptions:
     select by period and refuse to compile without it; the historical activity report
     is a snapshot at `as_of` and never reads it. One bound without the other is a
     mistake rather than a half-open period, so it is refused here.
+
+    `inventory` is a per-run input like `kev_catalog`: with one, every report carries the
+    coverage block measured against it (ADR 0015); without one, nothing reads the coverage
+    rules and no report changes.
     """
 
     certification_class: CertificationClass
@@ -154,6 +170,7 @@ class ReportOptions:
     calendar_timezone: str = "UTC"
     detected_at_attestation: datetime | None = None
     kev_catalog: KevCatalog | None = None
+    inventory: Inventory | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.certification_class, CertificationClass):
@@ -171,6 +188,8 @@ class ReportOptions:
             _require_aware(self.detected_at_attestation, "detected_at_attestation")
         if self.kev_catalog is not None and not isinstance(self.kev_catalog, KevCatalog):
             raise TypeError("kev_catalog must be a KevCatalog")
+        if self.inventory is not None and not isinstance(self.inventory, Inventory):
+            raise TypeError("inventory must be an Inventory")
         # Constructing the profile validates the calendar timezone at the boundary.
         CertificationProfile(
             self.certification_class,
@@ -488,6 +507,7 @@ class ReportMetadata:
     excluded_by_period: int = 0
     attestation_detected_at: datetime | None = None
     detection_failures: tuple[CompiledDetectionFailure, ...] = ()
+    coverage: CoverageResult | None = None
 
     @property
     def attestation(self) -> datetime | None:
@@ -613,8 +633,10 @@ class CompiledRecordSet:
     diagnostics after the ones held here, so the diagnostics on the set are exactly
     the ones the compile itself raised: ingest diagnostics in their total order, then
     unresolved observations, then partial detection times in group order.
-    `detection_failures` lists every system observation in the set, whether or not a
-    projection's period later reports its record.
+    `detection_failures` lists every detection-process system observation in the set,
+    whether or not a projection's period later reports its record. `coverage` is the
+    coverage projection when the options carry an inventory, and every report publishes
+    it whole, since coverage is measured at as-of and never selected by a period.
     """
 
     records: tuple[CompiledVulnerability, ...]
@@ -625,6 +647,7 @@ class CompiledRecordSet:
     generator_version: str
     options: ReportOptions
     detection_failures: tuple[CompiledDetectionFailure, ...] = ()
+    coverage: CoverageResult | None = None
 
 
 def compile_records(
@@ -715,6 +738,10 @@ def compile_record_set(
     if catalog is not None:
         _require_kev_catalog_by_as_of(catalog, options)
         kev_rule = _kev_rule(policy, catalog)
+    # Derived from the same observations on both paths, so the persisted report and the
+    # stateless one carry the same block (ADR 0015).
+    inventory = options.inventory
+    coverage = None if inventory is None else _coverage(observations, inventory, policy, options)
 
     compiled: list[CompiledVulnerability] = []
     missing_detection: list[str] = []
@@ -775,10 +802,13 @@ def compile_record_set(
             errors.extend(record_errors)
             continue
         compiled.append(record)
+        # Only the failure type carries the metadata `_detection_failure` reads; any other
+        # reserved source type is a record like any other and is never listed (ADR 0015).
         detection_failures.extend(
             _detection_failure(item, record.tracking_id)
             for item in group.observations
             if item.origin is ObservationOrigin.SYSTEM
+            and item.source_type == DETECTION_FAILURE_SOURCE_TYPE
         )
         if kev_rule is not None and any(cve_may_be_missing(item) for item in group.observations):
             kev_incomplete.append(record)
@@ -801,6 +831,8 @@ def compile_record_set(
     _require_unique_tracking_ids(compiled)
     if catalog is not None:
         diagnostics.extend(_kev_diagnostics(catalog, compiled, kev_incomplete, options))
+    if coverage is not None:
+        diagnostics.extend(_coverage_diagnostics(coverage))
     return CompiledRecordSet(
         records=tuple(compiled),
         artifacts=tuple(sorted(artifacts, key=_artifact_order)),
@@ -810,6 +842,7 @@ def compile_record_set(
         generator_version=__version__,
         options=options,
         detection_failures=_ordered_detection_failures(detection_failures),
+        coverage=coverage,
     )
 
 
@@ -843,6 +876,7 @@ def project_vdt(record_set: CompiledRecordSet) -> CompiledVdtReport:
         excluded_by_period=excluded,
         attestation_detected_at=_attested_instant(records),
         detection_failures=record_set.detection_failures,
+        coverage=record_set.coverage,
     )
     document = _build_document(tuple(records), metadata, tuple(diagnostics))
     validation = _validate_document(ReportSchema.VULNERABILITY_DETAIL, document)
@@ -1327,7 +1361,7 @@ def _is_system_group(group: VulnerabilityGroup) -> bool:
 
 
 def _detection_failure(observation: Observation, tracking_id: str) -> CompiledDetectionFailure:
-    """Describe one system observation for `detectionFailures`, read from its metadata."""
+    """Describe one detection-process observation for `detectionFailures`, from its metadata."""
 
     metadata = dict(observation.source_metadata)
     observed_at = observation.observed_at
@@ -1629,6 +1663,80 @@ def _kev_diagnostics(
 
 def _kev_location(catalog: KevCatalog) -> str:
     return f"sha256:{catalog.sha256}"
+
+
+def _coverage(
+    observations: Sequence[Observation],
+    inventory: Inventory,
+    policy: SelectedPolicy,
+    options: ReportOptions,
+) -> CoverageResult:
+    """Return the coverage projection, or stop the run when the policy lacks a coverage rule.
+
+    Only a run with an inventory asks, so a run without one never needs the five rules
+    (ADR 0015). Every rule the policy lacks is named in one note, located at the
+    inventory's name like every other note about the inventory as a whole.
+    """
+
+    missing = [rule_id for rule_id in COVERAGE_RULE_IDS if not _selects(policy, rule_id)]
+    if missing:
+        raise ReportCompileError(
+            (
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="coverage_rule_unavailable",
+                    message=(
+                        "an information resource inventory was supplied, but the Class "
+                        f"{policy.profile.certification_class.value} policy selects no "
+                        f"{', '.join(missing)} rule, so no coverage clock can run"
+                    ),
+                    location=inventory.name,
+                ),
+            )
+        )
+    return derive_coverage(observations, inventory, policy, options.as_of)
+
+
+def _selects(policy: SelectedPolicy, rule_id: str) -> bool:
+    try:
+        policy.rule(rule_id)
+    except PolicyRuleNotFoundError:
+        return False
+    return True
+
+
+def _coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
+    """Return one note per warning an inventory entry raised, in inventory order.
+
+    Each is located at the inventory's name and the entry's pair, so the same entry in the
+    same inventory raises the same note whichever path or file name supplied it.
+    """
+
+    notes: list[ReportDiagnostic] = []
+    for resource in coverage.resources:
+        label = _coverage_label(resource.entry.ref)
+        for code in resource.warnings:
+            if code != DRIFT_LIKELIHOOD_UNKNOWN:
+                raise ValueError(f"unhandled coverage warning {code!r}")
+            notes.append(
+                ReportDiagnostic(
+                    level=DiagnosticLevel.WARNING,
+                    code=code,
+                    message=(
+                        f'{label} declares driftLikely "unknown", so it carries {PDD_RULE}, '
+                        "the shorter drift window, until the inventory says whether drift is "
+                        "likely"
+                    ),
+                    location=f"{coverage.inventory.name} {label}",
+                )
+            )
+    return notes
+
+
+def _coverage_label(ref: ResourceRef) -> str:
+    """Return a resource as `type:id`; a type never holds a colon, so it reads one way."""
+
+    return f"{ref.resource_type}:{ref.resource_id}"
 
 
 def _records_carry(count: int) -> str:
@@ -2215,6 +2323,10 @@ def _common_extension(
             "count": catalog.declared_count,
             "entriesConsidered": catalog.considered(options.as_of.astimezone(UTC).date()),
         }
+    # Only a run given an inventory carries the key, so every report compiled without one
+    # is byte-identical to one compiled before coverage existed (ADR 0015).
+    if metadata.coverage is not None:
+        extension["coverage"] = metadata.coverage.to_dict()
     return extension
 
 
@@ -2314,6 +2426,7 @@ def _render_markdown(report: CompiledVdtReport) -> str:
     )
     _write_attestation_section(write, records, metadata)
     _write_inputs(write, metadata)
+    _write_coverage(write, metadata)
     _write_diagnostics_section(write, report.diagnostics)
     _write_footer(write)
     return "\n".join(lines) + "\n"
@@ -2541,6 +2654,205 @@ def _write_detection_failures(
             f"| {_cell(item.clock)} | {_cell(item.tracking_id)} |"
         )
     write("")
+
+
+def _write_coverage(write: Callable[[str], None], metadata: ReportMetadata) -> None:
+    """Write the Coverage section, the twin of `x-complyroll.coverage` (ADR 0015).
+
+    Every summary row, resource, clock, window, unregistered resource and piece of listed
+    evidence the block carries is written here, from the same coverage result. Nothing is
+    written when the run was given no inventory.
+    """
+
+    coverage = metadata.coverage
+    if coverage is None:
+        return
+    inventory = coverage.inventory
+    write("## Coverage")
+    write("")
+    write(
+        f"Coverage of the inventory {_cell(inventory.name)} ({inventory.entry_count} entries, "
+        f"{inventory.size_bytes} bytes, SHA-256 {inventory.sha256}) as of "
+        f"{_iso(coverage.as_of)}, with clocks from rules dataset commit "
+        f"{metadata.rules_provenance.commit}."
+    )
+    write("")
+    write(COVERAGE_BASIS)
+    write("")
+
+    write("### Coverage by rule")
+    write("")
+    write("| Rule | Force | Expected | Current | Stale | Missing | Unanchored | Undetermined |")
+    write("|---|---|---:|---:|---:|---:|---:|---:|")
+    for row in coverage.summary:
+        write(
+            f"| {row.rule_id} | {row.force.value} | {row.expected} | {row.current} "
+            f"| {row.stale} | {row.missing} | {row.unanchored} | {row.undetermined} |"
+        )
+    write("")
+
+    write("### Resources")
+    write("")
+    write(
+        "| Resource | Kind | Aliases | Drift likely | Sample group | Job | Expected since "
+        "| Decommissioned | Last examined | Last verified | Examined | Untimed | Clocks |"
+    )
+    write("|---|---|---|---|---|---|---|---|---|---|---:|---:|---|")
+    for resource in coverage.resources:
+        write(_coverage_resource_row(resource))
+    write("")
+
+    write("### Clocks")
+    write("")
+    write(
+        "| Resource | Rule | Force | Status | Anchor | Anchored at | Due at | Evidence | Stand-in |"
+    )
+    write("|---|---|---|---|---|---|---|---|---|")
+    for resource in coverage.resources:
+        label = _cell(_coverage_label(resource.entry.ref))
+        for clock in resource.clocks:
+            write(
+                f"| {label} | {clock.rule_id} | {clock.force.value} | {clock.status.value} "
+                f"| {'n/a' if clock.anchor is None else clock.anchor.value} "
+                f"| {_optional_iso(clock.anchor_at)} | {_optional_iso(clock.due_at)} "
+                f"| {_coverage_evidence(clock.evidence)} | {_coverage_ref(clock.stand_in)} |"
+            )
+    write("")
+
+    write("### Windows")
+    write("")
+    if not coverage.windows:
+        write("No window closed without a verification.")
+    else:
+        write(
+            "| Rule | Context | Force | Anchor | Anchored at | Closed at | Resumed at "
+            "| Evidence | Stand-in |"
+        )
+        write("|---|---|---|---|---|---|---|---|---|")
+        for window in coverage.windows:
+            write(
+                f"| {window.rule_id} | {_cell(window.context_key)} | {window.force.value} "
+                f"| {window.anchor.value} | {_iso(window.anchor_at)} | {_iso(window.closed_at)} "
+                f"| {_optional_iso(window.resumed_at)} | {_coverage_evidence(window.evidence)} "
+                f"| {_coverage_ref(window.stand_in)} |"
+            )
+    write("")
+
+    write("### Unregistered resources")
+    write("")
+    if not coverage.unregistered:
+        write("Every observed resource is in the inventory.")
+    else:
+        write("| Resource | Observations |")
+        write("|---|---:|")
+        for item in coverage.unregistered:
+            write(f"| {_coverage_ref(item.resource)} | {item.observations} |")
+    write("")
+
+    _write_coverage_evidence(
+        write,
+        "Untimed evidence",
+        "No inventory resource has untimed evidence.",
+        [(resource, resource.untimed) for resource in coverage.resources],
+    )
+    _write_coverage_evidence(
+        write,
+        "Evidence after decommissioning",
+        "No evidence was observed after a resource was decommissioned.",
+        [(resource, resource.after_decommission) for resource in coverage.resources],
+    )
+    write("### Evidence after as-of")
+    write("")
+    if not coverage.later:
+        write("No evidence was observed after as-of.")
+    for evidence in coverage.later:
+        write(f"- {_coverage_evidence(evidence)}")
+    write("")
+
+
+def _coverage_resource_row(resource: ResourceCoverage) -> str:
+    """Render one resource row; a missing clock names the untimed evidence beside it."""
+
+    entry = resource.entry
+    untimed = len(resource.untimed)
+    statuses = []
+    for clock in resource.clocks:
+        status = f"{clock.rule_id} {clock.force.value} {clock.status.value}"
+        if clock.status is CoverageStatus.MISSING and untimed:
+            status += f" ({untimed} untimed)"
+        statuses.append(status)
+    aliases = ", ".join(_coverage_ref(alias) for alias in entry.aliases) or "n/a"
+    return (
+        "| "
+        + " | ".join(
+            (
+                _cell(_coverage_label(entry.ref)),
+                "attested" if resource.attested else "machine",
+                aliases,
+                _drift_label(entry.drift_likely),
+                _cell(entry.sample_group or "n/a"),
+                _cell(entry.job or "n/a"),
+                _iso(entry.expected_since),
+                _optional_iso(entry.decommissioned_at),
+                _optional_iso(resource.last_examined),
+                _optional_iso(resource.last_verified),
+                str(resource.examined_observations),
+                str(untimed),
+                "; ".join(statuses),
+            )
+        )
+        + " |"
+    )
+
+
+def _write_coverage_evidence(
+    write: Callable[[str], None],
+    heading: str,
+    empty_message: str,
+    listed: Sequence[tuple[ResourceCoverage, Sequence[CoverageEvidence]]],
+) -> None:
+    """Write one evidence list, one line per resource that has any."""
+
+    write(f"### {heading}")
+    write("")
+    lines = [
+        f"- **{_cell(_coverage_label(resource.entry.ref))}:** "
+        + "; ".join(_coverage_evidence(item) for item in evidence)
+        for resource, evidence in listed
+        if evidence
+    ]
+    for line in lines or [empty_message]:
+        write(line)
+    write("")
+
+
+def _coverage_evidence(evidence: CoverageEvidence | None) -> str:
+    """Name one piece of evidence: the observation fingerprint, or the attested reference."""
+
+    if evidence is None:
+        return "n/a"
+    if evidence.disposition is None:
+        text = f"attested: {_cell(evidence.reference)}"
+    else:
+        text = f"observation {evidence.reference} ({evidence.disposition.value})"
+    text += f" on {_coverage_ref(evidence.resource)}"
+    return text + (", untimed" if evidence.at is None else f" at {_iso(evidence.at)}")
+
+
+def _coverage_ref(ref: ResourceRef | None) -> str:
+    return "n/a" if ref is None else _cell(_coverage_label(ref))
+
+
+def _drift_label(value: bool | str | None) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, bool):
+        return _flag(value)
+    return _cell(value)
+
+
+def _optional_iso(value: datetime | None) -> str:
+    return "n/a" if value is None else _iso(value)
 
 
 def _write_diagnostics_section(

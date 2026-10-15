@@ -67,6 +67,7 @@ CONTENT_CODES = frozenset(
         "invalid_profile",
         "invalid_control",
         "no_observations",
+        "clean_run_unverified",
     }
 )
 CLASS_CODES = PARSE_CODES | CONTENT_CODES
@@ -105,7 +106,9 @@ class UnmintableReason(str, Enum):
     same bytes also read successfully, and it assigns the reason with
     FailureClassification.read_elsewhere. A clean SARIF run is an artifact observation of its
     scope (ADR 0015 decision 1), so the clean_scan reason this vocabulary once held is retired:
-    no reading reaches no_observations through a clean run any more.
+    no reading reaches no_observations through a clean run any more. An empty run whose
+    invocation is unverified is not a clean run; a log left with nothing beside it raises
+    clean_run_unverified with no_observations and is the content class, so the record names it.
     """
 
     NO_DIGEST = "no_digest"

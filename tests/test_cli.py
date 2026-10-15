@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import errno
 import hashlib
 import io
@@ -127,6 +128,32 @@ HISTORICAL_ARGUMENTS = (
 #: The case `evaluations-accepted.json` accepts: in the AVI report and the historical
 #: snapshot, and out of the Vulnerability Detail Report.
 ACCEPTED_CASE = "case-04efea8c137ae82f"
+
+#: The synthetic inventory the coverage goldens were cut with, over the golden fixtures.
+EXAMPLE_INVENTORY = EXAMPLES / "inventory.json"
+#: The `vdt-coverage` run: the `vdt-fixtures` run plus the example inventory (ADR 0015).
+COVERAGE_ARGUMENTS = (*REPORT_ARGUMENTS, "--inventory", str(EXAMPLE_INVENTORY))
+#: The `vdt-coverage-timed` run: two SARIF artifacts that declare their own clocks, so
+#: machine clocks anchor, which the untimed checklist set above never can. Its inventory
+#: is a test fixture; `examples/inventory.json` stays the one walkthrough file.
+TIMED_INVENTORY = FIXTURES / "inventory-timed.json"
+TIMED_ARTIFACTS = (str(FIXTURES / "codeql-repo.sarif"), str(FIXTURES / "clean-run.sarif"))
+TIMED_AS_OF = "2026-09-03T12:00:00Z"
+
+
+def timed_argv(kind: str = "vdt", *, inventory: bool = True, db: Path | None = None) -> list[str]:
+    """Build the timed coverage run from the artifacts or a store, with or without inventory."""
+
+    argv = ["report", kind]
+    argv += list(TIMED_ARTIFACTS) if db is None else ["--db", str(db)]
+    argv += ["--class", "C", "--package-uri", "https://example.test/cpo", "--calendar-tz", "UTC"]
+    argv += ["--as-of", TIMED_AS_OF]
+    if kind != "historical":
+        argv += ["--from", "2026-09-01T00:00:00Z", "--to", "2026-09-30T23:59:59Z"]
+    if inventory:
+        argv += ["--inventory", str(TIMED_INVENTORY)]
+    return argv
+
 
 #: The synthetic CISA KEV catalog and the run the three KEV goldens were cut with. Every
 #: identifier in it is `CVE-2099-*`; no real catalog content is carried in this repo.
@@ -1216,6 +1243,8 @@ class RecordFailedImportsTests(unittest.TestCase):
         runs = {
             **{f"{command}-fixtures": argv for command, argv in self.COMMANDS},
             **{f"{kind}-kev": kev_argv(kind) for kind in KevReportCommandTests.KINDS},
+            "vdt-coverage": COVERAGE_ARGUMENTS,
+            "vdt-coverage-timed": timed_argv(),
         }
         compiled = {
             "vdt-sarif": compile_sarif_golden(record_failed_imports=True),
@@ -6825,6 +6854,681 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
             out + err,
         )
         self.assert_bounded(out, err)
+
+
+#: A small inventory over the golden fixtures: one entry reached through an alias whose drift
+#: is unknown, and one attested procedure. The coverage goldens use `examples/inventory.json`.
+CLI_INVENTORY = {
+    "schema": "complyroll.inventory",
+    "schemaVersion": 1,
+    "name": "cli-boundary",
+    "resources": [
+        {
+            "resourceType": "host",
+            "resourceId": "ubuntu-primary",
+            "machineBased": True,
+            "driftLikely": "unknown",
+            "expectedSince": "2026-07-01T00:00:00Z",
+            "aliases": [{"resourceType": "host", "resourceId": "lab-ubuntu-01"}],
+        },
+        {
+            "resourceType": "logical",
+            "resourceId": "incident-response-procedure",
+            "machineBased": False,
+            "expectedSince": "2026-07-01T00:00:00Z",
+            "verifications": [{"at": "2026-08-01T17:00:00Z", "reference": "IR tabletop record"}],
+        },
+    ],
+}
+#: The drift warning the inventory raises, as stderr prints it.
+CLI_DRIFT_WARNING = (
+    'warning: drift_likelihood_unknown: host:ubuntu-primary declares driftLikely "unknown", '
+    "so it carries VDR-TFR-PDD, the shorter drift window, until the inventory says whether "
+    "drift is likely [cli-boundary host:ubuntu-primary]"
+)
+
+
+def stripped_policy(*rule_ids: str) -> Callable[..., Any]:
+    """Return a `select_policy` that drops the named rules from what it selects."""
+
+    real = vdt_module.select_policy
+
+    def select(snapshot: Any, profile: Any) -> Any:
+        policy = real(snapshot, profile)
+        return replace(
+            policy, rules=tuple(item for item in policy.rules if item.rule_id not in rule_ids)
+        )
+
+    return select
+
+
+class InventoryReportCommandTests(unittest.TestCase):
+    """`--inventory` on all three commands, reading the artifacts from disk (ADR 0015).
+
+    The inventory is a per-run input exactly as the KEV catalog is: named in the overwrite
+    guard, read before the options so a malformed one is refused as bad input, one only.
+    """
+
+    COMMANDS = (
+        ("vdt", REPORT_ARGUMENTS),
+        ("avi", AVI_ARGUMENTS),
+        ("historical", HISTORICAL_ARGUMENTS),
+    )
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.workspace = Path(directory.name)
+        self.inventory = self.workspace / "inventory.json"
+        self.inventory.write_text(json.dumps(CLI_INVENTORY), encoding="utf-8")
+
+    def write_inventory(self, content: bytes) -> Path:
+        path = self.workspace / "refused.json"
+        path.write_bytes(content)
+        return path
+
+    def test_every_command_carries_the_block_and_leaves_the_rest_alone(self) -> None:
+        for kind, argv in self.COMMANDS:
+            with self.subTest(report=kind):
+                json_path = self.workspace / f"{kind}.json"
+                markdown_path = self.workspace / f"{kind}.md"
+
+                code, out, err = run(
+                    [
+                        *argv,
+                        "--inventory",
+                        str(self.inventory),
+                        "-o",
+                        str(json_path),
+                        "--markdown",
+                        str(markdown_path),
+                    ]
+                )
+
+                self.assertEqual(code, 0, msg=err)
+                self.assertEqual(out, "")
+                self.assertIn(CLI_DRIFT_WARNING, err.splitlines())
+                document = json.loads(json_path.read_text(encoding="utf-8"))
+                golden = json.loads((GOLDEN / f"{kind}-fixtures.json").read_text(encoding="utf-8"))
+                extension = document.pop("x-complyroll")
+                golden_extension = golden.pop("x-complyroll")
+                self.assertEqual(document, golden)
+                coverage = extension.pop("coverage")
+                self.assertEqual(
+                    coverage["inventory"],
+                    {
+                        "name": "cli-boundary",
+                        "sha256": hashlib.sha256(self.inventory.read_bytes()).hexdigest(),
+                        "sizeBytes": self.inventory.stat().st_size,
+                        "entries": 2,
+                    },
+                )
+                diagnostics = extension.pop("diagnostics")
+                self.assertEqual(
+                    [item for item in diagnostics if item["code"] != "drift_likelihood_unknown"],
+                    golden_extension.pop("diagnostics"),
+                )
+                self.assertEqual(extension, golden_extension)
+                self.assertIn("\n## Coverage\n", markdown_path.read_text(encoding="utf-8"))
+
+    def test_the_three_commands_carry_one_block(self) -> None:
+        blocks = {}
+        for kind, argv in self.COMMANDS:
+            code, out, err = run([*argv, "--inventory", str(self.inventory)])
+            self.assertEqual(code, 0, msg=err)
+            blocks[kind] = json.loads(out)["x-complyroll"]["coverage"]
+        self.assertEqual(blocks["avi"], blocks["vdt"])
+        self.assertEqual(blocks["historical"], blocks["vdt"])
+        statuses = {
+            (item["resourceId"], clock["ruleId"]): clock["status"]
+            for item in blocks["vdt"]["resources"]
+            for clock in item["clocks"]
+        }
+        self.assertEqual(
+            statuses,
+            {
+                ("incident-response-procedure", "VDR-TFR-NMV"): "current",
+                ("ubuntu-primary", "VDR-TFR-MVX"): "missing",
+                ("ubuntu-primary", "VDR-TFR-PDD"): "missing",
+            },
+        )
+
+    def test_a_second_inventory_is_refused_on_every_command(self) -> None:
+        # `--inventory` appends, so argparse would otherwise keep the last of several.
+        for kind, argv in self.COMMANDS:
+            with self.subTest(report=kind):
+                code, out, err = run(
+                    [*argv, "--inventory", str(self.inventory), "--inventory", str(self.inventory)]
+                )
+
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn(
+                    f"error: invalid_option: report {kind} takes one --inventory file, not 2", err
+                )
+
+    def test_a_refused_inventory_is_bad_input_and_writes_nothing(self) -> None:
+        colon = copy.deepcopy(CLI_INVENTORY)
+        colon["resources"][0]["resourceType"] = "host:linux"
+        group = copy.deepcopy(CLI_INVENTORY)
+        group["resources"][0]["sampleGroup"] = "g" * 129
+        cases = {
+            "not JSON": (b"resourceType,resourceId\n", "inventory must be a JSON document"),
+            "a KEV catalog": (
+                (FIXTURES / "kev-catalog.json").read_bytes(),
+                "inventory: schema is required",
+            ),
+            "a colon in a type": (
+                json.dumps(colon).encode("utf-8"),
+                "inventory resources[0]: resourceType must not contain a colon, got 'host:linux'",
+            ),
+            "a long group name": (
+                json.dumps(group).encode("utf-8"),
+                "inventory resources[0]: sampleGroup must be 1 to 128 printable ASCII",
+            ),
+        }
+        for label, (content, message) in cases.items():
+            for kind, argv in self.COMMANDS:
+                with self.subTest(case=label, report=kind):
+                    path = self.write_inventory(content)
+                    json_path = self.workspace / "report.json"
+
+                    code, out, err = run([*argv, "--inventory", str(path), "-o", str(json_path)])
+
+                    self.assertEqual(code, 1)
+                    self.assertEqual(out, "")
+                    self.assertIn(f"error: invalid_input: {message}", err)
+                    self.assertFalse(json_path.exists())
+
+    def test_an_inventory_that_is_not_there_is_refused_as_bad_input(self) -> None:
+        json_path = self.workspace / "report.json"
+
+        missing = self.workspace / "gone.json"
+        code, out, err = run([*REPORT_ARGUMENTS, "--inventory", str(missing), "-o", str(json_path)])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: invalid_input: inventory cannot be read", err)
+        self.assertFalse(json_path.exists())
+
+    def test_writing_a_report_over_the_inventory_is_refused(self) -> None:
+        before = self.inventory.read_bytes()
+        for option in ("-o", "--markdown"):
+            with self.subTest(destination=option):
+                inventory = str(self.inventory)
+                code, out, err = run(
+                    [*REPORT_ARGUMENTS, "--inventory", inventory, option, inventory]
+                )
+
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn("refusing to overwrite the input file", err)
+                self.assertEqual(self.inventory.read_bytes(), before)
+
+    def test_a_policy_without_a_coverage_rule_stops_the_run_and_writes_nothing(self) -> None:
+        for kind, argv in self.COMMANDS:
+            with (
+                self.subTest(report=kind),
+                patch.object(vdt_module, "select_policy", stripped_policy("VDR-TFR-PSD")),
+            ):
+                json_path = self.workspace / "report.json"
+
+                code, out, err = run(
+                    [*argv, "--inventory", str(self.inventory), "-o", str(json_path)]
+                )
+
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn(
+                    "error: coverage_rule_unavailable: an information resource inventory was "
+                    "supplied, but the Class C policy selects no VDR-TFR-PSD rule, so no "
+                    "coverage clock can run [cli-boundary]",
+                    err,
+                )
+                self.assertFalse(json_path.exists())
+
+    def test_without_the_flag_the_coverage_rules_are_never_read(self) -> None:
+        for kind, argv in self.COMMANDS:
+            with (
+                self.subTest(report=kind),
+                patch.object(
+                    vdt_module,
+                    "select_policy",
+                    stripped_policy(
+                        "VDR-TFR-MVX", "VDR-TFR-NMV", "VDR-TFR-PCD", "VDR-TFR-PDD", "VDR-TFR-PSD"
+                    ),
+                ),
+            ):
+                code, out, err = run(argv)
+
+                self.assertEqual(code, 0, msg=err)
+                self.assertEqual(
+                    out, (GOLDEN / f"{kind}-fixtures.json").read_text(encoding="utf-8")
+                )
+                self.assertNotIn("drift_likelihood_unknown", err)
+                self.assertNotIn("coverage", json.loads(out)["x-complyroll"])
+
+    def test_help_names_the_option_on_every_command(self) -> None:
+        for kind, _ in self.COMMANDS:
+            with self.subTest(report=kind):
+                text = help_text(["report", kind])
+                self.assertIn("--inventory FILE", text)
+                self.assertIn(
+                    "information resource inventory JSON to measure coverage against "
+                    "(read locally, never stored)",
+                    text,
+                )
+
+
+class PersistedInventoryTests(PersistedStoreTestCase):
+    """`--inventory` beside `--db`: no store holds an inventory, so it is never a conflict."""
+
+    KINDS = ("vdt", "avi", "historical")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.populate(ACCEPTED_EVALUATIONS)
+        self.inventory = self.workspace / "inventory.json"
+        self.inventory.write_text(json.dumps(CLI_INVENTORY), encoding="utf-8")
+
+    def persisted(self, kind: str, *extra: str) -> list[str]:
+        argv = [
+            "report",
+            kind,
+            "--db",
+            str(self.database),
+            "--class",
+            "C",
+            "--package-uri",
+            "https://example.test/cpo",
+            "--as-of",
+            INGESTED_AT,
+        ]
+        if kind != "historical":
+            argv += ["--from", "2026-08-01T00:00:00Z", "--to", "2026-08-31T23:59:59Z"]
+        return [*argv, *extra]
+
+    @staticmethod
+    def stateless(kind: str, *extra: str) -> list[str]:
+        """Return the stateless run of the same inputs the store was populated with."""
+
+        if kind == "avi":
+            argv = list(AVI_ARGUMENTS)
+        elif kind == "historical":
+            argv = list(HISTORICAL_ARGUMENTS)
+        else:
+            argv = [*REPORT_ARGUMENTS[:-1], str(ACCEPTED_EVALUATIONS)]
+        return [*argv, *extra]
+
+    def test_an_inventory_beside_a_store_is_not_a_source_conflict(self) -> None:
+        for kind in self.KINDS:
+            with self.subTest(report=kind):
+                code, out, err = run(self.persisted(kind, "--inventory", str(self.inventory)))
+
+                self.assertEqual(code, 0, msg=err)
+                self.assertNotIn("invalid_option", err)
+                self.assertIn(CLI_DRIFT_WARNING, err.splitlines())
+                self.assertIn("coverage", json.loads(out)["x-complyroll"])
+
+    def test_the_persisted_report_equals_the_stateless_one_byte_for_byte(self) -> None:
+        for kind in self.KINDS:
+            with self.subTest(report=kind):
+                persisted = self.workspace / f"{kind}-persisted"
+                stateless = self.workspace / f"{kind}-stateless"
+                outputs = []
+                for argv, stem in (
+                    (self.persisted(kind), persisted),
+                    (self.stateless(kind), stateless),
+                ):
+                    code, _, err = run(
+                        [
+                            *argv,
+                            "--inventory",
+                            str(self.inventory),
+                            "-o",
+                            f"{stem}.json",
+                            "--markdown",
+                            f"{stem}.md",
+                        ]
+                    )
+                    self.assertEqual(code, 0, msg=err)
+                    outputs.append(err)
+
+                self.assertEqual(
+                    Path(f"{persisted}.json").read_bytes(), Path(f"{stateless}.json").read_bytes()
+                )
+                self.assertEqual(
+                    Path(f"{persisted}.md").read_bytes(), Path(f"{stateless}.md").read_bytes()
+                )
+                self.assertIn(CLI_DRIFT_WARNING, outputs[0].splitlines())
+
+    def test_a_second_inventory_is_refused_against_a_store_too(self) -> None:
+        code, out, err = run(
+            self.persisted(
+                "vdt", "--inventory", str(self.inventory), "--inventory", str(self.inventory)
+            )
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: invalid_option: report vdt takes one --inventory file, not 2", err)
+
+    def test_a_refused_inventory_against_a_store_writes_nothing(self) -> None:
+        refused = self.workspace / "refused.json"
+        refused.write_bytes(b"{}")
+        json_path = self.workspace / "report.json"
+
+        code, out, err = run(
+            self.persisted("vdt", "--inventory", str(refused), "-o", str(json_path))
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("error: invalid_input: inventory: schema is required", err)
+        self.assertFalse(json_path.exists())
+
+
+class CoverageGoldenTests(unittest.TestCase):
+    """The `vdt-coverage` goldens: the `vdt-fixtures` run plus `examples/inventory.json`."""
+
+    def golden(self) -> dict[str, Any]:
+        return json.loads((GOLDEN / "vdt-coverage.json").read_text(encoding="utf-8"))
+
+    def test_the_command_reproduces_the_coverage_golden_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            markdown_path = Path(directory) / "report.md"
+
+            code, out, err = run(
+                [*COVERAGE_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+            )
+
+            self.assertEqual(code, 0, msg=err)
+            self.assertEqual(out, "")
+            self.assertIn(
+                "warning: drift_likelihood_unknown: host:lab-rhel-01 declares driftLikely "
+                '"unknown"',
+                err,
+            )
+            self.assertIn("[example-boundary host:lab-rhel-01]", err)
+            self.assertEqual(json_path.read_bytes(), (GOLDEN / "vdt-coverage.json").read_bytes())
+            self.assertEqual(markdown_path.read_bytes(), (GOLDEN / "vdt-coverage.md").read_bytes())
+
+    def test_the_golden_validates_against_the_official_schema(self) -> None:
+        code, out, err = run(
+            ["validate", str(GOLDEN / "vdt-coverage.json"), "--schema", "vulnerability-detail"]
+        )
+
+        self.assertEqual(code, 0, msg=err)
+        self.assertTrue(out.startswith("valid: "), out)
+
+    def test_the_official_fields_equal_the_fixtures_golden(self) -> None:
+        coverage = self.golden()
+        fixtures = json.loads((GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8"))
+        extension = coverage.pop("x-complyroll")
+        fixtures_extension = fixtures.pop("x-complyroll")
+
+        self.assertEqual(coverage, fixtures)
+        self.assertIn("coverage", extension)
+        extension.pop("coverage")
+        self.assertEqual(
+            [
+                item
+                for item in extension.pop("diagnostics")
+                if item["code"] != "drift_likelihood_unknown"
+            ],
+            fixtures_extension.pop("diagnostics"),
+        )
+        self.assertEqual(extension, fixtures_extension)
+
+    def test_avi_and_historical_carry_the_golden_block(self) -> None:
+        block = self.golden()["x-complyroll"]["coverage"]
+        for kind, argv in (("avi", AVI_ARGUMENTS), ("historical", HISTORICAL_ARGUMENTS)):
+            with self.subTest(report=kind):
+                code, out, err = run([*argv, "--inventory", str(EXAMPLE_INVENTORY)])
+
+                self.assertEqual(code, 0, msg=err)
+                self.assertEqual(json.loads(out)["x-complyroll"]["coverage"], block)
+
+    def test_the_golden_shows_what_the_fixtures_can_reach(self) -> None:
+        # The golden fixtures are untimed, so no machine resource can be verified at this
+        # as-of: only attested resources reach current or stale, and nothing is undetermined.
+        block = self.golden()["x-complyroll"]["coverage"]
+        self.assertEqual(
+            block["inventory"]["sha256"],
+            hashlib.sha256(EXAMPLE_INVENTORY.read_bytes()).hexdigest(),
+        )
+        resources = {item["resourceId"]: item for item in block["resources"]}
+        statuses = {
+            (name, clock["ruleId"]): clock["status"]
+            for name, item in resources.items()
+            for clock in item["clocks"]
+        }
+        self.assertEqual(
+            statuses,
+            {
+                ("lab-rhel-01", "VDR-TFR-MVX"): "missing",
+                ("lab-rhel-01", "VDR-TFR-PDD"): "missing",
+                ("lab-ubuntu-03", "VDR-TFR-MVX"): "unanchored",
+                ("lab-ubuntu-03", "VDR-TFR-PDD"): "unanchored",
+                ("lab-win-01", "VDR-TFR-MVX"): "missing",
+                ("lab-win-01", "VDR-TFR-PCD"): "missing",
+                ("ubuntu-web-01", "VDR-TFR-MVX"): "missing",
+                ("ubuntu-web-01", "VDR-TFR-PDD"): "missing",
+                ("backup-restore-procedure", "VDR-TFR-NMV"): "stale",
+                ("contingency-plan", "VDR-TFR-NMV"): "missing",
+                ("contingency-plan", "VDR-TFR-PSD"): "stale",
+                ("incident-response-procedure", "VDR-TFR-NMV"): "current",
+                ("incident-response-procedure", "VDR-TFR-PSD"): "stale",
+            },
+        )
+        group = resources["contingency-plan"]["clocks"][1]
+        self.assertEqual(
+            group["standIn"],
+            {"resourceType": "logical", "resourceId": "incident-response-procedure"},
+        )
+        self.assertEqual(
+            (resources["ubuntu-web-01"]["untimed"], resources["lab-win-01"]["untimed"]), (6, 2)
+        )
+        self.assertEqual(
+            resources["ubuntu-web-01"]["aliases"],
+            [{"resourceType": "host", "resourceId": "lab-ubuntu-01"}],
+        )
+        self.assertTrue(resources["contingency-plan"]["attested"])
+        self.assertEqual(resources["lab-rhel-01"]["decommissionedAt"], "2026-08-10T00:00:00Z")
+        self.assertEqual(
+            block["unregistered"],
+            [{"resourceType": "host", "resourceId": "lab-ubuntu-02", "observations": 3}],
+        )
+        self.assertEqual(
+            [(item["kind"], item["reference"]) for item in block["later"]],
+            [("attestation", "IR tabletop record TT-2026-09")],
+        )
+        markdown = (GOLDEN / "vdt-coverage.md").read_text(encoding="utf-8")
+        self.assertIn("VDR-TFR-MVX MUST missing (6 untimed)", markdown)
+
+
+class PersistedCoverageGoldenTests(PersistedStoreTestCase):
+    """The documented sequence plus `--inventory` rebuilds the coverage goldens."""
+
+    def test_the_documented_sequence_reproduces_the_coverage_golden(self) -> None:
+        self.populate()
+        json_path = self.workspace / "report.json"
+        markdown_path = self.workspace / "report.md"
+
+        code, out, err = run(
+            [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                INGESTED_AT,
+                "--inventory",
+                str(EXAMPLE_INVENTORY),
+                "-o",
+                str(json_path),
+                "--markdown",
+                str(markdown_path),
+            ]
+        )
+
+        self.assertEqual(code, 0, msg=err)
+        self.assertEqual(out, "")
+        self.assertEqual(json_path.read_bytes(), (GOLDEN / "vdt-coverage.json").read_bytes())
+        self.assertEqual(markdown_path.read_bytes(), (GOLDEN / "vdt-coverage.md").read_bytes())
+
+
+class TimedCoverageGoldenTests(unittest.TestCase):
+    """The `vdt-coverage-timed` goldens: machine clocks anchored by timed SARIF evidence."""
+
+    def golden(self) -> dict[str, Any]:
+        return json.loads((GOLDEN / "vdt-coverage-timed.json").read_text(encoding="utf-8"))
+
+    def test_the_command_reproduces_the_timed_golden_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            json_path = Path(directory) / "report.json"
+            markdown_path = Path(directory) / "report.md"
+
+            code, out, err = run(
+                [*timed_argv(), "-o", str(json_path), "--markdown", str(markdown_path)]
+            )
+
+            self.assertEqual(code, 0, msg=err)
+            self.assertEqual(out, "")
+            self.assertNotIn("drift_likelihood_unknown", err)
+            self.assertEqual(
+                json_path.read_bytes(), (GOLDEN / "vdt-coverage-timed.json").read_bytes()
+            )
+            self.assertEqual(
+                markdown_path.read_bytes(), (GOLDEN / "vdt-coverage-timed.md").read_bytes()
+            )
+
+    def test_the_golden_validates_against_the_official_schema(self) -> None:
+        code, out, err = run(
+            [
+                "validate",
+                str(GOLDEN / "vdt-coverage-timed.json"),
+                "--schema",
+                "vulnerability-detail",
+            ]
+        )
+
+        self.assertEqual(code, 0, msg=err)
+        self.assertTrue(out.startswith("valid: "), out)
+
+    def test_the_official_fields_equal_the_run_without_the_inventory(self) -> None:
+        # No golden holds this run without `--inventory`, so it is compiled here.
+        code, out, err = run(timed_argv(inventory=False))
+        self.assertEqual(code, 0, msg=err)
+        bare = json.loads(out)
+        timed = self.golden()
+        extension = timed.pop("x-complyroll")
+        bare_extension = bare.pop("x-complyroll")
+
+        self.assertEqual(timed, bare)
+        self.assertNotIn("coverage", bare_extension)
+        extension.pop("coverage")
+        # No entry declares drift unknown, so the diagnostics are equal as they stand.
+        self.assertEqual(extension, bare_extension)
+
+    def test_avi_and_historical_carry_the_golden_block(self) -> None:
+        block = self.golden()["x-complyroll"]["coverage"]
+        for kind in ("avi", "historical"):
+            with self.subTest(report=kind):
+                code, out, err = run(timed_argv(kind))
+
+                self.assertEqual(code, 0, msg=err)
+                self.assertEqual(json.loads(out)["x-complyroll"]["coverage"], block)
+
+    def test_the_golden_shows_the_machine_statuses(self) -> None:
+        block = self.golden()["x-complyroll"]["coverage"]
+        self.assertEqual(
+            block["inventory"]["sha256"], hashlib.sha256(TIMED_INVENTORY.read_bytes()).hexdigest()
+        )
+        resources = {item["resourceId"].rsplit("/", 1)[-1]: item for item in block["resources"]}
+        statuses = {
+            (name, clock["ruleId"]): clock["status"]
+            for name, item in resources.items()
+            for clock in item["clocks"]
+        }
+        self.assertEqual(
+            statuses,
+            {
+                ("helpers.js", "VDR-TFR-MVX"): "current",
+                ("helpers.js", "VDR-TFR-PCD"): "current",
+                ("index.js", "VDR-TFR-MVX"): "missing",
+                ("index.js", "VDR-TFR-PDD"): "missing",
+                ("index.js", "VDR-TFR-PSD"): "current",
+                ("legacy.js", "VDR-TFR-MVX"): "undetermined",
+                ("legacy.js", "VDR-TFR-PDD"): "undetermined",
+                ("render.js", "VDR-TFR-MVX"): "current",
+                ("render.js", "VDR-TFR-PDD"): "current",
+                ("render.js", "VDR-TFR-PSD"): "current",
+                ("example-service:1.4.0", "VDR-TFR-MVX"): "stale",
+                ("example-service:1.4.0", "VDR-TFR-PDD"): "stale",
+            },
+        )
+        # A member never scanned is current on its group clock through a scanned member.
+        render = {"resourceType": "file", "resourceId": "src/ui/render.js"}
+        self.assertEqual(resources["index.js"]["clocks"][2]["standIn"], render)
+        # The scanner names render.js by its repository URL, which only the alias matches.
+        self.assertEqual(
+            resources["render.js"]["clocks"][0]["evidence"]["resourceId"],
+            "https://github.com/example/webapp/src/ui/render.js",
+        )
+        self.assertEqual(
+            [(item["ruleId"], item["closedAt"], item["resumedAt"]) for item in block["windows"]],
+            [
+                ("VDR-TFR-MVX", "2026-08-04T00:00:00Z", "2026-08-05T10:00:00Z"),
+                ("VDR-TFR-MVX", "2026-08-08T10:00:00Z", None),
+                ("VDR-TFR-PDD", "2026-08-19T10:00:00Z", None),
+            ],
+        )
+        self.assertEqual((block["unregistered"], block["later"]), ([], []))
+        self.assertEqual({item["untimed"] for item in block["resources"]}, {0})
+
+
+class PersistedTimedCoverageGoldenTests(PersistedStoreTestCase):
+    """A store holding the timed SARIF fixtures plus `--inventory` rebuilds the timed goldens.
+
+    The fixtures declare their own clocks, so the sequence needs no detection attestation.
+    """
+
+    def test_a_store_and_the_timed_inventory_reproduce_the_golden_pair(self) -> None:
+        self.succeeds(
+            [
+                "ingest",
+                *TIMED_ARTIFACTS,
+                "--db",
+                str(self.database),
+                "--as-of",
+                TIMED_AS_OF,
+                "--actor",
+                "golden",
+            ]
+        )
+        self.correlate()
+        json_path = self.workspace / "report.json"
+        markdown_path = self.workspace / "report.md"
+
+        out, _ = self.succeeds(
+            [*timed_argv(db=self.database), "-o", str(json_path), "--markdown", str(markdown_path)]
+        )
+
+        self.assertEqual(out, "")
+        self.assertEqual(json_path.read_bytes(), (GOLDEN / "vdt-coverage-timed.json").read_bytes())
+        self.assertEqual(
+            markdown_path.read_bytes(), (GOLDEN / "vdt-coverage-timed.md").read_bytes()
+        )
 
 
 if __name__ == "__main__":

@@ -20,6 +20,13 @@ from itertools import permutations
 from pathlib import Path
 from unittest import mock
 
+from test_coverage_report import (
+    CRAFTED,
+    INVENTORY_DOCUMENT,
+    TIMED_ARTIFACTS,
+    TIMED_INVENTORY,
+    TIMED_OPTIONS,
+)
 from test_evaluation_order import SYSTEM_REMEDY
 from test_kev import KEV_ARTIFACTS, KEV_CATALOG, KEV_EVALUATIONS, KEV_OVERRIDES
 from test_reports import (
@@ -88,7 +95,9 @@ from complyroll.reports import (
     compile_vdt_report,
     compile_vdt_report_from_history,
     load_evaluations,
+    load_inventory,
     load_kev_catalog,
+    parse_inventory,
 )
 from complyroll.reports import vdt as vdt_module
 from complyroll.store import SQLiteEventStore
@@ -1845,6 +1854,184 @@ class KevReplayTests(StoreFixture):
                 )
                 self.assertNotIn("kevSource", report.document["x-complyroll"])
                 self.assertNotIn("Known exploited", report.to_markdown())
+
+
+class CoverageReplayTests(StoreFixture):
+    """ADR 0015: coverage is derived from the observations both paths hand the compiler.
+
+    The inventory is a compile-time input that never enters the log, as a KEV catalog is,
+    so the same store and the same inventory print the bytes the stateless run prints.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.inventory = parse_inventory(json.dumps(INVENTORY_DOCUMENT).encode("utf-8"))
+        crafted = []
+        for name, text in CRAFTED.items():
+            path = self.workspace / name
+            path.write_text(text, encoding="utf-8")
+            crafted.append(path)
+        self.artifacts = (
+            *ARTIFACTS,
+            FIXTURES / "clean-run.sarif",
+            FIXTURES / "openscap-arf.xml",
+            *crafted,
+        )
+        populate(self.repository, self.metadata, self.artifacts)
+
+    def stateless_coverage(
+        self, artifacts: Sequence[Path], kind: ReportKind = "vdt", **overrides: object
+    ) -> AnyReport:
+        return compile_stateless(
+            artifacts,
+            None,
+            kind=kind,
+            options=options(inventory=self.inventory, **overrides),  # type: ignore[arg-type]
+        )
+
+    def test_the_two_paths_agree_byte_for_byte_on_every_projection(self) -> None:
+        for kind in REPORT_KINDS:
+            with self.subTest(report=kind):
+                replayed = self.replay(kind=kind, inventory=self.inventory)
+                stateless = self.stateless_coverage(self.artifacts, kind)
+
+                self.assertEqual(replayed.to_json(), stateless.to_json())
+                self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
+                coverage = replayed.document["x-complyroll"]["coverage"]
+                self.assertEqual(coverage["inventory"]["sha256"], self.inventory.sha256)
+                self.assertEqual(
+                    {clock["status"] for item in coverage["resources"] for clock in item["clocks"]},
+                    {"current", "stale", "missing", "unanchored", "undetermined"},
+                )
+
+    def test_the_two_paths_agree_on_the_coverage_diagnostics(self) -> None:
+        replayed = self.replay(inventory=self.inventory)
+        stateless = self.stateless_coverage(self.artifacts)
+        notes = [
+            (item.code, item.level, item.message, item.location)
+            for item in replayed.diagnostics
+            if item.code == "drift_likelihood_unknown"
+        ]
+        self.assertEqual(
+            notes,
+            [
+                (item.code, item.level, item.message, item.location)
+                for item in stateless.diagnostics
+                if item.code == "drift_likelihood_unknown"
+            ],
+        )
+        self.assertEqual(len(notes), 1)
+
+    def test_history_ingested_in_another_order_replays_the_same_bytes(self) -> None:
+        expected = self.replay(inventory=self.inventory)
+        for order in (tuple(reversed(self.artifacts)), (*self.artifacts[3:], *self.artifacts[:3])):
+            with self.subTest(order=[path.name for path in order]):
+                repository = self.open_repository(self.fresh_workspace())
+                populate(repository, self.metadata, order)
+
+                replayed = compile_from_history(
+                    repository, kind="vdt", options=options(inventory=self.inventory)
+                )
+
+                self.assertEqual(replayed.to_json(), expected.to_json())
+                self.assertEqual(replayed.to_markdown(), expected.to_markdown())
+
+    def test_artifacts_named_in_another_order_compile_the_same_bytes(self) -> None:
+        expected = self.stateless_coverage(self.artifacts)
+        for order in (tuple(reversed(self.artifacts)), (*self.artifacts[3:], *self.artifacts[:3])):
+            with self.subTest(order=[path.name for path in order]):
+                report = self.stateless_coverage(order)
+
+                self.assertEqual(report.to_json(), expected.to_json())
+                self.assertEqual(report.to_markdown(), expected.to_markdown())
+
+    def test_without_the_inventory_neither_path_carries_coverage(self) -> None:
+        replayed = self.replay()
+        stateless = compile_stateless(self.artifacts, None, kind="vdt", options=options())
+
+        self.assertEqual(replayed.to_json(), stateless.to_json())
+        self.assertNotIn("coverage", replayed.document["x-complyroll"])
+        self.assertNotIn("## Coverage", replayed.to_markdown())
+
+
+class CoverageGoldenReplayTests(StoreFixture):
+    """The documented store plus the example inventory replays into the coverage goldens."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ingest()
+        self.correlate()
+        self.attest()
+        self.evaluate()
+        self.inventory = load_inventory(EXAMPLES / "inventory.json")
+
+    def test_the_replayed_report_reproduces_the_coverage_golden(self) -> None:
+        # The goldens were cut through the command line from the artifacts, so history
+        # replays into the published bytes, not merely into what the stateless path prints.
+        replayed = self.replay(inventory=self.inventory)
+
+        self.assertEqual(
+            replayed.to_json(), (GOLDEN / "vdt-coverage.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            replayed.to_markdown(), (GOLDEN / "vdt-coverage.md").read_text(encoding="utf-8")
+        )
+
+    def test_the_two_paths_agree_on_every_projection(self) -> None:
+        for kind in REPORT_KINDS:
+            with self.subTest(report=kind):
+                report = self.assert_paths_agree(
+                    ARTIFACTS, EXAMPLES / "evaluations.json", kind=kind, inventory=self.inventory
+                )
+                self.assertEqual(
+                    report.document["x-complyroll"]["coverage"]["inventory"]["name"],
+                    "example-boundary",
+                )
+
+
+class TimedCoverageGoldenReplayTests(StoreFixture):
+    """The timed SARIF fixtures replay into the `vdt-coverage-timed` goldens.
+
+    The fixtures declare their own clocks, so the store needs no detection attestation
+    and no evaluations, the same way the KEV store does without them.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ingest(TIMED_ARTIFACTS)
+        self.correlate()
+        self.inventory = load_inventory(TIMED_INVENTORY)
+
+    def test_the_replayed_report_reproduces_the_timed_golden(self) -> None:
+        replayed = self.replay(inventory=self.inventory, **TIMED_OPTIONS)
+
+        self.assertEqual(
+            replayed.to_json(),
+            (GOLDEN / "vdt-coverage-timed.json").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            replayed.to_markdown(),
+            (GOLDEN / "vdt-coverage-timed.md").read_text(encoding="utf-8"),
+        )
+
+    def test_the_two_paths_agree_on_every_projection(self) -> None:
+        for kind in REPORT_KINDS:
+            with self.subTest(report=kind):
+                replayed = self.replay(kind=kind, inventory=self.inventory, **TIMED_OPTIONS)
+                stateless = compile_stateless(
+                    TIMED_ARTIFACTS,
+                    None,
+                    kind=kind,
+                    options=options(inventory=self.inventory, **TIMED_OPTIONS),
+                )
+
+                self.assertEqual(replayed.to_json(), stateless.to_json())
+                self.assertEqual(replayed.to_markdown(), stateless.to_markdown())
+                coverage = replayed.document["x-complyroll"]["coverage"]
+                self.assertEqual(
+                    {clock["status"] for item in coverage["resources"] for clock in item["clocks"]},
+                    {"current", "stale", "missing", "undetermined"},
+                )
 
 
 class FailureStoreFixture(StoreFixture):

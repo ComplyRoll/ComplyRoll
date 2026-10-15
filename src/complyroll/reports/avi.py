@@ -45,6 +45,7 @@ from .vdt import (
     _schema_provenance,
     _validate_document,
     _write_attestation_section,
+    _write_coverage,
     _write_diagnostics_section,
     _write_footer,
     _write_header,
@@ -141,6 +142,7 @@ def project_avi(record_set: CompiledRecordSet) -> CompiledAviReport:
         excluded_by_period=excluded,
         attestation_detected_at=_attested_instant(records),
         detection_failures=record_set.detection_failures,
+        coverage=record_set.coverage,
     )
     document = _build_avi_document(
         tuple(reported), metadata, tuple(diagnostics), active_not_reported=active
@@ -268,6 +270,7 @@ def _render_avi_markdown(report: CompiledAviReport) -> str:
     )
     _write_attestation_section(write, records, metadata)
     _write_inputs(write, metadata)
+    _write_coverage(write, metadata)
     _write_diagnostics_section(write, report.diagnostics)
     _write_footer(write)
     return "\n".join(lines) + "\n"

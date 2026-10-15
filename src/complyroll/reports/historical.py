@@ -43,6 +43,7 @@ from .vdt import (
     _schema_provenance,
     _validate_document,
     _write_attestation_section,
+    _write_coverage,
     _write_diagnostics_section,
     _write_footer,
     _write_header,
@@ -134,6 +135,7 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
         excluded_by_period=0,
         attestation_detected_at=_attested_instant(records),
         detection_failures=record_set.detection_failures,
+        coverage=record_set.coverage,
     )
     document = _build_historical_document(records, active, accepted, metadata, diagnostics)
     validation = _validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)
@@ -213,6 +215,7 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
     )
     _write_attestation_section(write, _population(report), metadata)
     _write_inputs(write, metadata)
+    _write_coverage(write, metadata)
     _write_diagnostics_section(write, report.diagnostics)
     _write_footer(write)
     return "\n".join(lines) + "\n"

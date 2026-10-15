@@ -183,6 +183,124 @@ supersedes with INFO `failure_held`. A store that holds a failure stream is sche
 and version 3 once it holds a hold (see ARCHITECTURE.md, Storage direction); a store that never
 records one stays at version 1.
 
+## Information resource inventory and coverage
+
+An information resource inventory is a per-run report input, like a KEV catalog, and never a
+stored record. A run given `--inventory FILE` measures detection coverage against it. The
+inventory reaches the compiler as a report option rather than as an event, so the stateless and
+persisted paths produce identical bytes. It adds and changes no observation: observations stay
+immutable source facts, and coverage is derived from them at report time (ADR 0015).
+
+The document is ComplyRoll-native JSON, `examples/inventory.json` is a worked example, and
+`InformationResource` under Core entities is its parsed entry.
+
+| Root field | Rule |
+|---|---|
+| `schema` | `complyroll.inventory`; checked first, so a KEV catalog is refused at once |
+| `schemaVersion` | The JSON integer 1 |
+| `name` | 1 to 128 printable ASCII characters with no leading or trailing space |
+| `resources` | An array of at most `MAX_INVENTORY_RESOURCES` (20,000) entries |
+
+| Entry field | Rule |
+|---|---|
+| `resourceType` | Required identity text with no colon, matched exactly and case-sensitively |
+| `resourceId` | Required identity text, matched exactly |
+| `machineBased` | Required JSON boolean |
+| `expectedSince` | Required instant from which detection is expected to reach the resource |
+| `driftLikely` | `true`, `false`, or `"unknown"`; required on a machine entry, refused on others |
+| `sampleGroup` | Optional, under the name rule; adds a `VDR-TFR-PSD` clock for the group |
+| `job` | Optional, under the name rule; names the detection process meant to reach the resource |
+| `decommissionedAt` | Optional instant, not before `expectedSince`; the entry's clocks stop there |
+| `aliases` | Optional array of `resourceType` and `resourceId` pairs that also name the entry |
+| `verifications` | Optional, non-machine only: attestations, each an `at` and a `reference` |
+
+The reader refuses and never repairs:
+
+- Unknown keys are refused at every level, and every field is type-checked before any pattern.
+- Identity text (`resourceType`, `resourceId`, and both alias fields) follows the adapters'
+  rule: at most `MAX_IDENTITY_CHARS` (512) characters, no control, format, surrogate, or
+  line-separator code point, and not blank. It is never trimmed, so an identifier with a stray
+  space is accepted and never matches. `reference` takes the same rule at 512 characters.
+- `resourceType` is an open vocabulary, so `Host` never matches `host`. A colon is refused in an
+  entry's type and an alias's type, so a `type:id` context key splits one way.
+- `name`, `sampleGroup`, and `job` follow the name rule (`MAX_NAME_CHARS`, 128).
+- An instant is an RFC 3339 subset with an uppercase `T` and either an uppercase `Z` or a numeric
+  offset, at most 64 characters, matched against an ASCII pattern before it is parsed, normalized
+  to UTC, and held between the years 1970 and 9000 UTC, which is the KEV `dateReleased` rule.
+  Fractional seconds are truncated to microseconds, so two instants that differ only beyond the
+  sixth fractional digit compare equal, `--as-of` included.
+- A JSON null reads as absent on every optional field, where the KEV reader refuses it.
+- `verifications` is refused on a machine entry, even as an empty array.
+- A repeated pair, an alias that names another entry, and an alias that repeats another alias or
+  its own entry's pair are refused, and the message names both positions.
+- The file is read through the bounded reader at `MAX_INVENTORY_BYTES` (8 MiB) and JSON depth
+  16 with the standard 500,000-value bound, and no per-entry cap on aliases or verifications
+  applies beyond it.
+
+Entries sort by pair, aliases by pair, and verifications by instant, then reference, so file
+order never reaches a report. The inventory's identity is the SHA-256 of its raw bytes, taken
+before a BOM is stripped.
+
+### The coverage block
+
+The report-level `x-complyroll` gains `coverage` on a run given an inventory, built from one
+`CoverageResult` in `complyroll.reports.coverage`. All three reports carry the same block, and no
+period selects from it, because coverage is measured at as-of:
+
+| Key | Content |
+|---|---|
+| `inventory` | `name`, `sha256`, `sizeBytes`, and `entries`: the file's identity, never its bytes |
+| `asOf` | The run's as-of instant in UTC; evidence observed later is never used |
+| `basis` | Fixed text saying what a status can and cannot claim |
+| `summary` | One row per rule, all five in rule-id order, with `expected` and a count per status |
+| `resources` | One row per entry, sorted by type, then id |
+| `windows` | Every window that closed with no verification, by rule, subject, and close |
+| `unregistered` | Observed resources no entry names, each with its `observations` count |
+| `later` | Evidence observed after `asOf`, listed and never used |
+
+A summary row also carries `ruleId` and `force`, and counts distinct clocks, so a sample group's
+clock counts once. A resource row:
+
+| Field | Purpose |
+|---|---|
+| `resourceType`, `resourceId` | The entry's own pair, never an alias |
+| `machineBased`, `attested` | `attested` is true when only attestations can verify the entry |
+| `driftLikely`, `sampleGroup`, `job` | As declared, null when absent |
+| `expectedSince`, `decommissionedAt`, `aliases` | As declared |
+| `lastExamined`, `lastVerified` | The latest examination and verification within the cutoff |
+| `examined` | How many timed artifact observations examined the entry within the cutoff |
+| `untimed`, `untimedEvidence` | How many matching observations carry no source time, and which |
+| `afterDecommission` | Evidence observed after `decommissionedAt`, listed and never used |
+| `clocks` | The entry's clocks in rule-id order |
+
+A clock and a window share most fields:
+
+| Field | Purpose |
+|---|---|
+| `ruleId`, `force` | The coverage rule and its selected force, MUST or SHOULD |
+| `contextKey` | `<resourceType>:<resourceId>`, or `logical:sample-group/<name>` for a group clock |
+| `status` | Clocks only: `current`, `stale`, `missing`, `unanchored`, or `undetermined` |
+| `anchor` | `verification`, or `declared` when the clock runs from `expectedSince`; else null |
+| `anchorAt` | The instant the clock or window runs from |
+| `dueAt` | Clocks only: when the current window falls due |
+| `closedAt`, `resumedAt` | Windows only: the due date that passed, and the resuming verification |
+| `evidence` | The evidence a verification anchor stands on, else null |
+| `standIn` | The member whose verification anchors a group clock, else null |
+
+An unanchored clock has null `anchorAt` and `dueAt`, and a window not yet resumed has a null
+`resumedAt`. Evidence carries `kind` (`observation` or `attestation`), `at` (null when untimed),
+and the `resourceType` and `resourceId` it named, so a match through an alias shows; then
+`observationId` and `disposition` for an observation, or `reference` for an attestation. What
+each status means is in `docs/FEDRAMP_2026_MAPPING.md`, under Coverage and freshness.
+
+The Markdown twin gains a `## Coverage` section after Inputs. It names the inventory, its digest,
+as-of, and the rules dataset commit, prints the basis, and then has eight subsections: Coverage
+by rule, Resources, Clocks, Windows, Unregistered resources, Untimed evidence, Evidence after
+decommissioning, and Evidence after as-of. A missing clock with untimed evidence prints the count
+beside the status, so a checklist-only host never reads as unexamined. The parity test checks
+that the twin states every summary row, resource, clock, window, unregistered resource, and
+listed piece of evidence the JSON block carries.
+
 ## Report extension (x-complyroll)
 
 Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
@@ -194,8 +312,8 @@ vulnerability carries every computed deadline with its rule and force (`deadline
 `ruleId`, `ruleName`, and `force`), the grouped observation ids and affected resources
 (`observationIds`, `resources`), the detection-time source (`detectedAtSource`: `artifact`,
 `artifact-partial`, `attestation`, or `system` for a detection process failure), and the
-evaluator and rationale (`evaluator`, `rationale`). The KEV keys and `detectionFailures`
-described above live under the same key.
+evaluator and rationale (`evaluator`, `rationale`). The KEV keys, `detectionFailures`, and
+`coverage` described above live under the same key.
 
 The JSON is the complete machine record. The Markdown twin renders the same records for a reader,
 with a detail section per vulnerability, and a parity test checks that the twin states every
@@ -230,20 +348,35 @@ exported but unused by production code: the report compiler reads evaluations th
 `complyroll.reports.evaluations` and case state through the fold in `complyroll.history`, and
 reconciling or retiring the two classes is Phase 2 cleanup. `AcceptedVulnerability` predates
 ADR 0010 in `complyroll.reports`; ADR 0010 made the accepted-vulnerability and historical
-reports publish it, as described below. `InformationResource`,
-`ResponseAction`, `ValidationDefinition`, and `ValidationRun` remain planned entities; their
-tables describe intent, not shipped code.
+reports publish it, as described below. `InformationResource` shipped with ADR 0015 in
+`complyroll.reports.inventory`, beside the KEV reader. `ResponseAction`, `ValidationDefinition`,
+and `ValidationRun` remain planned entities; their tables describe intent, not shipped code.
 
-### InformationResource (planned)
+### InformationResource
 
-| Field | Purpose |
-|---|---|
-| `resource_id` | Stable provider identifier |
-| `resource_type` | Host, image, repository, service, policy, process, identity, etc. Observations already carry one on `ResourceRef`: `host` for the STIG sources and `image`, `file`, `logical`, or `scan` for SARIF (ADR 0011); `target` or `scan` for HDF (ADR 0013); `artifact`, with `sha256:<digest>` of the failed artifact as the id, for a detection process failure (ADR 0014) |
-| `service_id` | Cloud service or component membership |
-| `boundary_status` | In, inherited, interconnected, customer-responsible, or unknown |
-| `drift_likelihood` | Likely, not likely, or unknown |
-| `reachability_context` | Paths by which data or actions can reach the resource |
+`complyroll.reports.inventory` parses the inventory described above into three frozen types, and
+a directly built one holds the reader's rules:
+
+- `Inventory`: `name`, `sha256`, `size_bytes`, and `entries` sorted by pair. `entry_for(type,
+  id)` returns the entry an exact pair or an exact alias names; nothing is normalized.
+- `InformationResource`: `resource_type`, `resource_id`, `machine_based`, `expected_since`,
+  `drift_likely` (`True`, `False`, or `"unknown"` on a machine entry, `None` on any other),
+  `sample_group`, `job`, `decommissioned_at`, `aliases`, and `verifications`. `identities` lists
+  the entry's own pair, then its aliases.
+- `Verification`: `at` in UTC and `reference`, one operator-attested verification of a
+  non-machine resource.
+
+An alias is a `ResourceRef`, the type an observation's resource already uses, so an alias names
+exactly what an observation can carry. Observations carry `host` for the STIG sources and
+`image`, `file`, `logical`, or `scan` for SARIF (ADR 0011); `target` or `scan` for HDF (ADR
+0013); `artifact`, with `sha256:<digest>` of the failed artifact as the id, for a detection
+process failure (ADR 0014). The vocabulary stays open, so an entry may name a type no adapter
+emits yet, and no observation matches it until one does.
+
+Planned fields not carried yet: `service_id` (cloud service or component membership),
+`boundary_status` (in, inherited, interconnected, customer-responsible, or unknown), and
+`reachability_context` (paths by which data or actions can reach the resource). The planned
+`drift_likelihood` shipped as `driftLikely`.
 
 ### Observation
 

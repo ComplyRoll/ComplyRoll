@@ -908,6 +908,8 @@ class _ArtifactParse(EvidenceParse):
         # The clocks failed invocations declare, across every run, read by _run_clock.
         self.failed_starts: list[datetime] = []
         self.failed_ends: list[datetime] = []
+        # Whether any run had no results under an unverified invocation, read by run().
+        self.unverified_empty_run = False
 
     def run(self, runs: list[Any]) -> AdapterOutput:
         """Scan every run, fold by identity, and fail closed on any error."""
@@ -929,6 +931,18 @@ class _ArtifactParse(EvidenceParse):
                     self.artifact.name,
                 )
             )
+            # A recorded failure keeps codes, not messages, so the cause gets a code of its
+            # own. Raised here and not per run: a productive run beside it still imports.
+            if self.unverified_empty_run:
+                self.diagnostics.add_fixed(
+                    IngestDiagnostic(
+                        DiagnosticLevel.ERROR,
+                        "clean_run_unverified",
+                        "SARIF log has a run with no results under an unverified invocation, "
+                        "which is not a clean run",
+                        self.artifact.name,
+                    )
+                )
         observations: list[Observation] = []
         # SECURITY: An ERROR anywhere withholds every observation (refuse identity).
         if not self.diagnostics.has_errors:
@@ -985,6 +999,7 @@ class _ArtifactParse(EvidenceParse):
             if scope.execution_failed:
                 return
             if scope.execution_unverified:
+                self.unverified_empty_run = True
                 self.diagnostics.add(
                     DiagnosticLevel.WARNING,
                     "execution_unverified",

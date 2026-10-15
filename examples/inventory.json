@@ -1,0 +1,68 @@
+{
+  "schema": "complyroll.inventory",
+  "schemaVersion": 1,
+  "name": "example-boundary",
+  "resources": [
+    {
+      "resourceType": "host",
+      "resourceId": "ubuntu-web-01",
+      "machineBased": true,
+      "driftLikely": true,
+      "job": "weekly-stig-checklist",
+      "expectedSince": "2026-07-01T00:00:00Z",
+      "aliases": [
+        {"resourceType": "host", "resourceId": "lab-ubuntu-01"}
+      ]
+    },
+    {
+      "resourceType": "host",
+      "resourceId": "lab-win-01",
+      "machineBased": true,
+      "driftLikely": false,
+      "job": "weekly-stig-checklist",
+      "expectedSince": "2026-07-01T00:00:00Z"
+    },
+    {
+      "resourceType": "host",
+      "resourceId": "lab-rhel-01",
+      "machineBased": true,
+      "driftLikely": "unknown",
+      "expectedSince": "2026-07-01T00:00:00Z",
+      "decommissionedAt": "2026-08-10T00:00:00Z"
+    },
+    {
+      "resourceType": "host",
+      "resourceId": "lab-ubuntu-03",
+      "machineBased": true,
+      "driftLikely": true,
+      "expectedSince": "2026-09-01T00:00:00Z"
+    },
+    {
+      "resourceType": "logical",
+      "resourceId": "incident-response-procedure",
+      "machineBased": false,
+      "sampleGroup": "ir-runbooks",
+      "expectedSince": "2026-07-01T00:00:00Z",
+      "verifications": [
+        {"at": "2026-08-03T17:00:00Z", "reference": "IR tabletop record TT-2026-08"},
+        {"at": "2026-09-02T17:00:00Z", "reference": "IR tabletop record TT-2026-09"}
+      ]
+    },
+    {
+      "resourceType": "logical",
+      "resourceId": "contingency-plan",
+      "machineBased": false,
+      "sampleGroup": "ir-runbooks",
+      "expectedSince": "2026-07-01T00:00:00Z"
+    },
+    {
+      "resourceType": "logical",
+      "resourceId": "backup-restore-procedure",
+      "machineBased": false,
+      "expectedSince": "2026-04-01T00:00:00Z",
+      "verifications": [
+        {"at": "2026-04-15T16:00:00Z", "reference": "Restore test record RT-2026-04"}
+      ]
+    }
+  ]
+}

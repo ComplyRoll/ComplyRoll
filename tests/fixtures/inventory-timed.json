@@ -1,0 +1,54 @@
+{
+  "schema": "complyroll.inventory",
+  "schemaVersion": 1,
+  "name": "timed-boundary",
+  "resources": [
+    {
+      "resourceType": "file",
+      "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+      "machineBased": true,
+      "driftLikely": false,
+      "job": "nightly-codeql",
+      "expectedSince": "2026-09-01T00:00:00Z"
+    },
+    {
+      "resourceType": "file",
+      "resourceId": "src/ui/render.js",
+      "machineBased": true,
+      "driftLikely": true,
+      "sampleGroup": "webapp-ui",
+      "job": "nightly-codeql",
+      "expectedSince": "2026-09-01T00:00:00Z",
+      "aliases": [
+        {
+          "resourceType": "file",
+          "resourceId": "https://github.com/example/webapp/src/ui/render.js"
+        }
+      ]
+    },
+    {
+      "resourceType": "file",
+      "resourceId": "https://github.com/example/webapp/src/ui/index.js",
+      "machineBased": true,
+      "driftLikely": true,
+      "sampleGroup": "webapp-ui",
+      "expectedSince": "2026-09-01T00:00:00Z"
+    },
+    {
+      "resourceType": "file",
+      "resourceId": "https://github.com/example/webapp/src/ui/legacy.js",
+      "machineBased": true,
+      "driftLikely": true,
+      "job": "nightly-codeql",
+      "expectedSince": "2026-09-01T00:00:00Z"
+    },
+    {
+      "resourceType": "image",
+      "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+      "machineBased": true,
+      "driftLikely": true,
+      "job": "nightly-image-scan",
+      "expectedSince": "2026-08-01T00:00:00Z"
+    }
+  ]
+}

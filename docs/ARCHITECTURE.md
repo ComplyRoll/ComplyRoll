@@ -48,6 +48,10 @@ Report inputs, which are not adapters and produce no observations:
   locally, never fetched or bundled, and never written to the store: it reaches the compiler
   only as a report option, so the stateless path and the persisted path apply it identically.
   The report names the catalog it used by the SHA-256 of the bytes that were read (ADR 0012).
+- The provider's information resource inventory, supplied per run with `--inventory`. It is read
+  locally through a bounded reader, never written to the store, and reaches the compiler only as
+  a report option, so both paths measure coverage against it identically. The report names it by
+  the SHA-256 of the bytes that were read (ADR 0015).
 
 ### Observation ledger
 
@@ -114,6 +118,16 @@ compiler builds one period-agnostic record set from either entry path, and three
 read it: the detail report, the accepted-vulnerability report, and the historical snapshot
 (ADR 0010). Period selection happens in a projection, never in the set, so a diagnostic raised
 at ingest or rebuild sits at the same position in every report.
+
+Coverage evidence (ADR 0015) is a pure derivation in the reports layer, not a fourth projection.
+`reports/inventory.py` reads and validates the inventory, and `reports/coverage.py` derives every
+clock, window, and status from the observations, the inventory, the selected policy, and as-of,
+with no I/O. The record compiler derives it once, right after the KEV rule check and before the
+record loop, from the same observations both entry paths hand it, so the persisted report equals
+the stateless one byte for byte and all three projections publish the same block. Due dates come
+from `SelectedPolicy.coverage_deadline`, month clocks run in the policy profile's calendar zone,
+which `--calendar-tz` sets, and the five coverage rules are resolved only on a run given an
+inventory.
 
 Shipped projections:
 
@@ -242,8 +256,10 @@ independent from all of it.
 
 - Parse failure: diagnostic plus failed ingest, or, with `--record-failed-imports`, a system
   observation and case (ADR 0014); never a clean result.
-- Missing expected resource: coverage observation.
-- Stale scanner/validation: process-health observation.
+- Missing expected resource: status `missing` in the coverage block of a run given an inventory
+  (ADR 0015); the coverage observation and case are a later slice.
+- Stale scanner or validation: status `stale` and a closed window in the same block; the
+  process-health observation and case are a later slice.
 - Policy unavailable or unverified: block deadline/report certification claims.
 - Schema mismatch: report generation failure with actionable paths.
 - Unknown evaluation factor: preserve unknown; do not invent a default.

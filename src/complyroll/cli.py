@@ -62,6 +62,7 @@ from .reports import (
     compile_vdt_report,
     compile_vdt_report_from_history,
     load_evaluations,
+    load_inventory,
     load_kev_catalog,
     parse_rfc3339,
 )
@@ -393,6 +394,16 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         action="append",
         metavar="FILE",
         help="CISA KEV catalog JSON feed to apply (read locally, never fetched)",
+    )
+    # Appends for the reason `--kev` does: a second inventory is refused, not silently kept.
+    parser.add_argument(
+        "--inventory",
+        action="append",
+        metavar="FILE",
+        help=(
+            "information resource inventory JSON to measure coverage against "
+            "(read locally, never stored)"
+        ),
     )
     parser.add_argument(
         "--detected-at",
@@ -993,6 +1004,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     markdown = Path(args.markdown) if args.markdown else None
     evaluations_path = Path(args.evaluations) if args.evaluations else None
     kev_paths = [Path(item) for item in (args.kev or ())]
+    inventory_paths = [Path(item) for item in (args.inventory or ())]
 
     conflict = _report_source_conflict(args, command.name)
     if conflict is not None:
@@ -1002,6 +1014,12 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             stderr,
             "invalid_option",
             f"report {command.name} takes one --kev catalog, not {len(kev_paths)}",
+        )
+    if len(inventory_paths) > 1:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} takes one --inventory file, not {len(inventory_paths)}",
         )
     if database is not None:
         missing = _refuse_missing_store(stderr, database)
@@ -1028,12 +1046,14 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             inputs=(
                 *artifacts,
                 *kev_paths,
+                *inventory_paths,
                 *(item for item in (evaluations_path, database) if item),
             ),
         )
-        # Loaded before the options it belongs to, so a malformed catalog is refused as
-        # the input it is rather than as one more bad option.
+        # Loaded before the options they belong to, so a malformed catalog or inventory is
+        # refused as the input it is rather than as one more bad option.
         kev_catalog = load_kev_catalog(kev_paths[0]) if kev_paths else None
+        inventory = load_inventory(inventory_paths[0]) if inventory_paths else None
         options = ReportOptions(
             certification_class=CertificationClass(args.certification_class),
             package_uri=args.package_uri,
@@ -1045,6 +1065,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
                 parse_rfc3339(args.detected_at, "--detected-at") if args.detected_at else None
             ),
             kev_catalog=kev_catalog,
+            inventory=inventory,
         )
         evaluations = load_evaluations(evaluations_path) if evaluations_path else None
     except ReportInputError as exc:
@@ -1084,8 +1105,9 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     sources of truth. Naming neither leaves nothing to compile. The message names the
     command the operator ran, so a refusal reads back as their own invocation.
 
-    `--kev` is absent from this list on purpose: no store holds a CISA KEV catalog, so a
-    catalog is a per-run input on both paths and never a second source of truth.
+    `--kev` and `--inventory` are absent from this list on purpose: no store holds a CISA
+    KEV catalog or an information resource inventory, so each is a per-run input on both
+    paths and never a second source of truth (ADR 0012, ADR 0015).
     `--record-failed-imports` is on it because a store already recorded or refused its
     failures when `ingest` read them (ADR 0014).
     """

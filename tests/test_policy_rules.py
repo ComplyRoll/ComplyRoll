@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from complyroll.models import PainRating
 from complyroll.policy import (
+    COVERAGE_RULE_IDS,
     CertificationClass,
     CertificationProfile,
+    PolicyRuleNotFoundError,
     PolicySourceIntegrityError,
     ResponseContext,
     RuleForce,
@@ -26,6 +29,7 @@ from complyroll.policy import (
     load_bundled_rule_source_manifest,
     load_bundled_rule_source_snapshot,
     load_rule_source_snapshot,
+    select_policy,
 )
 
 TEST_ROOT = Path(__file__).parent
@@ -336,6 +340,192 @@ class ClassAwarePolicyTests(unittest.TestCase):
             "timeframes": timeframes,
             "response": response,
         }
+
+
+def expected_due(timeframe: RuleTimeframe, start: datetime, zone: tzinfo) -> datetime:
+    """Compute a coverage due date independently: exact days, or months clamped in `zone`."""
+
+    if timeframe.unit is TimeframeUnit.DAYS:
+        return start + timedelta(days=int(timeframe.amount))
+    if timeframe.unit is TimeframeUnit.MONTHS:
+        local = start.astimezone(zone)
+        year, month_index = divmod(local.year * 12 + local.month - 1 + int(timeframe.amount), 12)
+        day = min(local.day, calendar.monthrange(year, month_index + 1)[1])
+        return local.replace(year=year, month=month_index + 1, day=day).astimezone(UTC)
+    raise AssertionError(f"no coverage rule uses {timeframe.unit.value}; extend the oracle")
+
+
+def snapshot_without(rule_ids: set[str], directory: Path) -> Path:
+    """Write the bundled dataset with the named VDR rules removed; return its path."""
+
+    data = load_bundled_rule_source_snapshot().data
+    for scoped in data["FRR"]["VDR"]["data"].values():
+        for rules in scoped.values():
+            for rule_id in rule_ids & set(rules):
+                del rules[rule_id]
+    path = directory / "rules.json"
+    path.write_bytes(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
+    return path
+
+
+class CoverageDeadlineTests(unittest.TestCase):
+    """The five detection cadence clocks come from the pinned dataset, never from literals."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.policies = {
+            class_name.value: load_bundled_policy(CertificationProfile(class_name))
+            for class_name in CertificationClass
+        }
+        cls.golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+
+    def test_the_coverage_rules_are_the_five_detection_cadence_rules(self) -> None:
+        self.assertEqual(
+            COVERAGE_RULE_IDS,
+            ("VDR-TFR-MVX", "VDR-TFR-NMV", "VDR-TFR-PCD", "VDR-TFR-PDD", "VDR-TFR-PSD"),
+        )
+
+    def test_mvx_is_the_20x_scoped_rule_and_mvf_is_never_selected(self) -> None:
+        for class_name, policy in self.policies.items():
+            with self.subTest(certification_class=class_name):
+                scopes = {
+                    rule_id: policy.rule(rule_id).source_scope for rule_id in COVERAGE_RULE_IDS
+                }
+                self.assertEqual(scopes.pop("VDR-TFR-MVX"), "20x")
+                self.assertEqual(set(scopes.values()), {"all"})
+                with self.assertRaises(PolicyRuleNotFoundError):
+                    policy.rule("VDR-TFR-MVF")
+
+    def test_classes_b_and_c_read_every_coverage_clock_from_the_dataset(self) -> None:
+        for class_name, policy in self.policies.items():
+            golden = self.golden["profiles"][class_name]["timeframes"]
+            for rule_id in COVERAGE_RULE_IDS:
+                with self.subTest(certification_class=class_name, rule_id=rule_id):
+                    rule = policy.rule(rule_id)
+                    deadline = policy.coverage_deadline(rule_id, START)
+
+                    assert rule.timeframe is not None
+                    self.assertEqual(deadline, policy.deadline_for_rule(rule_id, START))
+                    self.assertEqual(deadline.rule_id, rule_id)
+                    self.assertEqual(deadline.rule_name, rule.name)
+                    self.assertIs(deadline.force, rule.force)
+                    self.assertEqual(deadline.timeframe, rule.timeframe)
+                    self.assertEqual(deadline.start_at, START)
+                    self.assertEqual(deadline.provenance, policy.provenance)
+                    self.assertEqual(
+                        golden[rule_id],
+                        {
+                            "force": deadline.force.value,
+                            "amount": deadline.timeframe.display_amount,
+                            "unit": deadline.timeframe.unit.value,
+                        },
+                    )
+                    self.assertEqual(deadline.due_at, expected_due(rule.timeframe, START, UTC))
+
+    def test_day_clocks_are_exact_elapsed_time_whatever_the_calendar(self) -> None:
+        for class_name in CertificationClass:
+            phoenix = load_bundled_policy(
+                CertificationProfile(class_name, calendar_timezone="America/Phoenix")
+            )
+            utc = self.policies[class_name.value]
+            timeframes = {rule_id: phoenix.rule(rule_id).timeframe for rule_id in COVERAGE_RULE_IDS}
+            day_rules = {
+                rule_id: timeframe
+                for rule_id, timeframe in timeframes.items()
+                if timeframe is not None and timeframe.unit is TimeframeUnit.DAYS
+            }
+            self.assertIn("VDR-TFR-MVX", day_rules)
+            for rule_id, timeframe in day_rules.items():
+                with self.subTest(certification_class=class_name.value, rule_id=rule_id):
+                    due = phoenix.coverage_deadline(rule_id, START).due_at
+                    self.assertEqual(due, utc.coverage_deadline(rule_id, START).due_at)
+                    self.assertEqual(due - START, timedelta(days=int(timeframe.amount)))
+
+    def test_month_clocks_clamp_in_the_provider_calendar(self) -> None:
+        phoenix = ZoneInfo("America/Phoenix")
+        # The 31st of January, 10:00 in Phoenix, is the 31st in UTC too: the clamp shows alone.
+        month_end = datetime(2027, 1, 31, 10, 0, tzinfo=phoenix)
+        # 20:00 on January 30 in Phoenix is already January 31 in UTC: the zone shows.
+        evening = datetime(2027, 1, 30, 20, 0, tzinfo=phoenix)
+        zone_mattered = False
+        for class_name in CertificationClass:
+            policy = load_bundled_policy(
+                CertificationProfile(class_name, calendar_timezone="America/Phoenix")
+            )
+            utc = self.policies[class_name.value]
+            timeframes = {rule_id: policy.rule(rule_id).timeframe for rule_id in COVERAGE_RULE_IDS}
+            month_rules = {
+                rule_id: timeframe
+                for rule_id, timeframe in timeframes.items()
+                if timeframe is not None and timeframe.unit is TimeframeUnit.MONTHS
+            }
+            self.assertIn("VDR-TFR-NMV", month_rules)
+            for rule_id, timeframe in month_rules.items():
+                with self.subTest(certification_class=class_name.value, rule_id=rule_id):
+                    clamped = policy.coverage_deadline(rule_id, month_end).due_at
+                    local = clamped.astimezone(phoenix)
+                    self.assertEqual(clamped, expected_due(timeframe, month_end, phoenix))
+                    self.assertEqual(local.day, calendar.monthrange(local.year, local.month)[1])
+                    self.assertEqual((local.hour, local.minute), (10, 0))
+
+                    shifted = policy.coverage_deadline(rule_id, evening).due_at
+                    self.assertEqual(shifted, expected_due(timeframe, evening, phoenix))
+                    self.assertEqual(shifted.astimezone(phoenix).hour, 20)
+                    self.assertEqual(
+                        utc.coverage_deadline(rule_id, evening).due_at,
+                        expected_due(timeframe, evening, UTC),
+                    )
+                    zone_mattered |= shifted != utc.coverage_deadline(rule_id, evening).due_at
+        self.assertTrue(zone_mattered)
+
+    def test_a_policy_without_a_coverage_rule_refuses_it_by_the_policy_error(self) -> None:
+        for class_name, policy in self.policies.items():
+            for missing in COVERAGE_RULE_IDS:
+                with self.subTest(certification_class=class_name, missing=missing):
+                    stripped = replace(
+                        policy,
+                        rules=tuple(item for item in policy.rules if item.rule_id != missing),
+                    )
+                    with self.assertRaisesRegex(PolicyRuleNotFoundError, missing):
+                        stripped.coverage_deadline(missing, START)
+                    for rule_id in set(COVERAGE_RULE_IDS) - {missing}:
+                        self.assertEqual(
+                            stripped.coverage_deadline(rule_id, START),
+                            policy.coverage_deadline(rule_id, START),
+                        )
+
+    def test_selection_never_requires_the_coverage_rules(self) -> None:
+        snapshot = load_bundled_rule_source_snapshot()
+        with tempfile.TemporaryDirectory() as directory:
+            path = snapshot_without(set(COVERAGE_RULE_IDS), Path(directory))
+            manifest = replace(
+                snapshot.manifest,
+                dataset_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+            stripped = load_rule_source_snapshot(path, manifest)
+        for class_name in CertificationClass:
+            with self.subTest(certification_class=class_name.value):
+                policy = select_policy(stripped, CertificationProfile(class_name))
+                evaluation = policy.evaluation_deadline(START)
+                bundled = self.policies[class_name.value].evaluation_deadline(START)
+                # The stripped dataset carries its own digest, so only the clock is compared.
+                self.assertEqual(
+                    (evaluation.rule_id, evaluation.due_at), (bundled.rule_id, bundled.due_at)
+                )
+                for rule_id in COVERAGE_RULE_IDS:
+                    with self.assertRaisesRegex(PolicyRuleNotFoundError, rule_id):
+                        policy.coverage_deadline(rule_id, START)
+
+    def test_only_a_coverage_rule_takes_a_coverage_deadline(self) -> None:
+        policy = self.policies["B"]
+        for rule_id in ("VER-TFR-EVU", "VDR-TFR-PVR", "VDR-TFR-MVF", "vdr-tfr-mvx", ""):
+            with self.subTest(rule_id=rule_id):
+                with self.assertRaisesRegex(ValueError, "is not a coverage rule"):
+                    policy.coverage_deadline(rule_id, START)
+
+    def test_a_coverage_anchor_must_be_aware(self) -> None:
+        with self.assertRaisesRegex(ValueError, "start must include a timezone"):
+            self.policies["C"].coverage_deadline("VDR-TFR-MVX", datetime(2026, 8, 20, 16))
 
 
 if __name__ == "__main__":

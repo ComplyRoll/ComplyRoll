@@ -1,6 +1,7 @@
 """Pinned, class-aware FedRAMP policy selection and deadline calculation."""
 
 from .rules import (
+    COVERAGE_RULE_IDS,
     CertificationClass,
     CertificationPath,
     CertificationProfile,
@@ -32,6 +33,7 @@ from .source import (
 )
 
 __all__ = [
+    "COVERAGE_RULE_IDS",
     "MAX_RULE_SOURCE_BYTES",
     "CertificationClass",
     "CertificationPath",

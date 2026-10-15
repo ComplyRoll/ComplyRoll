@@ -15,6 +15,14 @@ from .evaluations import (
     parse_rfc3339,
 )
 from .historical import CompiledHistoricalReport, compile_historical_report, project_historical
+from .inventory import (
+    MAX_INVENTORY_BYTES,
+    MAX_INVENTORY_RESOURCES,
+    InformationResource,
+    Inventory,
+    load_inventory,
+    parse_inventory,
+)
 from .kev import (
     KEV_STALE_AFTER,
     MAX_KEV_CATALOG_BYTES,
@@ -65,6 +73,8 @@ __all__ = [
     "FINAL_DISPOSITIONS",
     "KEV_STALE_AFTER",
     "MAX_EVALUATIONS_BYTES",
+    "MAX_INVENTORY_BYTES",
+    "MAX_INVENTORY_RESOURCES",
     "MAX_KEV_CATALOG_BYTES",
     "MAX_KEV_ENTRIES",
     "AcceptedVulnerability",
@@ -81,6 +91,8 @@ __all__ = [
     "EvaluationInput",
     "EvaluationMatch",
     "EvaluationSet",
+    "InformationResource",
+    "Inventory",
     "KevCatalog",
     "KevClock",
     "KevEntry",
@@ -103,8 +115,10 @@ __all__ = [
     "compile_vdt_report",
     "compile_vdt_report_from_history",
     "load_evaluations",
+    "load_inventory",
     "load_kev_catalog",
     "parse_evaluations",
+    "parse_inventory",
     "parse_kev_catalog",
     "parse_rfc3339",
     "project_avi",

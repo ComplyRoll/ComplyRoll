@@ -1022,7 +1022,9 @@ class _ArtifactParse(EvidenceParse):
             )
         invocations = _sequence(run.get("invocations"))
         execution_failed = False
-        execution_unverified = False
+        # A present invocations member that is not an array can hide a failed invocation, so it
+        # is unverified too; only an absent member makes no claim.
+        execution_unverified = "invocations" in run and not isinstance(run["invocations"], list)
         for position, invocation in enumerate(invocations):
             entry = _mapping(invocation)
             # Only the JSON booleans count: a missing, null, or non-boolean flag is neither a

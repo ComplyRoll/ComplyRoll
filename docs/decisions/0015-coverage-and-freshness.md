@@ -31,9 +31,10 @@ and the first gap the adapter's users met.
 At the `run_clean` site in `adapters/sarif.py`, a run whose `results` member is an empty array
 yields one observation when every invocation it declares carries `executionSuccessful: true`. A
 run with no `invocations` member makes no claim either way and still yields it. Only the JSON
-booleans count: an invocation whose flag is absent, null or any other type is WARNING
-`execution_unverified` and backs no clean run, while its results, when it has any, are still
-read as before. The observation:
+booleans count: an invocation whose flag is absent, null or any other type, and an `invocations`
+member that is present but not an array (it could hide a failed invocation), is WARNING
+`execution_unverified` and backs no clean run, while the run's results, when it has any, are
+still read as before. The observation:
 
 - `source_type` `sarif`, `source_tool` the driver name, `source_record_id` `sarif.run`,
   `context_key` the run's automation key exactly as ADR 0011 Decision 2 builds it (`driver`, or

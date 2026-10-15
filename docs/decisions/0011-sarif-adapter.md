@@ -653,8 +653,9 @@ carries `results_unknown` and no `run_clean`, so it is not a clean scan; with th
 Decision 13 said a clean scan is not yet evidence, and the 2026-09-30 amendment repeated it. ADR
 0015 decision 1 supersedes both sentences. A run whose `results` is an empty array, and whose
 every invocation declares `executionSuccessful: true` (a run with no invocations makes no claim
-and still qualifies; an invocation whose flag is absent or not a boolean is WARNING
-`execution_unverified` and backs no clean run, though its results are still read), now yields
+and still qualifies; an invocation whose flag is absent or not a boolean, or an `invocations`
+member that is not an array, is WARNING `execution_unverified` and backs no clean run, though
+the run's results are still read), now yields
 one observation of the run: `source_record_id` `sarif.run`, the driver name as `source_tool` and
 in the context key exactly as Decision 2 builds it, resource `image:<name>` when the run names
 an image, `scan:<repository uri>` when it names a repository and no image, and `scan:<driver>`

@@ -4637,6 +4637,19 @@ class SarifCleanRunTests(unittest.TestCase):
                     "results is not a clean run (1 occurrence: runs[0])",
                 )
 
+    def test_a_non_array_invocations_member_backs_no_clean_run(self) -> None:
+        # The member is present but malformed, so the flag it may hide is never read: the run
+        # is unverified, not failed, and its empty results claim nothing.
+        for invocations in (None, {"executionSuccessful": False, "exitCode": 2}, "ok", 1, True):
+            with self.subTest(invocations=invocations):
+                output = ingest_document(make_log(clean_run(invocations=invocations)))
+                self.assertEqual(output.observations, ())
+                self.assertEqual(
+                    [item.code for item in output.diagnostics],
+                    ["run_clean", "execution_unverified", "no_observations"],
+                )
+                self.assertIsNone(output.failed_execution_at)
+
     def test_an_unverified_invocation_still_reads_the_results_it_has(self) -> None:
         # The strict reading guards the clean run alone; a run with results is read as before.
         output = ingest_document(make_log(make_run([make_result()], invocations=[{}])))

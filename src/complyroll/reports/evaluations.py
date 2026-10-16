@@ -91,17 +91,17 @@ class EvaluationMatch:
         ]
         return f"add {' or '.join(missing)}"
 
-    def context_key_required(self, tracking_id: str) -> str:
+    def context_key_required(self, tracking_id: str, *, kind: str) -> str:
         """Explain why this match, naming no `contextKey`, cannot select a system record.
 
         `reports.vdt` and `history.writers` both refuse it with this text, so the stateless
-        and persisted paths name the refusal the same way (ADR 0014 Decision 10).
+        and persisted paths name the refusal the same way (ADR 0014 Decision 10). `kind`
+        names the record, from `reports.vdt.system_record_kind` of its source type.
         """
 
         return (
-            f"{self.describe()} matches the detection process failure {tracking_id}; a "
-            "detection process failure is matched by sourceRecordId, sourceType and "
-            "contextKey together, so add contextKey"
+            f"{self.describe()} matches the {kind} {tracking_id}; a {kind} is matched by "
+            "sourceRecordId, sourceType and contextKey together, so add contextKey"
         )
 
 

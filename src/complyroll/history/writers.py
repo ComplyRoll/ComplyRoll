@@ -20,7 +20,6 @@ from datetime import datetime
 from typing import Any
 
 from complyroll.adapters import (
-    DETECTION_FAILURE_SOURCE_TYPE,
     ArtifactProvenance,
     DiagnosticLevel,
     FailureClass,
@@ -50,9 +49,9 @@ from complyroll.events import (
     parse_utc,
     tracking_id_from_stream,
 )
-from complyroll.models import CaseStatus, Observation
+from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet
-from complyroll.reports.vdt import ReportDiagnostic
+from complyroll.reports.vdt import ReportDiagnostic, system_record_kind
 from complyroll.store import EventRecord
 
 from .fold import (
@@ -938,8 +937,13 @@ def _match_cases(
             continue
         case = candidates[0]
         # The same refusal, in the same order, as `reports.vdt._match_evaluations`.
-        if case.source_type == DETECTION_FAILURE_SOURCE_TYPE and entry.match.context_key is None:
-            refusal = entry.match.context_key_required(case.tracking_id)
+        if (
+            case.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX)
+            and entry.match.context_key is None
+        ):
+            refusal = entry.match.context_key_required(
+                case.tracking_id, kind=system_record_kind(case.source_type)
+            )
             problems.append(f"{entry.location}: {refusal}")
             continue
         previous = claimed.get(case.tracking_id)

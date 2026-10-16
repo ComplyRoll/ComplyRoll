@@ -44,6 +44,7 @@ from complyroll.correlation import (
     group_open_observations,
 )
 from complyroll.models import (
+    RESERVED_SOURCE_TYPE_PREFIX,
     CaseStatus,
     Observation,
     ObservationOrigin,
@@ -82,6 +83,7 @@ from .coverage import (
     derive_coverage,
 )
 from .evaluations import EvaluationInput, EvaluationSet, ReportInputError
+from .gaps import COVERAGE_GAP_SOURCE_TYPE
 from .inventory import Inventory
 from .kev import KEV_STALE_AFTER, KevCatalog, KevClock, KevStatus, cve_may_be_missing, kev_clock
 
@@ -780,6 +782,7 @@ def compile_record_set(
                 detected_at=detected_at,
                 detected_source=detected_source,
                 completed_at=evaluation.completed_at,
+                source_type=group.source_type,
             )
             if order is not None and order.level is DiagnosticLevel.ERROR:
                 record_errors.append(order)
@@ -1214,14 +1217,20 @@ def _match_evaluations(
             )
             continue
         group = candidates[0]
-        # A lone failure would match a pair that names no digest, so the next failure of
-        # another digest would turn the same file ambiguous; the full triple is required.
-        if group.source_type == DETECTION_FAILURE_SOURCE_TYPE and entry.match.context_key is None:
+        # A lone system record would match a pair that names no context key, so the next
+        # record of another key would turn the same file ambiguous; every reserved source
+        # type needs the full triple (ADR 0014 Decision 10, ADR 0015).
+        if (
+            group.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX)
+            and entry.match.context_key is None
+        ):
             errors.append(
                 ReportDiagnostic(
                     level=DiagnosticLevel.ERROR,
                     code="evaluation_context_key_required",
-                    message=entry.match.context_key_required(group.tracking_id),
+                    message=entry.match.context_key_required(
+                        group.tracking_id, kind=system_record_kind(group.source_type)
+                    ),
                     location=entry.location,
                 )
             )
@@ -1246,6 +1255,22 @@ def _match_evaluations(
     if errors:
         raise ReportCompileError(errors)
     return matched
+
+
+#: How a refusal names the record of each reserved source type (ADR 0015).
+_SYSTEM_RECORD_KINDS = {
+    DETECTION_FAILURE_SOURCE_TYPE: "detection process failure",
+    COVERAGE_GAP_SOURCE_TYPE: "coverage gap",
+}
+
+
+def system_record_kind(source_type: str) -> str:
+    """Name the record of one reserved source type, or "system record" for any other.
+
+    `reports.vdt` and `history.writers` name a refusal with it, so both paths agree.
+    """
+
+    return _SYSTEM_RECORD_KINDS.get(source_type, "system record")
 
 
 def _matches(entry: EvaluationInput, group: VulnerabilityGroup) -> bool:
@@ -1287,8 +1312,9 @@ def resolve_detection_time(
 
 
 #: The remedy a refusal names, by the source of the detection time it is refused against.
-#: The compiler, the history writers and `store verify` print one text per source, so
-#: each must hold on both paths (ADR 0007 amendment 2026-10-14).
+#: The compiler, the history writers and `store verify` print one text per source, and
+#: per source type for `system`, so each must hold on both paths (ADR 0007 amendment
+#: 2026-10-14). The `system` text is a detection process failure's; a type may name its own.
 _ORDER_REMEDIES = {
     "artifact": "supply the artifact that detected it earlier, or correct completedAt",
     "attestation": "attest an earlier detection time, or correct completedAt",
@@ -1297,6 +1323,14 @@ _ORDER_REMEDIES = {
         "--as-of in history and at the run's as-of on the stateless path, so evaluate it "
         "at or after that instant, correct completedAt, or on the stateless path report "
         "with an --as-of no later than completedAt"
+    ),
+}
+#: A system record whose detection time is fixed by its inputs on both paths names no
+#: as-of remedy (ADR 0015).
+_SYSTEM_ORDER_REMEDIES = {
+    COVERAGE_GAP_SOURCE_TYPE: (
+        "a coverage gap is detected when its window closed, so evaluate it at or after that "
+        "instant, or correct completedAt"
     ),
 }
 
@@ -1308,6 +1342,7 @@ def evaluation_order_diagnostic(
     detected_at: datetime,
     detected_source: str,
     completed_at: datetime,
+    source_type: str | None = None,
 ) -> ReportDiagnostic | None:
     """Order one evaluation's `completedAt` against its record's detection time.
 
@@ -1317,7 +1352,8 @@ def evaluation_order_diagnostic(
     detection time is only the earliest known timestamp, and an observation declaring
     none may have detected it earlier, so it gets the WARNING
     `evaluation_before_partial_detection` and the record is published. Only
-    `completedAt` is ordered: a reduction or a projection starts no clock.
+    `completedAt` is ordered: a reduction or a projection starts no clock. For a
+    `system` detection time, the record's `source_type` chooses the remedy.
     """
 
     completed = completed_at.astimezone(UTC)
@@ -1337,6 +1373,8 @@ def evaluation_order_diagnostic(
             location=location,
         )
     remedy = _ORDER_REMEDIES.get(detected_source)
+    if detected_source == "system" and source_type is not None:
+        remedy = _SYSTEM_ORDER_REMEDIES.get(source_type, remedy)
     if remedy is None:
         return None
     return ReportDiagnostic(

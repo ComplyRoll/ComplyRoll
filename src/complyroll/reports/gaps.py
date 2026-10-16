@@ -61,14 +61,18 @@ COVERAGE_GAP_METADATA_KEYS = (
 
 
 def coverage_gap_context_key(window: CoverageWindow, entry: InformationResource | None) -> str:
-    """Return the gap's context key: one case per rule and job, else per rule and resource."""
+    """Return `<rule>:job:<job>` for an entry's job, else `<rule>:resource:<type>:<id>`.
+
+    One case per rule and job, else per rule and resource. Segment two always tells the
+    forms apart, so a resource of type `job` cannot spell an entry's job.
+    """
     subject = window.key.subject
     # A sample group's clock has no entry; an entry whose pair spells the group is not it.
     if entry is not None and (window.key.resource is None or entry.ref != subject):
         raise ValueError("the entry must be the inventory entry of the window's own resource")
     if entry is not None and entry.job:
         return f"{window.rule_id}:job:{entry.job}"
-    return f"{window.rule_id}:{subject.resource_type}:{subject.resource_id}"
+    return f"{window.rule_id}:resource:{subject.resource_type}:{subject.resource_id}"
 
 
 def coverage_gap_observation(

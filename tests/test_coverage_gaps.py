@@ -314,12 +314,12 @@ class GapContextKeyTests(unittest.TestCase):
 
     def test_a_job_less_entry_keys_on_its_resource(self) -> None:
         built = gap(fleet_result(), MVX_RULE, "host:lab-02")
-        self.assertEqual(built.context_key, f"{MVX_RULE}:host:lab-02")
+        self.assertEqual(built.context_key, f"{MVX_RULE}:resource:host:lab-02")
         self.assertEqual(built.metadata_value("coverage.job"), "")
 
     def test_a_sample_group_keys_on_the_group(self) -> None:
         built = gap(fleet_result(), PSD_RULE, GROUP_KEY)
-        self.assertEqual(built.context_key, f"{PSD_RULE}:{GROUP_KEY}")
+        self.assertEqual(built.context_key, f"{PSD_RULE}:resource:{GROUP_KEY}")
         self.assertEqual(
             built.resource,
             ResourceRef(resource_id=f"sample-group/{GROUP}", resource_type="logical"),
@@ -334,7 +334,7 @@ class GapContextKeyTests(unittest.TestCase):
         self.assertIsNotNone(entry)
 
         group_gap = gap(result, PSD_RULE, GROUP_KEY)
-        self.assertEqual(group_gap.context_key, f"{PSD_RULE}:{GROUP_KEY}")
+        self.assertEqual(group_gap.context_key, f"{PSD_RULE}:resource:{GROUP_KEY}")
         self.assertEqual(group_gap.metadata_value("coverage.job"), "")
         twin_gap = gap(result, NMV_RULE, GROUP_KEY)
         self.assertEqual(twin_gap.context_key, f"{NMV_RULE}:job:manual-review")
@@ -350,14 +350,28 @@ class GapContextKeyTests(unittest.TestCase):
         group = window_of(result, PSD_RULE, GROUP_KEY)
 
         self.assertEqual(coverage_gap_context_key(window, lab_01), f"{MVX_RULE}:job:{JOB}")
-        self.assertEqual(coverage_gap_context_key(window, None), f"{MVX_RULE}:host:lab-01")
-        self.assertEqual(coverage_gap_context_key(group, None), f"{PSD_RULE}:{GROUP_KEY}")
+        self.assertEqual(coverage_gap_context_key(window, None), f"{MVX_RULE}:resource:host:lab-01")
+        self.assertEqual(coverage_gap_context_key(group, None), f"{PSD_RULE}:resource:{GROUP_KEY}")
         for label, target, entry in (
             ("another resource's entry", window, lab_02),
             ("an entry for a group window", group, lab_01),
         ):
             with self.subTest(label), self.assertRaisesRegex(ValueError, "entry"):
                 coverage_gap_context_key(target, entry)
+
+    def test_a_resource_typed_job_cannot_spell_the_job_form(self) -> None:
+        # The inventory reader accepts resourceType "job", so segment two, not the last
+        # segments, must tell the forms apart; resource ids may hold colons.
+        impostor = host(JOB, resourceType="job")
+        result = derive([], fleet(impostor), AS_OF_LATE)
+        spelled = gap(result, MVX_RULE, f"job:{JOB}")
+        bearing = gap(result)
+
+        self.assertEqual(spelled.metadata_value("coverage.job"), "")
+        self.assertTrue(spelled.context_key.startswith(f"{MVX_RULE}:resource:job:"))
+        self.assertEqual(spelled.context_key, f"{MVX_RULE}:resource:job:{JOB}")
+        self.assertEqual(bearing.context_key, f"{MVX_RULE}:job:{JOB}")
+        self.assertEqual(len(group_open_observations([spelled, bearing])), 2)
 
 
 # *--- Record ---*
@@ -491,7 +505,11 @@ class GapCorrelationTests(unittest.TestCase):
         )
         self.assertEqual(
             (group.source_type, group.source_record_id, group.context_key),
-            (COVERAGE_GAP_SOURCE_TYPE, COVERAGE_GAP_RECORD_ID, f"{MVX_RULE}:host:lab-02"),
+            (
+                COVERAGE_GAP_SOURCE_TYPE,
+                COVERAGE_GAP_RECORD_ID,
+                f"{MVX_RULE}:resource:host:lab-02",
+            ),
         )
         self.assertEqual(group.observation_ids, (built.observation_id,))
         self.assertTrue(all(item.origin is ObservationOrigin.SYSTEM for item in group.observations))
@@ -516,7 +534,7 @@ class GapCorrelationTests(unittest.TestCase):
         lapses = [
             item
             for item in coverage_gap_observations(result, ingested_at=INGESTED_AT)
-            if item.context_key == f"{MVX_RULE}:host:lab-02"
+            if item.context_key == f"{MVX_RULE}:resource:host:lab-02"
         ]
         self.assertEqual(len(lapses), 2)
         (group,) = group_open_observations(lapses)

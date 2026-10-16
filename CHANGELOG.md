@@ -120,6 +120,39 @@ All notable project changes will be documented here.
 
 ### Added
 
+- Coverage gaps become cases (ADR 0015, PR 3, Decisions 19 to 40). A coverage window that closed
+  with no verification recorded can now be recorded as a system-generated observation, and so a
+  vulnerability case, on both paths. The gap observation carries a reserved source type, the
+  stream id `coverage/<fingerprint>` (one stream per gap), the window under `coverage.*` in its
+  metadata, and the title `coverage-gap: <rule> window for <resource> closed <instant> with no
+  verification recorded (VDR-CSO-FAV)`; a case per rule and job, or per sample group, holds
+  every member window. Stateless: `report vdt`, `report avi`, and `report historical` take
+  `--record-coverage-gaps` beside `--inventory`, the window rows gain `recorded` and
+  `trackingId`, and the run exits 3 when it records a gap, as `--record-failed-imports` does for
+  a failure, each flag answering for its own kind; a failed publish still exits 1. The flag is
+  refused without `--inventory` (`invalid_option`) and beside `--db`. Persisted:
+  `complyroll cases coverage --db STORE --inventory FILE --as-of T --class B|C [--calendar-tz Z]`
+  derives the windows the report derives and appends each gap as a coverage stream
+  (`coverage.recorded` version 1) at store schema 4, with migration record 4; it exits 3 when it
+  records and 0 when a rerun appends nothing, the first recorded payload standing even when the
+  inventory digest differs, and a recorded gap becomes a case after `cases correlate`. An
+  evaluation closes a gap by the full triple with the context key `<rule>:job:<job>`, else
+  `<rule>:resource:<type>:<id>`; a gap entry without it is refused
+  (`evaluation_context_key_required`), as every reserved source type now is on both paths, and
+  one dated before the window closed gets a gap remedy. Dispositions keep parity with failures,
+  so an `accepted` gap is listed in the AVI. A report from a store at schema 4 with an inventory
+  is gap-aware: a derived gap the store has not recorded is noted `coverage_gap_unrecorded`; a
+  stored gap this run does not derive is noted `coverage_gap_contradicted` when a verification
+  lies inside its window (a `false_positive` disposition is the remedy) or
+  `coverage_gap_unmatched` otherwise, and the case stays in the report either way.
+  `store verify` gains five audit codes for coverage streams (`coverage_incomplete`,
+  `coverage_overfull`, `coverage_stream_mismatch`, `coverage_identity_breach`,
+  `coverage_schema_unmarked`), and an older build refuses a schema 4 store with
+  `database schema 4 is newer than supported schema 3`. A retired entry stays expected and keeps
+  its status; `decommissionedAt` is the signal (Decision 19). New
+  `examples/evaluations-coverage.json` and four goldens,
+  `tests/golden/vdt-coverage-gaps.{json,md}` and `tests/golden/historical-coverage-gaps.{json,md}`;
+  every existing golden is byte-identical.
 - Coverage and freshness evidence against an information resource inventory (ADR 0015, PR 2).
   `complyroll report vdt`, `report avi`, and `report historical` take `--inventory FILE`, a
   `complyroll.inventory` JSON document listing the resources the provider expects its detection
@@ -140,7 +173,7 @@ All notable project changes will be documented here.
   `VDR-TFR-PDD` with WARNING `drift_likelihood_unknown`, once per entry. A second `--inventory`
   (`invalid_option`), a refused file (`invalid_input`), and a pinned dataset that lacks a
   coverage rule (`coverage_rule_unavailable`) each exit 1 and write nothing. A lapsed window
-  opens no case and changes no exit code yet; that is ADR 0015's next pull request. New
+  opened no case and changed no exit code in this pull request; the entry above adds both. New
   `examples/inventory.json` and four goldens: `tests/golden/vdt-coverage.{json,md}` on the
   official fixture set, and `tests/golden/vdt-coverage-timed.{json,md}` on two clocked SARIF
   logs and `tests/fixtures/inventory-timed.json`. Every existing golden is byte-identical.

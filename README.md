@@ -46,17 +46,18 @@ catalog the operator supplies.
 | `--kev FILE` | Matches each record's CVE identifiers to a CISA KEV catalog the operator supplies and carries the catalog's due date as the `VDR-TFR-KEV` clock, without fetching anything |
 | `--inventory FILE` | Shows when detection last reached each resource the operator declares |
 | `--record-failed-imports` | Records an artifact that cannot be parsed or holds no usable content, or a failed scanner invocation, as a system observation and a vulnerability of its own (`VDR-CSO-FAV`), and exits 3 |
+| `--record-coverage-gaps`, `complyroll cases coverage` | Record each coverage window that closed with no verification as a system observation and a vulnerability of its own (`VDR-CSO-FAV`), on a report run or into a store, and exit 3 |
 | `complyroll ingest`, `cases`, and `report --db` | Record the same work as append-only history and rebuild each report from it, byte-identical to the stateless report |
 | `complyroll store verify --db STORE` | Audits an event store's bytes and its domain, and exits non-zero on any fault |
 | `complyroll validate REPORT --schema KIND` | Validates a report offline against the pinned official schema, with a JSON Pointer for each failure |
 | `stigroll FILE...` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output |
 | `complyroll.adapters`, `.policy`, `.schemas`, `.store` | Ingest an artifact, calculate a deadline with its rule provenance, validate a report, or open the event store from Python |
 
-Not yet built, among others: coverage gaps as vulnerability cases (`--inventory` only lists them),
-failures in the response process, change integration, SBOM and cloud sources, and KSI and SDR
-evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. A SARIF log with no results
-ingests as a PASS observation of the scope it names, which is evidence that the tool ran, not
-that the scope is clean.
+Not yet built, among others: failures in the response process, change integration, SBOM and cloud
+sources, and KSI and SDR evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. A coverage
+gap records that no verification reached a resource in time, not that the resource is vulnerable.
+A SARIF log with no results ingests as a PASS observation of the scope it names, which is
+evidence that the tool ran, not that the scope is clean.
 
 Every command and flag: [`docs/CLI.md`][cli].
 
@@ -96,7 +97,7 @@ cmp report.json report-from-history.json && cmp report.md report-from-history.md
 
 The report includes internal resource identifiers and provider rationale, so redact it before
 sharing with an agency. [`examples/README.md`][examples] continues from here with the other two
-reports, SARIF, KEV, HDF, failed imports, and the Python API.
+reports, SARIF, KEV, coverage and coverage gaps, HDF, failed imports, and the Python API.
 
 ## For independent assessors
 

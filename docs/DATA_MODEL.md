@@ -188,8 +188,9 @@ records one stays at version 1.
 An information resource inventory is a per-run report input, like a KEV catalog, and never a
 stored record. A run given `--inventory FILE` measures detection coverage against it. The
 inventory reaches the compiler as a report option rather than as an event, so the stateless and
-persisted paths produce identical bytes. It adds and changes no observation: observations stay
-immutable source facts, and coverage is derived from them at report time (ADR 0015).
+persisted paths produce identical bytes. Measuring coverage adds and changes no observation:
+observations stay immutable source facts, and coverage is derived from them at report time (ADR
+0015). Recording a coverage gap, described below, adds a system observation and changes none.
 
 The document is ComplyRoll-native JSON, `examples/inventory.json` is a worked example, and
 `InformationResource` under Core entities is its parsed entry.
@@ -301,6 +302,73 @@ beside the status, so a checklist-only host never reads as unexamined. The parit
 that the twin states every summary row, resource, clock, window, unregistered resource, and
 listed piece of evidence the JSON block carries.
 
+### Coverage gaps
+
+A coverage gap is a stored record, unlike the coverage block. With `--record-coverage-gaps` on a
+report, or `cases coverage` into a store, each window in the block becomes one system
+observation, built by `coverage_gap_observation` in `reports/gaps.py` (ADR 0015). Without either,
+nothing is minted. The observation uses the SYSTEM identity recipe of the ADR 0002 amendment,
+with these inputs:
+
+| Recipe input | Value |
+|---|---|
+| `source_type` | `complyroll.coverage`, which no adapter can emit for an artifact observation |
+| `source_tool` | `complyroll` |
+| `parser_name`, `parser_version` | `complyroll.coverage`, `1` |
+| `source_record_id` | `coverage-gap` |
+| `resource_type`, `resource_id` | The clock's subject: the entry's own pair, or `logical` and `sample-group/<name>` for a group clock |
+| `context_key` | `<rule>:job:<job>` when the entry names a job, else `<rule>:resource:<type>:<id>` of the subject |
+| `observed_at` | The window's close, never as-of or ingest time |
+
+The other fields are fixed: disposition open, source severity unknown, no source identifiers,
+`evidence_ids` holding `sha256:<inventory digest>`, `ingested_at` from the report's as-of or from
+the `--as-of` of `cases coverage`, which reaches neither the id nor a report, and the title
+`<rule> window for <type>:<id> closed <instant> with no verification recorded (VDR-CSO-FAV)`. The
+description says ComplyRoll recorded no verification inside the window, and that this records
+the absence of a verification, not a vulnerability. The metadata always carries the same eight
+keys, and none of them moves the id:
+
+| Metadata key | Purpose |
+|---|---|
+| `coverage.rule`, `coverage.force` | The coverage rule and its selected force |
+| `coverage.anchor`, `coverage.anchorAt` | What the window ran from, `declared` or `verification`, and when |
+| `coverage.windowClosedAt` | The window's close, the same instant as `observed_at` |
+| `coverage.inventorySha256` | The inventory whose entry carried the clock |
+| `coverage.job` | The entry's `job`, or empty text when it names none or the clock is a group's |
+| `coverage.basis` | The block's fixed basis text |
+
+Correlation groups by source type, record id, and context key, so a gap case is one rule and one
+job, or one rule and one resource. The window's `contextKey` in the block names the clock, while
+the gap's context key names the case, and no report prints the latter. A gap record renders as a
+failure record does: `detectedAtSource` `system`, detection at the earliest window close of its
+case, one `VER-TFR-EVU` deadline from that close, and PAIN only from an evaluation matched on the
+full triple. `parserVersions` gains `complyroll.coverage`. A gap-aware run, one with the flag or a
+report from a store marked schema 4 given an inventory, adds two keys to every window of the
+block, and the Markdown Windows table gains a column for each:
+
+| Window key | Purpose |
+|---|---|
+| `recorded` | True when a gap record of the run carries the window |
+| `trackingId` | That record's effective tracking id, else null |
+
+On the persisted path each gap is recorded on its own stream, `coverage/<fingerprint>`, named for
+the gap record's SYSTEM identity hash. The stream holds exactly two events: a `coverage.recorded`
+v1 head and one `observation.recorded` carrying the gap record.
+
+| `coverage.recorded` field | Purpose |
+|---|---|
+| `rule` | The coverage rule, one of the five |
+| `contextKey` | The record's context key |
+| `windowClosedAt` | The window's close |
+| `anchor`, `anchorAt` | What the window ran from, and when |
+| `inventorySha256` | The inventory whose entry carried the clock |
+
+Every field is required, no other is allowed, and `store verify` holds each to the record it
+heads. The head carries no tracking id and no stream id, because both are derived from the stored
+record at replay. A recorded stream is never rewritten, so after an edited inventory the stored
+`inventorySha256` stays the first run's. A store that holds a coverage stream is schema version
+4, and one that never records a gap stays at its version.
+
 ## Report extension (x-complyroll)
 
 Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
@@ -311,9 +379,9 @@ digests (`rulesSource`, `schemaSource`), and the compile diagnostics (`diagnosti
 vulnerability carries every computed deadline with its rule and force (`deadlines`, each with
 `ruleId`, `ruleName`, and `force`), the grouped observation ids and affected resources
 (`observationIds`, `resources`), the detection-time source (`detectedAtSource`: `artifact`,
-`artifact-partial`, `attestation`, or `system` for a detection process failure), and the
-evaluator and rationale (`evaluator`, `rationale`). The KEV keys, `detectionFailures`, and
-`coverage` described above live under the same key.
+`artifact-partial`, `attestation`, or `system` for a detection process failure or a coverage
+gap), and the evaluator and rationale (`evaluator`, `rationale`). The KEV keys,
+`detectionFailures`, and `coverage` described above live under the same key.
 
 The JSON is the complete machine record. The Markdown twin renders the same records for a reader,
 with a detail section per vulnerability, and a parity test checks that the twin states every
@@ -409,7 +477,9 @@ SHA-256 over a JSON-encoded list of origin, source type, tool, parser name and v
 identifier, resource, context key, and the UTC observation time (ADR 0002 amendment). The first
 production recipe, for detection process failures, uses the failed artifact's digest as the
 context key, because ComplyRoll has no inventory of detection jobs yet; see Detection process
-failures above and the ADR 0002 amendment of 2026-09-30.
+failures above and the ADR 0002 amendment of 2026-09-30. The second, for coverage gaps (ADR
+0015), keys on the inventory entry's `job` when it names one; see Coverage gaps above. Failure
+cases stay keyed on the digest.
 
 A SARIF observation (ADR 0011) takes its identity from the literal source type `sarif`, the
 driver name as `source_tool`, the rule identifier resolved in the spec's order as

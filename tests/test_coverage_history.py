@@ -124,6 +124,11 @@ SECOND_PSD = GAP_WINDOWS[8]
 FIRST_PSD = GAP_WINDOWS[7]
 #: lab-win-01's MVX window, which shares its job's case with `UBUNTU_MVX`.
 WIN_MVX = GAP_WINDOWS[1]
+#: lab-rhel-01's MVX window, a case of its own, which the documented example file remediates.
+RHEL_MVX = GAP_WINDOWS[0]
+RHEL_MVX_KEY = "VDR-TFR-MVX:resource:host:lab-rhel-01"
+#: `examples/evaluations.json` plus the one entry that closes `RHEL_MVX` by the full triple.
+COVERAGE_EVALUATIONS = EXAMPLES / "evaluations-coverage.json"
 #: The one host of the lone-gap store: its Class C MVX window closes on 2026-08-04.
 LONE_HOST = host("lab-gap-01", expectedSince=EXPECTED_SINCE)
 LONE_KEY = "VDR-TFR-MVX:resource:host:lab-gap-01"
@@ -1816,6 +1821,167 @@ class PersistedGapAviCommandTests(PersistedStoreTestCase):
             item["acceptanceRationale"],
             "Accepted under change record CR-210 until the Q4 restore test.",
         )
+
+
+# *--- Example Evaluations ---*
+
+
+class CoverageEvaluationsExampleTests(PersistedStoreTestCase):
+    """`examples/evaluations-coverage.json` closes one gap case by the full triple, as documented.
+
+    The file is `examples/evaluations.json` plus one entry that remediates lab-rhel-01's MVX
+    gap, so its run differs from the `vdt-coverage-gaps` golden in that one case alone, and
+    the documented store sequence publishes the same bytes.
+    """
+
+    def stateless(self) -> tuple[bytes, bytes]:
+        """Run the documented stateless command with the example file; it exits 3."""
+        output = self.workspace / "stateless.json"
+        markdown = self.workspace / "stateless.md"
+        argv = list(VDT_GAP_ARGUMENTS)
+        argv[argv.index("--evaluations") + 1] = str(COVERAGE_EVALUATIONS)
+        code, _, err = run([*argv, "-o", str(output), "--markdown", str(markdown)])
+        self.assertEqual(code, 3, msg=err)
+        return output.read_bytes(), markdown.read_bytes()
+
+    def record_and_correlate(self) -> None:
+        """Write the documented store, record its gaps, and open their cases."""
+        self.populate()
+        code, _, err = run(["cases", "coverage", "--db", str(self.database), *COVERAGE_OPTIONS])
+        self.assertEqual(code, 3, msg=err)
+        self.correlate()
+
+    def persisted(self) -> tuple[bytes, bytes]:
+        """Report the store as the documented `report vdt --db --inventory` command does."""
+        output = self.workspace / "persisted.json"
+        markdown = self.workspace / "persisted.md"
+        self.succeeds(
+            [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                INGESTED_AT,
+                "--inventory",
+                str(EXAMPLE_INVENTORY),
+                "-o",
+                str(output),
+                "--markdown",
+                str(markdown),
+            ]
+        )
+        return output.read_bytes(), markdown.read_bytes()
+
+    def test_the_file_is_the_example_evaluations_plus_one_gap_entry(self) -> None:
+        shipped = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        example = json.loads(COVERAGE_EVALUATIONS.read_text(encoding="utf-8"))
+
+        *kept, gap = example["evaluations"]
+
+        self.assertEqual(kept, shipped["evaluations"])
+        self.assertEqual(
+            gap["match"],
+            {
+                "sourceRecordId": COVERAGE_GAP_RECORD_ID,
+                "sourceType": COVERAGE_GAP_SOURCE_TYPE,
+                "contextKey": RHEL_MVX_KEY,
+            },
+        )
+        self.assertEqual(gap["disposition"], "remediated")
+        # Completed after the window closed, so the order check passes on both paths.
+        self.assertGreater(gap["completedAt"], RHEL_MVX[2])
+
+    def test_its_triple_names_the_documented_case(self) -> None:
+        self.record_and_correlate()
+        with SQLiteEventStore(self.database) as store:
+            cases = {item.tracking_id: item for item in fold_all_cases(EventRepository(store))}
+
+        case = cases[RHEL_MVX[3]]
+
+        self.assertEqual(
+            (case.source_type, case.source_record_id, case.context_key),
+            (COVERAGE_GAP_SOURCE_TYPE, COVERAGE_GAP_RECORD_ID, RHEL_MVX_KEY),
+        )
+
+    def test_the_stateless_run_closes_that_case_alone(self) -> None:
+        document = json.loads(self.stateless()[0])
+        golden = json.loads((GOLDEN / "vdt-coverage-gaps.json").read_text(encoding="utf-8"))
+        records = {item["providerTrackingId"]: item for item in document["vulnerabilities"]}
+        expected = {item["providerTrackingId"]: item for item in golden["vulnerabilities"]}
+
+        closed = records.pop(RHEL_MVX[3])
+        del expected[RHEL_MVX[3]]
+
+        self.assertEqual(records, expected)
+        self.assertEqual(document["x-complyroll"]["coverage"], golden["x-complyroll"]["coverage"])
+        self.assertEqual(closed["finalDisposition"], "Remediated")
+        self.assertEqual(closed["detection"]["detectedAt"], RHEL_MVX[2])
+        self.assertEqual(closed["evaluationCompletedAt"], "2026-08-12T15:00:00Z")
+        self.assertEqual(closed["currentRating"], 2)
+        self.assertEqual(closed["overdueStatus"], {"isOverdue": False})
+        self.assertEqual(closed["x-complyroll"]["detectedAtSource"], "system")
+
+    def test_the_gap_entry_waits_for_cases_correlate(self) -> None:
+        self.populate()
+        code, _, err = run(["cases", "coverage", "--db", str(self.database), *COVERAGE_OPTIONS])
+        self.assertEqual(code, 3, msg=err)
+        with SQLiteEventStore(self.database) as store:
+            latest = store.latest_sequence
+
+        code, out, err = run(
+            [
+                "cases",
+                "evaluate",
+                "--db",
+                str(self.database),
+                "--evaluations",
+                str(COVERAGE_EVALUATIONS),
+            ]
+        )
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err,
+            "error: evaluation_unmatched: evaluations could not be applied: evaluations[2]: no "
+            f"case matches sourceRecordId='{COVERAGE_GAP_RECORD_ID}', "
+            f"sourceType='{COVERAGE_GAP_SOURCE_TYPE}', contextKey='{RHEL_MVX_KEY}'\n",
+        )
+        with SQLiteEventStore(self.database) as store:
+            self.assertEqual(store.latest_sequence, latest)
+
+    def test_the_documented_store_publishes_the_same_bytes(self) -> None:
+        self.record_and_correlate()
+        # Before the gap's evaluation the store reports the golden itself.
+        self.assertEqual(
+            self.persisted(),
+            (
+                (GOLDEN / "vdt-coverage-gaps.json").read_bytes(),
+                (GOLDEN / "vdt-coverage-gaps.md").read_bytes(),
+            ),
+        )
+
+        out, err = self.evaluate(COVERAGE_EVALUATIONS)
+
+        self.assertEqual(err, "")
+        self.assertEqual(
+            out.splitlines(),
+            [
+                "evaluations: 1 appended, 2 skipped",
+                "pain reductions: 0 appended, 1 skipped",
+                "dispositions: 1 appended, 1 skipped",
+                "identifications: 0 appended, 0 skipped",
+            ],
+        )
+        self.assertEqual(self.persisted(), self.stateless())
 
 
 if __name__ == "__main__":

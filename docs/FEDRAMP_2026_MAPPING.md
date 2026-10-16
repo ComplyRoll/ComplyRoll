@@ -129,8 +129,9 @@ evaluation. An InSpec impact or severity tag is evidence too, and never sets PAI
 
 Failures in the detection or response process are `VDR-CSO-FAV`, "Failures Are
 Vulnerabilities": "Providers MUST treat problems or failures with their vulnerability detection
-and response processes as vulnerabilities." ComplyRoll covers the detection half, and only the
-failures an import can see (ADR 0014). With `--record-failed-imports`, an artifact that cannot
+and response processes as vulnerabilities." ComplyRoll covers the detection half: the failures an
+import can see (ADR 0014), and coverage windows that closed with no verification (ADR 0015, under
+Coverage and freshness below). With `--record-failed-imports`, an artifact that cannot
 be parsed, an artifact with no usable content, and a scanner log that reports its own failed
 invocation each become a system observation and a vulnerability case, on the stateless and
 persisted paths alike, with the detection-time source `system`. PAIN, reachability, and
@@ -144,14 +145,13 @@ warning, as before.
 The response half is not covered: a broken remediation or response workflow, and a vulnerability
 whose detection time is never attested, are the Phase 2 deliverable "Response-process and
 attestation failures". Stale coverage and missing resources are measured by the coverage and
-freshness checks below, as evidence and not yet as cases. A clean SARIF run is already evidence,
-as a PASS observation of its scope (ADR 0015 decision 1). Some detection failures still stop the
-run with the
-flag, because no honest record can be built for them: a file that could not be read, an
-unsupported or rejected format, a reading that repeats an observation identity, a reading that
-found some usable results beside its errors (kept or withheld), and an error code ComplyRoll has
-not classified. A recorded failure is evidence that the provider's process noticed it. It is not
-a determination that the provider meets `VDR-CSO-FAV`.
+freshness checks below, and become cases when the operator asks for them. A clean SARIF run is
+evidence, as a PASS observation of its scope (ADR 0015 decision 1). Some detection failures still
+stop the run with the flag, because no honest record can be built for them: a file that could not
+be read, an unsupported or rejected format, a reading that repeats an observation identity, a
+reading that found some usable results beside its errors (kept or withheld), and an error code
+ComplyRoll has not classified. A recorded failure is evidence that the provider's process noticed
+it. It is not a determination that the provider meets `VDR-CSO-FAV`.
 
 ## Coverage and freshness
 
@@ -196,7 +196,9 @@ How a clock reads the evidence:
   `VDR-TFR-PSD`. `VDR-TFR-PDD` and `VDR-TFR-PCD` are detection cadence rules, so `driftLikely`
   is refused on a non-machine entry.
 - **The anchor is a real verification.** A clock runs from the latest verification at or before
-  as-of, else from the entry's `expectedSince`, labeled `declared`. Days are exact elapsed time,
+  as-of, else from the entry's `expectedSince`, labeled `declared`. A verification before
+  `expectedSince` anchors the clock only when its window reaches `expectedSince`; otherwise the
+  clock runs from `expectedSince` as if nothing had verified it. Days are exact elapsed time,
   months are calendar months in `--calendar-tz` with month-end clamping, and overdue is strict:
   as-of must be after the due date.
 - **A lapse is one window.** A window closes when a due date passes with no verification, and the
@@ -231,10 +233,17 @@ says so in fixed text, together with the reading that `VDR-TFR-MVX` comes from d
 until Phase 3 validation runs exist. Force is printed on every clock and window, so a lapsed
 SHOULD window never reads as a MUST violation.
 
-Still deferred, to ADR 0015's third pull request or later: a window that closed with no
-verification becoming a `VDR-CSO-FAV` system observation and case, on the stateless path and in
-the store at schema 4. Until then the coverage block lists the window, and nothing opens a case or
-changes an exit code. `VDR-TFR-MVF` and Class D stay out of scope.
+A window that closed with no verification can also become a `VDR-CSO-FAV` system observation and
+case (ADR 0015, third pull request). On the stateless path `--record-coverage-gaps` records each
+window of the run, and in the store `cases coverage` records each one once, on a coverage stream
+of its own, in a store marked schema 4. The record is detected at the window close, carries no
+severity, and gets PAIN, reachability, and exploitability only from an operator evaluation matched
+on its source type, record id, and context key, so its evaluation clock (`VER-TFR-EVU`) runs from
+the close. A case is one rule and one detection job, or one rule and one resource, and it closes
+only by a disposition: a later verification resumes the window and never erases the gap. The run
+exits 3, as a recorded failure does. A gap records that ComplyRoll found no verification inside
+the window, not that the resource has a vulnerability. Without the flag or the command the block
+only lists the window. `VDR-TFR-MVF` and Class D stay out of scope.
 
 ## Class C operational mapping
 
@@ -357,6 +366,9 @@ can publish them with authorization, logging, redaction, and availability contro
 - Do not read a `current` coverage status as compliance with a detection rule, a clean run as a
   clean scope, or an examined resource as a verified one. Coverage is only as complete as the
   inventory the provider supplied.
+- Do not read a coverage gap case as a weakness found on the resource. It records that no
+  verification reached the resource inside a window, and a lapsed SHOULD window is not a MUST
+  violation.
 
 ## Sources
 

@@ -450,3 +450,56 @@ the record. This supersedes, for those two codes, the 2026-10-14 amendment's "Th
 only on a log with no other fault". With the paragraph above it narrows the reading of the
 second 2026-08-22 amendment's metadata bullet: the repository refuses an envelope outside the
 rules at append, and at rest only `store verify` reports it. Neither earlier text is edited.
+
+## Amendment 2026-10-16: coverage streams and the gap divergences
+
+ADR 0015 records a coverage window that closed with no verification as a system observation, on
+the stateless path with `--record-coverage-gaps` and in the store with `cases coverage`. The
+persisted half adds a fourth stream kind and a new event, and a store's recorded gaps can disagree
+with the windows a run derives, so Decision 5 gets a second named carve-out in the style of ADR
+0014 Decision 15. These rules bind from this date.
+
+- **Decision 5 has a carve-out for coverage gaps.** A gap is observed at its window close, which
+  the inputs fix on both paths, so unlike a failure it never takes an ingest or report as-of, and
+  the refuse-versus-publish divergence of the 2026-10-14 amendment does not arise for it. What may
+  differ is which gaps a store holds against which windows a run derives. A window `cases
+  coverage` never recorded reads `recorded: false` and `trackingId: null`, opens no case, and is
+  INFO `coverage_gap_unrecorded`, where the stateless run with the flag has its case. A stored gap
+  the run derives no window for keeps its case and is INFO `coverage_gap_contradicted` when the
+  run's evidence holds a verification inside its window, as a late upload leaves, or INFO
+  `coverage_gap_unmatched` when it holds none, where the stateless run has no such record. A gap
+  recorded against an earlier copy of the inventory keeps that copy's `coverage.inventorySha256`
+  while the coverage block names the inventory given to the run. The two paths are byte-identical
+  when `cases coverage` ran with the report's inventory, as-of, class, and calendar zone; no
+  evidence observed inside a recorded window reached the store after it; the stateless run passes
+  `--record-coverage-gaps`; and the conditions of the 2026-09-30 amendment hold for any failure.
+  `tests/test_coverage_history.py` pins each divergence and the replay of both gap goldens.
+- **Gap awareness is the schema marker.** A report from a store is gap-aware only when the store
+  is marked schema 4 and the run has an inventory, and only a gap-aware run writes the window keys
+  and the three notes above. A store that never recorded a gap compiles exactly as Decision 5 and
+  ADR 0015's PR 2 describe, so every replay golden cut before this date keeps its bytes.
+- **A fourth stream kind, `coverage/<fingerprint>`.** It is named for the gap record's SYSTEM
+  identity hash and holds exactly one `coverage.recorded` head and one `observation.recorded`
+  carrying the gap record, written in one batch by `cases coverage`; a stream that is not whole is
+  refused rather than resumed, and a whole one is skipped, so its first recorded payload stands.
+  `observation.recorded` is accepted on artifact, failure, and coverage streams, and
+  `coverage.recorded` on coverage streams only. `rehydrate_observations` appends each coverage
+  stream's record in stream-open order, and no rule supersedes a gap. The audit gains
+  `coverage_incomplete`, `coverage_overfull`, `coverage_stream_mismatch`,
+  `coverage_identity_breach`, and `coverage_schema_unmarked`.
+- **`coverage.recorded` v1.** The payload is `rule`, `contextKey`, `windowClosedAt`, `anchor`,
+  `anchorAt`, and `inventorySha256`, every one required and no other allowed. Like
+  `failure.recorded` it carries no tracking id, and it carries no stream id either: both are
+  derived from the stored record at replay.
+- **A store that records a gap is schema 4.** The first coverage append inserts migration row 4
+  ("coverage gaps, ADR 0015"), and rows 2 and 3 when the store lacks them, and sets `user_version`
+  to 4 in the same transaction; a store that never records a gap stays at its version. This
+  supersedes "This build opens 1 to 3" in the 2026-10-13 amendment: this build opens 1 to 4. A
+  build that opens only 1 to 3 refuses a schema 4 store at open with `database schema 4 is newer
+  than supported schema 3`, and its `store verify` reports `schema_version_unsupported`.
+- **One more content-neutral fault.** `coverage_schema_unmarked`, a coverage stream in a store
+  below schema 4, joins `event_metadata_invalid` and `failure_schema_unmarked`: no reader and no
+  case writer refuses it, it changes no report's bytes, and `store verify` still checks evaluation
+  order beside it. This widens the second 2026-10-14 amendment's two codes to three. One more
+  writer refuses one shape: `cases coverage` exits 1 with `history_invalid` rather than resume a
+  coverage stream that holds an event no coverage stream carries.

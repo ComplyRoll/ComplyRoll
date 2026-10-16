@@ -180,8 +180,9 @@ Target: 3–4 weeks
   response workflows. **Partially complete, 2026-09-30** (ADR 0014): detection process failures
   shipped, so with `--record-failed-imports` an artifact that cannot be parsed, holds no usable
   content, or reports a failed scanner invocation becomes a system observation and a case on both
-  paths, and the run exits 3. Stale coverage and missing resources belong to the coverage and
-  freshness checks above, and broken response workflows to the deliverable above.
+  paths, and the run exits 3. Stale coverage and missing resources shipped with the coverage and
+  freshness checks above on 2026-10-16 (ADR 0015), and broken response workflows belong to the
+  deliverable above.
 - Carried from Phase 1 as a scope change: information resource and response action records, the
   reporting recurrence clocks, and HTML report output. The KEV clock shipped with the KEV
   enrichment above.
@@ -193,8 +194,12 @@ Target: 3–4 weeks
   observation and its own case, evaluated like any other, and the stateless and persisted reports
   carry it; an unreadable, rejected-format, partial, or unclassified reading stays fatal, ADR 0014
   Decision 2).
-- A stale detection process creates a reviewable vulnerability case. Not started; it belongs to
-  the coverage and freshness checks.
+- A stale detection process creates a reviewable vulnerability case. **Met, 2026-10-16** (ADR
+  0015: with `--record-coverage-gaps` on a report, or `cases coverage` into a store, each window
+  of an inventory entry's coverage clock that closed with no verification becomes a system
+  observation and a case per rule and job, else per rule and resource, evaluated like any other,
+  and the stateless and persisted reports carry it; a gap records an absence of verification, not
+  a vulnerability).
 - New or significantly changed resources can trigger a scoped detection request.
 - A case can group equivalent observations while retaining every affected resource.
 

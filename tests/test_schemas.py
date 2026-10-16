@@ -32,6 +32,7 @@ COMPILED_GOLDENS = (
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-sarif.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-hdf.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-timed.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-gaps.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-failed.json"),
     (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
@@ -277,9 +278,10 @@ class CompiledGoldenValidationTests(unittest.TestCase):
     """The compiler's own goldens satisfy the official schemas.
 
     `ver-schema-examples.json` holds hand-written examples; the compiled goldens in
-    `COMPILED_GOLDENS` are what ComplyRoll emits (six VDT goldens, from STIG
-    artifacts, SARIF logs, HDF documents, an inventory's coverage, its recorded coverage
-    gaps and detection process failures, plus the AVI golden and three historical goldens),
+    `COMPILED_GOLDENS` are what ComplyRoll emits (seven VDT goldens, from STIG
+    artifacts, SARIF logs, HDF documents, an inventory's coverage over untimed and timed
+    evidence, its recorded coverage gaps and detection process failures, plus the AVI golden
+    and three historical goldens),
     so validating each against its own schema here ties the projections to the schemas
     without going through the report compiler. The historical goldens with failures and
     with gaps sit before the plain one so `by_schema` still resolves to
@@ -334,6 +336,25 @@ class CompiledGoldenValidationTests(unittest.TestCase):
         self.assertLessEqual(
             with_gaps | {"vdt-coverage.json"}, {name for _, name, _ in self.goldens}
         )
+
+    def test_every_golden_with_a_coverage_block_is_validated_here(self) -> None:
+        with_coverage: set[str] = set()
+        for path in sorted((TEST_ROOT / "golden").glob("*.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            extension = document.get("x-complyroll") if isinstance(document, dict) else None
+            if isinstance(extension, dict) and "coverage" in extension:
+                with_coverage.add(path.name)
+
+        self.assertEqual(
+            with_coverage,
+            {
+                "historical-coverage-gaps.json",
+                "vdt-coverage-gaps.json",
+                "vdt-coverage-timed.json",
+                "vdt-coverage.json",
+            },
+        )
+        self.assertLessEqual(with_coverage, {name for _, name, _ in self.goldens})
 
     def test_the_avi_golden_is_not_a_vulnerability_detail_report(self) -> None:
         instance = self.by_schema[ReportSchema.ACCEPTED_VULNERABILITY]

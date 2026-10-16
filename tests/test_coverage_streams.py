@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -25,6 +26,7 @@ from test_coverage_gaps import GROUP_KEY, fleet_result, gap
 from test_events import failure_batch, failure_head, system_record, with_value
 from test_events import observation as artifact_observation
 
+from complyroll.correlation import group_open_observations
 from complyroll.events import (
     COVERAGE_ANCHOR_VALUES,
     COVERAGE_METADATA_KEYS,
@@ -60,8 +62,10 @@ from complyroll.events import (
 )
 from complyroll.events.contracts import _COMPONENT_PATTERN
 from complyroll.history import (
+    HistoryError,
     artifact_history,
     audit_history,
+    correlate_cases,
     fold_all_cases,
     rehydrate_observations,
 )
@@ -719,29 +723,110 @@ class CoverageSchemaMarkingTests(StoreCase):
 
 
 class CoverageReaderTests(StoreCase):
-    """The fold reads no coverage stream yet: rehydration of gaps is the next step."""
+    """The fold reads a whole coverage stream and refuses each shape the audit names."""
 
-    def test_the_readers_ignore_a_whole_coverage_stream(self) -> None:
+    def test_the_readers_read_a_whole_coverage_stream(self) -> None:
+        # Moved on purpose in PR 3 step 5: rehydration gains each gap record in recorded
+        # order, so `cases correlate` opens its case, and artifact history is unchanged.
         self.record_failure()
-        before = (
-            artifact_history(self.repository),
-            rehydrate_observations(self.repository),
-            fold_all_cases(self.repository),
-        )
+        history = artifact_history(self.repository)
+        (failure,) = rehydrate_observations(self.repository)
+        lab, group = gap_record(), gap_record(PSD_RULE, GROUP_KEY)
 
-        record_coverage(self.repository, gap_record())
-        record_coverage(self.repository, gap_record(PSD_RULE, GROUP_KEY))
+        record_coverage(self.repository, lab)
+        record_coverage(self.repository, group)
 
+        self.assertEqual(artifact_history(self.repository), history)
+        self.assertEqual(rehydrate_observations(self.repository), (failure, lab, group))
+        self.assertEqual(fold_all_cases(self.repository), ())
+        correlate_cases(self.repository, metadata=metadata(), now=NOW)
         self.assertEqual(
-            (
-                artifact_history(self.repository),
-                rehydrate_observations(self.repository),
-                fold_all_cases(self.repository),
+            sorted(
+                (case.source_type, case.context_key) for case in fold_all_cases(self.repository)
             ),
-            before,
+            sorted((item.source_type, item.context_key) for item in (failure, lab, group)),
         )
-        self.assertEqual(len(before[1]), 1)
         self.assertEqual(audit_history(self.repository), ())
+
+    def fresh_store(self) -> None:
+        """Point the test at a new empty store, so each planted shape starts clean."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "history.sqlite"
+        self.open_store()
+
+    def test_the_reader_refuses_each_shape_with_the_audits_message(self) -> None:
+        record = gap_record()
+        stream_id = coverage_stream_id_of(record)
+        head, observation = coverage_events(record)
+        other = coverage_events(gap_record(MVX_RULE, "host:web-01"))[1]
+        canonical = record.to_canonical_dict()
+        dropped = {
+            key: value
+            for key, value in canonical["source_metadata"].items()
+            if key != "coverage.force"
+        }
+        disagreeing = (COVERAGE_RECORDED, {**head[1], "anchor": "verification"})
+        invalid = (COVERAGE_RECORDED, {**head[1], "rule": "VDR-NOT-A-RULE"})
+        # Each shape, the audit code it is reported under, and whether the reader names the
+        # event before the audit's message, as it does for a failure stream's event.
+        shapes: dict[str, tuple[str, list[tuple[str, Any]], str, str | None]] = {
+            "head alone": (stream_id, [head], "coverage_incomplete", None),
+            "a second record": (
+                stream_id,
+                [head, observation, observation],
+                "coverage_overfull",
+                None,
+            ),
+            "record first": (stream_id, [observation, head], "coverage_stream_mismatch", None),
+            "another gap's record": (
+                stream_id,
+                [head, other],
+                "coverage_stream_mismatch",
+                "is on the wrong stream",
+            ),
+            "a metadata key dropped": (
+                stream_id,
+                [head, ("observation.recorded", {**canonical, "source_metadata": dropped})],
+                "coverage_identity_breach",
+                "is on the wrong stream",
+            ),
+            "a head naming another anchor": (
+                stream_id,
+                [disagreeing, observation],
+                "coverage_identity_breach",
+                None,
+            ),
+            "a head outside its contract": (
+                stream_id,
+                [invalid, observation],
+                "payload_contract_invalid",
+                "is not a readable coverage record",
+            ),
+            "a stream id naming no fingerprint": (
+                "coverage/not-a-fingerprint",
+                [head, observation],
+                "coverage_stream_mismatch",
+                "is on the wrong stream",
+            ),
+        }
+        for label, (planted_on, events, code, prefix) in shapes.items():
+            with self.subTest(label):
+                self.fresh_store()
+                self.stage(planted_on, events)
+                faults = [fault for fault in audit_history(self.repository) if fault.code == code]
+                self.assertTrue(faults, msg=label)
+                fault = faults[0]
+                expected = (
+                    fault.message
+                    if prefix is None
+                    else f"event {fault.sequence} {prefix}: {fault.message}"
+                )
+
+                with self.assertRaises(HistoryError) as caught:
+                    rehydrate_observations(self.repository)
+
+                self.assertEqual(str(caught.exception), expected)
 
 
 # *--- Audits ---*
@@ -1007,7 +1092,9 @@ class CoverageStoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn(message, err)
         self.assertIn("faults: 1 domain fault(s) in", err)
 
-    def test_a_whole_coverage_stream_verifies_and_changes_no_report(self) -> None:
+    def test_a_whole_coverage_stream_verifies_and_its_gap_reaches_the_report(self) -> None:
+        # Moved on purpose in PR 3 step 5: the fold reads the stream, so the report gains the
+        # gap's record and `cases correlate` opens its case.
         twin = self.workspace / "twin.json"
         self.report(output=twin)
         listed = run(["cases", "list", "--db", str(self.database)])[:2]
@@ -1015,13 +1102,24 @@ class CoverageStoreVerifyCommandTests(PersistedStoreTestCase):
             record_coverage(EventRepository(store), self.record)
             self.assertEqual(store.schema_version, 4)
         planted = self.workspace / "planted.json"
+        (group,) = group_open_observations([self.record])
 
         out, err = self.succeeds(["store", "verify", "--db", str(self.database)])
         self.report(output=planted)
 
         self.assertEqual((out, err), (f"ok: {self.latest_sequence()} event(s) verified\n", ""))
-        self.assertEqual(planted.read_bytes(), twin.read_bytes())
+        before = json.loads(twin.read_text(encoding="utf-8"))
+        after = json.loads(planted.read_text(encoding="utf-8"))
+        self.assertEqual(
+            {item["providerTrackingId"] for item in after["vulnerabilities"]},
+            {item["providerTrackingId"] for item in before["vulnerabilities"]}
+            | {group.tracking_id},
+        )
         self.assertEqual(run(["cases", "list", "--db", str(self.database)])[:2], listed)
+        self.correlate()
+        code, listing = run(["cases", "list", "--db", str(self.database)])[:2]
+        self.assertEqual(code, 0)
+        self.assertIn(group.tracking_id, listing)
 
     def test_a_coverage_stream_missing_its_record_is_named_and_exits_one(self) -> None:
         sequences = self.smuggle(self.stream_id, [self.head])

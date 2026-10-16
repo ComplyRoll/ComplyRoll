@@ -6080,6 +6080,39 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
             ],
         )
 
+    def test_a_coverage_schema_marker_left_low_changes_no_report_and_no_writer(self) -> None:
+        # The twin holds the same coverage streams: the fold reads them, so a stream planted
+        # in one copy alone would change the report (ADR 0015, PR 3 step 4 finding 5).
+        self.copy_store(self.clean, "coverage-clean.db")
+        code, _out, err = run(
+            [
+                "cases",
+                "coverage",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--as-of",
+                INGESTED_AT,
+                "--inventory",
+                str(EXAMPLE_INVENTORY),
+            ]
+        )
+        self.assertEqual(code, 3, err)
+        self.clean = self.database
+        coverage = self.record("coverage.recorded")
+        self.copy_store(self.clean, "coverage-twin.db")
+        self.twin_outputs = self.outputs("coverage-twin")
+        self.twin_reads = self.case_reads()
+        self.twin_appended = self.appended()
+
+        def plant() -> list[tuple[int, str]]:
+            with closing(self.raw()) as connection:
+                connection.execute("PRAGMA user_version = 3")
+            return [(coverage.sequence, "coverage_schema_unmarked")]
+
+        self.assert_content_neutral("coverage-schema", plant)
+
 
 class ReportSourceConflictTests(unittest.TestCase):
     """Every `report` command takes a store or stateless inputs, never both, never neither.

@@ -31,6 +31,7 @@ from complyroll.adapters import (
 )
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import (
+    COVERAGE_RECORDED,
     FAILURE_HEAD_TYPES,
     FAILURE_HELD,
     MAX_BATCH_EVENTS,
@@ -42,6 +43,8 @@ from complyroll.events import (
     artifact_stream_id,
     canonical_payload_digest,
     case_stream_id,
+    coverage_head_payload,
+    coverage_stream_id_of,
     failure_hold_orphan_message,
     failure_stream_id,
     is_case_stream,
@@ -50,8 +53,17 @@ from complyroll.events import (
     tracking_id_from_stream,
 )
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
+from complyroll.policy import CertificationProfile
+from complyroll.reports.coverage import CoverageResult
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet
-from complyroll.reports.vdt import ReportDiagnostic, system_record_kind
+from complyroll.reports.gaps import coverage_gap_observations
+from complyroll.reports.inventory import Inventory
+from complyroll.reports.vdt import (
+    ReportDiagnostic,
+    coverage_diagnostics,
+    derive_report_coverage,
+    system_record_kind,
+)
 from complyroll.store import EventRecord
 
 from .fold import (
@@ -68,6 +80,7 @@ from .fold import (
     CaseNotFoundError,
     CaseState,
     HistoryError,
+    _coverage_stream_problem,
     _failure_stream_problem,
     artifact_history,
     fold_case_records,
@@ -133,6 +146,23 @@ class FailureOutcome:
         """Return True when the failure was already in history and nothing was written."""
 
         return not self.appended
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageOutcome:
+    """What one `record_coverage_gaps` call did (ADR 0015).
+
+    `recorded` is each gap this call wrote and `already_recorded` each one whose stream the
+    store already held, both in window order. A gap already recorded keeps the payload its
+    stream was first written with, so its entry here is this run's rebuild of it, under the
+    same id. `coverage` is the projection the gaps came from, and `diagnostics` the notes
+    its derivation raised, which a report from the same inputs raises too.
+    """
+
+    coverage: CoverageResult
+    recorded: tuple[Observation, ...]
+    already_recorded: tuple[Observation, ...]
+    diagnostics: tuple[ReportDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -501,6 +531,88 @@ def _record_failure(
         failure_class=failure_class,
         diagnostics=reported,
         held_by=holder,
+    )
+
+
+def record_coverage_gaps(
+    repository: EventRepository,
+    inventory: Inventory,
+    *,
+    profile: CertificationProfile,
+    as_of: datetime,
+    metadata: EventMetadata,
+) -> CoverageOutcome:
+    """Record each coverage window the store's evidence closed empty, once and atomically.
+
+    The windows are derived as a report from this store derives them (ADR 0015): from the
+    rehydrated observations, with the inventory, profile and as-of given, and each gap is
+    ingested at that as-of, as the stateless run ingests its gaps at its own. A gap's stream
+    is named by its gap record, so the stream id is the idempotence key: a stream already
+    holding its head and record is left alone, and the first recorded payload stands even
+    where this run's inventory digest differs. A stream holding anything else is refused,
+    not resumed, because nothing ever writes one half of a coverage stream; the fold refuses
+    a half the reader can see before this reads it. A new stream is written head first, as
+    one batch at version 0.
+
+    The rehydration and every append run in one store transaction, or in the caller's, so
+    a run records every gap it derives or none of them.
+    """
+
+    if not isinstance(inventory, Inventory):
+        raise TypeError("inventory must be an Inventory")
+    _require_aware(as_of, "as_of")
+    with _transaction_scope(repository):
+        return _record_coverage_gaps(
+            repository, inventory, profile=profile, as_of=as_of, metadata=metadata
+        )
+
+
+def _record_coverage_gaps(
+    repository: EventRepository,
+    inventory: Inventory,
+    *,
+    profile: CertificationProfile,
+    as_of: datetime,
+    metadata: EventMetadata,
+) -> CoverageOutcome:
+    """Derive the gaps and write the streams the store lacks, inside the transaction."""
+
+    coverage = derive_report_coverage(rehydrate_observations(repository), inventory, profile, as_of)
+    recorded: list[Observation] = []
+    already: list[Observation] = []
+    # Every stream is read and judged before the first append, so a refusal writes nothing.
+    for gap in coverage_gap_observations(coverage, ingested_at=as_of):
+        stream_id = coverage_stream_id_of(gap)
+        existing = repository.read_stream(stream_id)
+        if not existing:
+            recorded.append(gap)
+            continue
+        heads = [record for record in existing if record.event_type == COVERAGE_RECORDED]
+        observed = [record for record in existing if record.event_type == OBSERVATION_RECORDED]
+        problem = _coverage_stream_problem(stream_id, len(heads), len(observed))
+        reason = None if problem is None else problem[1]
+        if reason is None and len(heads) + len(observed) != len(existing):
+            reason = f"coverage stream {stream_id!r} holds an event no coverage stream carries"
+        if reason is not None:
+            raise HistoryError(
+                f"{reason}; a coverage stream is written whole, so it is refused rather than "
+                "resumed"
+            )
+        already.append(gap)
+    for gap in recorded:
+        repository.append_batch(
+            coverage_stream_id_of(gap),
+            (
+                _pending(COVERAGE_RECORDED, coverage_head_payload(gap), as_of, metadata),
+                _pending(OBSERVATION_RECORDED, gap.to_canonical_dict(), as_of, metadata),
+            ),
+            expected_version=0,
+        )
+    return CoverageOutcome(
+        coverage=coverage,
+        recorded=tuple(recorded),
+        already_recorded=tuple(already),
+        diagnostics=tuple(coverage_diagnostics(coverage)),
     )
 
 
@@ -1300,6 +1412,7 @@ __all__ = [
     "CLERICAL_FIELDS",
     "AttestationOutcome",
     "CorrelationOutcome",
+    "CoverageOutcome",
     "EvaluationMatchError",
     "EvaluationOrderError",
     "EvaluationOutcome",
@@ -1309,6 +1422,7 @@ __all__ = [
     "attest_detection",
     "content_digest",
     "correlate_cases",
+    "record_coverage_gaps",
     "record_failure",
     "record_ingest",
 ]

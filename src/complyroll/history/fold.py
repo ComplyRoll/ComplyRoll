@@ -374,7 +374,8 @@ def rehydrate_observations(repository: EventRepository) -> tuple[Observation, ..
     byte identity and reported every finding twice. A current failure stream contributes its
     one system observation, so `cases correlate` creates and links a system case exactly as
     it does any other (ADR 0014). A dormant hold contributes nothing: its observation is the
-    one the failure carrying it contributes, under R6.
+    one the failure carrying it contributes, under R6. Every coverage stream is current and
+    contributes its one gap record, so a gap becomes a case the same way (ADR 0015).
     """
 
     split = _split_streams(_read_artifact_streams(repository), _read_failure_streams(repository))
@@ -382,6 +383,7 @@ def rehydrate_observations(repository: EventRepository) -> tuple[Observation, ..
         (
             *(event for view in split.current for event in view.observations),
             *(view.observation for view in split.current_failures),
+            *(view.observation for view in _read_coverage_streams(repository)),
         ),
         key=lambda event: event.sequence,
     )
@@ -1135,10 +1137,69 @@ def _read_failure_streams(repository: EventRepository) -> tuple[_FailureStreamVi
     return tuple(views)
 
 
-#: What an unreadable artifact- or failure-stream event is called in the message the fold
-#: raises.
+@dataclass(frozen=True, slots=True)
+class _CoverageStreamView:
+    """One coverage stream: its `coverage.recorded` head and its one gap record event."""
+
+    stream_id: str
+    head: EventRecord
+    observation: EventRecord
+
+
+def _read_coverage_streams(repository: EventRepository) -> tuple[_CoverageStreamView, ...]:
+    """Read every coverage stream back, in the order the streams were opened (ADR 0015).
+
+    A coverage stream is one `coverage.recorded` head and the one gap record it names,
+    written whole in one transaction and head first, so the reader refuses what the audit
+    names, with the audit's message: a contract-invalid event, an event its stream does not
+    name, a missing half (incomplete), a second head or record (overfull), a record ahead of
+    its head, and a head and a record that describe two gaps. A gap record is never
+    superseded, so every coverage stream is current.
+    """
+
+    heads: dict[str, list[EventRecord]] = {}
+    observations: dict[str, list[EventRecord]] = {}
+    opened_by: dict[str, str] = {}
+    for record in repository.read_all():
+        if record.event_type not in (COVERAGE_RECORDED, OBSERVATION_RECORDED):
+            continue
+        if not is_coverage_stream(record.stream_id):
+            continue
+        _require_readable_artifact_event(repository, record)
+        problem = coverage_record_problem(record.stream_id, record.event_type, record.payload)
+        if problem is not None:
+            raise HistoryError(f"event {record.sequence} is on the wrong stream: {problem[1]}")
+        opened_by.setdefault(record.stream_id, record.event_type)
+        found = heads if record.event_type == COVERAGE_RECORDED else observations
+        found.setdefault(record.stream_id, []).append(record)
+
+    views: list[_CoverageStreamView] = []
+    for stream_id, opener in opened_by.items():
+        stream_heads = heads.get(stream_id, [])
+        stream_observations = observations.get(stream_id, [])
+        problem = _coverage_stream_problem(stream_id, len(stream_heads), len(stream_observations))
+        if problem is not None:
+            raise HistoryError(problem[1])
+        if opener != COVERAGE_RECORDED:
+            raise HistoryError(coverage_head_order_message(stream_id))
+        disagreement = coverage_record_disagreement(
+            stream_id, stream_heads[0].payload, stream_observations[0].payload
+        )
+        if disagreement is not None:
+            raise HistoryError(disagreement)
+        views.append(
+            _CoverageStreamView(
+                stream_id=stream_id, head=stream_heads[0], observation=stream_observations[0]
+            )
+        )
+    return tuple(views)
+
+
+#: What an unreadable artifact-, failure- or coverage-stream event is called in the message
+#: the fold raises.
 _ARTIFACT_EVENT_NAMES: Final[dict[str, str]] = {
     ARTIFACT_INGESTED: "artifact record",
+    COVERAGE_RECORDED: "coverage record",
     FAILURE_RECORDED: "failure record",
     FAILURE_HELD: "failure hold",
     OBSERVATION_RECORDED: "observation",

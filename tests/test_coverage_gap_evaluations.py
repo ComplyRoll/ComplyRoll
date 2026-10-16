@@ -224,8 +224,8 @@ def as_tuples(diagnostics: Sequence[ReportDiagnostic]) -> list[tuple[str, str, s
 def case_of(group: VulnerabilityGroup) -> CaseState:
     """Return the case `cases correlate` would open for a group, before any event on it.
 
-    The coverage stream writer lands in a later step, so no store can hold a gap yet; the
-    persisted refusals are exercised on the folded state they read.
+    The persisted refusals are exercised here on the folded state they read; the end-to-end
+    twins on a store `cases coverage` wrote are in `tests/test_coverage_history.py`.
     """
     return CaseState(
         tracking_id=group.tracking_id,
@@ -547,8 +547,8 @@ class GapEvaluationOrderTests(unittest.TestCase):
 class PersistedGapEvaluationTests(unittest.TestCase):
     """`cases evaluate` refuses and orders a gap case exactly as the compiler does.
 
-    No store can hold a gap until the coverage stream writer lands, so these run the
-    writer's matcher and the order check on the case state and group they read.
+    These run the writer's matcher and the order check on the case state and group they
+    read; `PersistedGapEvaluationCommandTests` runs the same refusals on a real store.
     """
 
     def test_the_triple_selects_the_gap_case_with_its_disposition(self) -> None:

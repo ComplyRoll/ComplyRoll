@@ -82,6 +82,7 @@ from .coverage import (
     CoverageWindow,
     ResourceCoverage,
     derive_coverage,
+    verifying_evidence,
 )
 from .evaluations import EvaluationInput, EvaluationSet, ReportInputError
 from .gaps import COVERAGE_GAP_SOURCE_TYPE, coverage_gap_observation, coverage_gap_observations
@@ -641,7 +642,7 @@ def compile_record_set_from_artifacts(
     inventory = options.inventory
     if options.record_coverage_gaps and inventory is not None:
         policy = select_policy(load_bundled_rule_source_snapshot(), options.profile)
-        coverage = _coverage(observations, inventory, policy, options)
+        coverage = _coverage(observations, inventory, policy, options.as_of)
         observations.extend(coverage_gap_observations(coverage, ingested_at=options.as_of))
     groups = group_open_observations(observations)
     matches = _match_evaluations(groups, evaluations)
@@ -747,7 +748,9 @@ def compile_record_set(
 
     `coverage` is a projection the caller already derived from these observations, so it
     is not derived twice; it must belong to the options. With `gap_aware`, every coverage
-    window is mapped to the record that carries its gap, or to None when none does.
+    window is mapped to the record that carries its gap, or to None when none does, and
+    each window no record carries and each gap record no window derives is named in an
+    INFO note, which only a compile from history can meet (ADR 0015, divergences 1 and 2).
     """
 
     if not isinstance(options, ReportOptions):
@@ -787,7 +790,7 @@ def compile_record_set(
     inventory = options.inventory
     if coverage is None:
         coverage = (
-            None if inventory is None else _coverage(observations, inventory, policy, options)
+            None if inventory is None else _coverage(observations, inventory, policy, options.as_of)
         )
     elif not _coverage_belongs(coverage, inventory, policy, options):
         raise ValueError("coverage must be derived from these options' inventory, as-of and policy")
@@ -892,7 +895,14 @@ def compile_record_set(
     if catalog is not None:
         diagnostics.extend(_kev_diagnostics(catalog, compiled, kev_incomplete, options))
     if coverage is not None:
-        diagnostics.extend(_coverage_diagnostics(coverage))
+        diagnostics.extend(coverage_diagnostics(coverage))
+    gap_records: dict[CoverageWindow, str | None] | None = None
+    if gap_aware and coverage is not None:
+        window_ids = _window_gap_ids(coverage, options)
+        gap_records = {window: gap_tracking.get(gap_id) for window, gap_id in window_ids.items()}
+        diagnostics.extend(
+            _coverage_gap_divergences(coverage, window_ids, gap_tracking, observations)
+        )
     return CompiledRecordSet(
         records=tuple(compiled),
         artifacts=tuple(sorted(artifacts, key=_artifact_order)),
@@ -904,11 +914,7 @@ def compile_record_set(
         detection_failures=_ordered_detection_failures(detection_failures),
         coverage=coverage,
         coverage_gaps=tuple(sorted(set(gap_tracking.values()))),
-        coverage_gap_records=(
-            _coverage_gap_records(coverage, gap_tracking, options)
-            if gap_aware and coverage is not None
-            else None
-        ),
+        coverage_gap_records=gap_records,
     )
 
 
@@ -1768,11 +1774,33 @@ def _kev_location(catalog: KevCatalog) -> str:
     return f"sha256:{catalog.sha256}"
 
 
+def derive_report_coverage(
+    observations: Sequence[Observation],
+    inventory: Inventory,
+    profile: CertificationProfile,
+    as_of: datetime,
+) -> CoverageResult:
+    """Derive the coverage block a report of these inputs carries, as the report derives it.
+
+    `cases coverage` records the gaps of exactly this projection (ADR 0015): the policy the
+    profile selects from the pinned dataset, the same refusal when it lacks a coverage
+    rule, and a derivation that never reads a system observation as evidence.
+    """
+
+    if not isinstance(inventory, Inventory):
+        raise TypeError("inventory must be an Inventory")
+    if not isinstance(profile, CertificationProfile):
+        raise TypeError("profile must be a CertificationProfile")
+    _require_aware(as_of, "as_of")
+    policy = select_policy(load_bundled_rule_source_snapshot(), profile)
+    return _coverage(observations, inventory, policy, as_of)
+
+
 def _coverage(
     observations: Sequence[Observation],
     inventory: Inventory,
     policy: SelectedPolicy,
-    options: ReportOptions,
+    as_of: datetime,
 ) -> CoverageResult:
     """Return the coverage projection, or stop the run when the policy lacks a coverage rule.
 
@@ -1797,7 +1825,7 @@ def _coverage(
                 ),
             )
         )
-    return derive_coverage(observations, inventory, policy, options.as_of)
+    return derive_coverage(observations, inventory, policy, as_of)
 
 
 def _selects(policy: SelectedPolicy, rule_id: str) -> bool:
@@ -1825,26 +1853,208 @@ def _coverage_belongs(
     )
 
 
-def _coverage_gap_records(
-    coverage: CoverageResult, gap_tracking: Mapping[str, str], options: ReportOptions
-) -> dict[CoverageWindow, str | None]:
-    """Map each window to the record carrying its gap, found by the gap's own id.
+def _window_gap_ids(coverage: CoverageResult, options: ReportOptions) -> dict[CoverageWindow, str]:
+    """Return the id of each window's gap, rebuilt from the window alone.
 
     The id depends only on the window, never on the ingest time, so rebuilding the gap
     here names the observation whichever path recorded it.
     """
 
     return {
-        window: gap_tracking.get(
-            coverage_gap_observation(
-                window, inventory=coverage.inventory, ingested_at=options.as_of
-            ).observation_id
-        )
+        window: coverage_gap_observation(
+            window, inventory=coverage.inventory, ingested_at=options.as_of
+        ).observation_id
         for window in coverage.windows
     }
 
 
-def _coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
+def _coverage_gap_divergences(
+    coverage: CoverageResult,
+    window_ids: Mapping[CoverageWindow, str],
+    gap_tracking: Mapping[str, str],
+    observations: Sequence[Observation],
+) -> list[ReportDiagnostic]:
+    """Name each window no gap record carries, then each gap record no window derives.
+
+    A stateless run records every window it derives and nothing else, so only a compile
+    from history meets either (ADR 0015, divergences 1 and 2). A missed window is a
+    permanent fact: a gap this run no longer derives keeps its case, and the note says why,
+    as `coverage_gap_contradicted` when evidence inside the window disproves it and as
+    `coverage_gap_unmatched` when none does. A disposition answers a whole case, so each
+    note is read against the other recorded gaps of its case as well.
+    """
+
+    notes: list[ReportDiagnostic] = []
+    for window, gap_id in window_ids.items():
+        if gap_id in gap_tracking:
+            continue
+        label = _coverage_label(window.key.subject)
+        notes.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.INFO,
+                code="coverage_gap_unrecorded",
+                message=(
+                    f"the {window.rule_id} window for {label} closed {_iso(window.closed_at)} "
+                    "with no verification, and history records no gap for it, so no case in "
+                    "this report carries it; cases coverage with this run's inventory, as-of, "
+                    "class and calendar zone records it"
+                ),
+                location=f"{coverage.inventory.name} {label}",
+            )
+        )
+    derived = set(window_ids.values())
+    recorded = sorted(
+        (
+            item
+            for item in observations
+            if item.origin is ObservationOrigin.SYSTEM
+            and item.source_type == COVERAGE_GAP_SOURCE_TYPE
+            and item.observation_id in gap_tracking
+        ),
+        key=_gap_order,
+    )
+    disproof = {
+        item.observation_id: _disproving_evidence(item, observations, coverage)
+        for item in recorded
+        if item.observation_id not in derived
+    }
+    # Each case's recorded gaps, in window order, so siblings are found once per case.
+    cases: dict[str, list[Observation]] = {}
+    for item in recorded:
+        cases.setdefault(gap_tracking[item.observation_id], []).append(item)
+    for item in recorded:
+        if item.observation_id not in disproof:
+            continue
+        tracking_id = gap_tracking[item.observation_id]
+        siblings = [other for other in cases[tracking_id] if other is not item]
+        # A sibling still derived, or one nothing disproves, keeps the case open.
+        standing = [
+            (other, other.observation_id in derived)
+            for other in siblings
+            if other.observation_id in derived or disproof[other.observation_id] is None
+        ]
+        notes.append(
+            _underived_gap(
+                item,
+                tracking_id,
+                disproof[item.observation_id],
+                standing=standing,
+                shared=bool(siblings),
+            )
+        )
+    return notes
+
+
+def _disproving_evidence(
+    gap: Observation, observations: Sequence[Observation], coverage: CoverageResult
+) -> CoverageEvidence | None:
+    """Return the earliest verification inside a recorded gap's window, or None.
+
+    The window is (anchorAt, windowClosedAt] from the record's own metadata, which the
+    reader holds to its head and its close to the instant it is observed at. Evidence is
+    filed as the derivation files it, so a verification after this run's as-of is not used.
+    """
+
+    closed_at = gap.observed_at
+    if closed_at is None:  # pragma: no cover - a gap is always observed at its window close
+        raise ValueError(f"coverage gap {gap.observation_id} has no window close")
+    rule = gap.context_key.split(":", 1)[0]
+    anchor_at = datetime.fromisoformat(dict(gap.source_metadata)["coverage.anchorAt"])
+    return next(
+        (
+            item
+            for item in verifying_evidence(
+                observations, coverage.inventory, coverage.as_of, rule_id=rule, subject=gap.resource
+            )
+            if item.at is not None and anchor_at < item.at <= closed_at
+        ),
+        None,
+    )
+
+
+def _underived_gap(
+    gap: Observation,
+    tracking_id: str,
+    evidence: CoverageEvidence | None,
+    *,
+    standing: Sequence[tuple[Observation, bool]],
+    shared: bool,
+) -> ReportDiagnostic:
+    """Name a recorded gap this run derives no window for, and why it derives none.
+
+    With evidence inside the window the gap is contradicted and the earliest is named.
+    Without it the gap is unmatched: nothing disproves it, and the inputs of this run and
+    of the one that recorded it may differ, which no disposition answers. A disposition
+    answers the whole case, so a contradicted note advises a false positive only when no
+    other recorded gap of its case stands. Each that does is named with why it stands:
+    this run still derives it (True), or neither derives nor disproves it (False).
+    """
+
+    closed_at = gap.observed_at
+    if closed_at is None:  # pragma: no cover - a gap is always observed at its window close
+        raise ValueError(f"coverage gap {gap.observation_id} has no window close")
+    described = f"{tracking_id} carries the recorded gap of {_gap_window(gap)}"
+    others = ", and ".join(
+        f"{_gap_window(other)}, which this run "
+        + ("still derives" if still_derived else "neither derives nor disproves")
+        for other, still_derived in standing
+    )
+    if evidence is None or evidence.at is None:
+        tail = "the gap stays recorded"
+        if others:
+            tail = f"{tail}, and the case also carries {others}"
+        return ReportDiagnostic(
+            level=DiagnosticLevel.INFO,
+            code="coverage_gap_unmatched",
+            message=(
+                f"{described}, and this run derives no such window and holds no verification "
+                "inside it, so its inventory, as-of, class or calendar zone may differ from "
+                f"the run that recorded the gap; {tail}"
+            ),
+            location=gap.source_record_id,
+        )
+    if others:
+        advice = (
+            f"but the case also carries {others}, so it stays open until every other gap it "
+            "carries is contradicted or disposed on its own merits"
+        )
+    elif shared:
+        advice = (
+            "and every other recorded gap of the case is contradicted too, so an evaluation "
+            "can dispose the case as a false positive"
+        )
+    else:
+        advice = "and an evaluation can dispose it as a false positive"
+    return ReportDiagnostic(
+        level=DiagnosticLevel.INFO,
+        code="coverage_gap_contradicted",
+        message=(
+            f"{described}, but {evidence.kind.value} {evidence.reference} on "
+            f"{_coverage_label(evidence.resource)} verified it at {_iso(evidence.at)}, inside "
+            f"that window, so this run derives no such window; the gap stays recorded, {advice}"
+        ),
+        location=gap.source_record_id,
+    )
+
+
+def _gap_window(gap: Observation) -> str:
+    """Return a recorded gap as its window reads: rule, context subject and close."""
+
+    closed = "" if gap.observed_at is None else _iso(gap.observed_at)
+    rule = gap.context_key.split(":", 1)[0]
+    return f"the {rule} window for {_coverage_label(gap.resource)} that closed {closed}"
+
+
+def _gap_order(gap: Observation) -> tuple[str, str, str, str, str]:
+    """Order gap records as their windows are ordered: by rule, subject and close."""
+
+    closed = "" if gap.observed_at is None else _iso(gap.observed_at)
+    rule = gap.context_key.split(":", 1)[0]
+    subject = gap.resource
+    return (rule, subject.resource_type, subject.resource_id, closed, gap.observation_id)
+
+
+def coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
     """Return one note per warning an inventory entry raised, in inventory order.
 
     Each is located at the inventory's name and the entry's pair, so the same entry in the

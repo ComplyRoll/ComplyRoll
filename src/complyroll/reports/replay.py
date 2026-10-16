@@ -8,7 +8,9 @@ the log is byte-identical to the stateless report compiled from the same inputs.
 failure stream reads back as its system observation and its head's diagnostics, which are
 what the stateless path compiled for that failure (ADR 0014 records where the two differ).
 Current is the stream that carries the failure: a hold left dormant beneath it is named,
-not read back (ADR 0014, amendment 2026-10-13).
+not read back (ADR 0014, amendment 2026-10-13). A coverage stream reads back as its gap
+record, and a store marked schema 4 compiles gap aware, naming each window no recorded gap
+carries and each recorded gap this run derives no window for (ADR 0015).
 
 Detection-time attestations are per case here rather than one flag on the command line.
 An attestation still applies only to a group where no observation declares a source
@@ -26,7 +28,7 @@ from typing import TYPE_CHECKING
 
 from complyroll.adapters import DiagnosticLevel
 from complyroll.correlation import group_open_observations
-from complyroll.events import EventRepository, is_failure_stream
+from complyroll.events import COVERAGE_STREAM_SCHEMA_VERSION, EventRepository, is_failure_stream
 from complyroll.models import Observation
 
 from .avi import CompiledAviReport, project_avi
@@ -100,8 +102,11 @@ def compile_record_set_from_history(
     `options.detected_at_attestation` is ignored on this path. Attestations are facts
     the log already holds, one `detection.attested` event per case, so a command-line
     flag has nothing to add and must not silently override what an operator filed.
-    `options.record_coverage_gaps` is refused rather than ignored: a gap the store has not
-    recorded would otherwise vanish from a run that asked for it (ADR 0015).
+    `options.record_coverage_gaps` is refused rather than ignored: a report never records a
+    gap, `cases coverage` does (ADR 0015). The store decides instead: one marked schema 4
+    has recorded gaps, so with an inventory the report is gap aware, each window naming the
+    recorded gap that carries it or none. A store that never recorded a gap reads exactly
+    as the stateless run without the flag, whatever the build that reads it.
     """
 
     if not isinstance(options, ReportOptions):
@@ -134,6 +139,10 @@ def compile_record_set_from_history(
         evaluations_by_tracking_id=_evaluations(cases),
         attestation=_attestation(cases),
         options=options,
+        gap_aware=(
+            options.inventory is not None
+            and repository.store.schema_version >= COVERAGE_STREAM_SCHEMA_VERSION
+        ),
     )
 
 

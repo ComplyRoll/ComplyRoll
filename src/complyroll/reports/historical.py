@@ -136,6 +136,8 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
         attestation_detected_at=_attested_instant(records),
         detection_failures=record_set.detection_failures,
         coverage=record_set.coverage,
+        coverage_gaps=record_set.coverage_gaps,
+        coverage_gap_records=record_set.coverage_gap_records,
     )
     document = _build_historical_document(records, active, accepted, metadata, diagnostics)
     validation = _validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)

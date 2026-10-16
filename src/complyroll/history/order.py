@@ -108,6 +108,7 @@ def case_order_diagnostic(
         detected_at=detected_at,
         detected_source=detected_source,
         completed_at=completed_at,
+        source_type=group.source_type,
     )
 
 

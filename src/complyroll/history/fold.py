@@ -21,6 +21,8 @@ from typing import Any, Final, TypeGuard, TypeVar
 from complyroll.adapters import DiagnosticLevel, FailureClass, IngestDiagnostic
 from complyroll.adapters.failures import EXECUTION_UNSUCCESSFUL
 from complyroll.events import (
+    COVERAGE_RECORDED,
+    COVERAGE_STREAM_SCHEMA_VERSION,
     FAILURE_HEAD_TYPES,
     FAILURE_HELD,
     FAILURE_STREAM_SCHEMA_VERSION,
@@ -30,6 +32,9 @@ from complyroll.events import (
     EventRepository,
     artifact_identity_breach,
     case_stream_id,
+    coverage_head_order_message,
+    coverage_record_disagreement,
+    coverage_record_problem,
     duplicate_observation_message,
     event_belongs_on_stream,
     failure_duplicate_observation_message,
@@ -40,6 +45,7 @@ from complyroll.events import (
     failure_stream_components,
     is_artifact_stream,
     is_case_stream,
+    is_coverage_stream,
     is_failure_stream,
     metadata_breaches,
     parse_utc,
@@ -68,6 +74,11 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    "coverage_identity_breach",
+    "coverage_incomplete",
+    "coverage_overfull",
+    "coverage_schema_unmarked",
+    "coverage_stream_mismatch",
     "evaluation_before_detection",
     "event_metadata_invalid",
     "event_stream_mismatch",
@@ -363,7 +374,8 @@ def rehydrate_observations(repository: EventRepository) -> tuple[Observation, ..
     byte identity and reported every finding twice. A current failure stream contributes its
     one system observation, so `cases correlate` creates and links a system case exactly as
     it does any other (ADR 0014). A dormant hold contributes nothing: its observation is the
-    one the failure carrying it contributes, under R6.
+    one the failure carrying it contributes, under R6. Every coverage stream is current and
+    contributes its one gap record, so a gap becomes a case the same way (ADR 0015).
     """
 
     split = _split_streams(_read_artifact_streams(repository), _read_failure_streams(repository))
@@ -371,6 +383,7 @@ def rehydrate_observations(repository: EventRepository) -> tuple[Observation, ..
         (
             *(event for view in split.current for event in view.observations),
             *(view.observation for view in split.current_failures),
+            *(view.observation for view in _read_coverage_streams(repository)),
         ),
         key=lambda event: event.sequence,
     )
@@ -539,7 +552,7 @@ def _digest_compares_numerically(history: ArtifactHistory, sha256: str, version:
 #: The faults no reader and no case writer refuses on any stream, beside which
 #: `audit_history` still checks evaluation order.
 _ORDER_CHECKED_BESIDE: Final[frozenset[str]] = frozenset(
-    {"event_metadata_invalid", "failure_schema_unmarked"}
+    {"event_metadata_invalid", "failure_schema_unmarked", "coverage_schema_unmarked"}
 )
 
 
@@ -588,6 +601,20 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       build that predates failure streams would open and misread, or a hold in a store
       below schema 3, which a build that predates holds would misread the same way.
 
+    Coverage streams (ADR 0015) have five of their own:
+
+    - `coverage_incomplete` and `coverage_overfull`: a coverage stream that is not exactly
+      one `coverage.recorded` head and one observation.
+    - `coverage_stream_mismatch`: a coverage stream id that names no fingerprint, a gap
+      record whose fingerprint is not the one its stream id names, or a stream that does
+      not open with its head.
+    - `coverage_identity_breach`: an observation on a coverage stream that is not a gap
+      record (origin, source type, tool, parser, record id, or derived id), whose metadata
+      is not exactly the eight keys or restates its window close or rule otherwise, or
+      whose head names another rule, context key, window close, anchor, or inventory.
+    - `coverage_schema_unmarked`: a coverage stream in a store below schema 4, which a
+      build that predates coverage streams would open and misread.
+
     One fault orders the log's cases against the report rather than describing damage:
 
     - `evaluation_before_detection`: a case's current evaluation completed before the
@@ -596,8 +623,9 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       refuse to leave one, but `ingest` can, by superseding an untimed reading with a timed
       one, and so can a store written around the writers. It folds every case and
       rehydrates observations, which a damaged log cannot do dependably, so it is checked
-      only when every other fault found is `event_metadata_invalid` or
-      `failure_schema_unmarked`, the two no reader refuses on any stream. Beside those it
+      only when every other fault found is `event_metadata_invalid`,
+      `failure_schema_unmarked`, or `coverage_schema_unmarked`, the three no reader refuses
+      on any stream. Beside those it
       is skipped when it cannot fold, and the faults found are reported alone (ADR 0008
       amendment 2026-10-14, second).
 
@@ -620,6 +648,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     # known, because whether it is a fault depends on what opens both streams.
     failure_observations: list[EventRecord] = []
     holds: set[str] = set()
+    # Per coverage stream, the same three as a failure stream's, read the same way.
+    coverage_shapes: dict[str, list[int]] = {}
+    coverage_openers: dict[str, EventRecord] = {}
+    coverage_pairs: dict[str, dict[str, EventRecord]] = {}
     for record in repository.read_all():
         contract_faults = _contract_faults(repository, record)
         faults.extend(contract_faults)
@@ -643,6 +675,17 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
                 failure_openers.setdefault(record.stream_id, record)
                 if not contract_faults and not identity_faults:
                     pair = failure_pairs.setdefault(record.stream_id, {})
+                    pair.setdefault(record.event_type, record)
+        if is_coverage_stream(record.stream_id):
+            shape = coverage_shapes.setdefault(record.stream_id, [record.sequence, 0, 0])
+            if record.event_type == COVERAGE_RECORDED:
+                shape[1] += 1
+            elif record.event_type == OBSERVATION_RECORDED:
+                shape[2] += 1
+            if record.event_type in (COVERAGE_RECORDED, OBSERVATION_RECORDED):
+                coverage_openers.setdefault(record.stream_id, record)
+                if not contract_faults and not identity_faults:
+                    pair = coverage_pairs.setdefault(record.stream_id, {})
                     pair.setdefault(record.event_type, record)
         if record.event_type == ARTIFACT_INGESTED:
             count = record.payload.get("observationCount")
@@ -674,6 +717,19 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
             )
         )
     faults.extend(_schema_faults(repository, failure_shapes, holds))
+    for stream_id, (first, heads, observations) in coverage_shapes.items():
+        problem = _coverage_stream_problem(stream_id, heads, observations)
+        if problem is not None:
+            faults.append(HistoryFault(sequence=first, code=problem[0], message=problem[1]))
+        faults.extend(
+            _coverage_pair_faults(
+                stream_id,
+                heads,
+                coverage_openers.get(stream_id),
+                None if problem is not None else coverage_pairs.get(stream_id, {}),
+            )
+        )
+    faults.extend(_coverage_schema_faults(repository, coverage_shapes))
     for stream_id, (sequence, count) in declared.items():
         found = observed.get(stream_id, 0)
         if found == count:
@@ -1081,10 +1137,71 @@ def _read_failure_streams(repository: EventRepository) -> tuple[_FailureStreamVi
     return tuple(views)
 
 
-#: What an unreadable artifact- or failure-stream event is called in the message the fold
-#: raises.
+@dataclass(frozen=True, slots=True)
+class _CoverageStreamView:
+    """One coverage stream: its `coverage.recorded` head and its one gap record event."""
+
+    stream_id: str
+    head: EventRecord
+    observation: EventRecord
+
+
+def _read_coverage_streams(repository: EventRepository) -> tuple[_CoverageStreamView, ...]:
+    """Read every coverage stream back, in the order the streams were opened (ADR 0015).
+
+    A coverage stream is one `coverage.recorded` head and the one gap record it names,
+    written whole in one transaction and head first, so the reader refuses what the audit
+    names, with the audit's message: an event no coverage stream carries, a contract-invalid
+    event, an event its stream does not name, a missing half (incomplete), a second head or
+    record (overfull), a record ahead of its head, and a head and a record that describe two
+    gaps. A gap record is never superseded, so every coverage stream is current.
+    """
+
+    heads: dict[str, list[EventRecord]] = {}
+    observations: dict[str, list[EventRecord]] = {}
+    opened_by: dict[str, str] = {}
+    for record in repository.read_all():
+        if not is_coverage_stream(record.stream_id):
+            continue
+        # A foreign event is refused rather than skipped: skipped, it left a stream the audit
+        # names readable here, so a report and `cases coverage` ran on top of it.
+        if not event_belongs_on_stream(record.event_type, record.stream_id):
+            raise HistoryError(_misplaced_event_message(record))
+        _require_readable_artifact_event(repository, record)
+        problem = coverage_record_problem(record.stream_id, record.event_type, record.payload)
+        if problem is not None:
+            raise HistoryError(f"event {record.sequence} is on the wrong stream: {problem[1]}")
+        opened_by.setdefault(record.stream_id, record.event_type)
+        found = heads if record.event_type == COVERAGE_RECORDED else observations
+        found.setdefault(record.stream_id, []).append(record)
+
+    views: list[_CoverageStreamView] = []
+    for stream_id, opener in opened_by.items():
+        stream_heads = heads.get(stream_id, [])
+        stream_observations = observations.get(stream_id, [])
+        problem = _coverage_stream_problem(stream_id, len(stream_heads), len(stream_observations))
+        if problem is not None:
+            raise HistoryError(problem[1])
+        if opener != COVERAGE_RECORDED:
+            raise HistoryError(coverage_head_order_message(stream_id))
+        disagreement = coverage_record_disagreement(
+            stream_id, stream_heads[0].payload, stream_observations[0].payload
+        )
+        if disagreement is not None:
+            raise HistoryError(disagreement)
+        views.append(
+            _CoverageStreamView(
+                stream_id=stream_id, head=stream_heads[0], observation=stream_observations[0]
+            )
+        )
+    return tuple(views)
+
+
+#: What an unreadable artifact-, failure- or coverage-stream event is called in the message
+#: the fold raises.
 _ARTIFACT_EVENT_NAMES: Final[dict[str, str]] = {
     ARTIFACT_INGESTED: "artifact record",
+    COVERAGE_RECORDED: "coverage record",
     FAILURE_RECORDED: "failure record",
     FAILURE_HELD: "failure hold",
     OBSERVATION_RECORDED: "observation",
@@ -1556,13 +1673,14 @@ def _failure_pair_faults(
 
 
 def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
-    """Report one artifact- or failure-stream event naming a reading its stream does not.
+    """Report one reading-stream event naming a reading or a gap its stream does not.
 
     The artifact-stream analogue of the `case.created` tracking-id check in
     `_placement_faults`: an artifact stream id is an artifact's identity, so both events
     it carries have to name that identity in their payload as well. A failure stream id is
     a failed reading's identity, and its observation has to be that digest's system record
-    (ADR 0014).
+    (ADR 0014). A coverage stream id is a gap record's fingerprint, and its observation has
+    to be that gap record (ADR 0015), under the code `coverage_record_problem` gives.
     """
 
     breach = artifact_identity_breach(record.stream_id, record.event_type, record.payload)
@@ -1570,6 +1688,10 @@ def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
     if breach is None:
         breach = failure_identity_breach(record.stream_id, record.event_type, record.payload)
         code = "failure_stream_mismatch"
+    if breach is None:
+        problem = coverage_record_problem(record.stream_id, record.event_type, record.payload)
+        if problem is not None:
+            code, breach = problem
     if breach is None:
         return ()
     return (
@@ -1627,6 +1749,106 @@ def _schema_faults(
             message=(
                 f"failure stream {stream_id!r} is in a store at schema {version}; a store "
                 f"holding failure streams is marked schema {FAILURE_STREAM_SCHEMA_VERSION}, "
+                "so a build that cannot read them refuses it rather than misreading it"
+            ),
+        ),
+    )
+
+
+def _coverage_stream_problem(
+    stream_id: str,
+    heads: int,
+    observations: int,
+) -> tuple[str, str] | None:
+    """Return the fault code and message for a coverage stream that is not whole, else None.
+
+    A coverage stream is one `coverage.recorded` head and the one gap record it names,
+    written in one transaction (ADR 0015), so like a failure stream it declares no count:
+    the shape is the declaration. A second head or record is overfull, and a missing half
+    is incomplete.
+    """
+
+    found = f"found {heads} coverage record(s) and {observations} observation(s)"
+    if heads > 1 or observations > 1:
+        return (
+            "coverage_overfull",
+            f"coverage stream {stream_id!r} is overfull: a coverage stream holds one coverage "
+            f"record and one observation, {found}",
+        )
+    if heads < 1 or observations < 1:
+        return (
+            "coverage_incomplete",
+            f"coverage stream {stream_id!r} is incomplete: a coverage stream holds one "
+            f"coverage record and one observation, {found}",
+        )
+    return None
+
+
+def _coverage_pair_faults(
+    stream_id: str,
+    heads: int,
+    opener: EventRecord | None,
+    pair: Mapping[str, EventRecord] | None,
+) -> tuple[HistoryFault, ...]:
+    """Report a coverage stream out of order, or whose two events describe two gaps.
+
+    The mirror of `_failure_pair_faults` (ADR 0015). Only a stream holding a head is out of
+    order when its record opens it, a `coverage_stream_mismatch` at that record. `pair` is
+    None for a stream that is not whole; otherwise the two are compared only when both read,
+    and a disagreement is a `coverage_identity_breach` at the record.
+    """
+
+    faults: list[HistoryFault] = []
+    if heads and opener is not None and opener.event_type != COVERAGE_RECORDED:
+        faults.append(
+            HistoryFault(
+                sequence=opener.sequence,
+                code="coverage_stream_mismatch",
+                message=coverage_head_order_message(stream_id),
+            )
+        )
+    if pair is None or COVERAGE_RECORDED not in pair or OBSERVATION_RECORDED not in pair:
+        return tuple(faults)
+    observation = pair[OBSERVATION_RECORDED]
+    disagreement = coverage_record_disagreement(
+        stream_id, pair[COVERAGE_RECORDED].payload, observation.payload
+    )
+    if disagreement is not None:
+        faults.append(
+            HistoryFault(
+                sequence=observation.sequence,
+                code="coverage_identity_breach",
+                message=disagreement,
+            )
+        )
+    return tuple(faults)
+
+
+def _coverage_schema_faults(
+    repository: EventRepository,
+    coverage_streams: Mapping[str, Sequence[int]],
+) -> tuple[HistoryFault, ...]:
+    """Report coverage streams in a store that never marked itself for them (ADR 0015).
+
+    The first coverage append marks the store schema 4 in the same transaction, so a store
+    below 4 holding a coverage stream was written past the repository, and a build that
+    predates coverage streams would open it and misread them instead of refusing it. One
+    fault names the store's condition once, at the first coverage stream's first event.
+    """
+
+    if not coverage_streams:
+        return ()
+    version = repository.store.schema_version
+    if version >= COVERAGE_STREAM_SCHEMA_VERSION:
+        return ()
+    stream_id, shape = min(coverage_streams.items(), key=lambda item: item[1][0])
+    return (
+        HistoryFault(
+            sequence=shape[0],
+            code="coverage_schema_unmarked",
+            message=(
+                f"coverage stream {stream_id!r} is in a store at schema {version}; a store "
+                f"holding coverage streams is marked schema {COVERAGE_STREAM_SCHEMA_VERSION}, "
                 "so a build that cannot read them refuses it rather than misreading it"
             ),
         ),
@@ -1761,6 +1983,12 @@ def _contract_faults(
     return ()
 
 
+def _misplaced_event_message(record: EventRecord) -> str:
+    """Word one event stored on a stream its kind does not carry, for the audit and the fold."""
+
+    return f"event {record.event_type!r} does not belong on stream {record.stream_id!r}"
+
+
 def _placement_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
     """Report one event stored on a stream its kind does not belong on."""
 
@@ -1769,10 +1997,7 @@ def _placement_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
             HistoryFault(
                 sequence=record.sequence,
                 code="event_stream_mismatch",
-                message=(
-                    f"event {record.event_type!r} does not belong on stream "
-                    f"{record.stream_id!r}"
-                ),
+                message=_misplaced_event_message(record),
             ),
         )
     if record.event_type != CASE_CREATED:

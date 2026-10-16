@@ -51,7 +51,8 @@ Report inputs, which are not adapters and produce no observations:
 - The provider's information resource inventory, supplied per run with `--inventory`. It is read
   locally through a bounded reader, never written to the store, and reaches the compiler only as
   a report option, so both paths measure coverage against it identically. The report names it by
-  the SHA-256 of the bytes that were read (ADR 0015).
+  the SHA-256 of the bytes that were read (ADR 0015). `cases coverage` reads it the same way to
+  record coverage gaps, and the store keeps those gap records, never the inventory.
 
 ### Observation ledger
 
@@ -127,7 +128,10 @@ record loop, from the same observations both entry paths hand it, so the persist
 the stateless one byte for byte and all three projections publish the same block. Due dates come
 from `SelectedPolicy.coverage_deadline`, month clocks run in the policy profile's calendar zone,
 which `--calendar-tz` sets, and the five coverage rules are resolved only on a run given an
-inventory.
+inventory. With `--record-coverage-gaps`, each window of that one projection also becomes a
+`VDR-CSO-FAV` system observation, built in `reports/gaps.py` and added before grouping, so the
+block and the gap records cannot disagree within a run. `cases coverage` derives through the same
+function the report uses and stores those observations instead (ADR 0015).
 
 Shipped projections:
 
@@ -191,9 +195,15 @@ Schema version 3 (the ADR 0014 amendment of 2026-10-13) changes no schema object
 a store that holds a hold, a failure stream that opens with `failure.held`. The first append that
 needs version 3 (`requires_schema=3`) inserts migration record 3 and sets `user_version` to 3
 inside its own transaction, as version 2 does. A store with failure streams and no hold stays at
-version 2. This build opens versions 1 to 3 (`SUPPORTED_SCHEMA_VERSION`). An earlier build refuses
-a version 3 store at open with `database schema 3 is newer than supported schema 2`, and its
-`store verify` reports the marker as `schema_version_unsupported`.
+version 2. An earlier build refuses a version 3 store at open as newer than it supports.
+
+Schema version 4 (ADR 0015) changes no schema object either. It marks a store that holds a
+coverage stream. The first append that needs version 4 (`requires_schema=4`) inserts every
+missing migration record up to 4 and sets `user_version` to 4 inside its own transaction, so a
+store that never held a failure carries records 2 and 3 as well. A store that never records a
+coverage gap stays at its version. This build opens versions 1 to 4 (`SUPPORTED_SCHEMA_VERSION`).
+An earlier build refuses a version 4 store at open with `database schema 4 is newer than supported
+schema 3`, and its `store verify` reports the marker as `schema_version_unsupported`.
 
 Projection checkpoints are mutable compare-and-swap cursors over the global sequence. Projection
 rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
@@ -205,8 +215,11 @@ Event types with published version-1 contracts (ADR 0008): `artifact.ingested`,
 ADR 0014 adds `failure.recorded` v1, `failure.held` v1, and a third stream kind beside artifact
 and case streams: `failure/<sha256>/<parser_name>/<parser_version>`, which holds one
 `failure.recorded` or `failure.held` head and the one `observation.recorded` carrying its system
-observation. Candidates for later slices:
-`case.action_planned`, `case.action_completed`, `validation.completed`, `evidence.attached`.
+observation. ADR 0015 adds `coverage.recorded` v1 and a fourth stream kind,
+`coverage/<fingerprint>`, named for its gap record's SYSTEM identity hash, which holds one
+`coverage.recorded` head and the one `observation.recorded` carrying that gap record. Candidates
+for later slices: `case.action_planned`, `case.action_completed`, `validation.completed`,
+`evidence.attached`.
 
 ## Package layout
 
@@ -246,7 +259,9 @@ period-agnostic record set and three projections, so the same equality holds for
 accepted-vulnerability and historical reports, each golden-tested on both paths. A system
 observation takes its instant from the ingest on one path and the report on the other, so with
 detection process failures the equality holds under the conditions ADR 0014 Decision 15 names,
-recorded as a dated amendment to ADR 0008. Event payloads
+recorded as a dated amendment to ADR 0008. A coverage gap is observed at its window close on both
+paths, but a store's recorded gaps can disagree with the windows a run derives, and the report
+names each disagreement in an INFO note (the ADR 0008 amendment of 2026-10-16). Event payloads
 are validated against the contracts in `events/` on every append; the store itself stays a
 generic envelope log. The fold runs in memory at Phase 1 volumes; projection tables and
 checkpoints remain available for when that stops being enough. The domain model remains
@@ -257,9 +272,10 @@ independent from all of it.
 - Parse failure: diagnostic plus failed ingest, or, with `--record-failed-imports`, a system
   observation and case (ADR 0014); never a clean result.
 - Missing expected resource: status `missing` in the coverage block of a run given an inventory
-  (ADR 0015); the coverage observation and case are a later slice.
-- Stale scanner or validation: status `stale` and a closed window in the same block; the
-  process-health observation and case are a later slice.
+  (ADR 0015), and a closed window once its declared window lapses.
+- Stale scanner or validation: status `stale` and a closed window in the same block. With
+  `--record-coverage-gaps`, or `cases coverage` into a store, each closed window becomes a
+  `VDR-CSO-FAV` system observation and case (ADR 0015). Validation runs are a Phase 3 slice.
 - Policy unavailable or unverified: block deadline/report certification claims.
 - Schema mismatch: report generation failure with actionable paths.
 - Unknown evaluation factor: preserve unknown; do not invent a default.
@@ -270,3 +286,5 @@ A system observation for a detection process failure (ADR 0014) is not a substit
 is the detector of that failure, so its `observed_at` is the failed invocation's own clock when
 the log declares one and otherwise the instant ComplyRoll saw the failure, and `failure.clock`
 records which (`invocation` or `as-of`). It never lends that instant to an artifact observation.
+A coverage gap (ADR 0015) is not one either: its `observed_at` is the close of its window, a due
+date the pinned rules dataset computes from the window's anchor, never as-of or ingest time.

@@ -100,7 +100,9 @@ The standard-library ingestion layer currently enforces:
   of JSON nesting, with the standard 500,000-value bound unchanged. The inventory is a new
   untrusted input, read through the same bounded reader as an artifact. ComplyRoll never fetches
   it and never writes it to the event store, and a report records its SHA-256, size, and entry
-  count, never its bytes
+  count, never its bytes. `cases coverage` reads it through the same reader, and each gap record
+  it stores carries the clock's resource pair, the entry's `job`, and the inventory's SHA-256,
+  never the bytes
 - The inventory is validated field by field before any value is used. Unknown keys are refused at
   every level, and every field is type-checked before any pattern runs. Identity text takes the
   adapters' rule and is refused, never repaired: over 512 characters, or holding a control,

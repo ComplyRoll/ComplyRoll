@@ -133,6 +133,10 @@ evaluation appear in `complyroll cases history <tracking-id> --db complyroll.db`
 report carries the latest one. Nothing can update or delete an event; a correction is a new
 event with its rationale.
 
+A store that records coverage gaps adds `cases coverage` and a second `cases correlate` after the
+four writing commands, and its report takes `--inventory`; Coverage gaps in a store below walks
+through it. The first gap `cases coverage` records moves the store to schema version 4.
+
 Only `ingest` creates a store, and it never deletes one. A store that does not exist yet is
 built at a temporary path beside the destination and linked into place once the whole run
 succeeded, so a failed ingest leaves the operator exactly what they had. If another run
@@ -527,8 +531,9 @@ Each entry is placed to show one reading:
 - `host:lab-ubuntu-02`, which `openscap-results.xml` scanned, is left out of the inventory on
   purpose, so its three observations are listed as unregistered rather than dropped.
 
-A `current` status is not a compliance finding, and a lapsed window here is evidence, not a
-vulnerability case; the report says so in fixed text above the tables.
+A `current` status is not a compliance finding, and the report says so in fixed text above the
+tables. On this run a lapsed window is evidence, not a vulnerability case; with
+`--record-coverage-gaps` it becomes one, as Coverage gaps as cases below shows.
 
 The official fixture set can only show what untimed evidence reaches. Every observation in those
 three files is untimed, so no machine clock can anchor on them, and no machine entry above can be
@@ -556,6 +561,181 @@ There `helpers.js` is `current`, verified by an open CodeQL result. The clean-ru
 examined only by a result whose disposition is unknown, is `undetermined`. `index.js` was never
 scanned, yet its sample group's `VDR-TFR-PSD` clock is `current`, because `render.js` stands in,
 reached through an alias that matches the repository URL the scanner reports.
+
+### Coverage gaps as cases
+
+`VDR-CSO-FAV` says a failure of the detection process is a vulnerability, and a window that closed
+with no verification is one. With `--record-coverage-gaps`, each window in the block becomes a
+system observation of its own and a vulnerability case (ADR 0015): windows of one rule whose entries
+name the same `job` share a case, the windows of one sample group share a case, and every other
+window is a case of its own. The flag needs `--inventory`. Add it to the first command in this
+section:
+
+```bash
+complyroll report vdt \
+  tests/fixtures/ubuntu-host.cklb \
+  tests/fixtures/windows-host.ckl \
+  tests/fixtures/openscap-results.xml \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-31T23:59:59Z \
+  --as-of 2026-08-21T12:00:00Z \
+  --detected-at 2026-08-01T00:00:00Z \
+  --evaluations examples/evaluations.json \
+  --inventory examples/inventory.json \
+  --record-coverage-gaps \
+  -o vdt-coverage-gaps.json \
+  --markdown vdt-coverage-gaps.md
+```
+
+It writes `tests/golden/vdt-coverage-gaps.json` and `tests/golden/vdt-coverage-gaps.md`, byte for
+byte, and exits 3, so a pipeline that stops on a non-zero exit still stops. Standard error carries
+the same four warnings as the run without the flag. Run as `report historical`, without `--from`
+and `--to` and with `examples/evaluations-accepted.json`, the same inputs give
+`tests/golden/historical-coverage-gaps.json` and `.md`, also with exit 3, and `report avi` exits 3
+too.
+
+The nine windows become nine gap observations and seven cases:
+
+| Rule | Context | Closed at | Tracking ID |
+|---|---|---|---|
+| VDR-TFR-MVX | host:lab-rhel-01 | 2026-07-04T00:00:00Z | case-56e1eee78e97395f |
+| VDR-TFR-MVX | host:lab-win-01 | 2026-07-04T00:00:00Z | case-656d627b62275ba8 |
+| VDR-TFR-MVX | host:ubuntu-web-01 | 2026-07-04T00:00:00Z | case-656d627b62275ba8 |
+| VDR-TFR-NMV | logical:backup-restore-procedure | 2026-07-15T16:00:00Z | case-fe51d8e4d9c79b36 |
+| VDR-TFR-PCD | host:lab-win-01 | 2026-08-01T00:00:00Z | case-9c9bf88832065e17 |
+| VDR-TFR-PDD | host:lab-rhel-01 | 2026-07-15T00:00:00Z | case-23ec0644fabe50d3 |
+| VDR-TFR-PDD | host:ubuntu-web-01 | 2026-07-15T00:00:00Z | case-987c96e87614506a |
+| VDR-TFR-PSD | logical:sample-group/ir-runbooks | 2026-07-04T00:00:00Z | case-a971b430300440cf |
+| VDR-TFR-PSD | logical:sample-group/ir-runbooks | 2026-08-06T17:00:00Z | case-a971b430300440cf |
+
+A case is one rule and one detection job, or one rule and one resource when the entry names no
+job. `host:lab-win-01` and `host:ubuntu-web-01` both name the job `weekly-stig-checklist`, so their
+`VDR-TFR-MVX` windows share one case, and the two windows of the sample group share another.
+`host:lab-rhel-01` names no job, so each of its windows is a case of its own. A shared case takes
+one member's title, `coverage-gap: VDR-TFR-MVX window for host:lab-win-01 closed
+2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)`, and lists both hosts under its
+resources.
+
+Each gap is detected when its window closed, with `detectedAtSource` `system`, so `--detected-at`
+never applies to it, and its evaluation window (`VER-TFR-EVU`) runs from that close. Every gap
+case above is overdue for evaluation at the as-of. The record says that ComplyRoll found no
+verification inside the window. It does not say that the resource has a vulnerability, and it
+carries no PAIN until an operator evaluates it. In the coverage block every window gains
+`recorded` and `trackingId`, and the Markdown Windows table gains Recorded and Tracking ID columns
+under one fixed sentence ([`docs/CLI.md`](../docs/CLI.md), Coverage gaps as cases).
+
+A later verification never erases a gap; it only resumes the window. A case closes by an
+evaluation's disposition. `examples/evaluations-coverage.json` is `evaluations.json` plus one entry
+for lab-rhel-01's `VDR-TFR-MVX` case: the host was retired on 2026-08-10 before any detection job
+reached it, so the entry's disposition is `remediated`. It matches on all three keys:
+
+```json
+{"sourceRecordId": "coverage-gap", "sourceType": "complyroll.coverage", "contextKey": "VDR-TFR-MVX:resource:host:lab-rhel-01"}
+```
+
+No report prints the context key. It is the rule, then `job:` and the entry's job when the entry
+names one, else `resource:` and the clock's pair. lab-win-01's shared case is
+`VDR-TFR-MVX:job:weekly-stig-checklist`, and the sample group's is
+`VDR-TFR-PSD:resource:logical:sample-group/ir-runbooks`. Every gap shares the record id and the
+source type, so the same entry without `contextKey` names all seven cases, and the run stops with
+exit 1 and writes nothing:
+
+```text
+error: evaluation_ambiguous: sourceRecordId='coverage-gap', sourceType='complyroll.coverage' matches 7 vulnerabilities (case-656d627b62275ba8, case-56e1eee78e97395f, case-fe51d8e4d9c79b36, case-9c9bf88832065e17, case-987c96e87614506a, case-23ec0644fabe50d3, case-a971b430300440cf); add contextKey [evaluations[2]]
+```
+
+Run the command above with `--evaluations examples/evaluations-coverage.json` in place of
+`examples/evaluations.json`. It still exits 3, and the case now reads:
+
+```text
+| case-56e1eee78e97395f | coverage-gap | 1 | 2026-07-04T00:00:00Z | 2026-08-12T15:00:00Z | no | no | N2 | n/a | no | Remediated |
+```
+
+Every other record and the whole coverage block equal the golden's, and the window still reads
+`recorded: true` with that tracking id: the disposition closed the case, and the missed window
+stays on the record. The evaluation completed after the window closed. One completed before
+2026-07-04T00:00:00Z would stop the run with `evaluation_before_detection`, whose remedy reads "a
+coverage gap is detected when its window closed, so evaluate it at or after that instant, or
+correct completedAt". Any disposition applies to a gap as it does to a failure, and `accepted`
+lists the gap in the accepted-vulnerability report as an accepted risk.
+
+### Coverage gaps in a store
+
+On the persisted path `cases coverage` records the gaps, and the report takes `--inventory` beside
+`--db`. Run the first four commands under Persisted path with `--db coverage.db`, then these:
+
+```bash
+complyroll cases coverage \
+  --db coverage.db \
+  --inventory examples/inventory.json \
+  --class C \
+  --as-of 2026-08-21T12:00:00Z
+
+complyroll cases correlate --db coverage.db
+
+complyroll report vdt \
+  --db coverage.db \
+  --class C \
+  --package-uri https://example.test/cpo \
+  --from 2026-08-01T00:00:00Z \
+  --to 2026-08-31T23:59:59Z \
+  --as-of 2026-08-21T12:00:00Z \
+  --inventory examples/inventory.json \
+  -o vdt-coverage-gaps.json \
+  --markdown vdt-coverage-gaps.md
+```
+
+`cases coverage` derives the windows from the store's evidence exactly as the report does and
+records one stream per window. It writes the `drift_likelihood_unknown` warning to standard error,
+prints one line per gap, nine in all, and exits 3:
+
+```text
+obs-93163dadcffc2fa5e3efd858b439b2be6c792975a029a95596b26b92be6fd56c: recorded VDR-TFR-MVX window for host:lab-rhel-01 closed 2026-07-04T00:00:00Z
+obs-59fbb69836e1874231e0ce7eed88c5669b626cb453ace189f6345424340c93a1: recorded VDR-TFR-MVX window for host:lab-win-01 closed 2026-07-04T00:00:00Z
+recorded 9 coverage gap(s), skipped 0 already-recorded coverage gap(s)
+```
+
+Run again with the same inputs it appends nothing, prints `already_recorded` on each line, and
+exits 0. A recorded gap is evidence, as an ingested observation is, so `cases correlate` opens its
+case and prints `created 7 case(s), linked 9 observation(s), skipped 6 already-linked
+observation(s)`. An evaluation of a gap before that is refused with `evaluation_unmatched`, "no
+case matches". The report is the stateless golden pair again, byte for byte. `cases evaluate --db
+coverage.db --evaluations examples/evaluations-coverage.json` then closes lab-rhel-01's case:
+
+```text
+evaluations: 1 appended, 2 skipped
+pain reductions: 0 appended, 1 skipped
+dispositions: 1 appended, 1 skipped
+identifications: 0 appended, 0 skipped
+```
+
+and the report from the store equals the stateless run with that file. The first gap moves the
+store to schema version 4, recorded as migration 4, "coverage gaps, ADR 0015", beside records 2 and
+3. `complyroll store verify --db coverage.db` prints `ok: 72 event(s) verified`. An earlier build
+refuses the store with `database schema 4 is newer than supported schema 3`.
+
+A store records a gap once, so a report from it can disagree with the windows its own run
+derives. Each disagreement is an INFO note, and a recorded gap keeps its case whatever the note
+says. Record the gaps of a fresh store at `--as-of 2026-08-05T00:00:00Z`, before the sample
+group's second window closes, and report at the golden as-of. The store holds eight gaps, and the
+report names the ninth window and leaves it without a case:
+
+```text
+info: coverage_gap_unrecorded: the VDR-TFR-PSD window for logical:sample-group/ir-runbooks closed 2026-08-06T17:00:00Z with no verification, and history records no gap for it, so no case in this report carries it; cases coverage with this run's inventory, as-of, class and calendar zone records it [example-boundary logical:sample-group/ir-runbooks]
+```
+
+Running `cases coverage` again at the golden as-of records it, `cases correlate` links it to the
+group's case, and the report is the golden pair again. Two notes name a recorded gap the run does
+not derive. `coverage_gap_contradicted` means the run's evidence holds a verification inside the
+gap's window, as a late upload leaves. The note names the earliest one, and a false-positive
+disposition is the remedy only when the note advises it: a case can carry other gaps that still
+stand, and the note names each of those. `coverage_gap_unmatched` means nothing disproves the gap,
+so the report's inventory, as-of, class, or calendar zone may differ from the run that recorded
+it. Reporting this store with `--class B` prints one for each Class C gap whose window Class B
+does not derive, beside a `coverage_gap_unrecorded` note for each Class B window. No disposition
+answers it; report with the inputs `cases coverage` used.
 
 ## InSpec and HDF
 
@@ -911,7 +1091,8 @@ and its `store verify` reports the failure streams as domain faults and exits 1.
 
 A store that records a hold, a failure that another failure stream of its digest already holds,
 moves on to schema version 3. An earlier build refuses it the same way, naming schema 3 as newer
-than the schema it supports.
+than the schema it supports. A store that records a coverage gap moves to schema version 4, as
+Coverage gaps in a store describes.
 
 The clean log described under Other formats is not a detection failure: it imports as a PASS
 observation with or without the flag, and records no failure. A SARIF log that yields nothing and
@@ -927,8 +1108,12 @@ every payload against its published contract, every observation through the repl
 every event against its stream kind and against the artifact identity its stream names, every
 artifact stream for completeness in both directions (`artifact_incomplete`, `artifact_overfull`) and
 for repeated observation identifiers (`artifact_duplicate_observation`), the current evaluation of
-each case a report would print against its detection time, and every metadata envelope. A healthy
-store prints one line:
+each case a report would print against its detection time, and every metadata envelope. A store
+that recorded coverage gaps is also audited for `coverage_incomplete` and `coverage_overfull` (a
+coverage stream without exactly one head and one gap record), `coverage_stream_mismatch` (a stream
+id or a record that is not its stream's own), `coverage_identity_breach` (a record that is not a
+gap record, or a head that disagrees with it), and `coverage_schema_unmarked` (a coverage stream
+in a store marked below schema 4). A healthy store prints one line:
 
 ```text
 ok: 36 event(s) verified

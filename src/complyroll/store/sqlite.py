@@ -25,15 +25,17 @@ from uuid import uuid4
 SCHEMA_VERSION = 1
 #: The newest schema this build opens. A store is still created at `SCHEMA_VERSION`, and
 #: an append that needs a newer schema marks the store forward inside its own transaction,
-#: so a store that never needs schema 2 stays readable by a build that knows only 1, and one
-#: that never needs schema 3 by a build that knows only 2. Neither adds a schema object:
-#: schema 2 marks a store that holds failure streams (ADR 0014), and schema 3 one that holds
-#: a held failure (ADR 0014, amendment 2026-10-13).
-SUPPORTED_SCHEMA_VERSION = 3
+#: so a store that never needs schema 2 stays readable by a build that knows only 1, one
+#: that never needs schema 3 by a build that knows only 2, and one that never needs schema 4
+#: by a build that knows only 3. None adds a schema object: schema 2 marks a store that
+#: holds failure streams (ADR 0014), schema 3 one that holds a held failure (ADR 0014,
+#: amendment 2026-10-13), and schema 4 one that holds a coverage gap (ADR 0015).
+SUPPORTED_SCHEMA_VERSION = 4
 _MIGRATION_DESCRIPTIONS: Mapping[int, str] = {
     1: "append-only event history and projection checkpoints",
     2: "failure streams, ADR 0014",
     3: "held failures, ADR 0014 amendment 2026-10-13",
+    4: "coverage gaps, ADR 0015",
 }
 APPLICATION_ID = 0x43524F4C  # ASCII "CROL"
 MAX_EVENTS_PER_APPEND = 1_000
@@ -2044,7 +2046,7 @@ def _schema_out_of_range(version: int) -> UnsupportedSchemaError:
 def _missing_migrations(connection: sqlite3.Connection, version: int) -> tuple[int, ...]:
     """Return the migration records a store marked at ``version`` lacks, in order.
 
-    A store at version 1 needs record 1, and one at version 2 or 3 every record up to it. A
+    A store at version 1 needs record 1, and one at version 2, 3 or 4 every record up to it. A
     version this build does not open is held to the records it knows, so `verify_history`
     can still describe such a file rather than raising. Only a record stored as an integer
     counts. The column is an alias for the rowid and holds nothing else, so only a table

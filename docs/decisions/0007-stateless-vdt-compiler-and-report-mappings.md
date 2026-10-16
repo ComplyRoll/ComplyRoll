@@ -434,3 +434,14 @@ detected published a response clock that started before the weakness was known.
   error.
 - Only `completedAt` is ordered. `painReductionEvents[].reducedAt` and
   `projectedNextReduction.estimatedAt` start no clock and are not ordered against detection.
+
+## Amendment 2026-10-16: the coverage gap remedy
+
+The 2026-10-14 amendment gives one remedy per detection-time source. ADR 0015 adds a second kind
+of system record, the coverage gap, whose detection time is its window close, which the inputs fix
+on both paths. For source `system` the remedy now depends on the record's source type. A coverage
+gap reads "a coverage gap is detected when its window closed, so evaluate it at or after that
+instant, or correct completedAt", with no as-of remedy, and a detection process failure keeps the
+text above. A reserved source type with no remedy of its own takes the failure's. The compiler,
+the history writers and `store verify` still print one text per source and type, so each remedy
+holds on both paths (ADR 0015 Decision 24).

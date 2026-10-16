@@ -56,5 +56,6 @@ read a record's amendments before relying on it.
 - [ADR 0015: Coverage and freshness evidence](0015-coverage-and-freshness.md): a SARIF run with
   no results is an artifact-origin PASS observation of the scope it names, guarded on invocation
   success; a provider-supplied inventory is a per-run report input whose entries get coverage
-  clocks from the pinned dataset, reported as evidence with a status per clock; grows by a dated
-  section with the coverage-gap pull request.
+  clocks from the pinned dataset, reported as evidence with a status per clock; a window that
+  closes with no verification becomes a `VDR-CSO-FAV` system observation and case, with
+  `--record-coverage-gaps` on a report or `cases coverage` into a schema 4 store.

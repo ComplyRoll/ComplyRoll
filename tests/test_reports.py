@@ -580,9 +580,22 @@ def assert_coverage_markdown(
 
     windows = coverage["windows"]
     assert isinstance(windows, list)
-    window_rows = markdown_table_list(markdown_subsection(section, "Windows"), 9, "Rule")
+    # A gap-aware run marks every window with its record, and only it adds the two columns.
+    gap_aware = {"recorded" in window for window in windows}
+    test.assertLessEqual(len(gap_aware), 1, "some windows carry `recorded` and some do not")
+    width = 11 if True in gap_aware else 9
+    window_rows = markdown_table_list(markdown_subsection(section, "Windows"), width, "Rule")
     test.assertEqual(len(window_rows), len(windows))
     for window, cells in zip(windows, window_rows, strict=True):
+        if width == 11:
+            test.assertEqual(
+                cells[9:],
+                (
+                    "yes" if window["recorded"] else "no",
+                    vdt_module._cell(window["trackingId"] or "n/a"),
+                ),
+                f"window {window['contextKey']} record",
+            )
         test.assertEqual(
             cells[:7],
             (
@@ -3851,10 +3864,17 @@ class DetectionFailureEvaluationTests(unittest.TestCase):
         # One failure matches the pair today, and the next failure of another digest would
         # make the same file ambiguous, so the triple is required even when nothing else
         # could match.
-        for label, source_type in (("with sourceType", True), ("without sourceType", False)):
+        for label, source_type, context_key, remedy in (
+            ("with sourceType", True, False, "contextKey"),
+            # Moved on purpose in PR 3 step 8: the remedy names each key the entry leaves out.
+            ("without sourceType", False, False, "contextKey and sourceType"),
+            # Added in PR 3 step 8: the triple is required, so the pair is refused too.
+            ("with contextKey alone", False, True, "sourceType"),
+        ):
             with self.subTest(label):
                 match = system_match(TRUNCATED_SHA256, source_type=source_type)
-                del match["contextKey"]
+                if not context_key:
+                    del match["contextKey"]
                 evaluations = evaluations_from(match=match, completedAt="2026-08-21T12:00:00Z")
 
                 with self.assertRaises(ReportCompileError) as caught:
@@ -3877,7 +3897,7 @@ class DetectionFailureEvaluationTests(unittest.TestCase):
                             f"{described} matches the detection process failure "
                             f"{TRUNCATED_CASE}; a detection process failure is matched by "
                             "sourceRecordId, sourceType and contextKey together, so add "
-                            "contextKey",
+                            f"{remedy}",
                         )
                     ],
                 )

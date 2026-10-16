@@ -29,6 +29,7 @@ from .events import (
     EventContractError,
     EventMetadata,
     EventRepository,
+    iso_utc,
     require_tracking_id,
 )
 from .history import (
@@ -45,10 +46,12 @@ from .history import (
     correlate_cases,
     fold_all_cases,
     reading_elsewhere,
+    record_coverage_gaps,
     record_failure,
     record_ingest,
 )
-from .policy import CertificationClass
+from .models import Observation
+from .policy import CertificationClass, CertificationProfile
 from .reports import (
     CompiledReport,
     ReportCompileError,
@@ -101,8 +104,9 @@ def _default_actor() -> str:
 #: Resolved once, so `--help` prints the name every event of a run would carry.
 DEFAULT_ACTOR = _default_actor()
 
-#: The status of a run that recorded a detection process failure and still wrote its
-#: output (ADR 0014), so a pipeline can tell it from a clean run (0) and a refusal (1).
+#: The status of a run that recorded a system-generated VDR-CSO-FAV record and still wrote
+#: its output: a detection process failure (ADR 0014) or a coverage gap (ADR 0015), so a
+#: pipeline can tell it from a clean run (0) and a refusal (1).
 EXIT_DETECTION_FAILURES = 3
 
 #: The `cases list` columns, each with whether its values are right-aligned numbers.
@@ -275,6 +279,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_actor_option(evaluate)
 
+    coverage_help = (
+        "record each coverage window the store's evidence closed with no verification as a "
+        "VDR-CSO-FAV system record; exits 3 when one is recorded"
+    )
+    coverage = case_commands.add_parser("coverage", help=coverage_help, description=coverage_help)
+    _add_database_option(coverage, "event store holding the recorded evidence")
+    # Appends for the reason `report --inventory` does: a second inventory is refused.
+    coverage.add_argument(
+        "--inventory",
+        action="append",
+        metavar="FILE",
+        help=(
+            "information resource inventory JSON to measure coverage against "
+            "(read locally, never stored)"
+        ),
+    )
+    coverage.add_argument(
+        "--class",
+        dest="certification_class",
+        required=True,
+        choices=[item.value for item in CertificationClass],
+        help="certification class whose rules select the coverage clocks",
+    )
+    coverage.add_argument(
+        "--as-of",
+        required=True,
+        metavar="RFC3339",
+        help="instant the windows are closed against, and each gap's ingestion time",
+    )
+    coverage.add_argument(
+        "--calendar-tz",
+        default="UTC",
+        metavar="NAME",
+        help="IANA calendar used for month and year arithmetic (default: UTC)",
+    )
+    _add_actor_option(coverage)
+
     listing = case_commands.add_parser("list", help="list every recorded case")
     _add_database_option(listing, "event store to read")
 
@@ -416,6 +457,14 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         help=(
             "record a detection process failure (VDR-CSO-FAV) as a system observation "
             "instead of stopping; exits 3 when one is recorded"
+        ),
+    )
+    parser.add_argument(
+        "--record-coverage-gaps",
+        action="store_true",
+        help=(
+            "record each coverage window that closed with no verification as a VDR-CSO-FAV "
+            "system record; needs --inventory; exits 3 when one is recorded"
         ),
     )
     parser.add_argument(
@@ -795,6 +844,8 @@ def _run_cases(args: argparse.Namespace) -> int:
         return _run_cases_attest(args)
     if args.cases_command == "evaluate":
         return _run_cases_evaluate(args)
+    if args.cases_command == "coverage":
+        return _run_cases_coverage(args)
     if args.cases_command == "list":
         return _run_cases_list(args)
     if args.cases_command == "history":
@@ -912,6 +963,68 @@ def _run_cases_evaluate(args: argparse.Namespace) -> int:
     return _persisted_run(stderr, evaluate)
 
 
+def _run_cases_coverage(args: argparse.Namespace) -> int:
+    stderr = sys.stderr
+    database = Path(args.db)
+    inventory_paths = [Path(item) for item in (args.inventory or ())]
+    if not inventory_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            "cases coverage needs --inventory: a coverage gap is a window of an inventory "
+            "entry's clock",
+        )
+    if len(inventory_paths) > 1:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"cases coverage takes one --inventory file, not {len(inventory_paths)}",
+        )
+    missing = _refuse_missing_store(stderr, database)
+    if missing is not None:
+        return missing
+    try:
+        as_of = parse_rfc3339(args.as_of, "--as-of")
+        profile = CertificationProfile(
+            CertificationClass(args.certification_class), calendar_timezone=args.calendar_tz
+        )
+        inventory = load_inventory(inventory_paths[0])
+        metadata = _metadata(args)
+    except ReportInputError as exc:
+        return _fail(stderr, "invalid_input", str(exc))
+    except (TypeError, ValueError) as exc:
+        return _fail(stderr, "invalid_option", str(exc))
+
+    def record() -> int:
+        with _open_repository(database) as repository:
+            outcome = record_coverage_gaps(
+                repository, inventory, profile=profile, as_of=as_of, metadata=metadata
+            )
+        _write_diagnostics(stderr, outcome.diagnostics)
+        # Each list is in window order: what this run recorded, then what history held.
+        for gap in outcome.recorded:
+            print(f"{gap.observation_id}: recorded {_gap_window(gap)}")
+        for gap in outcome.already_recorded:
+            print(f"{gap.observation_id}: already_recorded {_gap_window(gap)}")
+        print(
+            f"recorded {len(outcome.recorded)} coverage gap(s), "
+            f"skipped {len(outcome.already_recorded)} already-recorded coverage gap(s)"
+        )
+        # A recorded gap is a system-generated VDR-CSO-FAV record, so the run says so (ADR 0015).
+        return EXIT_DETECTION_FAILURES if outcome.recorded else 0
+
+    return _persisted_run(stderr, record)
+
+
+def _gap_window(gap: Observation) -> str:
+    """Name the window a gap records, as its title does: rule, resource and close."""
+
+    rule = gap.context_key.split(":", 1)[0]
+    closed = "n/a" if gap.observed_at is None else iso_utc(gap.observed_at)
+    resource = gap.resource
+    return f"{rule} window for {resource.resource_type}:{resource.resource_id} closed {closed}"
+
+
 def _run_cases_list(args: argparse.Namespace) -> int:
     stderr = sys.stderr
     database = Path(args.db)
@@ -1021,6 +1134,13 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             "invalid_option",
             f"report {command.name} takes one --inventory file, not {len(inventory_paths)}",
         )
+    if args.record_coverage_gaps and not inventory_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} --record-coverage-gaps needs --inventory: a coverage gap "
+            "is a window of an inventory entry's clock",
+        )
     if database is not None:
         missing = _refuse_missing_store(stderr, database)
         if missing is not None:
@@ -1066,6 +1186,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             ),
             kev_catalog=kev_catalog,
             inventory=inventory,
+            record_coverage_gaps=args.record_coverage_gaps,
         )
         evaluations = load_evaluations(evaluations_path) if evaluations_path else None
     except ReportInputError as exc:
@@ -1087,10 +1208,13 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     def compile_and_publish() -> int:
         report = compile_report()
         status = _publish(stderr, report, output=output, markdown=markdown)
-        # The output is already written: a recorded failure is reported, not refused, and
-        # the status is how a pipeline learns one was recorded. `--db` never gets here with
-        # the flag, since a store recorded or refused its failures at ingest.
-        if status == 0 and args.record_failed_imports and report.metadata.detection_failures:
+        # The output is already written: a recorded failure or gap is reported, not
+        # refused, and the status is how a pipeline learns one was recorded. `--db` never
+        # gets here with either flag; each flag answers only for its own kind of record.
+        recorded = (args.record_failed_imports and report.metadata.detection_failures) or (
+            args.record_coverage_gaps and report.metadata.coverage_gaps
+        )
+        if status == 0 and recorded:
             return EXIT_DETECTION_FAILURES
         return status
 
@@ -1109,7 +1233,9 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     KEV catalog or an information resource inventory, so each is a per-run input on both
     paths and never a second source of truth (ADR 0012, ADR 0015).
     `--record-failed-imports` is on it because a store already recorded or refused its
-    failures when `ingest` read them (ADR 0014).
+    failures when `ingest` read them (ADR 0014). `--record-coverage-gaps` is on it because
+    a report run never records a gap into a store; what a store holds is its own record
+    (ADR 0015).
     """
 
     named = [
@@ -1119,6 +1245,7 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
             ("--evaluations", args.evaluations is not None),
             ("--detected-at", args.detected_at is not None),
             ("--record-failed-imports", args.record_failed_imports),
+            ("--record-coverage-gaps", args.record_coverage_gaps),
         )
         if present
     ]

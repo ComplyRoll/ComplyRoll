@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -379,9 +379,24 @@ class CoverageResult:
     # Evidence observed after as-of: listed, never used.
     later: tuple[CoverageEvidence, ...]
 
-    def to_dict(self) -> dict[str, Any]:
-        """Return the `x-complyroll.coverage` block; keys are sorted when the JSON is written."""
+    def to_dict(
+        self, *, gap_records: Mapping[CoverageWindow, str | None] | None = None
+    ) -> dict[str, Any]:
+        """Return the `x-complyroll.coverage` block; keys are sorted when the JSON is written.
+
+        `gap_records` makes the block gap aware: each window also says whether its gap is a
+        record of the run and names that record's tracking id, or None when there is none.
+        Without it the windows carry neither key, as they did before gaps existed.
+        """
         inventory = self.inventory
+        windows = [item.to_dict() for item in self.windows]
+        if gap_records is not None:
+            if set(gap_records) != set(self.windows):
+                raise ValueError("gap_records must name every window of the result and no other")
+            for value, window in zip(windows, self.windows, strict=True):
+                tracking_id = gap_records[window]
+                value["recorded"] = tracking_id is not None
+                value["trackingId"] = tracking_id
         return {
             "inventory": {
                 "name": inventory.name,
@@ -393,7 +408,7 @@ class CoverageResult:
             "basis": COVERAGE_BASIS,
             "summary": [row.to_dict() for row in self.summary],
             "resources": [item.to_dict() for item in self.resources],
-            "windows": [item.to_dict() for item in self.windows],
+            "windows": windows,
             "unregistered": [item.to_dict() for item in self.unregistered],
             "later": [item.to_dict() for item in self.later],
         }
@@ -460,42 +475,7 @@ def derive_coverage(
     # Every coverage rule resolves before anything is derived, used or not, so a pinned
     # dataset that lacks one refuses the run instead of thinning the projection.
     forces = {rule_id: policy.rule(rule_id).force for rule_id in COVERAGE_RULE_IDS}
-    collected = {entry.ref: _Collected() for entry in inventory.entries}
-    unregistered: Counter[ResourceRef] = Counter()
-    later: list[CoverageEvidence] = []
-
-    for observation in observations:
-        # A system observation records a process failure; it never examines a resource.
-        if observation.origin is not ObservationOrigin.ARTIFACT:
-            continue
-        resource = observation.resource
-        at = None if observation.observed_at is None else _utc(observation.observed_at)
-        item = CoverageEvidence(
-            kind=EvidenceKind.OBSERVATION,
-            resource=resource,
-            at=at,
-            reference=observation.observation_id,
-            disposition=observation.disposition,
-        )
-        entry = inventory.entry_for(resource.resource_type, resource.resource_id)
-        if at is not None and at > cutoff:
-            later.append(item)
-        elif entry is None:
-            unregistered[resource] += 1
-        elif at is None:
-            collected[entry.ref].untimed.append(item)
-        else:
-            verifies = entry.machine_based and observation.disposition in VERIFYING_DISPOSITIONS
-            _file(collected[entry.ref], entry, at, item, verifies=verifies)
-
-    for entry in inventory.entries:
-        for verification in entry.verifications:
-            at = _utc(verification.at)
-            item = CoverageEvidence(EvidenceKind.ATTESTATION, entry.ref, at, verification.reference)
-            if at > cutoff:
-                later.append(item)
-            else:
-                _file(collected[entry.ref], entry, at, item, verifies=True)
+    collected, unregistered, later = _collect(observations, inventory, cutoff)
 
     anchors = {ref: _anchors(found.verifying) for ref, found in collected.items()}
     groups: defaultdict[str, list[InformationResource]] = defaultdict(list)
@@ -567,6 +547,74 @@ def derive_coverage(
         ),
         later=_ordered(later),
     )
+
+
+def verifying_evidence(
+    observations: Iterable[Observation],
+    inventory: Inventory,
+    as_of: datetime,
+    *,
+    rule_id: str,
+    subject: ResourceRef,
+) -> tuple[CoverageEvidence, ...]:
+    """Return what verifies one clock's subject by as-of, filed as `derive_coverage` files it.
+
+    A sample group's clock is verified by any member, every other clock by the entry that
+    names it, by id or by alias; a subject no entry of this inventory names has none. An
+    alias names the same resource, so a gap recorded before a rename still reads its
+    evidence. Ordered earliest first.
+    """
+    collected = _collect(observations, inventory, _utc(as_of))[0]
+    if rule_id == PSD_RULE:
+        name = subject.resource_id.removeprefix(SAMPLE_GROUP_PREFIX)
+        refs = [entry.ref for entry in inventory.entries if entry.sample_group == name]
+    else:
+        entry = inventory.entry_for(subject.resource_type, subject.resource_id)
+        refs = [] if entry is None else [entry.ref]
+    return _ordered(item for ref in refs for _, item in collected[ref].verifying)
+
+
+def _collect(
+    observations: Iterable[Observation], inventory: Inventory, cutoff: datetime
+) -> tuple[dict[ResourceRef, _Collected], Counter[ResourceRef], list[CoverageEvidence]]:
+    """File every observation and attestation against its entry, or as unregistered or later."""
+    collected = {entry.ref: _Collected() for entry in inventory.entries}
+    unregistered: Counter[ResourceRef] = Counter()
+    later: list[CoverageEvidence] = []
+
+    for observation in observations:
+        # A system observation records a process failure; it never examines a resource.
+        if observation.origin is not ObservationOrigin.ARTIFACT:
+            continue
+        resource = observation.resource
+        at = None if observation.observed_at is None else _utc(observation.observed_at)
+        item = CoverageEvidence(
+            kind=EvidenceKind.OBSERVATION,
+            resource=resource,
+            at=at,
+            reference=observation.observation_id,
+            disposition=observation.disposition,
+        )
+        entry = inventory.entry_for(resource.resource_type, resource.resource_id)
+        if at is not None and at > cutoff:
+            later.append(item)
+        elif entry is None:
+            unregistered[resource] += 1
+        elif at is None:
+            collected[entry.ref].untimed.append(item)
+        else:
+            verifies = entry.machine_based and observation.disposition in VERIFYING_DISPOSITIONS
+            _file(collected[entry.ref], entry, at, item, verifies=verifies)
+
+    for entry in inventory.entries:
+        for verification in entry.verifications:
+            at = _utc(verification.at)
+            item = CoverageEvidence(EvidenceKind.ATTESTATION, entry.ref, at, verification.reference)
+            if at > cutoff:
+                later.append(item)
+            else:
+                _file(collected[entry.ref], entry, at, item, verifies=True)
+    return collected, unregistered, later
 
 
 def _file(
@@ -776,4 +824,5 @@ __all__ = [
     "UnregisteredResource",
     "derive_coverage",
     "entry_clocks",
+    "verifying_evidence",
 ]

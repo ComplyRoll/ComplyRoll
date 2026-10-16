@@ -2912,7 +2912,7 @@ class StoreHeaderTests(unittest.TestCase):
                 )
                 self.assertFalse(store._connection.in_transaction)
                 self.assertEqual(self.state(path), before)
-                self.assertEqual(before, (marker, (3, 3), [(1,), (2,), (3,)]))
+                self.assertEqual(before, (marker, (3, 3), [(1,), (2,), (3,), (4,)]))
 
     def test_an_append_after_the_application_id_is_rewritten_is_refused(self) -> None:
         """The open checked the application id; a second connection rewrites it afterwards.
@@ -2955,7 +2955,9 @@ class StoreHeaderTests(unittest.TestCase):
                     requires_schema=requires_schema,
                 )
 
-        self.assertEqual(self.state(path), (SUPPORTED_SCHEMA_VERSION, (5, 5), [(1,), (2,), (3,)]))
+        self.assertEqual(
+            self.state(path), (SUPPORTED_SCHEMA_VERSION, (5, 5), [(1,), (2,), (3,), (4,)])
+        )
 
 
 if __name__ == "__main__":

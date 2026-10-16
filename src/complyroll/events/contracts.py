@@ -30,6 +30,7 @@ from complyroll.models import (
     ObservationOrigin,
     SourceSeverity,
 )
+from complyroll.policy import COVERAGE_RULE_IDS
 
 #: Statuses that record a disposition. `new`, `evaluating`, and `active` are not
 #: dispositions, so `case.disposition_recorded` refuses them (ADR 0008 Decision 2).
@@ -54,6 +55,7 @@ CLOSED_DISPOSITION_VALUES: Final[tuple[str, ...]] = (
 ARTIFACT_STREAM_PREFIX: Final = "artifact"
 CASE_STREAM_PREFIX: Final = "case"
 FAILURE_STREAM_PREFIX: Final = "failure"
+COVERAGE_STREAM_PREFIX: Final = "coverage"
 #: The store schema a failure stream needs (ADR 0014). A store is created at schema 1 and
 #: marked 2 by the transaction that first writes a failure stream, so a store that never
 #: records a failure stays readable by a build that knows only schema 1.
@@ -62,6 +64,10 @@ FAILURE_STREAM_SCHEMA_VERSION: Final = 2
 #: 3 by the transaction that first writes a `failure.held` stream, so a store that holds
 #: failure streams and no hold stays at 2 and readable by a build that knows only schema 2.
 HELD_FAILURE_SCHEMA_VERSION: Final = 3
+#: The store schema a coverage stream needs (ADR 0015). A store is marked 4 by the
+#: transaction that first writes a `coverage.recorded` stream, so a store that never records
+#: a gap stays at its version and readable by a build that knows only schema 3.
+COVERAGE_STREAM_SCHEMA_VERSION: Final = 4
 TRACKING_ID_PATTERN: Final = re.compile(r"^case-[0-9a-f]{16}$")
 
 #: Stream-id components may not contain the separator, so a stream id parses back.
@@ -372,6 +378,31 @@ FAILURE_RECORDED_V1: Final[dict[str, Any]] = _schema("failure.recorded", _FAILUR
 #: system observation first.
 FAILURE_HELD_V1: Final[dict[str, Any]] = _schema(FAILURE_HELD, _FAILURE_HEAD_PROPERTIES)
 
+#: The event type of a coverage stream's head (ADR 0015).
+COVERAGE_RECORDED: Final = "coverage.recorded"
+
+#: Which instant a coverage window ran from: an operator-declared start, or the last
+#: verification. Mirrors `reports.coverage.AnchorKind` without importing the report layer
+#: into the event layer.
+COVERAGE_ANCHOR_VALUES: Final[tuple[str, ...]] = ("declared", "verification")
+
+#: The properties of a coverage stream's head (ADR 0015): the window that closed with no
+#: verification, named as its gap record's metadata names it. Like a failure head it carries
+#: no tracking id, and it carries no stream id either: both are pure functions of the gap
+#: record that follows it, derived at replay.
+_COVERAGE_HEAD_PROPERTIES: Final[dict[str, Any]] = {
+    "rule": {"enum": list(COVERAGE_RULE_IDS)},
+    "contextKey": _NON_BLANK_TEXT,
+    "windowClosedAt": _UTC_TIMESTAMP,
+    "anchor": {"enum": list(COVERAGE_ANCHOR_VALUES)},
+    "anchorAt": _UTC_TIMESTAMP,
+    "inventorySha256": _SHA256,
+}
+
+#: The head of a coverage stream, followed by exactly one `observation.recorded`: the gap
+#: record (ADR 0015).
+COVERAGE_RECORDED_V1: Final[dict[str, Any]] = _schema(COVERAGE_RECORDED, _COVERAGE_HEAD_PROPERTIES)
+
 #: The one registry every writer validates against (ADR 0008 Decision 1).
 EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("artifact.ingested", 1): ARTIFACT_INGESTED_V1,
@@ -385,18 +416,20 @@ EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("case.identified", 1): CASE_IDENTIFIED_V1,
     ("failure.recorded", 1): FAILURE_RECORDED_V1,
     (FAILURE_HELD, 1): FAILURE_HELD_V1,
+    (COVERAGE_RECORDED, 1): COVERAGE_RECORDED_V1,
 }
 
 EVENT_TYPES: Final[tuple[str, ...]] = tuple(
     sorted({event_type for event_type, _ in EVENT_CONTRACTS})
 )
 
-#: The event types each stream kind may carry (ADR 0008 Decision 2, ADR 0014). An event
-#: stored on the wrong kind of stream is not history the replay can read: it would be
+#: The event types each stream kind may carry (ADR 0008 Decision 2, ADR 0014, ADR 0015). An
+#: event stored on the wrong kind of stream is not history the replay can read: it would be
 #: silently ignored there while `store verify` called the log healthy, so the repository
-#: refuses the combination at append. `observation.recorded` is the one type two kinds
-#: share: an artifact stream records what a reading found, and a failure stream records the
-#: one system observation a failed reading mints. A failure stream opens with either head.
+#: refuses the combination at append. `observation.recorded` is the one type the three
+#: reading kinds share: an artifact stream records what a reading found, a failure stream
+#: the one system observation a failed reading mints, and a coverage stream the one gap
+#: record a closed window mints. A failure stream opens with either head.
 ARTIFACT_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {"artifact.ingested", "observation.recorded"}
 )
@@ -406,10 +439,14 @@ CASE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
 FAILURE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {"failure.recorded", FAILURE_HELD, "observation.recorded"}
 )
+COVERAGE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {COVERAGE_RECORDED, "observation.recorded"}
+)
 STREAM_EVENT_TYPES: Final[Mapping[str, frozenset[str]]] = {
     ARTIFACT_STREAM_PREFIX: ARTIFACT_STREAM_EVENT_TYPES,
     CASE_STREAM_PREFIX: CASE_STREAM_EVENT_TYPES,
     FAILURE_STREAM_PREFIX: FAILURE_STREAM_EVENT_TYPES,
+    COVERAGE_STREAM_PREFIX: COVERAGE_STREAM_EVENT_TYPES,
 }
 
 
@@ -417,20 +454,26 @@ def _placement_problem(
     artifact: frozenset[str],
     case: frozenset[str],
     failure: frozenset[str],
+    coverage: frozenset[str],
     event_types: frozenset[str],
 ) -> str | None:
     """Return why a placement table is unsound, or None when every type has its place.
 
-    Every published type must be on some kind, a case type on no other kind, and the
-    artifact and failure kinds may share `observation.recorded` and nothing else.
+    Every published type must be on some kind, a case type on no other kind, and any two of
+    the artifact, failure, and coverage kinds may share `observation.recorded` and nothing
+    else.
     """
 
-    if artifact | case | failure != event_types:
+    if artifact | case | failure | coverage != event_types:
         return "every published event type must belong to a stream kind"
-    if case & (artifact | failure):
+    if case & (artifact | failure | coverage):
         return "a case event type must belong to the case stream kind alone"
-    if artifact & failure != {"observation.recorded"}:
-        return "artifact and failure streams may share observation.recorded and nothing else"
+    for first, second in ((artifact, failure), (artifact, coverage), (failure, coverage)):
+        if first & second != {"observation.recorded"}:
+            return (
+                "artifact, failure, and coverage streams may share observation.recorded and "
+                "nothing else"
+            )
     return None
 
 
@@ -438,6 +481,7 @@ _PLACEMENT_PROBLEM: Final = _placement_problem(
     ARTIFACT_STREAM_EVENT_TYPES,
     CASE_STREAM_EVENT_TYPES,
     FAILURE_STREAM_EVENT_TYPES,
+    COVERAGE_STREAM_EVENT_TYPES,
     frozenset(EVENT_TYPES),
 )
 if _PLACEMENT_PROBLEM is not None:  # pragma: no cover - a new event type nobody placed
@@ -592,13 +636,15 @@ def stream_kind(stream_id: str) -> str | None:
         return CASE_STREAM_PREFIX
     if is_failure_stream(stream_id):
         return FAILURE_STREAM_PREFIX
+    if is_coverage_stream(stream_id):
+        return COVERAGE_STREAM_PREFIX
     return None
 
 
 def event_belongs_on_stream(event_type: str, stream_id: str) -> bool:
     """Return True when one event type may be stored on one stream (ADR 0008 Decision 2).
 
-    A stream that names none of the three aggregate kinds carries nothing: every published
+    A stream that names none of the four aggregate kinds carries nothing: every published
     event type belongs to at least one of them.
     """
 
@@ -643,6 +689,29 @@ def failure_stream_components(stream_id: str) -> tuple[str, str, str]:
     """Return the digest, parser name, and parser version one failure stream id names."""
 
     return _reading_stream_components(FAILURE_STREAM_PREFIX, "a failure", stream_id)
+
+
+def coverage_stream_id(fingerprint: str) -> str:
+    """Return `coverage/<fingerprint>` for one gap record's SYSTEM identity hash (ADR 0015).
+
+    One stream per gap record. Gaps under one job share a context key and never-scanned
+    entries close at one instant, so neither names a gap alone; the record's own identity
+    does, and it keeps every inventory identifier out of the stream id.
+    """
+
+    return _require_stream_id(
+        f"{COVERAGE_STREAM_PREFIX}/{_require_digest(fingerprint, 'fingerprint')}"
+    )
+
+
+def coverage_stream_fingerprint(stream_id: str) -> str:
+    """Return the gap record fingerprint one coverage stream id names, the inverse of the above."""
+
+    start = f"{COVERAGE_STREAM_PREFIX}/"
+    if not isinstance(stream_id, str) or not stream_id.startswith(start):
+        raise ValueError(f"stream_id must start with {start!r}, got {stream_id!r}")
+    _require_stream_id(stream_id)
+    return _require_digest(stream_id[len(start) :], "fingerprint")
 
 
 def _reading_stream_id(prefix: str, sha256: str, parser_name: str, parser_version: str) -> str:
@@ -706,6 +775,12 @@ def is_failure_stream(stream_id: str) -> bool:
     """Return True when a stream id names a recorded detection process failure."""
 
     return isinstance(stream_id, str) and stream_id.startswith(f"{FAILURE_STREAM_PREFIX}/")
+
+
+def is_coverage_stream(stream_id: str) -> bool:
+    """Return True when a stream id names a recorded coverage gap (ADR 0015)."""
+
+    return isinstance(stream_id, str) and stream_id.startswith(f"{COVERAGE_STREAM_PREFIX}/")
 
 
 def require_tracking_id(value: str) -> str:
@@ -779,6 +854,12 @@ __all__ = [
     "CASE_STREAM_EVENT_TYPES",
     "CASE_STREAM_PREFIX",
     "CLOSED_DISPOSITION_VALUES",
+    "COVERAGE_ANCHOR_VALUES",
+    "COVERAGE_RECORDED",
+    "COVERAGE_RECORDED_V1",
+    "COVERAGE_STREAM_EVENT_TYPES",
+    "COVERAGE_STREAM_PREFIX",
+    "COVERAGE_STREAM_SCHEMA_VERSION",
     "DETECTION_ATTESTED_V1",
     "DISPOSITION_STATUS_VALUES",
     "EVENT_CONTRACTS",
@@ -799,11 +880,14 @@ __all__ = [
     "artifact_stream_components",
     "artifact_stream_id",
     "case_stream_id",
+    "coverage_stream_fingerprint",
+    "coverage_stream_id",
     "event_belongs_on_stream",
     "failure_stream_components",
     "failure_stream_id",
     "is_artifact_stream",
     "is_case_stream",
+    "is_coverage_stream",
     "is_failure_stream",
     "iso_utc",
     "parse_utc",

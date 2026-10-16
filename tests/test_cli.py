@@ -1255,7 +1255,15 @@ class RecordFailedImportsTests(unittest.TestCase):
             for path in GOLDEN.glob("*.json")
             if "x-complyroll" in json.loads(path.read_text(encoding="utf-8"))
         }
-        self.assertEqual(reports - {"vdt-failed", "historical-failed"}, {*runs, *compiled})
+        # The failure and coverage gap goldens exit 3 by design; each pair has its own
+        # reproduction, the gap pair in `test_coverage_gap_report`.
+        system_goldens = {
+            "vdt-failed",
+            "historical-failed",
+            "vdt-coverage-gaps",
+            "historical-coverage-gaps",
+        }
+        self.assertEqual(reports - system_goldens, {*runs, *compiled})
         for name, argv in runs.items():
             with self.subTest(golden=name), tempfile.TemporaryDirectory() as directory:
                 json_path = Path(directory) / "report.json"
@@ -1549,6 +1557,13 @@ COVERED_AUDIT_CODES = {
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    # The five coverage codes' `store verify` command tests live in
+    # `tests/test_coverage_streams.py`.
+    "coverage_identity_breach",
+    "coverage_incomplete",
+    "coverage_overfull",
+    "coverage_schema_unmarked",
+    "coverage_stream_mismatch",
     # Its `store verify` command tests live in `tests/test_evaluation_order.py`.
     "evaluation_before_detection",
     "event_metadata_invalid",
@@ -6065,6 +6080,39 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
             ],
         )
 
+    def test_a_coverage_schema_marker_left_low_changes_no_report_and_no_writer(self) -> None:
+        # The twin holds the same coverage streams: the fold reads them, so a stream planted
+        # in one copy alone would change the report (ADR 0015, PR 3 step 4 finding 5).
+        self.copy_store(self.clean, "coverage-clean.db")
+        code, _out, err = run(
+            [
+                "cases",
+                "coverage",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--as-of",
+                INGESTED_AT,
+                "--inventory",
+                str(EXAMPLE_INVENTORY),
+            ]
+        )
+        self.assertEqual(code, 3, err)
+        self.clean = self.database
+        coverage = self.record("coverage.recorded")
+        self.copy_store(self.clean, "coverage-twin.db")
+        self.twin_outputs = self.outputs("coverage-twin")
+        self.twin_reads = self.case_reads()
+        self.twin_appended = self.appended()
+
+        def plant() -> list[tuple[int, str]]:
+            with closing(self.raw()) as connection:
+                connection.execute("PRAGMA user_version = 3")
+            return [(coverage.sequence, "coverage_schema_unmarked")]
+
+        self.assert_content_neutral("coverage-schema", plant)
+
 
 class ReportSourceConflictTests(unittest.TestCase):
     """Every `report` command takes a store or stateless inputs, never both, never neither.
@@ -6838,7 +6886,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 self.assertEqual(code, 1, err[:500])
                 self.assertIn(
                     "error: store_unavailable: database schema -1 is outside supported "
-                    "schemas 1 to 3",
+                    "schemas 1 to 4",
                     err,
                 )
                 self.assert_bounded(out, err)
@@ -6850,7 +6898,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1, err[:500])
         self.assertIn(
             "schema_version_unsupported: database is marked schema -1; this build opens "
-            "schemas 1 to 3",
+            "schemas 1 to 4",
             out + err,
         )
         self.assert_bounded(out, err)

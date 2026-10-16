@@ -1034,3 +1034,40 @@ every ERROR code of its reading. A productive run beside an unverified empty run
 successful reading with WARNING `execution_unverified` and no ERROR, because the code is raised
 only where `no_observations` is. No golden moves: no fixture has an empty run under an
 unverified invocation.
+
+## Amendment 2026-10-16: a second reserved source type
+
+ADR 0015's third pull request adds a second system-generated record, the coverage gap, under the
+source type `complyroll.coverage` beside `complyroll.detection-process`. Five decisions above
+read wider from this date; their text is not edited.
+
+- **Decision 8 holds for gaps.** A gap is timed by its window close, so its `detectedAtSource` is
+  `system`, `--detected-at` never applies to it, and `cases attest-detection` never attests a gap
+  case: `--all-missing` never selects one, and `--case` reports it `attestation_not_applicable`.
+- **Decision 9's attestation sentence names the kinds present.** With no attestation, a run whose
+  system records are all gaps prints "Every reported vulnerability carried a detection time from
+  its source artifact or, for a coverage gap, from the instant its coverage window closed. No
+  attestation was needed." A run with both kinds names the failure's clause first, then the gap's,
+  joined by "and,". A run whose system records are all failures prints Decision 9's sentence byte
+  for byte.
+- **Decision 10's refusal covers every reserved type and names the kind.** An entry without
+  `contextKey` that matches a record of any source type under the `complyroll.` prefix is refused
+  on both paths, in the order Decision 10 gives. `EvaluationMatch.context_key_required` takes the
+  record's kind from `reports.vdt.system_record_kind`: "detection process failure", "coverage
+  gap", or "system record" for a reserved type with no name of its own, so the message names
+  whichever kind matched, and the failure's message is unchanged byte for byte for an entry that
+  gives `sourceType`. A lone match that names `contextKey` without `sourceType` is now refused with
+  the same code and told to add `sourceType`, so the triple is required as Decision 10 states. A
+  gap's documented match is the full triple: `sourceRecordId` `coverage-gap`, `sourceType`
+  `complyroll.coverage`, and the gap's context key (ADR 0015 Decision 23).
+- **Decision 11's exit 3 is widened per flag.** Exit 3 means the output holds a system-generated
+  `VDR-CSO-FAV` record. `--record-failed-imports` answers for failures and
+  `--record-coverage-gaps` for coverage gaps, a run with both exits 3 once, and a publish that
+  fails still exits 1. `cases coverage` exits 3 when it records a gap. Unlike `ingest`, a rerun
+  that finds every gap already recorded exits 0, because it recorded nothing. `report ... --db`
+  keeps 0 and 1, and refuses the gap flag through `_report_source_conflict` ("report vdt takes
+  either --db or --record-coverage-gaps, never both"), because a report never records a gap into a
+  store (ADR 0015 Decision 30).
+- **Decision 18 is unchanged and applies to gaps.** A gap record detected after the report period
+  ends is excluded from the official VDT, and it still counts for exit 3, is listed by the
+  historical snapshot, and keeps its tracking id on its coverage window (ADR 0015 Decision 31).

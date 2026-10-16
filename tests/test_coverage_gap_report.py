@@ -593,6 +593,35 @@ class GapGoldenTests(unittest.TestCase):
             self.vdt.metadata.coverage_gaps, tuple(sorted({item[3] for item in GAP_WINDOWS}))
         )
 
+    def test_a_gap_record_names_its_kind_once_under_the_same_tracking_ids(self) -> None:
+        # The title leads with the rule, so a gap reads `coverage-gap: VDR-TFR-...` the way a
+        # failure reads `detection-process-failure: source artifact ...`. The title is not
+        # part of the identity, so the goldens keep every tracking id they named.
+        gap_ids = {item[3] for item in GAP_WINDOWS}
+        for name in GAP_GOLDENS:
+            with self.subTest(golden=name):
+                document = json.loads((GOLDEN / f"{name}.json").read_text("utf-8"))
+                markdown = (GOLDEN / f"{name}.md").read_text("utf-8")
+                self.assertNotIn("coverage gap:", f"{json.dumps(document)}{markdown}")
+                details = [
+                    item.get("vulnerabilityDetail", item)
+                    for key in (
+                        "vulnerabilities",
+                        "activeVulnerabilities",
+                        "acceptedVulnerabilities",
+                    )
+                    for item in document.get(key, ())
+                ]
+                gaps = [item for item in details if item["providerTrackingId"] in gap_ids]
+                self.assertTrue(gaps)
+                for item in gaps:
+                    self.assertRegex(
+                        item["vulnerabilityDescription"],
+                        r"^coverage-gap: VDR-TFR-(MVX|NMV|PCD|PDD|PSD) window for ",
+                    )
+                windows = document["x-complyroll"]["coverage"]["windows"]
+                self.assertEqual({window["trackingId"] for window in windows}, gap_ids)
+
     def test_the_library_compiles_both_gap_goldens(self) -> None:
         for name, report, sections in (
             ("vdt-coverage-gaps", self.vdt, None),

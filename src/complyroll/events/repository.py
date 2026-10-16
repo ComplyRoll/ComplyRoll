@@ -31,6 +31,8 @@ from complyroll.models import Observation, ObservationOrigin
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 
 from .contracts import (
+    COVERAGE_RECORDED,
+    COVERAGE_STREAM_SCHEMA_VERSION,
     EVENT_CONTRACTS,
     FAILURE_CLOCK_VALUES,
     FAILURE_CODE_VALUES,
@@ -39,9 +41,12 @@ from .contracts import (
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
     artifact_stream_components,
+    coverage_stream_fingerprint,
+    coverage_stream_id,
     event_belongs_on_stream,
     failure_stream_components,
     is_artifact_stream,
+    is_coverage_stream,
     is_failure_stream,
     iso_utc,
     parse_utc,
@@ -104,6 +109,40 @@ _FAILURE_RECORD_PAIRS: Final[tuple[tuple[str, str], ...]] = (
     ("failureClass", "failure.class"),
     ("failureCodes", "failure.codes"),
     ("clock", "failure.clock"),
+)
+
+#: The identity of a coverage stream's gap record, exactly what `reports.gaps` writes
+#: (ADR 0015). Spelled here because the event layer does not import the report layer, as
+#: `CLOSED_DISPOSITION_VALUES` is; the coverage stream tests hold each to its builder's.
+COVERAGE_SOURCE_TYPE: Final = "complyroll.coverage"
+COVERAGE_SOURCE_TOOL: Final = "complyroll"
+COVERAGE_PARSER_NAME: Final = "complyroll.coverage"
+COVERAGE_PARSER_VERSION: Final = "1"
+COVERAGE_RECORD_ID: Final = "coverage-gap"
+
+#: Exactly the source metadata keys a gap record carries, `coverage.job` empty when the
+#: entry names no job. The fingerprint covers none of them, so the derived-id check cannot
+#: see one changed.
+COVERAGE_METADATA_KEYS: Final[tuple[str, ...]] = (
+    "coverage.anchor",
+    "coverage.anchorAt",
+    "coverage.basis",
+    "coverage.force",
+    "coverage.inventorySha256",
+    "coverage.job",
+    "coverage.rule",
+    "coverage.windowClosedAt",
+)
+
+#: How a coverage head names what its gap record names. The context key is the record's
+#: own field; the rest are its metadata.
+_COVERAGE_RECORD_PAIRS: Final[tuple[tuple[str, str], ...]] = (
+    ("rule", "coverage.rule"),
+    ("contextKey", "context_key"),
+    ("windowClosedAt", "coverage.windowClosedAt"),
+    ("anchor", "coverage.anchor"),
+    ("anchorAt", "coverage.anchorAt"),
+    ("inventorySha256", "coverage.inventorySha256"),
 )
 
 #: A size as `str(int)` spells it: digits only, no sign, no leading zero.
@@ -334,6 +373,13 @@ class EventRepository:
                 and event.event_type not in FAILURE_HEAD_TYPES
             ):
                 raise EventContractError(failure_head_order_message(stream_id))
+            if (
+                index == 0
+                and expected_version == 0
+                and is_coverage_stream(stream_id)
+                and event.event_type != COVERAGE_RECORDED
+            ):
+                raise EventContractError(coverage_head_order_message(stream_id))
             metadata = event.metadata.to_dict()
             _require_valid_metadata(metadata)
             prepared.append(
@@ -369,6 +415,15 @@ class EventRepository:
                     if head_type == FAILURE_HELD
                     else FAILURE_STREAM_SCHEMA_VERSION
                 ),
+            )
+        if is_coverage_stream(stream_id):
+            # A coverage stream needs schema 4, marked with its events in one transaction, so
+            # a rollback undoes both (ADR 0015).
+            return self._store.append(
+                stream_id,
+                prepared,
+                expected_version=expected_version,
+                requires_schema=COVERAGE_STREAM_SCHEMA_VERSION,
             )
         return self._store.append(stream_id, prepared, expected_version=expected_version)
 
@@ -408,6 +463,10 @@ class EventRepository:
         level deep, and the earliest stream of any identifier is a recorded failure. A batch
         that opens a hold with no observation names no holder, so it is refused too.
         `head_type` is the stream's head and `opening` says the batch writes it.
+
+        A coverage stream is held to the same-stream rule alone (ADR 0015): its id is its gap
+        record's fingerprint, so a record on any other coverage stream is refused as the
+        gap record of another stream before it gets here.
         """
 
         incoming = [
@@ -419,7 +478,11 @@ class EventRepository:
             if opening and head_type == FAILURE_HELD:
                 raise EventContractError(failure_hold_orphan_message(stream_id, None, None))
             return
-        if not is_artifact_stream(stream_id) and not is_failure_stream(stream_id):
+        if not (
+            is_artifact_stream(stream_id)
+            or is_failure_stream(stream_id)
+            or is_coverage_stream(stream_id)
+        ):
             return
         seen: set[str] = set()
         if self.current_version(stream_id) > 0:
@@ -920,6 +983,209 @@ def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | Non
     return None
 
 
+def coverage_stream_id_of(observation: Observation) -> str:
+    """Return the one stream a gap record is recorded on, `coverage/<its fingerprint>`.
+
+    The writer names a gap's stream with it, and `coverage_record_problem` recomputes a
+    stored record's with it, so both name a gap's stream one way (ADR 0015).
+    """
+
+    if not isinstance(observation, Observation):
+        raise TypeError("observation must be an Observation")
+    if (
+        observation.origin is not ObservationOrigin.SYSTEM
+        or observation.source_type != COVERAGE_SOURCE_TYPE
+    ):
+        raise ValueError(
+            f"only a system record of source type {COVERAGE_SOURCE_TYPE!r} names a coverage stream"
+        )
+    return coverage_stream_id(observation.fingerprint)
+
+
+def coverage_stream_id_of_payload(payload: Mapping[str, Any]) -> str:
+    """Recompute the stream one recorded gap record names, reading it back as replay does.
+
+    The fingerprint is rebuilt from the record's own fields rather than read from the
+    payload's `fingerprint`, which the reader holds equal to it anyway.
+    """
+
+    try:
+        observation = Observation.from_canonical_dict(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"the payload is not a readable observation: {exc}") from exc
+    return coverage_stream_id_of(observation)
+
+
+def coverage_head_payload(observation: Observation) -> dict[str, str]:
+    """Return the `coverage.recorded` head of one gap record, read off the record itself.
+
+    Built from the record, so a head and its record agree by construction; the writer and
+    every test that stages a coverage stream share it.
+    """
+
+    coverage_stream_id_of(observation)
+    metadata = dict(observation.source_metadata)
+    missing = [key for key in COVERAGE_METADATA_KEYS if key not in metadata]
+    if missing:
+        raise ValueError(f"the gap record's metadata has no {', '.join(missing)}")
+    head: dict[str, str] = {}
+    for head_key, record_key in _COVERAGE_RECORD_PAIRS:
+        if record_key == "context_key":
+            head[head_key] = observation.context_key
+        else:
+            head[head_key] = metadata[record_key]
+    return head
+
+
+def coverage_record_problem(
+    stream_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    """Return the audit code and message for a coverage-stream event its stream does not name.
+
+    A coverage stream id is its gap record's fingerprint (ADR 0015), so either event on a
+    stream whose id names none is a `coverage_stream_mismatch`. The record must be the gap
+    record a closed window mints: origin `system`, the coverage source type, tool, parser,
+    and record id, and its derived id, else a `coverage_identity_breach`; the gap record
+    whose fingerprint the stream names, else a `coverage_stream_mismatch`; and exactly
+    `COVERAGE_METADATA_KEYS`, with the window close and rule its own identity names, else a
+    `coverage_identity_breach`. The repository refuses each at append with the message, and
+    the audit reports each under its code. Whether the head agrees with the record takes
+    both events, which is `coverage_record_disagreement`'s business.
+
+    Returns None for an event no coverage stream carries and for a stream of another kind,
+    which are the stream-kind check's business rather than this one's.
+    """
+
+    if not is_coverage_stream(stream_id) or event_type not in (
+        COVERAGE_RECORDED,
+        OBSERVATION_RECORDED,
+    ):
+        return None
+    try:
+        coverage_stream_fingerprint(stream_id)
+    except ValueError as exc:
+        return ("coverage_stream_mismatch", f"stream {stream_id!r} names no gap record: {exc}")
+    if event_type == COVERAGE_RECORDED:
+        return None
+    described = f"{OBSERVATION_RECORDED} on coverage stream {stream_id!r}"
+    problem = _gap_record_problem(payload)
+    if problem is not None:
+        return ("coverage_identity_breach", f"{described} is not a coverage gap record: {problem}")
+    try:
+        recomputed = coverage_stream_id_of_payload(payload)
+    except ValueError as exc:
+        return ("coverage_identity_breach", f"{described} is not a coverage gap record: {exc}")
+    if recomputed != stream_id:
+        return (
+            "coverage_stream_mismatch",
+            f"{described} is the gap record of stream {recomputed!r}; a coverage stream is "
+            "named for its gap record's fingerprint",
+        )
+    problem = _gap_metadata_problem(payload)
+    if problem is not None:
+        return ("coverage_identity_breach", f"{described} is not a coverage gap record: {problem}")
+    return None
+
+
+def coverage_record_disagreement(
+    stream_id: str,
+    head: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> str | None:
+    """Return why a coverage head and its gap record describe two different gaps.
+
+    The writer reads the head off the record (`coverage_head_payload`), so the two name the
+    same rule, context key, window close, anchor, and inventory digest. Each is checked
+    alone at append, which cannot see the other, so the fold and the audit, which read
+    both, ask this. Both payloads are expected to have passed their own contract and
+    `coverage_record_problem` already.
+    """
+
+    raw = observation.get("source_metadata")
+    metadata: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    for head_key, record_key in _COVERAGE_RECORD_PAIRS:
+        recorded = head.get(head_key)
+        described = (
+            observation.get(record_key) if record_key == "context_key" else metadata.get(record_key)
+        )
+        if described != recorded:
+            return (
+                f"coverage stream {stream_id!r} records {head_key} {_shown(recorded)} in its "
+                f"{COVERAGE_RECORDED} and {record_key} {_shown(described)} in its gap record; "
+                "the two describe one gap"
+            )
+    return None
+
+
+def coverage_head_order_message(stream_id: str) -> str:
+    """Word a coverage stream whose first event is not its head, wherever it is reported."""
+
+    return (
+        f"coverage stream {stream_id!r} does not open with its {COVERAGE_RECORDED} head; a "
+        "coverage stream is written head first"
+    )
+
+
+def _gap_record_problem(payload: Mapping[str, Any]) -> str | None:
+    """Return the first way one observation payload is not a coverage gap record."""
+
+    derived = f"obs-{payload.get('fingerprint')}"
+    if payload.get("origin") != ObservationOrigin.SYSTEM.value:
+        return f"its origin is {_shown(payload.get('origin'))}"
+    if payload.get("source_type") != COVERAGE_SOURCE_TYPE:
+        return f"its source type is {_shown(payload.get('source_type'))}"
+    if payload.get("source_record_id") != COVERAGE_RECORD_ID:
+        return f"its source record id is {_shown(payload.get('source_record_id'))}"
+    if payload.get("source_tool") != COVERAGE_SOURCE_TOOL:
+        return f"its source tool is {_shown(payload.get('source_tool'))}"
+    parser = (payload.get("parser_name"), payload.get("parser_version"))
+    if parser != (COVERAGE_PARSER_NAME, COVERAGE_PARSER_VERSION):
+        return f"its parser is {_shown(parser[0])} version {_shown(parser[1])}"
+    if payload.get(OBSERVATION_ID_KEY) != derived:
+        return (
+            f"its id is {_shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
+            f"{_shown(derived)}"
+        )
+    return None
+
+
+def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
+    """Return the first way a gap record's metadata is not what its writer stores.
+
+    Exactly the eight keys, and the two that restate the record's identity agree with it:
+    the window close is the instant the record is observed at, and the rule leads its
+    context key. The rest are what the head names, which `coverage_record_disagreement`
+    holds them to.
+    """
+
+    raw = payload.get("source_metadata")
+    if not isinstance(raw, Mapping):
+        return "its metadata is not an object"
+    for key in COVERAGE_METADATA_KEYS:
+        if key not in raw:
+            return f"its metadata has no {key!r}"
+    for key in raw:
+        if key not in COVERAGE_METADATA_KEYS:
+            return f"its metadata carries {_shown(key)}, which a gap record does not"
+    observed = payload.get("observed_at")
+    observed_text = None if not isinstance(observed, str) else iso_utc(parse_utc(observed))
+    if raw["coverage.windowClosedAt"] != observed_text:
+        return (
+            f"its metadata coverage.windowClosedAt is {_shown(raw['coverage.windowClosedAt'])}, "
+            f"where the record is observed at {_shown(observed_text)}"
+        )
+    context_key = payload.get("context_key")
+    rule = raw["coverage.rule"]
+    if not isinstance(context_key, str) or not context_key.startswith(f"{rule}:"):
+        return (
+            f"its metadata coverage.rule is {_shown(rule)}, and its context key "
+            f"{_shown(context_key)} does not lead with it"
+        )
+    return None
+
+
 def duplicate_observation_message(stream_id: str, observation_id: str) -> str:
     """Word one stream holding the same observation twice, wherever it is reported.
 
@@ -928,7 +1194,12 @@ def duplicate_observation_message(stream_id: str, observation_id: str) -> str:
     whichever command an operator reaches it through.
     """
 
-    kind = "failure" if is_failure_stream(stream_id) else "artifact"
+    if is_failure_stream(stream_id):
+        kind = "failure"
+    elif is_coverage_stream(stream_id):
+        kind = "coverage"
+    else:
+        kind = "artifact"
     return (
         f"{kind} stream {stream_id!r} records observation {observation_id!r} more than "
         "once; the same finding would be rehydrated twice"
@@ -963,13 +1234,16 @@ def _require_stream_compatible(
     names a different tracking id would fold into a case the stream is not; an
     `artifact.ingested` and an `observation.recorded` name their own stream the same way,
     through the artifact identity the stream id spells out. A failure stream's head and its
-    system observation are held to the failed reading the stream id spells out (ADR 0014).
+    system observation are held to the failed reading the stream id spells out (ADR 0014),
+    and a coverage stream's gap record to the fingerprint its stream id spells out (ADR 0015).
     """
 
     if not event_belongs_on_stream(event_type, stream_id):
         kind = stream_kind(stream_id)
         described = (
-            "not an artifact, case, or failure stream" if kind is None else f"a {kind} stream"
+            "not an artifact, case, failure, or coverage stream"
+            if kind is None
+            else f"a {kind} stream"
         )
         raise EventContractError(
             f"event {event_type!r} does not belong on stream {stream_id!r}, which is {described}"
@@ -977,6 +1251,9 @@ def _require_stream_compatible(
     breach = artifact_identity_breach(stream_id, event_type, payload)
     if breach is None:
         breach = failure_identity_breach(stream_id, event_type, payload)
+    if breach is None:
+        problem = coverage_record_problem(stream_id, event_type, payload)
+        breach = None if problem is None else problem[1]
     if breach is not None:
         raise EventContractError(breach)
     if event_type != CASE_CREATED:
@@ -1068,6 +1345,12 @@ def _json_pointer(parts: Any) -> str:
 
 __all__ = [
     "ARTIFACT_IDENTITY_KEYS",
+    "COVERAGE_METADATA_KEYS",
+    "COVERAGE_PARSER_NAME",
+    "COVERAGE_PARSER_VERSION",
+    "COVERAGE_RECORD_ID",
+    "COVERAGE_SOURCE_TOOL",
+    "COVERAGE_SOURCE_TYPE",
     "FAILURE_HEAD_TYPES",
     "MAX_BATCH_EVENTS",
     "METADATA_KEYS",
@@ -1083,6 +1366,12 @@ __all__ = [
     "PendingEvent",
     "artifact_identity_breach",
     "canonical_payload_digest",
+    "coverage_head_order_message",
+    "coverage_head_payload",
+    "coverage_record_disagreement",
+    "coverage_record_problem",
+    "coverage_stream_id_of",
+    "coverage_stream_id_of_payload",
     "duplicate_observation_message",
     "failure_duplicate_observation_message",
     "failure_hold_orphan_message",

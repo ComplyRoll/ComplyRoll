@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import pkgutil
 import unittest
 from collections.abc import Sequence
 from dataclasses import replace
@@ -27,6 +29,7 @@ from test_reports import (
     options,
 )
 
+import complyroll
 from complyroll.adapters import (
     DETECTION_FAILURE_SOURCE_TYPE,
     DiagnosticLevel,
@@ -38,6 +41,7 @@ from complyroll.history import CaseState, EvaluationMatchError
 from complyroll.history import writers as history_writers
 from complyroll.history.order import case_order_diagnostic
 from complyroll.models import (
+    RESERVED_SOURCE_TYPE_PREFIX,
     CaseStatus,
     Observation,
     ObservationDisposition,
@@ -635,6 +639,66 @@ class PersistedGapEvaluationTests(unittest.TestCase):
         with self.assertRaises(ReportCompileError) as caught:
             compile_with((gap,), evaluations_with(gap_match(gap), completedAt=GAP_EARLY_TEXT))
         self.assertEqual(as_tuples(caught.exception.diagnostics), as_tuples([early]))
+
+
+# *--- Reserved Types ---*
+
+
+def minted_reserved_types() -> set[str]:
+    """Return every reserved source type a module of the package names as a constant.
+
+    The convention is a module-level `*_SOURCE_TYPE` constant, as `adapters.failures` and
+    `reports.gaps` spell theirs, so a third reserved type is found the day it is defined.
+    """
+    found: set[str] = set()
+    for info in pkgutil.walk_packages(complyroll.__path__, f"{complyroll.__name__}."):
+        if info.name.endswith(".__main__"):
+            continue
+        module = importlib.import_module(info.name)
+        for name, value in vars(module).items():
+            if (
+                name.endswith("_SOURCE_TYPE")
+                and isinstance(value, str)
+                and value.startswith(RESERVED_SOURCE_TYPE_PREFIX)
+            ):
+                found.add(value)
+    return found
+
+
+class ReservedSourceTypeTableTests(unittest.TestCase):
+    """Each reserved type has its own entry at each of the three places a report branches.
+
+    A refusal names the record by kind, an order refusal names its remedy, and the
+    attestation sentence names what timed it. Each falls back to the detection failure's
+    text for a type it does not know, so a third type added to one and not the others would
+    read as a failure in silence.
+    """
+
+    def test_the_package_mints_the_two_reserved_types(self) -> None:
+        self.assertLessEqual(
+            {DETECTION_FAILURE_SOURCE_TYPE, COVERAGE_GAP_SOURCE_TYPE}, minted_reserved_types()
+        )
+
+    def test_every_minted_reserved_type_has_a_kind_a_remedy_and_a_sentence(self) -> None:
+        types = sorted(minted_reserved_types())
+        kinds = [vdt_module.system_record_kind(source_type) for source_type in types]
+        self.assertEqual(len(set(kinds)), len(types))
+        for source_type, kind in zip(types, kinds, strict=True):
+            with self.subTest(source_type=source_type):
+                self.assertNotEqual(kind, "system record")
+                diagnostic = vdt_module.evaluation_order_diagnostic(
+                    tracking_id="case-0000000000000000",
+                    location="here",
+                    detected_at=GAP_CLOSED_AT,
+                    detected_source="system",
+                    completed_at=datetime(2026, 8, 3, tzinfo=UTC),
+                    source_type=source_type,
+                )
+                assert diagnostic is not None
+                self.assertIn(f"; a {kind} is detected when", diagnostic.message)
+                sentence = vdt_module._system_detection_sentence({source_type})
+                self.assertIn(f"or, for a {kind}, from the instant", sentence)
+                self.assertEqual(sentence.count(", for a "), 1)
 
 
 if __name__ == "__main__":

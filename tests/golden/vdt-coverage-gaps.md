@@ -131,7 +131,7 @@
 
 ### case-656d627b62275ba8: coverage-gap
 
-- **Description:** coverage-gap: coverage gap: VDR-TFR-MVX window for host:lab-win-01 closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)
+- **Description:** coverage-gap: VDR-TFR-MVX window for host:lab-win-01 closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)
 - **Detection source:** complyroll
 - **Detected at:** 2026-07-04T00:00:00Z (source: system)
 - **Observations:** obs-59fbb69836e1874231e0ce7eed88c5669b626cb453ace189f6345424340c93a1, obs-4b422e90cbdc0a568f0e800f372d48d2120de7a62675d79d8339f92fde253970
@@ -147,7 +147,7 @@
 
 ### case-56e1eee78e97395f: coverage-gap
 
-- **Description:** coverage-gap: coverage gap: VDR-TFR-MVX window for host:lab-rhel-01 closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)
+- **Description:** coverage-gap: VDR-TFR-MVX window for host:lab-rhel-01 closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)
 - **Detection source:** complyroll
 - **Detected at:** 2026-07-04T00:00:00Z (source: system)
 - **Observations:** obs-93163dadcffc2fa5e3efd858b439b2be6c792975a029a95596b26b92be6fd56c
@@ -163,7 +163,7 @@
 
 ### case-fe51d8e4d9c79b36: coverage-gap
 
-- **Description:** coverage-gap: coverage gap: VDR-TFR-NMV window for logical:backup-restore-procedure closed 2026-07-15T16:00:00Z with no verification recorded (VDR-CSO-FAV)
+- **Description:** coverage-gap: VDR-TFR-NMV window for logical:backup-restore-procedure closed 2026-07-15T16:00:00Z with no verification recorded (VDR-CSO-FAV)
 - **Detection source:** complyroll
 - **Detected at:** 2026-07-15T16:00:00Z (source: system)
 - **Observations:** obs-27323a204397b0a2cb25d1f0effb7b7cf11c687350d862fc34b9a75d0773c7ea
@@ -179,7 +179,7 @@
 
 ### case-9c9bf88832065e17: coverage-gap
 
-- **Description:** coverage-gap: coverage gap: VDR-TFR-PCD window for host:lab-win-01 closed 2026-08-01T00:00:00Z with no verification recorded (VDR-CSO-FAV)
+- **Description:** coverage-gap: VDR-TFR-PCD window for host:lab-win-01 closed 2026-08-01T00:00:00Z with no verification recorded (VDR-CSO-FAV)
 - **Detection source:** complyroll
 - **Detected at:** 2026-08-01T00:00:00Z (source: system)
 - **Observations:** obs-c5143479e12c76daad73fd1e458defd592a1dbca33644f9b7040ee7573c27f7b
@@ -195,7 +195,7 @@
 
 ### case-987c96e87614506a: coverage-gap
 
-- **Description:** coverage-gap: coverage gap: VDR-TFR-PDD window for host:ubuntu-web-01 closed 2026-07-15T00:00:00Z with no verification recorded (VDR-CSO-FAV)
+- **Description:** coverage-gap: VDR-TFR-PDD window for host:ubuntu-web-01 closed 2026-07-15T00:00:00Z with no verification recorded (VDR-CSO-FAV)
 - **Detection source:** complyroll
 - **Detected at:** 2026-07-15T00:00:00Z (source: system)
 - **Observations:** obs-6ef76ee108c6ebc7e7ef2d90bee2d983e2e952c9d812d97b312697826056a2d7
@@ -211,7 +211,7 @@
 
 ### case-23ec0644fabe50d3: coverage-gap
 
-- **Description:** coverage-gap: coverage gap: VDR-TFR-PDD window for host:lab-rhel-01 closed 2026-07-15T00:00:00Z with no verification recorded (VDR-CSO-FAV)
+- **Description:** coverage-gap: VDR-TFR-PDD window for host:lab-rhel-01 closed 2026-07-15T00:00:00Z with no verification recorded (VDR-CSO-FAV)
 - **Detection source:** complyroll
 - **Detected at:** 2026-07-15T00:00:00Z (source: system)
 - **Observations:** obs-2476582a72700fbb5250049faf3faaf3daabaaefead5c7881b86ee7ef3e2ba4b
@@ -227,7 +227,7 @@
 
 ### case-a971b430300440cf: coverage-gap
 
-- **Description:** coverage-gap: coverage gap: VDR-TFR-PSD window for logical:sample-group/ir-runbooks closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)
+- **Description:** coverage-gap: VDR-TFR-PSD window for logical:sample-group/ir-runbooks closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)
 - **Detection source:** complyroll
 - **Detected at:** 2026-07-04T00:00:00Z (source: system)
 - **Observations:** obs-140cae03473a44858d421f78684c8f31360a8d78486f425ca6a433ae37d785ce, obs-1db1082f48622e26508155b2cf0dc4adf2a6cf8abc3faa705477a641f0db7667

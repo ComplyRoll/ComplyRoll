@@ -30,6 +30,7 @@ from complyroll.events import (
     ARTIFACT_IDENTITY_KEYS,
     ARTIFACT_STREAM_EVENT_TYPES,
     CASE_STREAM_EVENT_TYPES,
+    COVERAGE_STREAM_EVENT_TYPES,
     EVENT_CONTRACTS,
     EVENT_TYPES,
     FAILURE_CODE_VALUES,
@@ -53,6 +54,7 @@ from complyroll.events import (
     artifact_stream_id,
     canonical_payload_digest,
     case_stream_id,
+    coverage_stream_id,
     event_belongs_on_stream,
     failure_duplicate_observation_message,
     failure_head_order_message,
@@ -63,6 +65,7 @@ from complyroll.events import (
     failure_stream_id,
     is_artifact_stream,
     is_case_stream,
+    is_coverage_stream,
     is_failure_stream,
     iso_utc,
     metadata_breaches,
@@ -105,6 +108,8 @@ TRACKING_ID = "case-0123456789abcdef"
 STREAM_ID = f"case/{TRACKING_ID}"
 ARTIFACT_STREAM_ID = f"artifact/{DIGEST}/complyroll.cklb/1"
 FAILURE_STREAM_ID = f"failure/{DIGEST}/complyroll.sarif/1"
+#: A coverage stream: one gap record's SYSTEM identity hash, which is a SHA-256 like `DIGEST`.
+COVERAGE_STREAM_ID = f"coverage/{DIGEST}"
 #: The same bytes failing under the next parser version: a hold beneath the stream above.
 HELD_STREAM_ID = f"failure/{DIGEST}/complyroll.sarif/2"
 
@@ -265,12 +270,24 @@ GOOD_PAYLOADS["failure.held"] = {
     "parserVersion": "2",
 }
 
+#: The head of a coverage stream: one MVX window under a job that closed with no
+#: verification, named the way its gap record's metadata names it (ADR 0015).
+GOOD_PAYLOADS["coverage.recorded"] = {
+    "rule": "VDR-TFR-MVX",
+    "contextKey": "VDR-TFR-MVX:job:nightly-openscap",
+    "windowClosedAt": "2026-07-08T00:00:00Z",
+    "anchor": "declared",
+    "anchorAt": "2026-07-01T00:00:00Z",
+    "inventorySha256": DIGEST,
+}
+
 #: One field per contract that the schema requires in UTC `Z` form. The two contracts
 #: that accept a source offset are asserted separately below.
 UTC_ONLY_FIELDS: dict[str, str] = {
     "artifact.ingested": "ingestedAt",
     "failure.recorded": "ingestedAt",
     "failure.held": "ingestedAt",
+    "coverage.recorded": "windowClosedAt",
     "case.created": "createdAt",
     "detection.attested": "detectedAt",
     "case.evaluated": "completedAt",
@@ -284,6 +301,7 @@ BAD_ENUM_VALUES: dict[str, tuple[str, Any]] = {
     "case.disposition_recorded": ("status", "active"),
     "failure.recorded": ("failureClass", "network"),
     "failure.held": ("failureClass", "network"),
+    "coverage.recorded": ("anchor", "guessed"),
 }
 
 #: The two PAIN-bearing contracts and the integer field each constrains to 1 through 5.
@@ -407,6 +425,7 @@ EXPECTED_TIMESTAMP_POINTERS: dict[str, tuple[str, ...]] = {
     "case.identified": (),
     "case.observation_linked": ("/observedAt",),
     "case.pain_reduced": ("/reducedAt",),
+    "coverage.recorded": ("/anchorAt", "/windowClosedAt"),
     "detection.attested": ("/attestedAt", "/detectedAt"),
     "failure.held": ("/ingestedAt",),
     "failure.recorded": ("/ingestedAt",),
@@ -1471,30 +1490,37 @@ class StreamCompatibilityTests(unittest.TestCase):
             expected_version=self.repository.current_version(stream_id),
         )
 
-    def test_the_three_stream_kinds_place_every_published_type(self) -> None:
+    def test_the_four_stream_kinds_place_every_published_type(self) -> None:
+        readings = (
+            ARTIFACT_STREAM_EVENT_TYPES,
+            FAILURE_STREAM_EVENT_TYPES,
+            COVERAGE_STREAM_EVENT_TYPES,
+        )
         self.assertEqual(
-            ARTIFACT_STREAM_EVENT_TYPES | CASE_STREAM_EVENT_TYPES | FAILURE_STREAM_EVENT_TYPES,
+            CASE_STREAM_EVENT_TYPES.union(*readings),
             set(EVENT_TYPES),
         )
-        self.assertEqual(
-            CASE_STREAM_EVENT_TYPES & (ARTIFACT_STREAM_EVENT_TYPES | FAILURE_STREAM_EVENT_TYPES),
-            set(),
-        )
-        self.assertEqual(
-            ARTIFACT_STREAM_EVENT_TYPES & FAILURE_STREAM_EVENT_TYPES, {"observation.recorded"}
-        )
+        self.assertEqual(CASE_STREAM_EVENT_TYPES & frozenset().union(*readings), set())
+        for first, second in (
+            (ARTIFACT_STREAM_EVENT_TYPES, FAILURE_STREAM_EVENT_TYPES),
+            (ARTIFACT_STREAM_EVENT_TYPES, COVERAGE_STREAM_EVENT_TYPES),
+            (FAILURE_STREAM_EVENT_TYPES, COVERAGE_STREAM_EVENT_TYPES),
+        ):
+            self.assertEqual(first & second, {"observation.recorded"})
         self.assertEqual(
             ARTIFACT_STREAM_EVENT_TYPES, {"artifact.ingested", "observation.recorded"}
         )
         self.assertEqual(
             FAILURE_STREAM_EVENT_TYPES, {"failure.held", "failure.recorded", "observation.recorded"}
         )
+        self.assertEqual(COVERAGE_STREAM_EVENT_TYPES, {"coverage.recorded", "observation.recorded"})
         self.assertEqual(
             STREAM_EVENT_TYPES,
             {
                 "artifact": ARTIFACT_STREAM_EVENT_TYPES,
                 "case": CASE_STREAM_EVENT_TYPES,
                 "failure": FAILURE_STREAM_EVENT_TYPES,
+                "coverage": COVERAGE_STREAM_EVENT_TYPES,
             },
         )
 
@@ -1504,32 +1530,58 @@ class StreamCompatibilityTests(unittest.TestCase):
         artifact = frozenset(ARTIFACT_STREAM_EVENT_TYPES)
         case = frozenset(CASE_STREAM_EVENT_TYPES)
         failure = frozenset(FAILURE_STREAM_EVENT_TYPES)
+        coverage = frozenset(COVERAGE_STREAM_EVENT_TYPES)
         published = frozenset(EVENT_TYPES)
-        self.assertIsNone(_placement_problem(artifact, case, failure, published))
+        self.assertIsNone(_placement_problem(artifact, case, failure, coverage, published))
         for label, tables, expected in (
             (
                 "an unplaced type",
-                (artifact, case, failure - {"failure.recorded"}),
+                (artifact, case, failure - {"failure.recorded"}, coverage),
+                "must belong to a stream kind",
+            ),
+            (
+                "an unplaced coverage head",
+                (artifact, case, failure, coverage - {"coverage.recorded"}),
                 "must belong to a stream kind",
             ),
             (
                 "a case type on an artifact stream",
-                (artifact | {"case.created"}, case, failure),
+                (artifact | {"case.created"}, case, failure, coverage),
                 "case stream kind alone",
             ),
             (
                 "a case type on a failure stream",
-                (artifact, case, failure | {"case.identified"}),
+                (artifact, case, failure | {"case.identified"}, coverage),
+                "case stream kind alone",
+            ),
+            (
+                "a case type on a coverage stream",
+                (artifact, case, failure, coverage | {"case.evaluated"}),
                 "case stream kind alone",
             ),
             (
                 "a head shared by artifact and failure streams",
-                (artifact | {"failure.recorded"}, case, failure),
+                (artifact | {"failure.recorded"}, case, failure, coverage),
+                "may share observation.recorded and nothing else",
+            ),
+            (
+                "a head shared by failure and coverage streams",
+                (artifact, case, failure | {"coverage.recorded"}, coverage),
+                "may share observation.recorded and nothing else",
+            ),
+            (
+                "a head shared by artifact and coverage streams",
+                (artifact, case, failure, coverage | {"artifact.ingested"}),
                 "may share observation.recorded and nothing else",
             ),
             (
                 "an observation on one reading kind only",
-                (artifact, case, failure - {"observation.recorded"}),
+                (artifact, case, failure - {"observation.recorded"}, coverage),
+                "may share observation.recorded and nothing else",
+            ),
+            (
+                "an observation off the coverage kind",
+                (artifact, case, failure, coverage - {"observation.recorded"}),
                 "may share observation.recorded and nothing else",
             ),
         ):
@@ -1581,7 +1633,9 @@ class StreamCompatibilityTests(unittest.TestCase):
                 with self.assertRaises(EventContractError) as caught:
                     self.append("projection/case-list", event_type)
 
-                self.assertIn("not an artifact, case, or failure stream", str(caught.exception))
+                self.assertIn(
+                    "not an artifact, case, failure, or coverage stream", str(caught.exception)
+                )
 
     def test_a_case_created_naming_another_case_is_refused(self) -> None:
         other = "case-ffffffffffffffff"
@@ -2029,12 +2083,16 @@ class StreamIdentifierTests(unittest.TestCase):
             (ARTIFACT_STREAM_ID, "artifact"),
             (STREAM_ID, "case"),
             (FAILURE_STREAM_ID, "failure"),
+            (COVERAGE_STREAM_ID, "coverage"),
             ("projection/case-list", None),
             (f"failures/{DIGEST}/complyroll.sarif/1", None),
+            (f"coverages/{DIGEST}", None),
         ):
             with self.subTest(stream_id=stream_id):
                 self.assertEqual(stream_kind(stream_id), kind)
                 self.assertEqual(is_failure_stream(stream_id), kind == "failure")
+                self.assertEqual(is_coverage_stream(stream_id), kind == "coverage")
+        self.assertEqual(coverage_stream_id(DIGEST), COVERAGE_STREAM_ID)
 
     def test_failure_stream_id_rejects_what_an_artifact_stream_id_rejects(self) -> None:
         for digest, name, version in (
@@ -3096,7 +3154,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
             connection.execute(statement)
 
     def test_a_new_store_is_created_at_schema_1(self) -> None:
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 3)
+        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 4)
         self.assertEqual(HELD_FAILURE_SCHEMA_VERSION, 3)
         self.assertEqual(self.store.schema_version, 1)
         self.assertEqual(self.migrations(), [self.FIRST])
@@ -3308,18 +3366,18 @@ class FailureSchemaMarkingTests(unittest.TestCase):
         self.assertEqual(reopened.schema_version, 1)
         self.assertTrue(reopened.verify_history().ok)
 
-    def test_a_store_newer_than_schema_3_is_refused(self) -> None:
+    def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         self.record_failure()
-        self.damage("PRAGMA user_version = 4")
+        self.damage("PRAGMA user_version = 5")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 4 is newer than supported schema 3", str(caught.exception))
+        self.assertIn("database schema 5 is newer than supported schema 4", str(caught.exception))
 
     def test_the_required_schema_must_be_one_this_build_knows(self) -> None:
         event = NewEvent("failure.recorded", NOW, failure_head())
-        for value in (0, 4, True, "2"):
+        for value in (0, 5, True, "2"):
             with self.subTest(requires_schema=value):
                 with self.assertRaises(ValueError) as caught:
                     self.store.append(
@@ -3329,7 +3387,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
                         requires_schema=value,  # type: ignore[arg-type]
                     )
 
-                self.assertIn("requires_schema must be between 1 and 3", str(caught.exception))
+                self.assertIn("requires_schema must be between 1 and 4", str(caught.exception))
         self.assertEqual(self.store.latest_sequence, 0)
 
 

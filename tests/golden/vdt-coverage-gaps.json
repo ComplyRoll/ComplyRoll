@@ -280,7 +280,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-656d627b62275ba8",
-      "vulnerabilityDescription": "coverage-gap: coverage gap: VDR-TFR-MVX window for host:lab-win-01 closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
+      "vulnerabilityDescription": "coverage-gap: VDR-TFR-MVX window for host:lab-win-01 closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
       "x-complyroll": {
         "deadlines": [
           {
@@ -329,7 +329,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-56e1eee78e97395f",
-      "vulnerabilityDescription": "coverage-gap: coverage gap: VDR-TFR-MVX window for host:lab-rhel-01 closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
+      "vulnerabilityDescription": "coverage-gap: VDR-TFR-MVX window for host:lab-rhel-01 closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
       "x-complyroll": {
         "deadlines": [
           {
@@ -373,7 +373,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-fe51d8e4d9c79b36",
-      "vulnerabilityDescription": "coverage-gap: coverage gap: VDR-TFR-NMV window for logical:backup-restore-procedure closed 2026-07-15T16:00:00Z with no verification recorded (VDR-CSO-FAV)",
+      "vulnerabilityDescription": "coverage-gap: VDR-TFR-NMV window for logical:backup-restore-procedure closed 2026-07-15T16:00:00Z with no verification recorded (VDR-CSO-FAV)",
       "x-complyroll": {
         "deadlines": [
           {
@@ -417,7 +417,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-9c9bf88832065e17",
-      "vulnerabilityDescription": "coverage-gap: coverage gap: VDR-TFR-PCD window for host:lab-win-01 closed 2026-08-01T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
+      "vulnerabilityDescription": "coverage-gap: VDR-TFR-PCD window for host:lab-win-01 closed 2026-08-01T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
       "x-complyroll": {
         "deadlines": [
           {
@@ -461,7 +461,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-987c96e87614506a",
-      "vulnerabilityDescription": "coverage-gap: coverage gap: VDR-TFR-PDD window for host:ubuntu-web-01 closed 2026-07-15T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
+      "vulnerabilityDescription": "coverage-gap: VDR-TFR-PDD window for host:ubuntu-web-01 closed 2026-07-15T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
       "x-complyroll": {
         "deadlines": [
           {
@@ -505,7 +505,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-23ec0644fabe50d3",
-      "vulnerabilityDescription": "coverage-gap: coverage gap: VDR-TFR-PDD window for host:lab-rhel-01 closed 2026-07-15T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
+      "vulnerabilityDescription": "coverage-gap: VDR-TFR-PDD window for host:lab-rhel-01 closed 2026-07-15T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
       "x-complyroll": {
         "deadlines": [
           {
@@ -549,7 +549,7 @@
         "isOverdue": true
       },
       "providerTrackingId": "case-a971b430300440cf",
-      "vulnerabilityDescription": "coverage-gap: coverage gap: VDR-TFR-PSD window for logical:sample-group/ir-runbooks closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
+      "vulnerabilityDescription": "coverage-gap: VDR-TFR-PSD window for logical:sample-group/ir-runbooks closed 2026-07-04T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
       "x-complyroll": {
         "deadlines": [
           {

@@ -31,9 +31,12 @@ COMPILED_GOLDENS = (
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-fixtures.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-sarif.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-hdf.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-gaps.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-failed.json"),
     (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-failed.json"),
+    (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-coverage-gaps.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-fixtures.json"),
 )
 SCHEMA_COMMIT = "5156719aa7d0def16cf66f6197db9d6c0024e0e7"
@@ -274,12 +277,14 @@ class CompiledGoldenValidationTests(unittest.TestCase):
     """The compiler's own goldens satisfy the official schemas.
 
     `ver-schema-examples.json` holds hand-written examples; the compiled goldens in
-    `COMPILED_GOLDENS` are what ComplyRoll emits (four VDT goldens, from STIG
-    artifacts, SARIF logs, HDF documents and detection process failures, plus the AVI
-    golden and two historical goldens), so validating each against its own schema here
-    ties the projections to the schemas without going through the report compiler. The
-    historical golden with failures sits before the plain one so `by_schema` still
-    resolves to `historical-fixtures.json`.
+    `COMPILED_GOLDENS` are what ComplyRoll emits (six VDT goldens, from STIG
+    artifacts, SARIF logs, HDF documents, an inventory's coverage, its recorded coverage
+    gaps and detection process failures, plus the AVI golden and three historical goldens),
+    so validating each against its own schema here ties the projections to the schemas
+    without going through the report compiler. The historical goldens with failures and
+    with gaps sit before the plain one so `by_schema` still resolves to
+    `historical-fixtures.json`, and the coverage VDT goldens sit before `vdt-failed.json`,
+    which `by_schema` resolved to before them.
     """
 
     @classmethod
@@ -313,6 +318,22 @@ class CompiledGoldenValidationTests(unittest.TestCase):
 
         self.assertEqual(with_failures, {"historical-failed.json", "vdt-failed.json"})
         self.assertLessEqual(with_failures, {name for _, name, _ in self.goldens})
+
+    def test_every_golden_with_recorded_coverage_gaps_is_validated_here(self) -> None:
+        # A gap-aware run is the one whose coverage windows carry `recorded` (ADR 0015).
+        with_gaps: set[str] = set()
+        for path in sorted((TEST_ROOT / "golden").glob("*.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            extension = document.get("x-complyroll") if isinstance(document, dict) else None
+            coverage = extension.get("coverage") if isinstance(extension, dict) else None
+            windows = coverage.get("windows", ()) if isinstance(coverage, dict) else ()
+            if any("recorded" in window for window in windows):
+                with_gaps.add(path.name)
+
+        self.assertEqual(with_gaps, {"historical-coverage-gaps.json", "vdt-coverage-gaps.json"})
+        self.assertLessEqual(
+            with_gaps | {"vdt-coverage.json"}, {name for _, name, _ in self.goldens}
+        )
 
     def test_the_avi_golden_is_not_a_vulnerability_detail_report(self) -> None:
         instance = self.by_schema[ReportSchema.ACCEPTED_VULNERABILITY]

@@ -441,7 +441,7 @@ class GapRecordTests(unittest.TestCase):
         self.assertEqual(built.ingested_at, INGESTED_AT)
         self.assertEqual(
             built.title,
-            "coverage gap: VDR-TFR-MVX window for host:lab-01 closed 2026-07-08T00:00:00Z "
+            "VDR-TFR-MVX window for host:lab-01 closed 2026-07-08T00:00:00Z "
             "with no verification recorded (VDR-CSO-FAV)",
         )
         self.assertEqual(
@@ -452,9 +452,26 @@ class GapRecordTests(unittest.TestCase):
         self.assertEqual(built.description, COVERAGE_GAP_DESCRIPTION)
         self.assertEqual(
             gap(result, PSD_RULE, GROUP_KEY).title,
-            "coverage gap: VDR-TFR-PSD window for logical:sample-group/web-tier closed "
+            "VDR-TFR-PSD window for logical:sample-group/web-tier closed "
             "2026-07-08T00:00:00Z with no verification recorded (VDR-CSO-FAV)",
         )
+
+    def test_the_title_is_not_part_of_the_identity(self) -> None:
+        # A case renders as `<source record id>: <title>`, so the title names no kind of its
+        # own; and it can change without moving a gap's id, fingerprint or tracking id.
+        result = fleet_result()
+        for built in coverage_gap_observations(result, ingested_at=INGESTED_AT):
+            with self.subTest(
+                context=built.context_key, rule=built.metadata_value("coverage.rule")
+            ):
+                self.assertTrue(built.title.startswith(f"{built.metadata_value('coverage.rule')} "))
+                self.assertNotIn(COVERAGE_GAP_RECORD_ID, built.title)
+                retitled = replace(built, title="coverage gap: another title")
+                self.assertEqual(retitled.fingerprint, built.fingerprint)
+                self.assertEqual(retitled.derived_observation_id, built.observation_id)
+                (group,) = group_open_observations([retitled])
+                (original,) = group_open_observations([built])
+                self.assertEqual(group.tracking_id, original.tracking_id)
 
     def test_the_canonical_form_round_trips(self) -> None:
         result = fleet_result(AS_OF_LATE, observation("lab-02", at=RESUMED))

@@ -36,8 +36,10 @@ COVERAGE_GAP_RECORD_ID = "coverage-gap"
 COVERAGE_GAP_RULE = "VDR-CSO-FAV"
 # SECURITY: The title carries the clock's resource pair, which the inventory reader already
 # held to its identity rules; the instant is this module's own text.
+# NOTE: A case renders as `<record id>: <title>`, so the title leads with the rule and
+# names no kind of its own, as a detection failure's does.
 COVERAGE_GAP_TITLE = (
-    "coverage gap: {rule} window for {resource_type}:{resource_id} closed {closed_at} "
+    "{rule} window for {resource_type}:{resource_id} closed {closed_at} "
     f"with no verification recorded ({COVERAGE_GAP_RULE})"
 )
 COVERAGE_GAP_DESCRIPTION = (

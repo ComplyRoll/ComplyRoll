@@ -1557,6 +1557,13 @@ COVERED_AUDIT_CODES = {
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    # The five coverage codes' `store verify` command tests live in
+    # `tests/test_coverage_streams.py`.
+    "coverage_identity_breach",
+    "coverage_incomplete",
+    "coverage_overfull",
+    "coverage_schema_unmarked",
+    "coverage_stream_mismatch",
     # Its `store verify` command tests live in `tests/test_evaluation_order.py`.
     "evaluation_before_detection",
     "event_metadata_invalid",
@@ -6846,7 +6853,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 self.assertEqual(code, 1, err[:500])
                 self.assertIn(
                     "error: store_unavailable: database schema -1 is outside supported "
-                    "schemas 1 to 3",
+                    "schemas 1 to 4",
                     err,
                 )
                 self.assert_bounded(out, err)
@@ -6858,7 +6865,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1, err[:500])
         self.assertIn(
             "schema_version_unsupported: database is marked schema -1; this build opens "
-            "schemas 1 to 3",
+            "schemas 1 to 4",
             out + err,
         )
         self.assert_bounded(out, err)

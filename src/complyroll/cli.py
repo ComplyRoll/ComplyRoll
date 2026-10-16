@@ -101,8 +101,9 @@ def _default_actor() -> str:
 #: Resolved once, so `--help` prints the name every event of a run would carry.
 DEFAULT_ACTOR = _default_actor()
 
-#: The status of a run that recorded a detection process failure and still wrote its
-#: output (ADR 0014), so a pipeline can tell it from a clean run (0) and a refusal (1).
+#: The status of a run that recorded a system-generated VDR-CSO-FAV record and still wrote
+#: its output: a detection process failure (ADR 0014) or a coverage gap (ADR 0015), so a
+#: pipeline can tell it from a clean run (0) and a refusal (1).
 EXIT_DETECTION_FAILURES = 3
 
 #: The `cases list` columns, each with whether its values are right-aligned numbers.
@@ -416,6 +417,14 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         help=(
             "record a detection process failure (VDR-CSO-FAV) as a system observation "
             "instead of stopping; exits 3 when one is recorded"
+        ),
+    )
+    parser.add_argument(
+        "--record-coverage-gaps",
+        action="store_true",
+        help=(
+            "record each coverage window that closed with no verification as a VDR-CSO-FAV "
+            "system record; needs --inventory; exits 3 when one is recorded"
         ),
     )
     parser.add_argument(
@@ -1021,6 +1030,13 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             "invalid_option",
             f"report {command.name} takes one --inventory file, not {len(inventory_paths)}",
         )
+    if args.record_coverage_gaps and not inventory_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} --record-coverage-gaps needs --inventory: a coverage gap "
+            "is a window of an inventory entry's clock",
+        )
     if database is not None:
         missing = _refuse_missing_store(stderr, database)
         if missing is not None:
@@ -1066,6 +1082,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             ),
             kev_catalog=kev_catalog,
             inventory=inventory,
+            record_coverage_gaps=args.record_coverage_gaps,
         )
         evaluations = load_evaluations(evaluations_path) if evaluations_path else None
     except ReportInputError as exc:
@@ -1087,10 +1104,13 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     def compile_and_publish() -> int:
         report = compile_report()
         status = _publish(stderr, report, output=output, markdown=markdown)
-        # The output is already written: a recorded failure is reported, not refused, and
-        # the status is how a pipeline learns one was recorded. `--db` never gets here with
-        # the flag, since a store recorded or refused its failures at ingest.
-        if status == 0 and args.record_failed_imports and report.metadata.detection_failures:
+        # The output is already written: a recorded failure or gap is reported, not
+        # refused, and the status is how a pipeline learns one was recorded. `--db` never
+        # gets here with either flag; each flag answers only for its own kind of record.
+        recorded = (args.record_failed_imports and report.metadata.detection_failures) or (
+            args.record_coverage_gaps and report.metadata.coverage_gaps
+        )
+        if status == 0 and recorded:
             return EXIT_DETECTION_FAILURES
         return status
 
@@ -1109,7 +1129,9 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     KEV catalog or an information resource inventory, so each is a per-run input on both
     paths and never a second source of truth (ADR 0012, ADR 0015).
     `--record-failed-imports` is on it because a store already recorded or refused its
-    failures when `ingest` read them (ADR 0014).
+    failures when `ingest` read them (ADR 0014). `--record-coverage-gaps` is on it because
+    a report run never records a gap into a store; what a store holds is its own record
+    (ADR 0015).
     """
 
     named = [
@@ -1119,6 +1141,7 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
             ("--evaluations", args.evaluations is not None),
             ("--detected-at", args.detected_at is not None),
             ("--record-failed-imports", args.record_failed_imports),
+            ("--record-coverage-gaps", args.record_coverage_gaps),
         )
         if present
     ]

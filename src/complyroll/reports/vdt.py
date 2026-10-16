@@ -79,11 +79,12 @@ from .coverage import (
     CoverageEvidence,
     CoverageResult,
     CoverageStatus,
+    CoverageWindow,
     ResourceCoverage,
     derive_coverage,
 )
 from .evaluations import EvaluationInput, EvaluationSet, ReportInputError
-from .gaps import COVERAGE_GAP_SOURCE_TYPE
+from .gaps import COVERAGE_GAP_SOURCE_TYPE, coverage_gap_observation, coverage_gap_observations
 from .inventory import Inventory
 from .kev import KEV_STALE_AFTER, KevCatalog, KevClock, KevStatus, cve_may_be_missing, kev_clock
 
@@ -94,6 +95,13 @@ DISCLAIMER = (
 )
 EXTENSION_KEY = "x-complyroll"
 GENERATOR_NAME = "complyroll"
+#: The Windows subsection of a gap-aware run opens with this, since a recorded window can
+#: name a record the report does not list (ADR 0015).
+_RECORDED_WINDOW_NOTE = (
+    "A recorded window is a VDR-CSO-FAV system record of this run and names its tracking ID "
+    "here even when this report does not select the record, such as one detected after the "
+    "report period."
+)
 
 #: ADR 0007 Decision 4, amended 2026-09-04 (ADR 0009): Common Definitions 0.3.0 added
 #: `Remediated` to the official enumeration. `accepted` never appears in a Vulnerability
@@ -161,7 +169,9 @@ class ReportOptions:
 
     `inventory` is a per-run input like `kev_catalog`: with one, every report carries the
     coverage block measured against it (ADR 0015); without one, nothing reads the coverage
-    rules and no report changes.
+    rules and no report changes. `record_coverage_gaps` makes each window of that block a
+    system record of the run, so it needs the inventory; only a compile from artifacts
+    reads it (ADR 0015).
     """
 
     certification_class: CertificationClass
@@ -173,6 +183,7 @@ class ReportOptions:
     detected_at_attestation: datetime | None = None
     kev_catalog: KevCatalog | None = None
     inventory: Inventory | None = None
+    record_coverage_gaps: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.certification_class, CertificationClass):
@@ -192,6 +203,12 @@ class ReportOptions:
             raise TypeError("kev_catalog must be a KevCatalog")
         if self.inventory is not None and not isinstance(self.inventory, Inventory):
             raise TypeError("inventory must be an Inventory")
+        if not isinstance(self.record_coverage_gaps, bool):
+            raise TypeError("record_coverage_gaps must be a bool")
+        if self.record_coverage_gaps and self.inventory is None:
+            raise ValueError(
+                "record_coverage_gaps needs an inventory, whose coverage windows the gaps record"
+            )
         # Constructing the profile validates the calendar timezone at the boundary.
         CertificationProfile(
             self.certification_class,
@@ -510,6 +527,8 @@ class ReportMetadata:
     attestation_detected_at: datetime | None = None
     detection_failures: tuple[CompiledDetectionFailure, ...] = ()
     coverage: CoverageResult | None = None
+    coverage_gaps: tuple[str, ...] = ()
+    coverage_gap_records: Mapping[CoverageWindow, str | None] | None = None
 
     @property
     def attestation(self) -> datetime | None:
@@ -599,7 +618,9 @@ def compile_record_set_from_artifacts(
     the same artifacts starts here, so ingest happens once per run rather than once
     per report. With `record_failed_imports`, an artifact whose failure is mintable
     becomes a system observation instead of stopping the run (ADR 0014); without it
-    every failure stops the run exactly as before.
+    every failure stops the run exactly as before. With `options.record_coverage_gaps`,
+    each coverage window that closed with no verification becomes a coverage gap system
+    observation, added before grouping so an evaluation finds its record (ADR 0015).
     """
 
     if not isinstance(options, ReportOptions):
@@ -614,6 +635,14 @@ def compile_record_set_from_artifacts(
         ingest_diagnostics,
         record_failed_imports=record_failed_imports,
     )
+    # Derived once, from the evidence alone, before its gaps join the list; each gap is
+    # ingested at the run's as-of, as every artifact and failure of this path is.
+    coverage = None
+    inventory = options.inventory
+    if options.record_coverage_gaps and inventory is not None:
+        policy = select_policy(load_bundled_rule_source_snapshot(), options.profile)
+        coverage = _coverage(observations, inventory, policy, options)
+        observations.extend(coverage_gap_observations(coverage, ingested_at=options.as_of))
     groups = group_open_observations(observations)
     matches = _match_evaluations(groups, evaluations)
     return compile_record_set(
@@ -623,6 +652,8 @@ def compile_record_set_from_artifacts(
         evaluations_by_tracking_id=matches,
         attestation=DetectionAttestation(default=options.detected_at_attestation),
         options=options,
+        coverage=coverage,
+        gap_aware=options.record_coverage_gaps,
     )
 
 
@@ -639,6 +670,9 @@ class CompiledRecordSet:
     whether or not a projection's period later reports its record. `coverage` is the
     coverage projection when the options carry an inventory, and every report publishes
     it whole, since coverage is measured at as-of and never selected by a period.
+    `coverage_gaps` names every coverage gap record in the set the same way, and only a
+    gap-aware compile sets `coverage_gap_records`: each window of `coverage` mapped to the
+    tracking id of the record carrying its gap, or None when the set holds none.
     """
 
     records: tuple[CompiledVulnerability, ...]
@@ -650,6 +684,8 @@ class CompiledRecordSet:
     options: ReportOptions
     detection_failures: tuple[CompiledDetectionFailure, ...] = ()
     coverage: CoverageResult | None = None
+    coverage_gaps: tuple[str, ...] = ()
+    coverage_gap_records: Mapping[CoverageWindow, str | None] | None = None
 
 
 def compile_records(
@@ -698,6 +734,8 @@ def compile_record_set(
     evaluations_by_tracking_id: Mapping[str, EvaluationInput],
     attestation: DetectionAttestation,
     options: ReportOptions,
+    coverage: CoverageResult | None = None,
+    gap_aware: bool = False,
 ) -> CompiledRecordSet:
     """Compile the period-agnostic record set from already-normalized inputs.
 
@@ -706,6 +744,10 @@ def compile_record_set(
     on the one path both the stateless compile and the event-sourced rebuild share.
     Every report projection reads the set this returns, so a record is compiled once
     and selected many times.
+
+    `coverage` is a projection the caller already derived from these observations, so it
+    is not derived twice; it must belong to the options. With `gap_aware`, every coverage
+    window is mapped to the record that carries its gap, or to None when none does.
     """
 
     if not isinstance(options, ReportOptions):
@@ -743,13 +785,22 @@ def compile_record_set(
     # Derived from the same observations on both paths, so the persisted report and the
     # stateless one carry the same block (ADR 0015).
     inventory = options.inventory
-    coverage = None if inventory is None else _coverage(observations, inventory, policy, options)
+    if coverage is None:
+        coverage = (
+            None if inventory is None else _coverage(observations, inventory, policy, options)
+        )
+    elif not _coverage_belongs(coverage, inventory, policy, options):
+        raise ValueError("coverage must be derived from these options' inventory, as-of and policy")
+    if gap_aware and coverage is None:
+        raise ValueError("a gap-aware compile needs an inventory")
 
     compiled: list[CompiledVulnerability] = []
     missing_detection: list[str] = []
     errors: list[ReportDiagnostic] = []
     kev_incomplete: list[CompiledVulnerability] = []
     detection_failures: list[CompiledDetectionFailure] = []
+    # Each coverage gap observation's id, to the published id of the record carrying it.
+    gap_tracking: dict[str, str] = {}
 
     for group in groups:
         detected_at, detected_source = resolve_detection_time(group, attestation)
@@ -813,6 +864,12 @@ def compile_record_set(
             if item.origin is ObservationOrigin.SYSTEM
             and item.source_type == DETECTION_FAILURE_SOURCE_TYPE
         )
+        gap_tracking.update(
+            (item.observation_id, record.tracking_id)
+            for item in group.observations
+            if item.origin is ObservationOrigin.SYSTEM
+            and item.source_type == COVERAGE_GAP_SOURCE_TYPE
+        )
         if kev_rule is not None and any(cve_may_be_missing(item) for item in group.observations):
             kev_incomplete.append(record)
 
@@ -846,6 +903,12 @@ def compile_record_set(
         options=options,
         detection_failures=_ordered_detection_failures(detection_failures),
         coverage=coverage,
+        coverage_gaps=tuple(sorted(set(gap_tracking.values()))),
+        coverage_gap_records=(
+            _coverage_gap_records(coverage, gap_tracking, options)
+            if gap_aware and coverage is not None
+            else None
+        ),
     )
 
 
@@ -880,6 +943,8 @@ def project_vdt(record_set: CompiledRecordSet) -> CompiledVdtReport:
         attestation_detected_at=_attested_instant(records),
         detection_failures=record_set.detection_failures,
         coverage=record_set.coverage,
+        coverage_gaps=record_set.coverage_gaps,
+        coverage_gap_records=record_set.coverage_gap_records,
     )
     document = _build_document(tuple(records), metadata, tuple(diagnostics))
     validation = _validate_document(ReportSchema.VULNERABILITY_DETAIL, document)
@@ -1743,6 +1808,42 @@ def _selects(policy: SelectedPolicy, rule_id: str) -> bool:
     return True
 
 
+def _coverage_belongs(
+    coverage: CoverageResult,
+    inventory: Inventory | None,
+    policy: SelectedPolicy,
+    options: ReportOptions,
+) -> bool:
+    """Return whether a handed projection was derived from these options and policy."""
+
+    return (
+        inventory is not None
+        and coverage.inventory == inventory
+        and coverage.as_of == options.as_of
+        and coverage.profile == policy.profile
+        and coverage.provenance == policy.provenance
+    )
+
+
+def _coverage_gap_records(
+    coverage: CoverageResult, gap_tracking: Mapping[str, str], options: ReportOptions
+) -> dict[CoverageWindow, str | None]:
+    """Map each window to the record carrying its gap, found by the gap's own id.
+
+    The id depends only on the window, never on the ingest time, so rebuilding the gap
+    here names the observation whichever path recorded it.
+    """
+
+    return {
+        window: gap_tracking.get(
+            coverage_gap_observation(
+                window, inventory=coverage.inventory, ingested_at=options.as_of
+            ).observation_id
+        )
+        for window in coverage.windows
+    }
+
+
 def _coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
     """Return one note per warning an inventory entry raised, in inventory order.
 
@@ -2364,7 +2465,7 @@ def _common_extension(
     # Only a run given an inventory carries the key, so every report compiled without one
     # is byte-identical to one compiled before coverage existed (ADR 0015).
     if metadata.coverage is not None:
-        extension["coverage"] = metadata.coverage.to_dict()
+        extension["coverage"] = metadata.coverage.to_dict(gap_records=metadata.coverage_gap_records)
     return extension
 
 
@@ -2622,12 +2723,9 @@ def _write_attestation_section(
     write("")
     attested = metadata.attestation_applied_to
     attestation = metadata.attestation
-    if not attested and any(item.detected_at_source == "system" for item in records):
-        write(
-            "Every reported vulnerability carried a detection time from its source artifact "
-            "or, for a detection process failure, from the instant ComplyRoll or the scanner "
-            "recorded it. No attestation was needed."
-        )
+    system_types = {item.source_type for item in records if item.detected_at_source == "system"}
+    if not attested and system_types:
+        write(_system_detection_sentence(system_types))
     elif not attested:
         write(
             "Every reported vulnerability carried a detection time from its source artifact. "
@@ -2651,6 +2749,24 @@ def _write_attestation_section(
             "ingestion time for a detection time."
         )
     write("")
+
+
+def _system_detection_sentence(source_types: set[str]) -> str:
+    """Say what timed each kind of system record; a failure-only run reads as it always has."""
+
+    clauses = []
+    if source_types - {COVERAGE_GAP_SOURCE_TYPE}:
+        clauses.append(
+            "for a detection process failure, from the instant ComplyRoll or the scanner "
+            "recorded it"
+        )
+    if COVERAGE_GAP_SOURCE_TYPE in source_types:
+        clauses.append("for a coverage gap, from the instant its coverage window closed")
+    return (
+        "Every reported vulnerability carried a detection time from its source artifact or, "
+        + " and, ".join(clauses)
+        + ". No attestation was needed."
+    )
 
 
 def _write_inputs(write: Callable[[str], None], metadata: ReportMetadata) -> None:
@@ -2759,21 +2875,35 @@ def _write_coverage(write: Callable[[str], None], metadata: ReportMetadata) -> N
 
     write("### Windows")
     write("")
+    # Only a gap-aware run grows the table, so every earlier twin keeps its bytes.
+    gap_records = metadata.coverage_gap_records
     if not coverage.windows:
         write("No window closed without a verification.")
     else:
-        write(
+        header = (
             "| Rule | Context | Force | Anchor | Anchored at | Closed at | Resumed at "
             "| Evidence | Stand-in |"
         )
-        write("|---|---|---|---|---|---|---|---|---|")
+        rule = "|---|---|---|---|---|---|---|---|---|"
+        if gap_records is not None:
+            write(_RECORDED_WINDOW_NOTE)
+            write("")
+            header += " Recorded | Tracking ID |"
+            rule += "---|---|"
+        write(header)
+        write(rule)
         for window in coverage.windows:
-            write(
+            line = (
                 f"| {window.rule_id} | {_cell(window.context_key)} | {window.force.value} "
                 f"| {window.anchor.value} | {_iso(window.anchor_at)} | {_iso(window.closed_at)} "
                 f"| {_optional_iso(window.resumed_at)} | {_coverage_evidence(window.evidence)} "
                 f"| {_coverage_ref(window.stand_in)} |"
             )
+            if gap_records is not None:
+                tracking_id = gap_records[window]
+                recorded = "no" if tracking_id is None else "yes"
+                line += f" {recorded} | {_cell(tracking_id or 'n/a')} |"
+            write(line)
     write("")
 
     write("### Unregistered resources")

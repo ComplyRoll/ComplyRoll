@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -379,9 +379,24 @@ class CoverageResult:
     # Evidence observed after as-of: listed, never used.
     later: tuple[CoverageEvidence, ...]
 
-    def to_dict(self) -> dict[str, Any]:
-        """Return the `x-complyroll.coverage` block; keys are sorted when the JSON is written."""
+    def to_dict(
+        self, *, gap_records: Mapping[CoverageWindow, str | None] | None = None
+    ) -> dict[str, Any]:
+        """Return the `x-complyroll.coverage` block; keys are sorted when the JSON is written.
+
+        `gap_records` makes the block gap aware: each window also says whether its gap is a
+        record of the run and names that record's tracking id, or None when there is none.
+        Without it the windows carry neither key, as they did before gaps existed.
+        """
         inventory = self.inventory
+        windows = [item.to_dict() for item in self.windows]
+        if gap_records is not None:
+            if set(gap_records) != set(self.windows):
+                raise ValueError("gap_records must name every window of the result and no other")
+            for value, window in zip(windows, self.windows, strict=True):
+                tracking_id = gap_records[window]
+                value["recorded"] = tracking_id is not None
+                value["trackingId"] = tracking_id
         return {
             "inventory": {
                 "name": inventory.name,
@@ -393,7 +408,7 @@ class CoverageResult:
             "basis": COVERAGE_BASIS,
             "summary": [row.to_dict() for row in self.summary],
             "resources": [item.to_dict() for item in self.resources],
-            "windows": [item.to_dict() for item in self.windows],
+            "windows": windows,
             "unregistered": [item.to_dict() for item in self.unregistered],
             "later": [item.to_dict() for item in self.later],
         }

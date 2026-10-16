@@ -100,10 +100,17 @@ def compile_record_set_from_history(
     `options.detected_at_attestation` is ignored on this path. Attestations are facts
     the log already holds, one `detection.attested` event per case, so a command-line
     flag has nothing to add and must not silently override what an operator filed.
+    `options.record_coverage_gaps` is refused rather than ignored: a gap the store has not
+    recorded would otherwise vanish from a run that asked for it (ADR 0015).
     """
 
     if not isinstance(options, ReportOptions):
         raise TypeError("options must be a ReportOptions")
+    if options.record_coverage_gaps:
+        raise ValueError(
+            "record_coverage_gaps applies only to a compile from artifacts; a report from "
+            "history never records a coverage gap"
+        )
     # Imported here because `complyroll.history` reads the report layer's evaluation
     # shapes, so a module-level import would close a cycle whenever history is the
     # first of the two packages a caller imports.

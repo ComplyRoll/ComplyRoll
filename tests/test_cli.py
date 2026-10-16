@@ -1255,7 +1255,15 @@ class RecordFailedImportsTests(unittest.TestCase):
             for path in GOLDEN.glob("*.json")
             if "x-complyroll" in json.loads(path.read_text(encoding="utf-8"))
         }
-        self.assertEqual(reports - {"vdt-failed", "historical-failed"}, {*runs, *compiled})
+        # The failure and coverage gap goldens exit 3 by design; each pair has its own
+        # reproduction, the gap pair in `test_coverage_gap_report`.
+        system_goldens = {
+            "vdt-failed",
+            "historical-failed",
+            "vdt-coverage-gaps",
+            "historical-coverage-gaps",
+        }
+        self.assertEqual(reports - system_goldens, {*runs, *compiled})
         for name, argv in runs.items():
             with self.subTest(golden=name), tempfile.TemporaryDirectory() as directory:
                 json_path = Path(directory) / "report.json"

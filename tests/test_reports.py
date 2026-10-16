@@ -580,9 +580,22 @@ def assert_coverage_markdown(
 
     windows = coverage["windows"]
     assert isinstance(windows, list)
-    window_rows = markdown_table_list(markdown_subsection(section, "Windows"), 9, "Rule")
+    # A gap-aware run marks every window with its record, and only it adds the two columns.
+    gap_aware = {"recorded" in window for window in windows}
+    test.assertLessEqual(len(gap_aware), 1, "some windows carry `recorded` and some do not")
+    width = 11 if True in gap_aware else 9
+    window_rows = markdown_table_list(markdown_subsection(section, "Windows"), width, "Rule")
     test.assertEqual(len(window_rows), len(windows))
     for window, cells in zip(windows, window_rows, strict=True):
+        if width == 11:
+            test.assertEqual(
+                cells[9:],
+                (
+                    "yes" if window["recorded"] else "no",
+                    vdt_module._cell(window["trackingId"] or "n/a"),
+                ),
+                f"window {window['contextKey']} record",
+            )
         test.assertEqual(
             cells[:7],
             (

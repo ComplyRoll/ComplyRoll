@@ -110,6 +110,26 @@ OTHER_HEAD_VALUES: dict[str, str] = {
     "anchorAt": "2026-06-30T00:00:00Z",
     "inventorySha256": "b" * 64,
 }
+#: Fields the gap builder fixes, a value for each that the payload contract admits, and the
+#: reason the identity check gives for it. The fingerprint covers none of them, so an edited
+#: record still names its stream.
+FIXED_FIELD_EDITS: dict[str, tuple[Any, str]] = {
+    "disposition": ("pass", "its disposition is 'pass'"),
+    "source_severity": ("high", "its source severity is 'high'"),
+    "source_identifiers": (["CVE-2099-0001"], "its source identifiers are ['CVE-2099-0001']"),
+    "evidence_ids": ([f"sha256:{'d' * 64}"], f"its evidence ids are ['sha256:{'d' * 64}']"),
+}
+#: The two artifact fields a gap record leaves empty. The observation contract refuses either
+#: on any system record before the identity check reads the payload.
+ARTIFACT_FIELD_EDITS: dict[str, tuple[str, str]] = {
+    "source_artifact_digest": ("c" * 64, f"its source artifact digest is '{'c' * 64}'"),
+    "source_artifact_name": ("scan.xml", "its source artifact name is 'scan.xml'"),
+}
+#: A contract-valid event of another stream kind, planted on a coverage stream.
+FOREIGN_EVENT: tuple[str, dict[str, Any]] = (
+    "case.identified",
+    {"providerTrackingId": "PROV-2026-0001"},
+)
 
 
 def gap_record(rule_id: str = MVX_RULE, context_key: str = "host:lab-01") -> Observation:
@@ -555,6 +575,38 @@ class CoverageAppendTests(StoreCase):
                     message,
                 )
 
+    def test_a_gap_record_carrying_what_its_builder_never_writes_is_refused(self) -> None:
+        record = gap_record()
+        stream_id = coverage_stream_id_of(record)
+        canonical = record.to_canonical_dict()
+        for field, (value, message) in FIXED_FIELD_EDITS.items():
+            with self.subTest(field):
+                self.assert_refused(
+                    stream_id,
+                    [
+                        (COVERAGE_RECORDED, coverage_head_payload(record)),
+                        ("observation.recorded", {**canonical, field: value}),
+                    ],
+                    f"is not a coverage gap record: {message}",
+                )
+
+    def test_a_gap_record_naming_an_artifact_is_refused_by_the_observation_contract(
+        self,
+    ) -> None:
+        record = gap_record()
+        canonical = record.to_canonical_dict()
+        for field, (value, _) in ARTIFACT_FIELD_EDITS.items():
+            with self.subTest(field):
+                self.assert_refused(
+                    coverage_stream_id_of(record),
+                    [
+                        (COVERAGE_RECORDED, coverage_head_payload(record)),
+                        ("observation.recorded", {**canonical, field: value}),
+                    ],
+                    f"payload is not readable: <root>: reader: system observations must leave "
+                    f"{field} empty",
+                )
+
     def test_the_same_gap_record_twice_on_its_stream_is_refused(self) -> None:
         record = gap_record()
         stream_id = record_coverage(self.repository, record)
@@ -809,6 +861,32 @@ class CoverageReaderTests(StoreCase):
                 "coverage_stream_mismatch",
                 "is on the wrong stream",
             ),
+            **{
+                f"its {field} edited": (
+                    stream_id,
+                    [head, ("observation.recorded", {**canonical, field: value})],
+                    "coverage_identity_breach",
+                    "is on the wrong stream",
+                )
+                for field, (value, _) in FIXED_FIELD_EDITS.items()
+            },
+            **{
+                f"its {field} set": (
+                    stream_id,
+                    [head, ("observation.recorded", {**canonical, field: value})],
+                    "payload_contract_invalid",
+                    "is not a readable observation",
+                )
+                for field, (value, _) in ARTIFACT_FIELD_EDITS.items()
+            },
+            # Read before a foreign event is skipped, so the placement fault stops the read.
+            "a foreign event alone": (stream_id, [FOREIGN_EVENT], "event_stream_mismatch", None),
+            "a foreign event after a whole stream": (
+                stream_id,
+                [head, observation, FOREIGN_EVENT],
+                "event_stream_mismatch",
+                None,
+            ),
         }
         for label, (planted_on, events, code, prefix) in shapes.items():
             with self.subTest(label):
@@ -970,6 +1048,72 @@ class CoverageAuditTests(StoreCase):
 
                 # The fingerprint covers no metadata, so the stream id still names the record.
                 self.assert_faults([(sequences[1], "coverage_identity_breach")], message)
+
+    def test_a_gap_record_carrying_what_its_builder_never_writes_is_an_identity_breach(
+        self,
+    ) -> None:
+        canonical = self.record.to_canonical_dict()
+        for field, (value, message) in FIXED_FIELD_EDITS.items():
+            with self.subTest(field):
+                self.setUp()
+                observation = {**canonical, field: value}
+                sequences = self.stage(
+                    self.stream_id, [self.head, ("observation.recorded", observation)]
+                )
+
+                self.assert_faults([(sequences[1], "coverage_identity_breach")], message)
+                # The repository refuses at append with the same text the audit reports.
+                self.assertEqual(
+                    coverage_record_problem(self.stream_id, "observation.recorded", observation),
+                    ("coverage_identity_breach", audit_history(self.repository)[0].message),
+                )
+
+    def test_a_gap_record_naming_an_artifact_is_contract_invalid_and_not_a_gap_record(
+        self,
+    ) -> None:
+        canonical = self.record.to_canonical_dict()
+        for field, (value, message) in ARTIFACT_FIELD_EDITS.items():
+            with self.subTest(field):
+                self.setUp()
+                observation = {**canonical, field: value}
+                sequences = self.stage(
+                    self.stream_id, [self.head, ("observation.recorded", observation)]
+                )
+
+                # The observation contract refuses it on every store path first, so the
+                # identity check's own reason is reached only by a direct call.
+                self.assert_faults(
+                    [(sequences[1], "payload_contract_invalid")],
+                    f"system observations must leave {field} empty",
+                )
+                self.assertEqual(
+                    coverage_record_problem(self.stream_id, "observation.recorded", observation),
+                    (
+                        "coverage_identity_breach",
+                        f"observation.recorded on coverage stream {self.stream_id!r} is not a "
+                        f"coverage gap record: {message}",
+                    ),
+                )
+
+    def test_a_foreign_event_on_a_coverage_stream_is_a_placement_fault(self) -> None:
+        event_type = FOREIGN_EVENT[0]
+        shapes = {
+            # Alone, it also leaves the stream without either half.
+            "alone": ([FOREIGN_EVENT], [(0, "coverage_incomplete"), (0, "event_stream_mismatch")]),
+            "after a whole stream": (
+                [self.head, self.observation, FOREIGN_EVENT],
+                [(2, "event_stream_mismatch")],
+            ),
+        }
+        for label, (events, expected) in shapes.items():
+            with self.subTest(label):
+                self.setUp()
+                sequences = self.stage(self.stream_id, events)
+
+                self.assert_faults(
+                    [(sequences[index], code) for index, code in expected],
+                    f"event {event_type!r} does not belong on stream {self.stream_id!r}",
+                )
 
     def test_a_head_that_disagrees_with_its_record_is_an_identity_breach(self) -> None:
         for head_key, value in OTHER_HEAD_VALUES.items():

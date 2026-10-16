@@ -3864,10 +3864,17 @@ class DetectionFailureEvaluationTests(unittest.TestCase):
         # One failure matches the pair today, and the next failure of another digest would
         # make the same file ambiguous, so the triple is required even when nothing else
         # could match.
-        for label, source_type in (("with sourceType", True), ("without sourceType", False)):
+        for label, source_type, context_key, remedy in (
+            ("with sourceType", True, False, "contextKey"),
+            # Moved on purpose in PR 3 step 8: the remedy names each key the entry leaves out.
+            ("without sourceType", False, False, "contextKey and sourceType"),
+            # Added in PR 3 step 8: the triple is required, so the pair is refused too.
+            ("with contextKey alone", False, True, "sourceType"),
+        ):
             with self.subTest(label):
                 match = system_match(TRUNCATED_SHA256, source_type=source_type)
-                del match["contextKey"]
+                if not context_key:
+                    del match["contextKey"]
                 evaluations = evaluations_from(match=match, completedAt="2026-08-21T12:00:00Z")
 
                 with self.assertRaises(ReportCompileError) as caught:
@@ -3890,7 +3897,7 @@ class DetectionFailureEvaluationTests(unittest.TestCase):
                             f"{described} matches the detection process failure "
                             f"{TRUNCATED_CASE}; a detection process failure is matched by "
                             "sourceRecordId, sourceType and contextKey together, so add "
-                            "contextKey",
+                            f"{remedy}",
                         )
                     ],
                 )

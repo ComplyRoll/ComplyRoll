@@ -4150,9 +4150,12 @@ class FailureHistoryTests(WriterFixture):
         self.record_failed(TRUNCATED)
         self.correlate()
 
-        for label, dropped in (
-            ("with sourceType", ("contextKey",)),
-            ("without sourceType", ("contextKey", "sourceType")),
+        for label, dropped, remedy in (
+            ("with sourceType", ("contextKey",), "contextKey"),
+            # Moved on purpose in PR 3 step 8: the remedy names each key the entry leaves out.
+            ("without sourceType", ("contextKey", "sourceType"), "contextKey and sourceType"),
+            # Added in PR 3 step 8: the triple is required, so the pair is refused too.
+            ("with contextKey alone", ("sourceType",), "sourceType"),
         ):
             with self.subTest(label):
                 evaluations = self.failure_evaluation(*dropped)
@@ -4168,7 +4171,7 @@ class FailureHistoryTests(WriterFixture):
                     (
                         f"evaluations[0]: {described} matches the detection process failure "
                         f"{TRUNCATED_CASE}; a detection process failure is matched by "
-                        "sourceRecordId, sourceType and contextKey together, so add contextKey",
+                        f"sourceRecordId, sourceType and contextKey together, so add {remedy}",
                     ),
                 )
         outcome = self.evaluate(self.failure_evaluation())

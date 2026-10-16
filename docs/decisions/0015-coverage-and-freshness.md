@@ -410,18 +410,21 @@ would erase the window it reports.
 
 ### Decision 23 (2026-10-16): every reserved type needs the full triple
 
-ADR 0014 Decision 10's refusal of an entry without `contextKey` now covers every source type
-under the reserved `complyroll.` prefix, on the stateless path and in `cases evaluate`, in the
-same order as before. The message names the record by its kind: "detection process failure"
-for `complyroll.detection-process`, "coverage gap" for `complyroll.coverage`, and "system
-record" for a reserved type with no name of its own. The failure's text is unchanged byte for
-byte. A gap is matched by `{"sourceRecordId": "coverage-gap", "sourceType":
+ADR 0014 Decision 10's refusal of an entry without `contextKey` now covers every source type under
+the reserved `complyroll.` prefix, on the stateless path and in `cases evaluate`, in the same order
+as before. The message names the record by its kind: "detection process failure" for
+`complyroll.detection-process`, "coverage gap" for `complyroll.coverage`, and "system record" for a
+reserved type with no name of its own. The failure's text is unchanged byte for byte where the entry
+gives `sourceType`. A gap is matched by `{"sourceRecordId": "coverage-gap", "sourceType":
 "complyroll.coverage", "contextKey": "<context key>"}`, and a lone gap matched without its key is
 refused with `evaluation_context_key_required`: "... matches the coverage gap <tracking id>; a
-coverage gap is matched by sourceRecordId, sourceType and contextKey together, so add
-contextKey".
+coverage gap is matched by sourceRecordId, sourceType and contextKey together, so add contextKey".
+The refusal also covers a lone match without `sourceType`, and its remedy names every key the entry
+leaves out: "so add sourceType" for an entry that gives `contextKey`, and "so add contextKey and
+sourceType" for one that gives neither.
 Why: every gap shares the record id and the source type, so an entry that applies to one gap
-today turns ambiguous once a second is recorded, as a failure's does.
+today turns ambiguous once a second is recorded, as a failure's does, and an entry without the
+source type would also select an artifact record of the same record id and context key.
 
 ### Decision 24 (2026-10-16): a gap is detected when its window closed
 
@@ -545,22 +548,28 @@ refuses a schema 4 store at open with "database schema 4 is newer than supported
 Why: a build that cannot read coverage streams must refuse the store rather than misread it, and
 the existing marking already took a schema 1 store through to 3.
 
-### Decision 34 (2026-10-16): five audits, and the reader refuses what they name
+### Decision 34 (2026-10-16): five audits, and the reader refuses the four that name damage
 
-`store verify` gains five codes in `AUDIT_FAULT_CODES`: `coverage_incomplete` (a stream missing
-its head or its record), `coverage_overfull` (a second head or record), `coverage_stream_mismatch`
-(a stream id that names no fingerprint, a record that is another stream's gap record, or a record
-ahead of its head), `coverage_identity_breach`, and `coverage_schema_unmarked` (a coverage
-stream in a store below schema 4, reported once). The identity check is wider than the plan's
-metadata keys, origin and source type: it also holds the record id, the tool, the parser and its
-version, the derived observation id, `coverage.windowClosedAt` against `observed_at`,
-`coverage.rule` against the context key's lead, and the head's six fields against the record.
-`coverage_schema_unmarked` is content-neutral, as `failure_schema_unmarked` is, so the evaluation
-order check still runs beside it. `_read_coverage_streams` raises on exactly the shapes the
-coverage audits name, with the audit's text, so a report from the store refuses a damaged
-coverage stream as `history_invalid` and names the fault `store verify` names.
-Why: each extra check restates the record's own identity, which the fingerprint alone cannot
-see, and one text per fault keeps the reader and the audit from drifting apart.
+`store verify` gains five codes in `AUDIT_FAULT_CODES`: `coverage_incomplete` (a stream missing its
+head or its record), `coverage_overfull` (a second head or record), `coverage_stream_mismatch` (a
+stream id that names no fingerprint, a record that is another stream's gap record, or a record ahead
+of its head), `coverage_identity_breach`, and `coverage_schema_unmarked` (a coverage stream in a
+store below schema 4, reported once). The identity check is wider than the plan's metadata keys,
+origin and source type: it also holds the record id, the tool, the parser and its version, the
+derived observation id, the disposition `open`, the source severity `unknown`, no source
+identifiers, the one evidence id `sha256:<coverage.inventorySha256>`, `coverage.windowClosedAt`
+against `observed_at`, `coverage.rule` against the context key's lead, and the head's six fields
+against the record. A gap record that names an artifact digest or name is refused before that check,
+as `payload_contract_invalid`, by the observation contract, which holds every system record to empty
+artifact fields. `coverage_schema_unmarked` is content-neutral, as `failure_schema_unmarked` is: no
+reader refuses it, and the evaluation order check still runs beside it. `_read_coverage_streams`
+raises on each damaged shape the other four codes name, and on an event no coverage stream carries,
+which `store verify` reports as `event_stream_mismatch`, each with the audit's text, so a report
+from the store refuses a damaged coverage stream as `history_invalid` and names the fault
+`store verify` names.
+Why: each extra check restates the record's own identity or a field its builder fixes, which the
+fingerprint alone cannot see, and one text per fault keeps the reader and the audit from drifting
+apart.
 
 ### Decision 35 (2026-10-16): `cases coverage` records each gap once
 
@@ -634,9 +643,11 @@ nothing disproves.
 ### Decision 40 (2026-10-16): a stored gap's window comes from its own record
 
 The contradicted check takes the window from the stored record, its `coverage.anchorAt` and its
-observed instant, which the reader holds to its head, and files evidence exactly as the
-derivation files it, by the run's as-of: a sample-group clock is verified by any member and every
-other clock by its own entry, and evidence after the run's as-of is never named.
+observed instant, which the reader holds to its head, and files evidence exactly as the derivation
+files it, by the run's as-of: a sample-group clock is verified by any member and every other clock
+by the entry that names it, by id or by alias, and evidence after the run's as-of is never named. An
+alias names the same resource, so a gap recorded before its resource was renamed, with the old id
+kept as an alias, is read against the renamed entry's evidence.
 Why: the window disproved must be the one that was recorded, not one this run would derive.
 
 ### Left for later (2026-10-16)

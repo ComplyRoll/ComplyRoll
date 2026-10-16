@@ -84,25 +84,33 @@ class EvaluationMatch:
         and at least one key is always missing here.
         """
 
-        missing = [
-            key
-            for key, value in (("contextKey", self.context_key), ("sourceType", self.source_type))
-            if value is None
-        ]
-        return f"add {' or '.join(missing)}"
+        return f"add {' or '.join(self._missing_keys())}"
 
     def context_key_required(self, tracking_id: str, *, kind: str) -> str:
-        """Explain why this match, naming no `contextKey`, cannot select a system record.
+        """Explain why this match, short of the full triple, cannot select a system record.
 
         `reports.vdt` and `history.writers` both refuse it with this text, so the stateless
-        and persisted paths name the refusal the same way (ADR 0014 Decision 10). `kind`
-        names the record, from `reports.vdt.system_record_kind` of its source type.
+        and persisted paths name the refusal the same way (ADR 0014 Decision 10, ADR 0015
+        Decision 23). `kind` names the record, from `reports.vdt.system_record_kind` of its
+        source type. The remedy names every key the match leaves out, "contextKey",
+        "sourceType", or "contextKey and sourceType"; the callers refuse only a match that
+        leaves one out.
         """
 
         return (
             f"{self.describe()} matches the {kind} {tracking_id}; a {kind} is matched by "
-            "sourceRecordId, sourceType and contextKey together, so add contextKey"
+            "sourceRecordId, sourceType and contextKey together, so add "
+            f"{' and '.join(self._missing_keys())}"
         )
+
+    def _missing_keys(self) -> list[str]:
+        """Return the optional match keys this entry leaves out, `contextKey` first."""
+
+        return [
+            key
+            for key, value in (("contextKey", self.context_key), ("sourceType", self.source_type))
+            if value is None
+        ]
 
 
 @dataclass(frozen=True, slots=True)

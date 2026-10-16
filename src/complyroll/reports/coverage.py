@@ -559,8 +559,10 @@ def verifying_evidence(
 ) -> tuple[CoverageEvidence, ...]:
     """Return what verifies one clock's subject by as-of, filed as `derive_coverage` files it.
 
-    A sample group's clock is verified by any member, every other clock by its own entry;
-    a subject no entry of this inventory names has none. Ordered earliest first.
+    A sample group's clock is verified by any member, every other clock by the entry that
+    names it, by id or by alias; a subject no entry of this inventory names has none. An
+    alias names the same resource, so a gap recorded before a rename still reads its
+    evidence. Ordered earliest first.
     """
     collected = _collect(observations, inventory, _utc(as_of))[0]
     if rule_id == PSD_RULE:
@@ -568,7 +570,7 @@ def verifying_evidence(
         refs = [entry.ref for entry in inventory.entries if entry.sample_group == name]
     else:
         entry = inventory.entry_for(subject.resource_type, subject.resource_id)
-        refs = [] if entry is None or entry.ref != subject else [entry.ref]
+        refs = [] if entry is None else [entry.ref]
     return _ordered(item for ref in refs for _, item in collected[ref].verifying)
 
 

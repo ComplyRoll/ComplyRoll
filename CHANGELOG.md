@@ -139,7 +139,10 @@ All notable project changes will be documented here.
   evaluation closes a gap by the full triple with the context key `<rule>:job:<job>`, else
   `<rule>:resource:<type>:<id>`; a gap entry without it is refused
   (`evaluation_context_key_required`), as every reserved source type now is on both paths, and
-  one dated before the window closed gets a gap remedy. Dispositions keep parity with failures,
+  one dated before the window closed gets a gap remedy. A lone match on a detection process
+  failure or a coverage gap that names `sourceRecordId` and `contextKey` without `sourceType` is
+  now refused as `evaluation_context_key_required` too, and the refusal names each key the entry
+  leaves out. Dispositions keep parity with failures,
   so an `accepted` gap is listed in the AVI. A report from a store at schema 4 with an inventory
   is gap-aware: a derived gap the store has not recorded is noted `coverage_gap_unrecorded`; a
   stored gap this run does not derive is noted `coverage_gap_contradicted` when a verification

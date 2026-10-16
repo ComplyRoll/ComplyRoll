@@ -1151,20 +1151,22 @@ def _read_coverage_streams(repository: EventRepository) -> tuple[_CoverageStream
 
     A coverage stream is one `coverage.recorded` head and the one gap record it names,
     written whole in one transaction and head first, so the reader refuses what the audit
-    names, with the audit's message: a contract-invalid event, an event its stream does not
-    name, a missing half (incomplete), a second head or record (overfull), a record ahead of
-    its head, and a head and a record that describe two gaps. A gap record is never
-    superseded, so every coverage stream is current.
+    names, with the audit's message: an event no coverage stream carries, a contract-invalid
+    event, an event its stream does not name, a missing half (incomplete), a second head or
+    record (overfull), a record ahead of its head, and a head and a record that describe two
+    gaps. A gap record is never superseded, so every coverage stream is current.
     """
 
     heads: dict[str, list[EventRecord]] = {}
     observations: dict[str, list[EventRecord]] = {}
     opened_by: dict[str, str] = {}
     for record in repository.read_all():
-        if record.event_type not in (COVERAGE_RECORDED, OBSERVATION_RECORDED):
-            continue
         if not is_coverage_stream(record.stream_id):
             continue
+        # A foreign event is refused rather than skipped: skipped, it left a stream the audit
+        # names readable here, so a report and `cases coverage` ran on top of it.
+        if not event_belongs_on_stream(record.event_type, record.stream_id):
+            raise HistoryError(_misplaced_event_message(record))
         _require_readable_artifact_event(repository, record)
         problem = coverage_record_problem(record.stream_id, record.event_type, record.payload)
         if problem is not None:
@@ -1981,6 +1983,12 @@ def _contract_faults(
     return ()
 
 
+def _misplaced_event_message(record: EventRecord) -> str:
+    """Word one event stored on a stream its kind does not carry, for the audit and the fold."""
+
+    return f"event {record.event_type!r} does not belong on stream {record.stream_id!r}"
+
+
 def _placement_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
     """Report one event stored on a stream its kind does not belong on."""
 
@@ -1989,10 +1997,7 @@ def _placement_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
             HistoryFault(
                 sequence=record.sequence,
                 code="event_stream_mismatch",
-                message=(
-                    f"event {record.event_type!r} does not belong on stream "
-                    f"{record.stream_id!r}"
-                ),
+                message=_misplaced_event_message(record),
             ),
         )
     if record.event_type != CASE_CREATED:

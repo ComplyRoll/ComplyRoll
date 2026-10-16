@@ -46,7 +46,7 @@ catalog the operator supplies.
 | `--kev FILE` | Matches each record's CVE identifiers to a CISA KEV catalog the operator supplies and carries the catalog's due date as the `VDR-TFR-KEV` clock, without fetching anything |
 | `--inventory FILE` | Shows when detection last reached each resource the operator declares |
 | `--record-failed-imports` | Records an artifact that cannot be parsed or holds no usable content, or a failed scanner invocation, as a system observation and a vulnerability of its own (`VDR-CSO-FAV`), and exits 3 |
-| `--record-coverage-gaps`, `complyroll cases coverage` | Record each coverage window that closed with no verification as a system observation and a vulnerability of its own (`VDR-CSO-FAV`), on a report run or into a store, and exit 3 |
+| `--record-coverage-gaps`, `complyroll cases coverage` | Record each coverage window that closed with no verification as a system observation of its own and a vulnerability case (`VDR-CSO-FAV`), on a report run or into a store, and exit 3; windows of one rule whose entries name the same `job` share a case, the windows of one sample group share a case, and every other window is a case of its own |
 | `complyroll ingest`, `cases`, and `report --db` | Record the same work as append-only history and rebuild each report from it, byte-identical to the stateless report |
 | `complyroll store verify --db STORE` | Audits an event store's bytes and its domain, and exits non-zero on any fault |
 | `complyroll validate REPORT --schema KIND` | Validates a report offline against the pinned official schema, with a JSON Pointer for each failure |

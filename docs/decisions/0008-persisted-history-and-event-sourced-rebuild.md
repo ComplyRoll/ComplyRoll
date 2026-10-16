@@ -502,4 +502,7 @@ with the windows a run derives, so Decision 5 gets a second named carve-out in t
   case writer refuses it, it changes no report's bytes, and `store verify` still checks evaluation
   order beside it. This widens the second 2026-10-14 amendment's two codes to three. One more
   writer refuses one shape: `cases coverage` exits 1 with `history_invalid` rather than resume a
-  coverage stream that holds an event no coverage stream carries.
+  coverage stream that holds an event no coverage stream carries. The fold now refuses that shape on
+  any coverage stream and on every read path, so `report ... --db`, `cases correlate`, and
+  `cases coverage` each exit 1 with `history_invalid` and the text of the placement audit's
+  `event_stream_mismatch` fault.

@@ -1288,12 +1288,12 @@ def _match_evaluations(
             )
             continue
         group = candidates[0]
-        # A lone system record would match a pair that names no context key, so the next
-        # record of another key would turn the same file ambiguous; every reserved source
-        # type needs the full triple (ADR 0014 Decision 10, ADR 0015).
-        if (
-            group.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX)
-            and entry.match.context_key is None
+        # A lone system record would match an entry short of the full triple, so the next
+        # record of another key, or an artifact record of the same key, would turn the same
+        # file ambiguous; every reserved source type needs the triple (ADR 0014 Decision 10,
+        # ADR 0015 Decision 23).
+        if group.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX) and (
+            entry.match.context_key is None or entry.match.source_type is None
         ):
             errors.append(
                 ReportDiagnostic(

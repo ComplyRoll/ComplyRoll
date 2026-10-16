@@ -63,15 +63,15 @@ into the report's diagnostics, located at the inventory name and the entry's pai
 ### Coverage gaps as cases
 
 With `--record-coverage-gaps` as well, each window in the block, a coverage clock's due date that
-passed with no verification, becomes a `VDR-CSO-FAV` system observation and a vulnerability of
-its own (ADR 0015). Its source type is `complyroll.coverage` and its record id `coverage-gap`. It
-is detected at the window close, with `detectedAtSource` `system`, so `--detected-at` never
-applies to it, and it gets PAIN only from an evaluation. Windows of one rule share a case when their
-entries name the same `job`, the windows of one sample group share a case, and every other window
-is a case of its own. The command writes its outputs and exits 3. A gap detected after `--to` is
-left out of the official VDT with INFO `excluded_by_period` and still counts for exit 3. A gap
-records that ComplyRoll found no verification inside the window. It is not a finding that the
-resource has a vulnerability.
+passed with no verification, becomes a `VDR-CSO-FAV` system observation of its own and a
+vulnerability case (ADR 0015). Its source type is `complyroll.coverage` and its record id
+`coverage-gap`. It is detected at the window close, with `detectedAtSource` `system`, so
+`--detected-at` never applies to it, and it gets PAIN only from an evaluation. Windows of one rule
+share a case when their entries name the same `job`, the windows of one sample group share a case,
+and every other window is a case of its own. The command writes its outputs and exits 3. A gap
+detected after `--to` is left out of the official VDT with INFO `excluded_by_period` and still
+counts for exit 3. A gap records that ComplyRoll found no verification inside the window. It is not
+a finding that the resource has a vulnerability.
 
 The flag is refused, with exit 1 and nothing written, without `--inventory` and beside `--db`.
 The `--db` conflict is checked first:
@@ -105,10 +105,11 @@ the window's rule and context and the entry's `job`:
 ```
 
 An entry without `contextKey` is refused as `evaluation_ambiguous`, or as
-`evaluation_context_key_required` when it matches a single gap. An evaluation completed before
-the window closed is refused as `evaluation_before_detection`, with the remedy "a coverage gap is
-detected when its window closed, so evaluate it at or after that instant, or correct
-completedAt".
+`evaluation_context_key_required` when it matches a single gap. An entry without `sourceType` that
+matches a single gap is refused as `evaluation_context_key_required` too, and the message ends by
+naming each key to add. An evaluation completed before the window closed is refused as
+`evaluation_before_detection`, with the remedy "a coverage gap is detected when its window closed,
+so evaluate it at or after that instant, or correct completedAt".
 
 ### Coverage gaps in a store
 

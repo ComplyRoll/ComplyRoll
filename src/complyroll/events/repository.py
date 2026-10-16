@@ -27,7 +27,12 @@ from complyroll.adapters.failures import (
     DETECTION_FAILURE_SOURCE_TYPE,
     FailureClass,
 )
-from complyroll.models import Observation, ObservationOrigin
+from complyroll.models import (
+    Observation,
+    ObservationDisposition,
+    ObservationOrigin,
+    SourceSeverity,
+)
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 
 from .contracts import (
@@ -1047,12 +1052,15 @@ def coverage_record_problem(
     A coverage stream id is its gap record's fingerprint (ADR 0015), so either event on a
     stream whose id names none is a `coverage_stream_mismatch`. The record must be the gap
     record a closed window mints: origin `system`, the coverage source type, tool, parser,
-    and record id, and its derived id, else a `coverage_identity_breach`; the gap record
-    whose fingerprint the stream names, else a `coverage_stream_mismatch`; and exactly
-    `COVERAGE_METADATA_KEYS`, with the window close and rule its own identity names, else a
-    `coverage_identity_breach`. The repository refuses each at append with the message, and
-    the audit reports each under its code. Whether the head agrees with the record takes
-    both events, which is `coverage_record_disagreement`'s business.
+    and record id, its derived id, disposition `open`, severity `unknown`, and no source
+    identifier or artifact, else a `coverage_identity_breach`; the gap record whose
+    fingerprint the stream names, else a `coverage_stream_mismatch`; and exactly
+    `COVERAGE_METADATA_KEYS`, with the window close and rule its own identity names and the
+    one evidence id its inventory digest names, else a `coverage_identity_breach`. The
+    fingerprint covers none of the fixed fields, so they are checked here. The repository
+    refuses each at append with the message, and the audit reports each under its code.
+    Whether the head agrees with the record takes both events, which is
+    `coverage_record_disagreement`'s business.
 
     Returns None for an event no coverage stream carries and for a stream of another kind,
     which are the stream-kind check's business rather than this one's.
@@ -1148,6 +1156,19 @@ def _gap_record_problem(payload: Mapping[str, Any]) -> str | None:
             f"its id is {_shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
             f"{_shown(derived)}"
         )
+    # The builder fixes these, and a report reads each of them back from the record.
+    if payload.get("disposition") != ObservationDisposition.OPEN.value:
+        return f"its disposition is {_shown(payload.get('disposition'))}"
+    if payload.get("source_severity") != SourceSeverity.UNKNOWN.value:
+        return f"its source severity is {_shown(payload.get('source_severity'))}"
+    if payload.get("source_identifiers") != []:
+        return f"its source identifiers are {_shown(payload.get('source_identifiers'))}"
+    # NOTE: The observation contract refuses either artifact field on a system record first,
+    # so on a store path these two answer only a direct call.
+    if payload.get("source_artifact_digest") != "":
+        return f"its source artifact digest is {_shown(payload.get('source_artifact_digest'))}"
+    if payload.get("source_artifact_name") != "":
+        return f"its source artifact name is {_shown(payload.get('source_artifact_name'))}"
     return None
 
 
@@ -1156,8 +1177,8 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
 
     Exactly the eight keys, and the two that restate the record's identity agree with it:
     the window close is the instant the record is observed at, and the rule leads its
-    context key. The rest are what the head names, which `coverage_record_disagreement`
-    holds them to.
+    context key. The record's one evidence id names the inventory digest. The rest are what
+    the head names, which `coverage_record_disagreement` holds them to.
     """
 
     raw = payload.get("source_metadata")
@@ -1182,6 +1203,12 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
         return (
             f"its metadata coverage.rule is {_shown(rule)}, and its context key "
             f"{_shown(context_key)} does not lead with it"
+        )
+    evidence = [f"sha256:{raw['coverage.inventorySha256']}"]
+    if payload.get("evidence_ids") != evidence:
+        return (
+            f"its evidence ids are {_shown(payload.get('evidence_ids'))}, where its metadata "
+            f"coverage.inventorySha256 names {_shown(evidence)}"
         )
     return None
 

@@ -70,6 +70,7 @@ from complyroll.events import (
     EventRepository,
     case_stream_id,
     coverage_head_payload,
+    coverage_stream_id,
     coverage_stream_id_of,
 )
 from complyroll.history import (
@@ -127,6 +128,8 @@ WIN_MVX = GAP_WINDOWS[1]
 #: lab-rhel-01's MVX window, a case of its own, which the documented example file remediates.
 RHEL_MVX = GAP_WINDOWS[0]
 RHEL_MVX_KEY = "VDR-TFR-MVX:resource:host:lab-rhel-01"
+#: lab-rhel-01's PDD window, the host's other case of its own.
+RHEL_PDD = GAP_WINDOWS[5]
 #: `examples/evaluations.json` plus the one entry that closes `RHEL_MVX` by the full triple.
 COVERAGE_EVALUATIONS = EXAMPLES / "evaluations-coverage.json"
 #: The one host of the lone-gap store: its Class C MVX window closes on 2026-08-04.
@@ -475,6 +478,8 @@ class CoverageWriterTests(CoverageStoreFixture):
         self.assertEqual(len(with_gaps.windows), GAP_COUNT)
 
     def test_a_stream_holding_only_another_event_is_refused_and_nothing_is_appended(self) -> None:
+        # Moved on purpose in PR 3 step 8: the fold reads a foreign event before it skips
+        # one, so it refuses the stream with the audit's placement text before this judges it.
         self.golden_store()
         first = self.derived_gaps()[0]
         stream_id = coverage_stream_id_of(first)
@@ -486,9 +491,30 @@ class CoverageWriterTests(CoverageStoreFixture):
 
         self.assertEqual(
             str(caught.exception),
-            f"coverage stream {stream_id!r} is incomplete: a coverage stream holds one coverage "
-            "record and one observation, found 0 coverage record(s) and 0 observation(s); a "
-            "coverage stream is written whole, so it is refused rather than resumed",
+            f"event 'probe.planted' does not belong on stream {stream_id!r}",
+        )
+        self.assertEqual(self.store.latest_sequence, latest)
+
+    def test_a_foreign_event_on_a_stream_no_gap_names_is_refused_before_any_append(
+        self,
+    ) -> None:
+        # The fold used to skip it, so the run recorded every gap beside a stream the audit
+        # names; the writer never reads a stream no derived gap names.
+        self.golden_store()
+        stream_id = coverage_stream_id("f" * 64)
+        self.smuggle(stream_id, ("case.identified", {"providerTrackingId": "PROV-2026-0001"}))
+        self.assertEqual(
+            [fault.code for fault in audit_history(self.repository)],
+            ["coverage_incomplete", "event_stream_mismatch"],
+        )
+        latest = self.store.latest_sequence
+
+        with self.assertRaises(HistoryError) as caught:
+            self.record_gaps()
+
+        self.assertEqual(
+            str(caught.exception),
+            f"event 'case.identified' does not belong on stream {stream_id!r}",
         )
         self.assertEqual(self.store.latest_sequence, latest)
 
@@ -509,10 +535,10 @@ class CoverageWriterTests(CoverageStoreFixture):
         with self.assertRaises(HistoryError) as caught:
             self.record_gaps()
 
+        # Moved on purpose in PR 3 step 8, as the test above moved.
         self.assertEqual(
             str(caught.exception),
-            f"coverage stream {stream_id!r} holds an event no coverage stream carries; a "
-            "coverage stream is written whole, so it is refused rather than resumed",
+            f"event 'probe.planted' does not belong on stream {stream_id!r}",
         )
         self.assertEqual(self.store.latest_sequence, latest)
 
@@ -1127,6 +1153,66 @@ class GapDivergenceTests(CoverageStoreFixture):
                 )
                 assert_markdown_carries_the_json(self, report)
 
+    def renamed_store(self, scanned_at: str) -> tuple[CompiledReport, str]:
+        """Record the golden gaps, rename lab-rhel-01, then report a pass scan of its old id.
+
+        The renamed entry keeps the old id as an alias, so the stored gaps, which name the
+        old id, still name a resource of the inventory.
+        """
+        renamed = edited_inventory(
+            **{
+                "lab-rhel-01": {
+                    "resourceId": "rhel-app-01",
+                    "aliases": [{"resourceType": "host", "resourceId": "lab-rhel-01"}],
+                }
+            }
+        )
+        self.golden_store()
+        self.record_gaps()
+        self.correlate()
+        self.ingest_text("renamed.xml", xccdf("renamed", "lab-rhel-01", scanned_at, "pass"))
+        self.correlate()
+        return self.replay(inventory=renamed), self.late_observation_id("renamed.xml")
+
+    def rhel_notes(self, report: CompiledReport, code: str) -> list[str]:
+        return [
+            item["message"]
+            for item in diagnostics_of(report, code)
+            if "window for host:lab-rhel-01 " in item["message"]
+        ]
+
+    def test_a_scan_of_an_aliased_id_inside_a_recorded_window_contradicts_its_gap(
+        self,
+    ) -> None:
+        # An alias names the same resource, so evidence filed under the renamed entry is
+        # read against the gap recorded under its old id.
+        report, scan = self.renamed_store(LATE_AT)
+
+        evidence = f"observation {scan} on host:lab-rhel-01"
+        self.assertEqual(
+            self.rhel_notes(report, "coverage_gap_contradicted"),
+            [
+                contradicted_message(case, rule, label, closed, evidence, LATE_AT)
+                for rule, label, closed, case in (RHEL_MVX, RHEL_PDD)
+            ],
+        )
+        self.assertEqual(self.rhel_notes(report, "coverage_gap_unmatched"), [])
+        self.assertLessEqual({RHEL_MVX[3], RHEL_PDD[3]}, tracking_ids(report))
+
+    def test_a_scan_of_an_aliased_id_after_a_recorded_window_leaves_its_gap_unmatched(
+        self,
+    ) -> None:
+        report, _ = self.renamed_store("2026-07-20T09:00:00Z")
+
+        self.assertEqual(
+            self.rhel_notes(report, "coverage_gap_unmatched"),
+            [
+                unmatched_message(case, rule, label, closed)
+                for rule, label, closed, case in (RHEL_MVX, RHEL_PDD)
+            ],
+        )
+        self.assertEqual(self.rhel_notes(report, "coverage_gap_contradicted"), [])
+
     def test_each_underived_gap_takes_its_own_code_in_window_order(self) -> None:
         # At the early as-of the June restore test disproves the backup gap and the July plan
         # review the group's first, while nothing inside the group's second window disproves
@@ -1667,9 +1753,10 @@ class PersistedGapEvaluationCommandTests(PersistedStoreTestCase):
         self,
     ) -> None:
         latest = self.latest_sequence()
-        for label, keys in (
-            ("with sourceType", ("sourceRecordId", "sourceType")),
-            ("without sourceType", ("sourceRecordId",)),
+        for label, keys, remedy in (
+            ("with sourceType", ("sourceRecordId", "sourceType"), "contextKey"),
+            ("without sourceType", ("sourceRecordId",), "contextKey and sourceType"),
+            ("with contextKey alone", ("sourceRecordId", "contextKey"), "sourceType"),
         ):
             with self.subTest(label):
                 match = {key: value for key, value in self.triple().items() if key in keys}
@@ -1685,7 +1772,7 @@ class PersistedGapEvaluationCommandTests(PersistedStoreTestCase):
                     "error: evaluation_unmatched: evaluations could not be applied: "
                     f"evaluations[0]: {described} matches the coverage gap "
                     f"{self.case.tracking_id}; a coverage gap is matched by sourceRecordId, "
-                    "sourceType and contextKey together, so add contextKey\n",
+                    f"sourceType and contextKey together, so add {remedy}\n",
                 )
                 self.assertEqual(self.latest_sequence(), latest)
 

@@ -247,10 +247,13 @@ def case_of(group: VulnerabilityGroup) -> CaseState:
     )
 
 
-def context_key_text(described: str, kind: str, tracking_id: str) -> str:
+def context_key_text(
+    described: str, kind: str, tracking_id: str, remedy: str = "contextKey"
+) -> str:
+    """Return the refusal of a match short of the triple, naming the keys it leaves out."""
     return (
         f"{described} matches the {kind} {tracking_id}; a {kind} is matched by "
-        "sourceRecordId, sourceType and contextKey together, so add contextKey"
+        f"sourceRecordId, sourceType and contextKey together, so add {remedy}"
     )
 
 
@@ -338,7 +341,10 @@ class GapEvaluationTests(unittest.TestCase):
         # same file ambiguous, so the triple is required even when nothing else matches.
         (gap,) = gaps("lab-gap-01")
         (tracking_id,) = tracking_ids(gap)
-        for label, source_type in (("with sourceType", True), ("without sourceType", False)):
+        for label, source_type, remedy in (
+            ("with sourceType", True, "contextKey"),
+            ("without sourceType", False, "contextKey and sourceType"),
+        ):
             with self.subTest(label):
                 evaluations = evaluations_with(
                     gap_match(gap, source_type=source_type, context_key=False)
@@ -354,11 +360,34 @@ class GapEvaluationTests(unittest.TestCase):
                         (
                             "error",
                             "evaluation_context_key_required",
-                            context_key_text(described, "coverage gap", tracking_id),
+                            context_key_text(described, "coverage gap", tracking_id, remedy),
                             "evaluations[0]",
                         )
                     ],
                 )
+
+    def test_a_lone_gap_is_not_matched_without_its_source_type(self) -> None:
+        # Without the source type the entry would also take an artifact record of the same
+        # record id and context key, so the triple is required here too.
+        (gap,) = gaps("lab-gap-01")
+        (tracking_id,) = tracking_ids(gap)
+        evaluations = evaluations_with(gap_match(gap, source_type=False))
+
+        with self.assertRaises(ReportCompileError) as caught:
+            compile_with((gap,), evaluations)
+
+        described = evaluations.entries[0].match.describe()
+        self.assertEqual(
+            as_tuples(caught.exception.diagnostics),
+            [
+                (
+                    "error",
+                    "evaluation_context_key_required",
+                    context_key_text(described, "coverage gap", tracking_id, "sourceType"),
+                    "evaluations[0]",
+                )
+            ],
+        )
 
     def test_two_gaps_matched_without_a_context_key_are_ambiguous(self) -> None:
         # Ambiguity is checked before the lone-record refusal, so both gaps are named.
@@ -564,7 +593,10 @@ class PersistedGapEvaluationTests(unittest.TestCase):
     def test_a_lone_gap_case_is_not_matched_without_its_context_key(self) -> None:
         (gap,) = gaps("lab-gap-01")
         case = case_of(group_of(gap))
-        for label, source_type in (("with sourceType", True), ("without sourceType", False)):
+        for label, source_type, remedy in (
+            ("with sourceType", True, "contextKey"),
+            ("without sourceType", False, "contextKey and sourceType"),
+        ):
             with self.subTest(label):
                 evaluations = evaluations_with(
                     gap_match(gap, source_type=source_type, context_key=False)
@@ -578,9 +610,26 @@ class PersistedGapEvaluationTests(unittest.TestCase):
                     caught.exception.problems,
                     (
                         "evaluations[0]: "
-                        + context_key_text(described, "coverage gap", case.tracking_id),
+                        + context_key_text(described, "coverage gap", case.tracking_id, remedy),
                     ),
                 )
+
+    def test_a_lone_gap_case_is_not_matched_without_its_source_type(self) -> None:
+        (gap,) = gaps("lab-gap-01")
+        case = case_of(group_of(gap))
+        evaluations = evaluations_with(gap_match(gap, source_type=False))
+
+        with self.assertRaises(EvaluationMatchError) as caught:
+            history_writers._match_cases(evaluations, [case])
+
+        described = evaluations.entries[0].match.describe()
+        self.assertEqual(
+            caught.exception.problems,
+            (
+                "evaluations[0]: "
+                + context_key_text(described, "coverage gap", case.tracking_id, "sourceType"),
+            ),
+        )
 
     def test_two_gap_cases_matched_without_a_context_key_are_ambiguous(self) -> None:
         pair = gaps("lab-gap-01", "lab-gap-02")

@@ -1049,9 +1049,8 @@ def _match_cases(
             continue
         case = candidates[0]
         # The same refusal, in the same order, as `reports.vdt._match_evaluations`.
-        if (
-            case.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX)
-            and entry.match.context_key is None
+        if case.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX) and (
+            entry.match.context_key is None or entry.match.source_type is None
         ):
             refusal = entry.match.context_key_required(
                 case.tracking_id, kind=system_record_kind(case.source_type)

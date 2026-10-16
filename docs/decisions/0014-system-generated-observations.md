@@ -1055,8 +1055,10 @@ read wider from this date; their text is not edited.
   on both paths, in the order Decision 10 gives. `EvaluationMatch.context_key_required` takes the
   record's kind from `reports.vdt.system_record_kind`: "detection process failure", "coverage
   gap", or "system record" for a reserved type with no name of its own, so the message names
-  whichever kind matched, and the failure's message is unchanged byte for byte. A gap's
-  documented match is the full triple: `sourceRecordId` `coverage-gap`, `sourceType`
+  whichever kind matched, and the failure's message is unchanged byte for byte for an entry that
+  gives `sourceType`. A lone match that names `contextKey` without `sourceType` is now refused with
+  the same code and told to add `sourceType`, so the triple is required as Decision 10 states. A
+  gap's documented match is the full triple: `sourceRecordId` `coverage-gap`, `sourceType`
   `complyroll.coverage`, and the gap's context key (ADR 0015 Decision 23).
 - **Decision 11's exit 3 is widened per flag.** Exit 3 means the output holds a system-generated
   `VDR-CSO-FAV` record. `--record-failed-imports` answers for failures and

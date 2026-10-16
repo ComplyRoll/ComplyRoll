@@ -564,10 +564,12 @@ reached through an alias that matches the repository URL the scanner reports.
 
 ### Coverage gaps as cases
 
-`VDR-CSO-FAV` says a failure of the detection process is a vulnerability, and a window that
-closed with no verification is one. With `--record-coverage-gaps`, each window in the block
-becomes a system observation and a vulnerability case of its own (ADR 0015). The flag needs
-`--inventory`. Add it to the first command in this section:
+`VDR-CSO-FAV` says a failure of the detection process is a vulnerability, and a window that closed
+with no verification is one. With `--record-coverage-gaps`, each window in the block becomes a
+system observation of its own and a vulnerability case (ADR 0015): windows of one rule whose entries
+name the same `job` share a case, the windows of one sample group share a case, and every other
+window is a case of its own. The flag needs `--inventory`. Add it to the first command in this
+section:
 
 ```bash
 complyroll report vdt \

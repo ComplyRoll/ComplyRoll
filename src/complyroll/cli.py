@@ -1673,11 +1673,13 @@ def _stage(targets: Sequence[tuple[Path, str]]) -> tuple[tuple[Path, Path], ...]
                 suffix=".tmp",
                 delete=False,
             ) as handle:
+                # Recorded before the write, so a write that fails still has its file removed.
+                staged.append((Path(handle.name), destination))
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
-                staged.append((Path(handle.name), destination))
-    except OSError:
+    # Any failure, not only OSError: text that cannot be encoded fails in the write.
+    except BaseException:
         _discard(staged)
         raise
     return tuple(staged)

@@ -450,6 +450,18 @@ class ReportVdtCommandTests(unittest.TestCase):
                 ["report.json", "report.md"],
             )
 
+    def test_a_staging_failure_of_any_kind_leaves_no_temporary_files(self) -> None:
+        # Text that cannot be encoded fails inside the write as a UnicodeEncodeError, not
+        # an OSError: the JSON staged before it and the Markdown file itself stayed behind.
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            targets = [(workspace / "report.json", "{}\n"), (workspace / "report.md", "\udcff")]
+
+            with self.assertRaises(UnicodeEncodeError):
+                cli_module._stage(targets)
+
+            self.assertEqual(list(workspace.iterdir()), [])
+
     def test_a_failed_second_replace_restores_the_first_destination(self) -> None:
         # Staging every file first stops a rendering failure from half-publishing a pair.
         # It cannot stop the second rename from failing once the first has landed, which

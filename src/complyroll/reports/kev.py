@@ -20,6 +20,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from complyroll.adapters.common import MAX_IDENTITY_CHARS, identity_problem
 from complyroll.adapters.safeio import (
     IngestLimits,
     InputLimitError,
@@ -289,6 +290,11 @@ def parse_kev_catalog(content: bytes, *, name: str) -> KevCatalog:
         raise TypeError("content must be bytes")
     if not isinstance(name, str) or not name.strip():
         raise ReportInputError("KEV catalog name must not be blank")
+    # SECURITY: The name reaches both reports verbatim, so a surrogate escaped from a file
+    # name that is not UTF-8, or a terminal control, is refused here rather than at the write.
+    problem = identity_problem(name, MAX_IDENTITY_CHARS)
+    if problem is not None:
+        raise ReportInputError(f"KEV catalog name {problem}")
     if len(content) > MAX_KEV_CATALOG_BYTES:
         raise ReportInputError(
             f"KEV catalog is {len(content)} bytes; maximum is {MAX_KEV_CATALOG_BYTES} bytes"

@@ -625,6 +625,17 @@ class KevLoaderRefusalTests(unittest.TestCase):
                     parse_kev_catalog(fixture_bytes(), name=name)
                 self.assertTrue(str(caught.exception).startswith("KEV catalog"))
 
+    def test_a_name_no_report_can_carry_is_refused(self) -> None:
+        # A file name that is not UTF-8 decodes with a surrogate escape. It used to pass
+        # here and end the run in a traceback when the report was written.
+        for name in ("kev-\udcff.json", "kev-\x1b[31m.json", "k" * 513):
+            with self.subTest(name=name):
+                with self.assertRaises(ReportInputError) as caught:
+                    parse_kev_catalog(fixture_bytes(), name=name)
+                message = str(caught.exception)
+                self.assertTrue(message.startswith("KEV catalog name"))
+                self.assertNotIn(name, message)
+
 
 # *--- Matching and Instants ---*
 

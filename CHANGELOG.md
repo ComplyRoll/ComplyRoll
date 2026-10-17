@@ -6,6 +6,34 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- A SARIF run with no results no longer becomes a clean-run PASS when the same log says the run
+  did not complete: an invocation that declares `executionSuccessful: true` beside a nonzero
+  `exitCode`, an exit signal, or an `error`-level tool execution or configuration notification
+  (`execution_errors_reported`); a `conversion.invocation` that does not declare a clean
+  execution (`conversion_unverified`); or results that may live in
+  `externalPropertyFileReferences` or the log's `inlineExternalProperties` (`results_external`).
+  Each used to mint a PASS that the coverage block read as a verification of the scope. Such a
+  run now behaves as an unverified empty run does, so a log holding nothing else is
+  `no_observations` plus `clean_run_unverified`, whose text now reads "SARIF log has a run with
+  no results that cannot be verified as clean, which is not a clean run". The log-level
+  `inlineExternalProperties` member, whose results were dropped with no diagnostic, is now
+  WARNING `inline_external_properties_ignored`. Runs with results read exactly as before, and no
+  golden moves (ADR 0015 amendment of 2026-10-17).
+- Re-ingesting bytes whose artifact stream was opened by a parser that read them into another
+  observation count, as a store written before the clean-run change can hold, is refused as
+  `history_invalid`. The resume path, meant only to finish a stream a crash left short, used to
+  append the difference, after which every `report --db` failed with `artifact_overfull`.
+- A KEV catalog whose file name is not UTF-8, or carries a control character, is refused as
+  `invalid_input` before the compile. It used to end the run in a `UnicodeEncodeError` traceback
+  when the report was written. A lone surrogate escape such as `\ud800` in the evaluations file
+  is refused the same way at parse, as it already was in every artifact, KEV catalog, and
+  inventory.
+- A report write that failed for any reason but an operating-system error, such as text that
+  cannot be encoded, left its temporary files beside the destination. Every staged file is now
+  removed whatever stops the write, as the ADR 0007 amendment promises.
+- The bundled rules and schema files and the test fixtures are now marked `-text` in
+  `.gitattributes`, so a checkout with `core.autocrlf` cannot rewrite their line endings and
+  break the digests the loader verifies and the goldens record.
 - A compiled Vulnerability Detail Report is now byte-identical across any argument order, on the
   stateless path and the persisted path alike. Four things echoed the order the operator named
   files in: the artifact manifest, the ingest diagnostics and the unresolved-observation
@@ -466,8 +494,8 @@ All notable project changes will be documented here.
   definitions. In the VDR and VER scope ComplyRoll selects, the only change is `VDR-TFR-NMV`,
   which now carries a three-month `MUST` timeframe, so `SelectedRule.timeframe` and
   `deadline_for_rule` return it for both classes. No report deadline is computed from it: the
-  rule is a recurrence clock per non-machine-based information resource, which ComplyRoll does
-  not record yet. Verified by loading and selecting both classes against the new bytes (36 rules
+  rule is a recurrence clock per non-machine-based information resource, which ComplyRoll did
+  not record yet (the inventory input of ADR 0015, above, now reads it). Verified by loading and selecting both classes against the new bytes (36 rules
   each, every other timeframe and PAIN matrix unchanged), by the policy golden, which gained the
   `VDR-TFR-NMV` entry under both classes, and by the six report goldens, which moved only in the
   rules provenance block and in the overdue explanations that cite the dataset commit.

@@ -1,2 +1,6 @@
 # Golden outputs are byte-for-byte compatibility contracts. Do not normalize line endings.
 tests/golden/* binary
+# Digest-pinned inputs: the loader verifies the bundled data by SHA-256, and the goldens record
+# each fixture's digest. Keep their bytes as committed, but leave them diffable.
+src/complyroll/data/* -text
+tests/fixtures/* -text

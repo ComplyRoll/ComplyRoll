@@ -322,6 +322,16 @@ def _record_ingest(
             raise HistoryError(
                 f"artifact stream {stream_id!r} begins with {existing[0].event_type!r}"
             )
+        # The resume below completes a stream a crash left short; it never reconciles a
+        # parser that now reads the same bytes into another count. Appending that tail
+        # left the stream overfull, and every later rebuild refused the store.
+        declared = existing[0].payload.get("observationCount")
+        if type(declared) is not int or declared != len(observations):
+            raise HistoryError(
+                f"artifact stream {stream_id!r} was opened for another observation count "
+                f"than the {len(observations)} this parser reads from the same bytes; a "
+                "parser whose reading changed needs a new version"
+            )
         if recorded > len(observations):
             raise HistoryError(
                 f"artifact stream {stream_id!r} holds {recorded} observation(s) but the "

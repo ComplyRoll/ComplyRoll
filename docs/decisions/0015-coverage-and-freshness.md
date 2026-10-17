@@ -665,3 +665,43 @@ Why: the window disproved must be the one that was recorded, not one this run wo
 - Decision 10's first sentence does not say that a verification before `expectedSince` anchors a
   clock only when its window reaches `expectedSince`. Decision 11 states it, and so does
   `docs/FEDRAMP_2026_MAPPING.md` from this date.
+
+## Amendment (2026-10-17): an explicit true is necessary for a clean run, not sufficient
+
+Found in a review of the SARIF slice against main. Decision 1 minted a clean run whenever every
+invocation a run declares carries `executionSuccessful: true`. The same log can contradict the
+flag: an invocation with a nonzero `exitCode` or an exit signal, or with an `error`-level entry in
+`toolExecutionNotifications` or `toolConfigurationNotifications` ("rule pack failed to load"); a
+`conversion.invocation` (the converter's own run, SARIF 3.22) that does not declare a clean
+execution; and results that may live outside the run, under `externalPropertyFileReferences` or
+the log's `inlineExternalProperties`, which ADR 0011 Decision 13 already says are never read. Each
+minted a PASS that PR 2 read as a verification of a scope nobody had examined, which is the
+failure the domain invariants forbid most: a failed detection process read as a clean one.
+
+A run with no results and any of those signals now mints nothing. It raises one WARNING naming
+the first cause found, in this order: `execution_errors_reported`, `conversion_unverified`,
+`results_external`; each is a code of its own because a coalesced code keeps only its first
+message. It then behaves exactly as an unverified empty run does under Decision 1: when nothing
+else in the log yields, `no_observations` and `clean_run_unverified` (Decision 2), which is the
+content class with `--record-failed-imports` and fatal without it. A failed invocation still
+claims the run first, and a missing or non-boolean flag is still `execution_unverified`. An
+`exitCode` counts only when it is absent or the JSON integer 0, and a notification only when its
+level is exactly `error`, since an absent level defaults to `warning`. The log-level
+`inlineExternalProperties` member is now WARNING `inline_external_properties_ignored`; before,
+any results inside it were dropped with no diagnostic at all. `clean_run_unverified` now reads
+"SARIF log has a run with no results that cannot be verified as clean, which is not a clean run",
+because its old text named an invocation that the external-results cause does not involve.
+
+A run that has results is read exactly as before, whatever these signals say, and no golden moves:
+no fixture's empty run carries any of them. Some bytes that minted a clean run now mint nothing,
+so this parser reads them differently under the same `SARIF_PARSER_VERSION`, `1`, as PR #25 and
+PR 1 of this record already did. ADR 0002 makes the parser version an identity input precisely
+so that a changed reading is a new fact. No released build carries the SARIF adapter (0.3.0a0
+predates it), so only a store built from main since 2026-09-22 can hold an older reading; bumping
+the version is left for a decision before the first release that ships SARIF. Meanwhile the ingest
+writer refuses, as `history_invalid`, to resume an artifact stream whose head declared another
+observation count than this parser reads from the same bytes. It used to append the difference,
+and the stream then held more observations than its head declared, so every later rebuild
+refused the store as `artifact_overfull`.
+Why: a clean run is coverage evidence, so it must fail closed on any signal in the log that the
+run did not complete, not on the one flag alone.

@@ -1342,6 +1342,17 @@ class EvaluationInputValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ReportInputError, "non-standard JSON constant"):
             parse_evaluations(content)
 
+    def test_a_lone_surrogate_is_rejected_before_it_reaches_a_report(self) -> None:
+        # Valid JSON that decodes to text no UTF-8 encoder accepts: it used to pass here and
+        # end the report write in a traceback.
+        for content in (
+            evaluation_json(rationale="\ud800 accepted").encode("utf-8"),
+            b'{"evaluations": [], "\\udfff": 1}',
+        ):
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(ReportInputError, "lone surrogate"):
+                    parse_evaluations(content)
+
     def test_pain_must_be_a_rating(self) -> None:
         for value in (0, 6, "4", True, 4.0):
             with self.subTest(value=value):

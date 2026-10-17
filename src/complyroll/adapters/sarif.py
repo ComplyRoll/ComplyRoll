@@ -102,6 +102,25 @@ CLEAN_RUN_DESCRIPTION = (
     "The run shows the tool ran against the scope it named and found nothing it was "
     "configured to report. It is not evidence that the scope is free of vulnerabilities."
 )
+# Why a run whose every invocation declares success still backs no clean run (ADR 0015
+# amendment 2026-10-17), as (code, message). Each is a code of its own because a coalesced
+# code keeps only its first message.
+_EXECUTION_ERRORS_REPORTED = (
+    "execution_errors_reported",
+    "an invocation declares executionSuccessful true beside a nonzero exitCode, an exit "
+    "signal, or an error-level notification; a run with no results is not a clean run",
+)
+_CONVERSION_UNVERIFIED = (
+    "conversion_unverified",
+    "the conversion that wrote the run does not declare a clean execution; a run with no "
+    "results is not a clean run",
+)
+_RESULTS_EXTERNAL = (
+    "results_external",
+    "the run's results may live in external properties that are never read; a run with no "
+    "results is not a clean run",
+)
+_NOTIFICATION_MEMBERS = ("toolExecutionNotifications", "toolConfigurationNotifications")
 
 # The fixed metadata vocabulary: a producer can never mint a key (decision 9).
 METADATA_KEYS = frozenset(
@@ -276,6 +295,9 @@ class _RunScope:
     # Whether any invocation left executionSuccessful absent or non-boolean. Its results are
     # still read, but its empty results claim nothing, so no clean run is minted either.
     execution_unverified: bool
+    # Why a run whose invocations all declare success still backs no clean run, as (code,
+    # message), or None. Read only at the run_clean site; results are read as before.
+    clean_run_doubt: tuple[str, str] | None
     scalars: dict[str, str]
     lists: dict[str, tuple[str, ...]]
     truncated: set[str]
@@ -344,6 +366,25 @@ def _mapping(value: object) -> Mapping[str, Any] | None:
 
 def _sequence(value: object) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _reports_errors(invocation: Mapping[str, Any]) -> bool:
+    """Whether an invocation reports a failure its executionSuccessful flag does not.
+
+    Only an exitCode that is the JSON integer 0, or absent, claims nothing; a notification
+    counts when its level is exactly "error", since an absent level defaults to warning.
+    """
+    code = invocation.get("exitCode", 0)
+    if type(code) is not int or code != 0:
+        return True
+    if "exitSignalName" in invocation or "exitSignalNumber" in invocation:
+        return True
+    for member in _NOTIFICATION_MEMBERS:
+        for notification in _sequence(invocation.get(member)):
+            entry = _mapping(notification)
+            if entry is not None and entry.get("level") == "error":
+                return True
+    return False
 
 
 def _natural(value: object) -> int | None:
@@ -908,11 +949,21 @@ class _ArtifactParse(EvidenceParse):
         # The clocks failed invocations declare, across every run, read by _run_clock.
         self.failed_starts: list[datetime] = []
         self.failed_ends: list[datetime] = []
-        # Whether any run had no results under an unverified invocation, read by run().
+        # Whether any run had no results it could not verify as clean, read by run().
         self.unverified_empty_run = False
+        # Whether the log carries inlineExternalProperties, which no run's results can rule out.
+        self.inline_external = False
 
-    def run(self, runs: list[Any]) -> AdapterOutput:
+    def run(self, runs: list[Any], *, inline_external: bool = False) -> AdapterOutput:
         """Scan every run, fold by identity, and fail closed on any error."""
+        self.inline_external = inline_external
+        if inline_external:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "inline_external_properties_ignored",
+                "inlineExternalProperties is present; its contents are never read",
+                "inlineExternalProperties",
+            )
         for index, run in enumerate(runs):
             self._scan_run(index, run)
         # Set whether the log imports or fails closed, so a failed invocation keeps its own
@@ -938,8 +989,8 @@ class _ArtifactParse(EvidenceParse):
                     IngestDiagnostic(
                         DiagnosticLevel.ERROR,
                         "clean_run_unverified",
-                        "SARIF log has a run with no results under an unverified invocation, "
-                        "which is not a clean run",
+                        "SARIF log has a run with no results that cannot be verified as "
+                        "clean, which is not a clean run",
                         self.artifact.name,
                     )
                 )
@@ -1008,6 +1059,11 @@ class _ArtifactParse(EvidenceParse):
                     path,
                 )
                 return
+            if scope.clean_run_doubt is not None:
+                self.unverified_empty_run = True
+                code, message = scope.clean_run_doubt
+                self.diagnostics.add(DiagnosticLevel.WARNING, code, message, path)
+                return
             self._clean_run(scope)
             return
         if len(results) > self.limits.max_results_per_run:
@@ -1040,6 +1096,30 @@ class _ArtifactParse(EvidenceParse):
         # A present invocations member that is not an array can hide a failed invocation, so it
         # is unverified too; only an absent member makes no claim.
         execution_unverified = "invocations" in run and not isinstance(run["invocations"], list)
+        # An explicit true is necessary for a clean run, not sufficient: the same log can say
+        # the tool or its converter failed, or that the results live elsewhere.
+        clean_run_doubt: tuple[str, str] | None = None
+        succeeded = [
+            entry
+            for entry in map(_mapping, invocations)
+            if entry is not None and entry.get("executionSuccessful") is True
+        ]
+        if any(_reports_errors(entry) for entry in succeeded):
+            clean_run_doubt = _EXECUTION_ERRORS_REPORTED
+        else:
+            conversion = _mapping(run.get("conversion"))
+            if conversion is not None and "invocation" in conversion:
+                converter = _mapping(conversion["invocation"])
+                if (
+                    converter is None
+                    or converter.get("executionSuccessful") is not True
+                    or _reports_errors(converter)
+                ):
+                    clean_run_doubt = _CONVERSION_UNVERIFIED
+        if clean_run_doubt is None and (
+            "externalPropertyFileReferences" in run or self.inline_external
+        ):
+            clean_run_doubt = _RESULTS_EXTERNAL
         for position, invocation in enumerate(invocations):
             entry = _mapping(invocation)
             # Only the JSON booleans count: a missing, null, or non-boolean flag is neither a
@@ -1156,6 +1236,7 @@ class _ArtifactParse(EvidenceParse):
             clock=clock,
             execution_failed=execution_failed,
             execution_unverified=execution_unverified,
+            clean_run_doubt=clean_run_doubt,
             scalars=scalars,
             lists=lists,
             truncated=truncated,
@@ -1907,4 +1988,6 @@ class SarifAdapter:
         runs = data.get("runs")
         if not isinstance(runs, list):
             raise AdapterParseError("SARIF runs must be an array")
-        return _ArtifactParse(artifact, ingested_at, self.limits).run(runs)
+        return _ArtifactParse(artifact, ingested_at, self.limits).run(
+            runs, inline_external="inlineExternalProperties" in data
+        )

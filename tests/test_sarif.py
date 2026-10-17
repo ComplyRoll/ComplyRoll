@@ -4498,6 +4498,9 @@ def clean_run(**extra: Any) -> dict[str, Any]:
     return make_run((), **extra)
 
 
+CONVERTER = {"driver": {"name": "Converter"}}
+
+
 def succeeded(**clock: Any) -> dict[str, Any]:
     """Build one invocation that declares executionSuccessful true, with the given clocks."""
     return {"executionSuccessful": True, **clock}
@@ -4663,6 +4666,92 @@ class SarifCleanRunTests(unittest.TestCase):
                 )
                 self.assertIsNone(output.failed_execution_at)
 
+    def test_an_explicit_true_beside_a_reported_failure_backs_no_clean_run(self) -> None:
+        # The flag is necessary, not sufficient: the same invocation can say the tool failed,
+        # and a clean run would then count as a verification of a scope nobody examined.
+        error = {"level": "error", "message": {"text": "rule pack failed to load"}}
+        cases = {
+            "nonzero exitCode": succeeded(exitCode=2),
+            "non-integer exitCode": succeeded(exitCode="0"),
+            "exit signal": succeeded(exitSignalName="SIGKILL"),
+            "execution error": succeeded(toolExecutionNotifications=[error]),
+            "configuration error": succeeded(toolConfigurationNotifications=[error]),
+        }
+        for label, invocation in cases.items():
+            with self.subTest(label):
+                output = ingest_document(make_log(clean_run(invocations=[invocation])))
+                self.assertEqual(output.observations, ())
+                self.assertFalse(output.successful)
+                self.assertIsNone(output.failed_execution_at)
+                self.assertEqual(
+                    [item.code for item in output.diagnostics],
+                    [
+                        "run_clean",
+                        "execution_errors_reported",
+                        "no_observations",
+                        "clean_run_unverified",
+                    ],
+                )
+                self.assertIs(
+                    only_diagnostic(output, "execution_errors_reported").level,
+                    DiagnosticLevel.WARNING,
+                )
+
+    def test_an_exit_code_of_zero_and_lesser_notifications_keep_the_clean_run(self) -> None:
+        notes = [
+            {"message": {"text": "defaults to warning"}},
+            {"level": "warning", "message": {"text": "slow rule"}},
+            {"level": "note", "message": {"text": "cache hit"}},
+        ]
+        invocation = succeeded(
+            exitCode=0, toolExecutionNotifications=notes, toolConfigurationNotifications=notes
+        )
+        output = ingest_document(make_log(clean_run(invocations=[invocation])))
+        self.assertEqual(only_observation(output).source_record_id, CLEAN_RUN_RECORD_ID)
+        self.assertNotIn("execution_errors_reported", diagnostic_codes(output))
+
+    def test_a_conversion_that_did_not_succeed_backs_no_clean_run(self) -> None:
+        # conversion.invocation is the converter's own run (SARIF 3.22): a failed one wrote
+        # a log that cannot claim the scanner found nothing.
+        for converter in (
+            {"executionSuccessful": False},
+            {},
+            succeeded(exitCode=1),
+            "not an invocation",
+        ):
+            with self.subTest(converter=converter):
+                run = clean_run(conversion={"tool": CONVERTER, "invocation": converter})
+                output = ingest_document(make_log(run))
+                self.assertEqual(output.observations, ())
+                self.assertIn("conversion_unverified", diagnostic_codes(output))
+                self.assertIn("clean_run_unverified", diagnostic_codes(output))
+        run = clean_run(conversion={"tool": CONVERTER, "invocation": succeeded()})
+        output = ingest_document(make_log(run))
+        self.assertEqual(only_observation(output).source_record_id, CLEAN_RUN_RECORD_ID)
+
+    def test_results_that_may_live_elsewhere_back_no_clean_run(self) -> None:
+        external = clean_run(externalPropertyFileReferences={"results": [{"itemCount": 42}]})
+        inline = make_log(clean_run())
+        inline["inlineExternalProperties"] = [{"results": [make_result()]}]
+        for label, payload in (("file references", make_log(external)), ("inline", inline)):
+            with self.subTest(label):
+                output = ingest_document(payload)
+                self.assertEqual(output.observations, ())
+                self.assertIn("results_external", diagnostic_codes(output))
+                self.assertIn("clean_run_unverified", diagnostic_codes(output))
+        self.assertIs(
+            only_diagnostic(ingest_document(inline), "inline_external_properties_ignored").level,
+            DiagnosticLevel.WARNING,
+        )
+
+    def test_a_reported_failure_still_reads_the_results_it_has(self) -> None:
+        # The doubt guards the clean run alone, as the unverified flag does.
+        run = make_run([make_result()], invocations=[succeeded(exitCode=2)])
+        output = ingest_document(make_log(run))
+        self.assertTrue(output.successful)
+        self.assertEqual(only_observation(output).source_record_id, "R1")
+        self.assertNotIn("execution_errors_reported", diagnostic_codes(output))
+
     def test_an_unverified_empty_run_names_its_cause_once_in_fixed_text(self) -> None:
         # The stored failure keeps codes only, so the cause is an ERROR code of its own,
         # raised once per log beside no_observations, never per run.
@@ -4682,8 +4771,8 @@ class SarifCleanRunTests(unittest.TestCase):
         cause = only_diagnostic(output, "clean_run_unverified")
         self.assertEqual(
             cause.message,
-            "SARIF log has a run with no results under an unverified invocation, which is not "
-            "a clean run",
+            "SARIF log has a run with no results that cannot be verified as clean, which is "
+            "not a clean run",
         )
         self.assertEqual(cause.location, "unverified.sarif")
         self.assertIn("runs[0], runs[1]", only_diagnostic(output, "execution_unverified").message)

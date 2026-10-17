@@ -10,6 +10,7 @@ other JSON ComplyRoll reads.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,9 @@ from complyroll.models import CaseStatus, PainRating
 MAX_EVALUATIONS_BYTES = 8 * 1024 * 1024
 MAX_EVALUATIONS_DEPTH = 64
 MAX_EVALUATIONS_VALUES = 200_000
+# json.loads decodes the escape of a lone surrogate, such as "\\ud800", into text that
+# no UTF-8 encoder will accept.
+_LONE_SURROGATE = re.compile("[\\ud800-\\udfff]")
 
 #: Dispositions that may close a case, per ADR 0007 Decision 4 and its amendment.
 #: A case closed as accepted needs an acceptance rationale and is routed to VER-RPT-AVI.
@@ -521,8 +525,23 @@ def _parse_json_bounded(content: bytes) -> Any:
             raise ReportInputError(
                 f"evaluations file exceeds {MAX_EVALUATIONS_DEPTH} levels of JSON nesting"
             )
-        if isinstance(current, dict):
-            stack.extend((item, depth + 1) for item in current.values())
+        # SECURITY: A lone surrogate survives json.loads and fails the report write as a
+        # traceback; refuse it at parse, as safeio does for artifacts.
+        if isinstance(current, str):
+            _reject_lone_surrogate(current, "string")
+        elif isinstance(current, dict):
+            for key, item in current.items():
+                _reject_lone_surrogate(key, "object key")
+                stack.append((item, depth + 1))
         elif isinstance(current, list):
             stack.extend((item, depth + 1) for item in current)
     return value
+
+
+def _reject_lone_surrogate(text: str, kind: str) -> None:
+    found = _LONE_SURROGATE.search(text)
+    if found is not None:
+        raise ReportInputError(
+            f"evaluations file contains a lone surrogate code point in a JSON {kind}: "
+            f"U+{ord(found.group()):04X}"
+        )

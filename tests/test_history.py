@@ -579,6 +579,29 @@ class IngestIdempotencyTests(WriterFixture):
 
         self.assertIn("but the parser produced", str(error))
 
+    def test_a_parser_that_now_reads_another_count_is_refused_not_resumed(self) -> None:
+        # The same bytes under the same parser version, read into one more observation, as
+        # a reading change shipped without a version bump does. The resume used to append
+        # the extra one, and the stream then held more than its head declared.
+        self.ingest([ARTIFACTS[0]])
+        result = ingest_stig_artifact(ARTIFACTS[0], ingested_at=INGESTED_AT)
+        spare = relabelled(result.observations[0], "V-999999")
+        grown = replace(result, observations=(*result.observations, spare))
+
+        for reading in (grown, replace(result, observations=result.observations[:-1])):
+            with self.subTest(count=len(reading.observations)):
+                error = self.assertRefused(
+                    HistoryError,
+                    lambda reading=reading: record_ingest(
+                        self.repository,
+                        reading,
+                        metadata=self.metadata,
+                        ingested_at=INGESTED_AT,
+                    ),
+                )
+                self.assertIn("needs a new version", str(error))
+        self.assertEqual(audit_history(self.repository), ())
+
     def test_a_stream_that_does_not_begin_with_the_artifact_is_refused(self) -> None:
         result = ingest_stig_artifact(ARTIFACTS[0], ingested_at=INGESTED_AT)
         artifact = result.artifact

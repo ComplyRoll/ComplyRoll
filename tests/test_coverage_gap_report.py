@@ -23,6 +23,7 @@ from unittest import mock
 from test_cli import (
     AVI_ARGUMENTS,
     COVERAGE_ARGUMENTS,
+    CYCLONEDX_COVERAGE_ARGUMENTS,
     EXAMPLE_INVENTORY,
     HISTORICAL_ARGUMENTS,
     REPORT_ARGUMENTS,
@@ -714,6 +715,7 @@ class GoldenRegistryTests(unittest.TestCase):
             **{f"{kind}-kev": (kev_argv(kind), 0) for kind in REPORT_KINDS},
             "vdt-coverage": (COVERAGE_ARGUMENTS, 0),
             "vdt-coverage-timed": (timed_argv(), 0),
+            "vdt-cyclonedx-coverage": (CYCLONEDX_COVERAGE_ARGUMENTS, 0),
             "vdt-failed": (failed_vdt, 3),
             "historical-failed": (failed_historical, 3),
         }

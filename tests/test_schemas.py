@@ -33,6 +33,7 @@ COMPILED_GOLDENS = (
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-hdf.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-timed.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-cyclonedx-coverage.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-gaps.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-failed.json"),
     (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
@@ -278,9 +279,10 @@ class CompiledGoldenValidationTests(unittest.TestCase):
     """The compiler's own goldens satisfy the official schemas.
 
     `ver-schema-examples.json` holds hand-written examples; the compiled goldens in
-    `COMPILED_GOLDENS` are what ComplyRoll emits (seven VDT goldens, from STIG
+    `COMPILED_GOLDENS` are what ComplyRoll emits (eight VDT goldens, from STIG
     artifacts, SARIF logs, HDF documents, an inventory's coverage over untimed and timed
-    evidence, its recorded coverage gaps and detection process failures, plus the AVI golden
+    evidence and over CycloneDX SBOMs, its recorded coverage gaps and detection process
+    failures, plus the AVI golden
     and three historical goldens),
     so validating each against its own schema here ties the projections to the schemas
     without going through the report compiler. The historical goldens with failures and
@@ -352,6 +354,7 @@ class CompiledGoldenValidationTests(unittest.TestCase):
                 "vdt-coverage-gaps.json",
                 "vdt-coverage-timed.json",
                 "vdt-coverage.json",
+                "vdt-cyclonedx-coverage.json",
             },
         )
         self.assertLessEqual(with_coverage, {name for _, name, _ in self.goldens})

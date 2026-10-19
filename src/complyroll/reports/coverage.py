@@ -43,6 +43,10 @@ DRIFT_LIKELIHOOD_UNKNOWN = "drift_likelihood_unknown"
 SAMPLE_GROUP_TYPE = "logical"
 SAMPLE_GROUP_PREFIX = "sample-group/"
 
+# A CycloneDX package is a component of its subject, whose scope observation carries the
+# coverage. Pinned equal to the adapter's constant by a test, so reports/ imports no adapter.
+PACKAGE_RESOURCE_TYPE = "package"
+
 # The tool determined a status. NOT_REVIEWED, ERROR and UNKNOWN examine and never verify, so
 # a run full of errors does not satisfy a clock.
 VERIFYING_DISPOSITIONS = frozenset(
@@ -586,6 +590,9 @@ def _collect(
         # A system observation records a process failure; it never examines a resource.
         if observation.origin is not ObservationOrigin.ARTIFACT:
             continue
+        # A package never reads as unregistered, ref: fallbacks included: its subject is covered.
+        if observation.resource.resource_type == PACKAGE_RESOURCE_TYPE:
+            continue
         resource = observation.resource
         at = None if observation.observed_at is None else _utc(observation.observed_at)
         item = CoverageEvidence(
@@ -804,6 +811,7 @@ __all__ = [
     "DRIFT_LIKELIHOOD_UNKNOWN",
     "MVX_RULE",
     "NMV_RULE",
+    "PACKAGE_RESOURCE_TYPE",
     "PCD_RULE",
     "PDD_RULE",
     "PSD_RULE",

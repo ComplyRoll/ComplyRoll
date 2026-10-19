@@ -145,6 +145,37 @@ COVERAGE_ARGUMENTS = (*REPORT_ARGUMENTS, "--inventory", str(EXAMPLE_INVENTORY))
 TIMED_INVENTORY = FIXTURES / "inventory-timed.json"
 TIMED_ARTIFACTS = (str(FIXTURES / "codeql-repo.sarif"), str(FIXTURES / "clean-run.sarif"))
 TIMED_AS_OF = "2026-09-03T12:00:00Z"
+#: The `vdt-cyclonedx-coverage` run: a timed and an untimed syft inventory, a clean grype
+#: match, a trivy match and the spec corners over an inventory of their images (ADR 0016).
+CYCLONEDX_INVENTORY = FIXTURES / "inventory-cyclonedx.json"
+CYCLONEDX_COVERAGE_ARGUMENTS = (
+    "report",
+    "vdt",
+    *(
+        str(FIXTURES / name)
+        for name in (
+            "syft-image.cdx.json",
+            "syft-untimed.cdx.json",
+            "grype-clean.cdx.json",
+            "trivy-image.cdx.json",
+            "cyclonedx-spec-corners.cdx.json",
+        )
+    ),
+    "--class",
+    "C",
+    "--package-uri",
+    "https://example.test/cpo",
+    "--calendar-tz",
+    "UTC",
+    "--as-of",
+    "2026-10-03T12:00:00Z",
+    "--from",
+    "2026-10-01T00:00:00Z",
+    "--to",
+    "2026-10-31T23:59:59Z",
+    "--inventory",
+    str(CYCLONEDX_INVENTORY),
+)
 
 
 def timed_argv(kind: str = "vdt", *, inventory: bool = True, db: Path | None = None) -> list[str]:
@@ -1263,6 +1294,7 @@ class RecordFailedImportsTests(unittest.TestCase):
             **{f"{kind}-kev": kev_argv(kind) for kind in KevReportCommandTests.KINDS},
             "vdt-coverage": COVERAGE_ARGUMENTS,
             "vdt-coverage-timed": timed_argv(),
+            "vdt-cyclonedx-coverage": CYCLONEDX_COVERAGE_ARGUMENTS,
         }
         compiled = {
             "vdt-sarif": compile_sarif_golden(record_failed_imports=True),

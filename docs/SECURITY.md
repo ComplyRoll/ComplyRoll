@@ -73,9 +73,16 @@ The standard-library ingestion layer currently enforces:
 - A bare `.json` file is read as HDF only after its bounded parse has finished, and only when it
   has no `stigs` key, a `profiles` array, and a `platform` object. A bare `.json` document that
   exceeds the depth or node bound is never sniffed, so its failure is attributed to CKLB
-- SARIF and HDF diagnostics are coalesced per code per artifact, and each JSON path and detail they
-  carry is sanitized and cut at 512 characters, so one artifact's diagnostics stay within about
-  56,000 characters whatever the input's size
+- For CycloneDX, at most `max_results_per_run` vulnerabilities per document and 1,024 `affects`
+  entries per vulnerability (`MAX_AFFECTS_PER_VULNERABILITY`), both checked before any fold
+  work, plus the SARIF observation limits and member caps; a folded package keeps at most 64
+  installs (`MAX_INSTANCES_PER_PACKAGE`). The component tree is walked with an explicit stack
+  bounded by the parse, never by recursion. Exceeding any limit refuses the artifact
+- A bare `.json` file is read as CycloneDX only after its bounded parse has finished and the HDF
+  sniff has declined it, and only when it has no `stigs` key and `bomFormat` is `CycloneDX`
+- SARIF, HDF, and CycloneDX diagnostics are coalesced per code per artifact, and each JSON path
+  and detail they carry is sanitized and cut at 512 characters, so one artifact's diagnostics
+  stay within about 56,000 characters whatever the input's size
 - A lone surrogate code point in any JSON string or object key is refused at parse, for every
   JSON adapter
 - For a CISA KEV catalog supplied with `--kev`, 8 MiB maximum (the live feed is about 1.7 MB),
@@ -151,6 +158,18 @@ and attestation texts are evidence, sanitized and cut at the shared caps with th
 named. The adapter opens no path and fetches nothing: `depends` entries, profile `url` values,
 and `source_location` paths are never read. A `backtrace` or an `exception` never reaches a
 shell or an evaluator; an exception is recorded only as the text of a failure message.
+
+The CycloneDX adapter follows the same rule (ADR 0016). The tool names, every vulnerability id,
+and every composed scope and package resource id are identity inputs: over 512 characters, or
+carrying a control, format, surrogate, or line-separator code point, the reading is refused, never
+repaired. A purl is parsed by a function that never raises; a malformed escape or non-UTF-8 bytes
+make it a weak key with a warning, and a decoded `/` can never add a path segment. Case folding
+is ASCII only, so a package key does not depend on the interpreter's Unicode database. Purls,
+BOM-Links, external references, and every other URL in a document are text: nothing is opened,
+resolved, or fetched, and no other document is joined. A standalone VEX document is refused, and
+an embedded analysis is recorded as metadata that never changes a disposition, so a supplier's
+statement cannot close a case. Component names, versions, descriptions, and analysis details are
+evidence, sanitized and cut at the shared caps.
 
 A detection process failure (ADR 0014) is built from a reading that already failed, so everything it
 records is treated as hostile. The file name and every diagnostic message and location pass

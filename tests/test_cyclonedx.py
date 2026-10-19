@@ -15,9 +15,13 @@ import json
 import random
 import tempfile
 import unittest
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta, timezone
+from itertools import permutations
 from pathlib import Path
 from typing import Any
+
+from test_replay import StoreFixture, bumped
 
 from complyroll.adapters import (
     FailureClass,
@@ -63,7 +67,27 @@ from complyroll.adapters.cyclonedx import (
     subject_lineage,
 )
 from complyroll.adapters.safeio import DEFAULT_LIMITS, InputLimitError
+from complyroll.events import EventRepository
+from complyroll.history import (
+    HistoryError,
+    audit_history,
+    correlate_cases,
+    record_ingest,
+    rehydrate_observations,
+)
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
+from complyroll.policy import CertificationClass
+from complyroll.reports import (
+    CompiledHistoricalReport,
+    CompiledVdtReport,
+    ReportOptions,
+    compile_avi_report,
+    compile_avi_report_from_history,
+    compile_historical_report,
+    compile_historical_report_from_history,
+    compile_vdt_report,
+    compile_vdt_report_from_history,
+)
 from complyroll.reports.kev import cve_may_be_missing
 
 # *--- Configuration ---*
@@ -2730,3 +2754,416 @@ class ComponentHashShapeTests(unittest.TestCase):
         output = run(k3([{**LODASH, "hashes": "aa"}], [vuln()]))
         self.assertEqual(output.observations, ())
         self.assertEqual(level_codes(output, "error"), ["invalid_component"])
+
+
+# *--- Step 5: Goldens ---*
+
+GOLDEN = Path(__file__).parent / "golden"
+#: The `vdt-cyclonedx` and `historical-cyclonedx` runs: the grype and trivy matches of one image.
+GOLDEN_ARTIFACTS = (GRYPE_IMAGE, TRIVY_IMAGE)
+GOLDEN_PACKAGE_URI = "https://example.test/cpo"
+GOLDEN_FROM = datetime(2026, 10, 1, tzinfo=UTC)
+GOLDEN_TO = datetime(2026, 10, 31, 23, 59, 59, tzinfo=UTC)
+GOLDEN_AS_OF = datetime(2026, 10, 3, 12, tzinfo=UTC)
+#: Both documents declare this clock in `metadata.timestamp`, so no attestation is needed.
+GOLDEN_DETECTED_AT = "2026-10-01T12:00:00Z"
+#: After the documents' clock and before the as-of, so a substituted instant would show.
+GOLDEN_INGESTED_AT = datetime(2026, 10, 2, 12, tzinfo=UTC)
+GOLDEN_TRACKING_IDS = (
+    "case-b6bd658a4ffea56b",
+    "case-8b9104e175637348",
+    "case-0f4d0f825af49a8a",
+    "case-316e8e2251393517",
+    "case-b6cc25fd202e4964",
+    "case-031f4bfb066badaa",
+)
+#: Each case's record id and the tool that detected it: one case per CVE per tool.
+GOLDEN_CASES = {
+    "case-b6bd658a4ffea56b": ("CVE-2022-48174", "grype"),
+    "case-8b9104e175637348": ("CVE-2023-0286", "trivy"),
+    "case-0f4d0f825af49a8a": ("CVE-2023-38037", "trivy"),
+    "case-316e8e2251393517": ("CVE-2023-5678", "grype"),
+    "case-b6cc25fd202e4964": ("CVE-2024-0727", "grype"),
+    "case-031f4bfb066badaa": ("GHSA-rv95-896h-c2vc", "grype"),
+}
+#: trivy's CVE-2023-0286 on openssl-libs and openssl: the one case with two members.
+TWO_MEMBER_CASE = "case-8b9104e175637348"
+GOLDEN_OBSERVATION_COUNTS = {GRYPE_IMAGE.name: 5, TRIVY_IMAGE.name: 4}
+
+
+def golden_options() -> ReportOptions:
+    """Return the options the documented `vdt-cyclonedx` command line passes."""
+    return ReportOptions(
+        certification_class=CertificationClass.C,
+        package_uri=GOLDEN_PACKAGE_URI,
+        period_from=GOLDEN_FROM,
+        period_to=GOLDEN_TO,
+        as_of=GOLDEN_AS_OF,
+        calendar_timezone="UTC",
+    )
+
+
+def compile_cyclonedx_golden(
+    artifacts: Sequence[Path] = GOLDEN_ARTIFACTS, *, record_failed_imports: bool = False
+) -> CompiledVdtReport:
+    """Compile the `vdt-cyclonedx` golden the way the documented command line does."""
+    return compile_vdt_report(
+        list(artifacts), options=golden_options(), record_failed_imports=record_failed_imports
+    )
+
+
+def compile_cyclonedx_historical_golden(
+    artifacts: Sequence[Path] = GOLDEN_ARTIFACTS, *, record_failed_imports: bool = False
+) -> CompiledHistoricalReport:
+    """Compile `historical-cyclonedx`; the snapshot reads no period, so the options match."""
+    return compile_historical_report(
+        list(artifacts), options=golden_options(), record_failed_imports=record_failed_imports
+    )
+
+
+def golden_bytes(name: str) -> tuple[bytes, bytes]:
+    return (GOLDEN / f"{name}.json").read_bytes(), (GOLDEN / f"{name}.md").read_bytes()
+
+
+def rendered(report: CompiledVdtReport | CompiledHistoricalReport) -> tuple[bytes, bytes]:
+    return report.to_json().encode("utf-8"), report.to_markdown().encode("utf-8")
+
+
+class CycloneDxGoldenTests(unittest.TestCase):
+    """The CycloneDX goldens are the stateless compile of the grype and trivy fixtures.
+
+    `tests/golden/vdt-cyclonedx.{json,md}` and `historical-cyclonedx.{json,md}` were generated
+    through the command line with the options `golden_options` names (the historical command
+    takes no period); the compiler reproduces them here, whatever order the files arrive in.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.vdt = compile_cyclonedx_golden()
+        cls.historical = compile_cyclonedx_historical_golden()
+
+    def test_the_vdt_golden_is_reproduced_byte_for_byte(self) -> None:
+        self.assertEqual(rendered(self.vdt), golden_bytes("vdt-cyclonedx"))
+
+    def test_the_historical_golden_is_reproduced_byte_for_byte(self) -> None:
+        self.assertEqual(rendered(self.historical), golden_bytes("historical-cyclonedx"))
+
+    def test_every_order_of_the_two_fixtures_yields_the_golden_bytes(self) -> None:
+        for order in permutations(GOLDEN_ARTIFACTS):
+            with self.subTest(order=[path.name for path in order]):
+                self.assertEqual(
+                    rendered(compile_cyclonedx_golden(order)), golden_bytes("vdt-cyclonedx")
+                )
+                self.assertEqual(
+                    rendered(compile_cyclonedx_historical_golden(order)),
+                    golden_bytes("historical-cyclonedx"),
+                )
+
+    def test_the_flag_without_a_failure_changes_no_byte(self) -> None:
+        self.assertEqual(
+            rendered(compile_cyclonedx_golden(record_failed_imports=True)),
+            golden_bytes("vdt-cyclonedx"),
+        )
+        self.assertEqual(
+            rendered(compile_cyclonedx_historical_golden(record_failed_imports=True)),
+            golden_bytes("historical-cyclonedx"),
+        )
+
+    def test_both_goldens_validate_against_the_official_schemas(self) -> None:
+        for report in (self.vdt, self.historical):
+            with self.subTest(report=type(report).__name__):
+                self.assertTrue(report.validation.is_valid)
+                self.assertEqual(report.validation.issues, ())
+
+    def test_the_goldens_attribute_the_cyclonedx_parser_and_its_two_inputs(self) -> None:
+        for report in (self.vdt, self.historical):
+            extension = report.document["x-complyroll"]
+            with self.subTest(report=type(report).__name__):
+                self.assertEqual(
+                    extension["parserVersions"], {"complyroll.cyclonedx": CYCLONEDX_PARSER_VERSION}
+                )
+                self.assertEqual(
+                    {item["name"]: item["observationCount"] for item in extension["artifacts"]},
+                    GOLDEN_OBSERVATION_COUNTS,
+                )
+                self.assertEqual(
+                    {item["parser"] for item in extension["artifacts"]}, {"complyroll.cyclonedx"}
+                )
+
+    def test_every_case_is_one_cve_from_one_tool_detected_at_the_document_clock(self) -> None:
+        found = {
+            item["providerTrackingId"]: (
+                item["vulnerabilityDescription"].split(":")[0],
+                item["detection"]["detectionSource"],
+                item["detection"]["detectedAt"],
+                item["x-complyroll"]["detectedAtSource"],
+            )
+            for item in self.vdt.document["vulnerabilities"]
+        }
+        self.assertEqual(list(found), list(GOLDEN_TRACKING_IDS))
+        self.assertEqual(
+            found,
+            {
+                tracking_id: (record_id, tool, GOLDEN_DETECTED_AT, "artifact")
+                for tracking_id, (record_id, tool) in GOLDEN_CASES.items()
+            },
+        )
+        self.assertIsNone(self.vdt.document["x-complyroll"]["detectionTimeAttestation"])
+
+    def test_the_historical_snapshot_lists_the_same_cases(self) -> None:
+        active = self.historical.document["activeVulnerabilities"]
+        self.assertEqual([item["providerTrackingId"] for item in active], list(GOLDEN_TRACKING_IDS))
+        self.assertEqual(self.historical.document["acceptedVulnerabilities"], [])
+
+    def test_only_package_resources_are_reported_and_no_scope_observation(self) -> None:
+        scopes = {
+            item.observation_id
+            for path in GOLDEN_ARTIFACTS
+            for item in fixture_result(path).observations
+            if item.source_record_id == "cyclonedx.bom"
+        }
+        self.assertEqual(len(scopes), 2)
+        for item in self.vdt.document["vulnerabilities"]:
+            extension = item["x-complyroll"]
+            with self.subTest(case=item["providerTrackingId"]):
+                self.assertEqual(
+                    {resource["resourceType"] for resource in extension["resources"]}, {"package"}
+                )
+                self.assertEqual(set(extension["observationIds"]) & scopes, set())
+
+    def test_the_two_member_case_lists_its_members_in_resource_order(self) -> None:
+        # Resource order is not observation id order here, so a member order keyed on the
+        # fingerprint, or on the order the file listed them, would show in both lists.
+        (case,) = [
+            item
+            for item in self.vdt.document["vulnerabilities"]
+            if item["providerTrackingId"] == TWO_MEMBER_CASE
+        ]
+        extension = case["x-complyroll"]
+        resources = [item["resourceId"] for item in extension["resources"]]
+        lineage = "image:registry.example.test/api|"
+        self.assertEqual(
+            resources,
+            [
+                lineage + "pkg:rpm/centos/openssl-libs?arch=x86_64",
+                lineage + "pkg:rpm/centos/openssl?arch=x86_64",
+            ],
+        )
+        by_resource = {
+            item.resource.resource_id: item.observation_id
+            for item in by_record(fixture_result(TRIVY_IMAGE), "CVE-2023-0286")
+        }
+        self.assertEqual(
+            extension["observationIds"], [by_resource[resource] for resource in resources]
+        )
+        self.assertNotEqual(extension["observationIds"], sorted(extension["observationIds"]))
+
+
+# *--- Step 5: Path Equivalence ---*
+
+
+class CycloneDxPathEquivalenceTests(StoreFixture):
+    """The persisted path over the grype and trivy fixtures reports the golden bytes.
+
+    The adapter emits `observation.recorded` v1 on the existing artifact stream (plan section
+    17), so ingest, correlation and replay reach the stateless bytes with no attestation.
+    """
+
+    def record(self, repository: EventRepository, paths: Sequence[Path]) -> None:
+        for path in paths:
+            record_ingest(
+                repository,
+                ingest_stig_artifact(path, ingested_at=GOLDEN_INGESTED_AT),
+                metadata=self.metadata,
+                ingested_at=GOLDEN_INGESTED_AT,
+            )
+        correlate_cases(repository, metadata=self.metadata, now=GOLDEN_INGESTED_AT)
+
+    def test_history_reports_match_the_stateless_reports_and_the_goldens(self) -> None:
+        self.record(self.repository, GOLDEN_ARTIFACTS)
+        vdt = compile_vdt_report_from_history(self.repository, options=golden_options())
+        historical = compile_historical_report_from_history(
+            self.repository, options=golden_options()
+        )
+        self.assertEqual(rendered(vdt), golden_bytes("vdt-cyclonedx"))
+        self.assertEqual(rendered(historical), golden_bytes("historical-cyclonedx"))
+        pairs = (
+            (vdt, compile_cyclonedx_golden()),
+            (
+                compile_avi_report_from_history(self.repository, options=golden_options()),
+                compile_avi_report(list(GOLDEN_ARTIFACTS), options=golden_options()),
+            ),
+            (historical, compile_cyclonedx_historical_golden()),
+        )
+        for persisted, stateless in pairs:
+            with self.subTest(report=type(persisted).__name__):
+                self.assertTrue(persisted.validation.is_valid)
+                self.assertEqual(persisted.to_json(), stateless.to_json())
+                self.assertEqual(persisted.to_markdown(), stateless.to_markdown())
+
+    def test_every_ingest_order_reports_the_golden_bytes_from_history(self) -> None:
+        for order in permutations(GOLDEN_ARTIFACTS):
+            with self.subTest(order=[path.name for path in order]):
+                repository = self.open_repository(self.fresh_workspace())
+                self.record(repository, order)
+                self.assertEqual(
+                    rendered(compile_vdt_report_from_history(repository, options=golden_options())),
+                    golden_bytes("vdt-cyclonedx"),
+                )
+                self.assertEqual(
+                    rendered(
+                        compile_historical_report_from_history(repository, options=golden_options())
+                    ),
+                    golden_bytes("historical-cyclonedx"),
+                )
+
+    def test_replay_reads_back_every_observation_byte_for_byte(self) -> None:
+        self.record(self.repository, GOLDEN_ARTIFACTS)
+        expected = sorted(
+            item.to_canonical_json()
+            for path in GOLDEN_ARTIFACTS
+            for item in ingest_stig_artifact(path, ingested_at=GOLDEN_INGESTED_AT).observations
+        )
+        replayed = sorted(
+            item.to_canonical_json() for item in rehydrate_observations(self.repository)
+        )
+        self.assertEqual(len(expected), sum(GOLDEN_OBSERVATION_COUNTS.values()))
+        self.assertEqual(replayed, expected)
+        self.assertEqual(audit_history(self.repository), ())
+        self.assertEqual(
+            {record.event_type for record in self.repository.read_all()} & {"observation.recorded"},
+            {"observation.recorded"},
+        )
+        for record in self.repository.read_all():
+            if record.event_type == "observation.recorded":
+                with self.subTest(observation=record.payload["observation_id"]):
+                    self.assertEqual(record.event_version, 1)
+
+    def test_reingesting_the_same_bytes_records_nothing_new(self) -> None:
+        self.record(self.repository, GOLDEN_ARTIFACTS)
+        before = len(self.repository.read_all())
+        self.record(self.repository, GOLDEN_ARTIFACTS)
+        self.assertEqual(len(self.repository.read_all()), before)
+        vdt = compile_vdt_report_from_history(self.repository, options=golden_options())
+        self.assertEqual(rendered(vdt), golden_bytes("vdt-cyclonedx"))
+
+
+class CycloneDxSupersessionTests(StoreFixture):
+    """A parser-version smoke test: the newest reading of the same bytes is the one reported.
+
+    PR #32 made `record_ingest` refuse to resume a stream whose head declared another
+    observation count, so a reading that changed under the same version is refused, and only
+    a new parser version opens the new stream that supersedes the old one.
+    """
+
+    def first_reading(self) -> IngestResult:
+        result = ingest_stig_artifact(GRYPE_IMAGE, ingested_at=GOLDEN_INGESTED_AT)
+        record_ingest(
+            self.repository, result, metadata=self.metadata, ingested_at=GOLDEN_INGESTED_AT
+        )
+        return result
+
+    def test_a_later_parser_version_supersedes_the_reading_and_is_named(self) -> None:
+        first = self.first_reading()
+        second = bumped(first, "2")
+        record_ingest(
+            self.repository, second, metadata=self.metadata, ingested_at=GOLDEN_INGESTED_AT
+        )
+        correlate_cases(self.repository, metadata=self.metadata, now=GOLDEN_INGESTED_AT)
+
+        report = compile_vdt_report_from_history(self.repository, options=golden_options())
+        extension = report.document["x-complyroll"]
+        superseded = [item for item in report.diagnostics if item.code == "artifact_superseded"]
+        reported = {
+            observation_id
+            for item in report.document["vulnerabilities"]
+            for observation_id in item["x-complyroll"]["observationIds"]
+        }
+
+        self.assertEqual(extension["parserVersions"], {"complyroll.cyclonedx": "2"})
+        self.assertEqual(
+            [(item["name"], item["parserVersion"]) for item in extension["artifacts"]],
+            [(GRYPE_IMAGE.name, "2")],
+        )
+        self.assertEqual(len(superseded), 1)
+        self.assertIn("complyroll.cyclonedx 1", superseded[0].message)
+        self.assertIn("complyroll.cyclonedx 2", superseded[0].message)
+        self.assertEqual(len(report.document["vulnerabilities"]), 4)
+        self.assertEqual(reported & {item.observation_id for item in first.observations}, set())
+        self.assertLessEqual(reported, {item.observation_id for item in second.observations})
+        self.assertEqual(audit_history(self.repository), ())
+
+    def test_a_changed_reading_under_the_same_version_is_refused(self) -> None:
+        first = self.first_reading()
+        before = len(self.repository.read_all())
+        shorter = dataclasses.replace(first, observations=first.observations[:-1])
+
+        with self.assertRaisesRegex(HistoryError, "another observation count"):
+            record_ingest(
+                self.repository, shorter, metadata=self.metadata, ingested_at=GOLDEN_INGESTED_AT
+            )
+        self.assertEqual(len(self.repository.read_all()), before)
+
+
+class CycloneDxCrossImageMemberOrderTests(StoreFixture):
+    """One grype match of two images: a case's members follow the resource, not the file.
+
+    The goldens' one two-member case comes from a single file, so it cannot tell a member
+    order keyed on the artifact name from one keyed on the resource. Here a copy of the grype
+    fixture names another image, `registry.example.test/zzz`, and is called
+    `a-grype.cdx.json`, so its name sorts first while its packages sort last; every shared
+    CVE is one case of two members (one case per CVE per tool).
+    """
+
+    OTHER_IMAGE = "registry.example.test/zzz"
+
+    def setUp(self) -> None:
+        super().setUp()
+        document = json.loads(GRYPE_IMAGE.read_text(encoding="utf-8"))
+        document["metadata"]["component"]["name"] = self.OTHER_IMAGE
+        self.other = self.workspace / "a-grype.cdx.json"
+        self.other.write_text(json.dumps(document), encoding="utf-8")
+        self.paths = (GRYPE_IMAGE, self.other)
+
+    def assert_members_follow_the_resource(self, report: CompiledVdtReport) -> None:
+        cases = report.document["vulnerabilities"]
+        self.assertEqual(len(cases), 4)
+        flipped = 0
+        for case in cases:
+            extension = case["x-complyroll"]
+            with self.subTest(case=case["providerTrackingId"]):
+                resources = [item["resourceId"] for item in extension["resources"]]
+                self.assertEqual(len(resources), 2)
+                self.assertTrue(resources[0].startswith("image:registry.example.test/api|"))
+                self.assertTrue(resources[1].startswith(f"image:{self.OTHER_IMAGE}|"))
+                flipped += extension["observationIds"] != sorted(extension["observationIds"])
+        # At least one case orders its fingerprints against the resource order.
+        self.assertGreater(flipped, 0)
+
+    def test_every_input_order_lists_the_members_in_resource_order(self) -> None:
+        reports = [
+            compile_vdt_report(list(order), options=golden_options())
+            for order in permutations(self.paths)
+        ]
+        for report in reports:
+            self.assert_members_follow_the_resource(report)
+            self.assertEqual(report.to_json(), reports[0].to_json())
+            self.assertEqual(report.to_markdown(), reports[0].to_markdown())
+
+    def test_every_ingest_order_replays_the_stateless_bytes(self) -> None:
+        stateless = compile_vdt_report(list(self.paths), options=golden_options())
+        for order in permutations(self.paths):
+            with self.subTest(order=[path.name for path in order]):
+                repository = self.open_repository(self.fresh_workspace())
+                for path in order:
+                    record_ingest(
+                        repository,
+                        ingest_stig_artifact(path, ingested_at=GOLDEN_INGESTED_AT),
+                        metadata=self.metadata,
+                        ingested_at=GOLDEN_INGESTED_AT,
+                    )
+                correlate_cases(repository, metadata=self.metadata, now=GOLDEN_INGESTED_AT)
+                persisted = compile_vdt_report_from_history(repository, options=golden_options())
+                self.assert_members_follow_the_resource(persisted)
+                self.assertEqual(persisted.to_json(), stateless.to_json())
+                self.assertEqual(persisted.to_markdown(), stateless.to_markdown())

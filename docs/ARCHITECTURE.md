@@ -24,7 +24,10 @@ flowchart TD
 Adapters parse a source artifact or event and return normalized observations plus diagnostics.
 They do not assign PAIN, accept risk, calculate compliance, or mutate cases. A SARIF result
 becomes one observation per located resource, and the producer's own fingerprints and guids are
-recorded as metadata, never trusted as identity (ADR 0011).
+recorded as metadata, never trusted as identity (ADR 0011). A CycloneDX vulnerability becomes
+one observation per affected package, on a `package` resource whose id joins the subject's
+lineage to a version-free package key, and each document adds one observation of its subject
+that says whether it shows a match ran (ADR 0016).
 
 Initial adapters:
 
@@ -33,11 +36,12 @@ Initial adapters:
 - XCCDF/ARF
 - SARIF 2.1.0 (Trivy, Grype, Semgrep, CodeQL, Checkov, any conforming producer)
 - InSpec HDF (exec-json), native and `saf convert` output
+- CycloneDX 1.4 to 1.7 JSON (Syft, Grype, Trivy, any conforming producer)
 - CCI mapping
 
 Planned adapters:
 
-- CycloneDX/SPDX
+- SPDX
 - Cloud, container, and CSPM sources
 - Change and deployment events
 - KSI validation runs

@@ -41,7 +41,7 @@ catalog the operator supplies.
 
 | Surface | What it does |
 |---|---|
-| CKLB, CKL, XCCDF, ARF, SARIF, and HDF files | Become immutable observations with the artifact digest, parser identity, and timestamps |
+| CKLB, CKL, XCCDF, ARF, SARIF, HDF, and CycloneDX files | Become immutable observations with the artifact digest, parser identity, and timestamps |
 | `complyroll report vdt\|avi\|historical` | Compiles the Vulnerability Detail, Accepted Vulnerability Information, or Historical VER Activity report, with a Markdown twin rendered from the same records |
 | `--kev FILE` | Matches each record's CVE identifiers to a CISA KEV catalog the operator supplies and carries the catalog's due date as the `VDR-TFR-KEV` clock, without fetching anything |
 | `--inventory FILE` | Shows when detection last reached each resource the operator declares |
@@ -53,11 +53,13 @@ catalog the operator supplies.
 | `stigroll FILE...` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output |
 | `complyroll.adapters`, `.policy`, `.schemas`, `.store` | Ingest an artifact, calculate a deadline with its rule provenance, validate a report, or open the event store from Python |
 
-Not yet built, among others: failures in the response process, change integration, SBOM and cloud
+Not yet built, among others: failures in the response process, change integration, SPDX and cloud
 sources, and KSI and SDR evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. A coverage
 gap records that no verification reached a resource in time, not that the resource is vulnerable.
 A SARIF log with no results ingests as a PASS observation of the scope it names, which is
-evidence that the tool ran, not that the scope is clean.
+evidence that the tool ran, not that the scope is clean. A CycloneDX SBOM with no vulnerability
+records, or an empty list, ingests as a NOT_REVIEWED observation of its subject: an inventory is
+not a detection, and a standalone VEX document is refused.
 
 Every command and flag: [`docs/CLI.md`][cli].
 

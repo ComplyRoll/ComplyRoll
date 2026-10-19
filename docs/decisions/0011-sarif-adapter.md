@@ -724,3 +724,17 @@ resource moved. Coverage gains one reading: a location-less result in an image r
 image itself, which an inventory entry can match, where `scan:<driver>` matched none. Tests that
 re-read a SARIF fixture under another version now name that version relative to
 `SARIF_PARSER_VERSION`, so the next bump moves only the pinned identifiers and the goldens.
+
+## Amendment 2026-10-19: package-level identity is settled by the CycloneDX adapter
+
+The Consequences above deferred package-level identity to the SBOM adapter, and ADR 0016 settles
+it. A CycloneDX vulnerability is located on a resource of the new type `package`, whose id joins
+the subject's lineage to a version-free package key; the version stays in metadata, so the
+rejection of `name@version` as a resource above still holds. This adapter is unchanged: a SARIF
+result is still keyed on its location, so Trivy's two vulnerable packages in one
+`requirements.txt` still share one SARIF observation. A tool's SARIF log and its CycloneDX
+document of the same target carry different source types and resources, so they are two cases
+for every CVE; ADR 0016 and `docs/FEDRAMP_2026_MAPPING.md` advise ingesting one export format
+per tool per target. ADR 0016 also takes this record's driver-in-context rule for its tool, and
+names two departures from this record: a CycloneDX document with findings still yields an
+observation of its subject, and that observation never counts toward a withheld reading.

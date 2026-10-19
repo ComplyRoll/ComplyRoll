@@ -245,6 +245,46 @@ exits 3, as a recorded failure does. A gap records that ComplyRoll found no veri
 the window, not that the resource has a vulnerability. Without the flag or the command the block
 only lists the window. `VDR-TFR-MVF` and Class D stay out of scope.
 
+## SBOM evidence
+
+A CycloneDX document is read by what it shows (ADR 0016). An SBOM that lists components and
+carries no `vulnerabilities` member is an inventory, not a detection: its one observation of the
+subject is NOT_REVIEWED and examines the image without verifying it. An empty `vulnerabilities`
+list is read the same way whatever tool is named, because Trivy writes it with vulnerability
+scanning turned off, so an image whose only evidence is a clean Grype or Trivy run reads
+`undetermined`, never `current`. A document whose vulnerability records resolve to components it
+lists verifies the image's `VDR-TFR-MVX` and drift clocks at its `metadata.timestamp`, and its
+findings are OPEN observations on `package` resources, never on the image.
+
+Ingest one export format per tool per target. A case is one CVE from one tool, so a Grype SARIF
+log and a Grype CycloneDX document of one image are two source types and every CVE in them counts
+twice. Two different tools reporting one CVE are two cases too, until cross-source correlation
+exists. One case spans every image the CVE was found in, so its IRV, LEV, and PAIN cannot differ
+per image; an evaluator who finds the CVE false positive in one product and real in another must
+not mark the whole case false positive.
+
+The detection time is the document's `metadata.timestamp`. Grype and Trivy write the time the
+match finished, so a re-match of an old SBOM carries the re-match time and starts the clocks then,
+not at the old SBOM's creation. A supplier document that was created before it was matched starts
+the clocks earlier than the match, which is early, never late.
+
+An embedded VEX analysis never sets a disposition, and a standalone VEX document is refused. The
+table below is guidance for the evaluator who records the outcome with `--evaluations` or
+`cases evaluate`; none of it is stated by the dataset, and ComplyRoll applies none of it.
+
+| Supplier statement | What an evaluator might record | Condition |
+|---|---|---|
+| `not_affected` with `code_not_present` | `finalDisposition` False Positive (`VER-EVA-EFP`) | the vulnerability was never present in the deployment |
+| `not_affected` with `code_not_reachable` | False Positive, the nearest fit in `FRD-FPV`'s note on code not loaded or running | the provider confirms it for its own deployment |
+| `requires_configuration`, `requires_dependency`, `requires_environment` | not False Positive; input to `isLikelyExploitable` (`VER-EVA-ELX`) | the provider confirms the condition holds in its deployment |
+| `protected_by_compiler`, `protected_at_runtime`, `protected_by_mitigating_control` | Fully or Partially Mitigated, shown through `painReductionEvents` | evidence the control holds; still detected, so the clocks keep running |
+| `protected_at_perimeter` | may change `isInternetReachable` (`VER-EVA-EIR`) | the filter stops the triggering payload before the vulnerable resource |
+| `false_positive` | False Positive | a provider evaluation |
+| `resolved`, `resolved_with_pedigree` | Remediated, only once no longer detected | a rescan of the deployed resource |
+| `exploitable` | no disposition | sets no LEV, IRV, or PAIN |
+| `in_triage` | no disposition | the `VER-TFR-EVU` clock keeps running from detection |
+| `response` `will_not_fix` or `can_not_fix` | none | acceptance is the provider's decision with a rationale, never automatic |
+
 ## Class C operational mapping
 
 These values describe the current rules for planning and tests. Application code must select them
@@ -369,6 +409,8 @@ can publish them with authorization, logging, redaction, and availability contro
 - Do not read a coverage gap case as a weakness found on the resource. It records that no
   verification reached the resource inside a window, and a lapsed SHOULD window is not a MUST
   violation.
+- Do not read an SBOM as a detection, an empty vulnerability list as a clean scan, or a
+  supplier's VEX statement as the provider's disposition.
 
 ## Sources
 

@@ -31,6 +31,7 @@ COMPILED_GOLDENS = (
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-fixtures.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-sarif.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-hdf.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-cyclonedx.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-timed.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-cyclonedx-coverage.json"),
@@ -39,6 +40,7 @@ COMPILED_GOLDENS = (
     (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-failed.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-coverage-gaps.json"),
+    (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-cyclonedx.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-fixtures.json"),
 )
 SCHEMA_COMMIT = "5156719aa7d0def16cf66f6197db9d6c0024e0e7"
@@ -279,14 +281,14 @@ class CompiledGoldenValidationTests(unittest.TestCase):
     """The compiler's own goldens satisfy the official schemas.
 
     `ver-schema-examples.json` holds hand-written examples; the compiled goldens in
-    `COMPILED_GOLDENS` are what ComplyRoll emits (eight VDT goldens, from STIG
-    artifacts, SARIF logs, HDF documents, an inventory's coverage over untimed and timed
-    evidence and over CycloneDX SBOMs, its recorded coverage gaps and detection process
-    failures, plus the AVI golden
-    and three historical goldens),
+    `COMPILED_GOLDENS` are what ComplyRoll emits (nine VDT goldens, from STIG
+    artifacts, SARIF logs, HDF documents, CycloneDX SBOMs, an inventory's coverage over
+    untimed and timed evidence and over CycloneDX SBOMs, its recorded coverage gaps and
+    detection process failures, plus the AVI golden
+    and four historical goldens),
     so validating each against its own schema here ties the projections to the schemas
-    without going through the report compiler. The historical goldens with failures and
-    with gaps sit before the plain one so `by_schema` still resolves to
+    without going through the report compiler. The historical goldens with failures, with
+    gaps and from CycloneDX SBOMs sit before the plain one so `by_schema` still resolves to
     `historical-fixtures.json`, and the coverage VDT goldens sit before `vdt-failed.json`,
     which `by_schema` resolved to before them.
     """

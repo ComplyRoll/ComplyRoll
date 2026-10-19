@@ -59,6 +59,7 @@ from complyroll.adapters import (
     ingest_stig_artifact,
     system_observation_for,
 )
+from complyroll.adapters.sarif import SARIF_PARSER_VERSION
 from complyroll.events import (
     FAILURE_HELD,
     EventMetadata,
@@ -101,6 +102,11 @@ from complyroll.reports import (
 )
 from complyroll.reports import vdt as vdt_module
 from complyroll.store import SQLiteEventStore
+
+# Versions after the shipped SARIF parser, for a fixture re-read under another version.
+SARIF_NEXT = str(int(SARIF_PARSER_VERSION) + 1)
+SARIF_AFTER_NEXT = str(int(SARIF_PARSER_VERSION) + 2)
+SARIF_THIRD_AFTER = str(int(SARIF_PARSER_VERSION) + 3)
 
 AnyReport = CompiledVdtReport | CompiledAviReport | CompiledHistoricalReport
 
@@ -2376,16 +2382,36 @@ class FailedImportDivergenceTests(FailureStoreFixture):
             failures(replayed),
             [
                 ("failed-invalid-rules.cklb", "1", "2026-08-21T12:00:00Z", INVALID_RULES_CASE),
-                ("failed-invocation.sarif", "1", "2026-08-04T10:00:00Z", INVOCATION_CASE),
-                ("failed-truncated.sarif", "1", "2026-08-21T12:00:00Z", TRUNCATED_CASE),
+                (
+                    "failed-invocation.sarif",
+                    SARIF_PARSER_VERSION,
+                    "2026-08-04T10:00:00Z",
+                    INVOCATION_CASE,
+                ),
+                (
+                    "failed-truncated.sarif",
+                    SARIF_PARSER_VERSION,
+                    "2026-08-21T12:00:00Z",
+                    TRUNCATED_CASE,
+                ),
             ],
         )
         self.assertEqual(
             failures(stateless),
             [
                 ("failed-invalid-rules.cklb", "1", "2026-08-25T12:00:00Z", INVALID_RULES_CASE),
-                ("failed-invocation.sarif", "1", "2026-08-04T10:00:00Z", INVOCATION_CASE),
-                ("failed-truncated.sarif", "1", "2026-08-25T12:00:00Z", TRUNCATED_CASE),
+                (
+                    "failed-invocation.sarif",
+                    SARIF_PARSER_VERSION,
+                    "2026-08-04T10:00:00Z",
+                    INVOCATION_CASE,
+                ),
+                (
+                    "failed-truncated.sarif",
+                    SARIF_PARSER_VERSION,
+                    "2026-08-25T12:00:00Z",
+                    TRUNCATED_CASE,
+                ),
             ],
         )
         paths = {}
@@ -2498,7 +2524,12 @@ class FailedImportDivergenceTests(FailureStoreFixture):
             failures(replayed),
             [
                 ("failed-truncated.cklb", "1", "2026-08-21T13:00:00Z", TRUNCATED_CASE),
-                ("failed-truncated.sarif", "1", "2026-08-21T12:00:00Z", TRUNCATED_CASE),
+                (
+                    "failed-truncated.sarif",
+                    SARIF_PARSER_VERSION,
+                    "2026-08-21T12:00:00Z",
+                    TRUNCATED_CASE,
+                ),
             ],
         )
         self.assertEqual(
@@ -2521,7 +2552,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         # keeps the older reading, where a stateless run of version 2 reports the newer
         # failure. The WARNING is the condition the carve-out names for this.
         def failed(path: Path, *, ingested_at: datetime) -> IngestResult:
-            reading = bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+            reading = bumped(ingest_stig_artifact(path, ingested_at=ingested_at), SARIF_NEXT)
             error = IngestDiagnostic(
                 level=DiagnosticLevel.ERROR,
                 code="no_observations",
@@ -2547,7 +2578,9 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.assertTrue(held.appended)
         self.assertEqual(held.stream_id, hold_of(newer))
         self.assertEqual(held.held_by, older)
-        self.assertEqual(held.diagnostics[-1], held_warning(older, "complyroll.sarif 2"))
+        self.assertEqual(
+            held.diagnostics[-1], held_warning(older, f"complyroll.sarif {SARIF_NEXT}")
+        )
         # The hold is recorded, so the notice saying a failure was stays beside the WARNING.
         self.assertIn("detection_failure_recorded", [item.code for item in held.diagnostics])
         history = artifact_history(self.repository)
@@ -2576,9 +2609,9 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.assertEqual(
             [{key: entry[key] for key in named} for entry in (replayed_entry, stateless_entry)],
             [
-                {"parserVersion": "1", "failureCodes": ["execution_unsuccessful"]},
+                {"parserVersion": SARIF_PARSER_VERSION, "failureCodes": ["execution_unsuccessful"]},
                 {
-                    "parserVersion": "2",
+                    "parserVersion": SARIF_NEXT,
                     "failureCodes": ["execution_unsuccessful", "no_observations"],
                 },
             ],
@@ -2590,7 +2623,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         # The older reading's artifact, findings, and diagnostics stay on the persisted path.
         self.assertEqual(
             [item["parserVersion"] for item in replayed.document["x-complyroll"]["artifacts"]],
-            ["1"],
+            [SARIF_PARSER_VERSION],
         )
         self.assertEqual(stateless.document["x-complyroll"]["artifacts"], [])
         self.assertEqual(set(records[1]), {INVOCATION_CASE})
@@ -2612,7 +2645,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         # stateless run of version 2 names version 2. The WARNING is the condition the
         # carve-out names for this.
         def read_by_version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
-            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), SARIF_NEXT)
 
         older_artifact, older = (stream for stream, _ in self.record(INVOCATION))
         newer = read_by_version_2(INVOCATION, ingested_at=INGESTED_AT)
@@ -2633,7 +2666,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.correlate()
 
         self.assertTrue(read.appended)
-        self.assertTrue(read.stream_id.endswith("/complyroll.sarif/2"))
+        self.assertTrue(read.stream_id.endswith(f"/complyroll.sarif/{SARIF_NEXT}"))
         self.assertTrue(held.appended)
         self.assertEqual(held.stream_id, hold_of(newer))
         self.assertEqual(held.held_by, older)
@@ -2642,7 +2675,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
             held.diagnostics,
             (
                 *failure_diagnostics(newer, classification, name=newer.artifact.name),
-                held_warning(older, "complyroll.sarif 2"),
+                held_warning(older, f"complyroll.sarif {SARIF_NEXT}"),
             ),
         )
         history = artifact_history(self.repository)
@@ -2660,10 +2693,12 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         for report in (replayed, stateless):
             self.assertEqual(
                 [item["parserVersion"] for item in report.document["x-complyroll"]["artifacts"]],
-                ["2"],
+                [SARIF_NEXT],
             )
-        self.assertEqual([version for _, version, _, _ in failures(replayed)], ["1"])
-        self.assertEqual([version for _, version, _, _ in failures(stateless)], ["2"])
+        self.assertEqual(
+            [version for _, version, _, _ in failures(replayed)], [SARIF_PARSER_VERSION]
+        )
+        self.assertEqual([version for _, version, _, _ in failures(stateless)], [SARIF_NEXT])
         (replayed_entry,), (stateless_entry,) = (
             report.document["x-complyroll"]["detectionFailures"] for report in (replayed, stateless)
         )
@@ -2731,7 +2766,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         # the holder alone and supersedes the reading version 1 just recorded, so the
         # persisted report carries version 2's failure and none of version 1's reading.
         def failed(path: Path, *, ingested_at: datetime) -> IngestResult:
-            reading = bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+            reading = bumped(ingest_stig_artifact(path, ingested_at=ingested_at), SARIF_NEXT)
             error = IngestDiagnostic(
                 level=DiagnosticLevel.ERROR,
                 code="no_observations",
@@ -2763,7 +2798,9 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.assertTrue(held.appended)
         self.assertEqual(held.stream_id, hold_of(older))
         self.assertEqual(held.held_by, holder)
-        self.assertEqual(held.diagnostics[-1], held_warning(holder, "complyroll.sarif 1"))
+        self.assertEqual(
+            held.diagnostics[-1], held_warning(holder, f"complyroll.sarif {SARIF_PARSER_VERSION}")
+        )
         history = artifact_history(self.repository)
         self.assertEqual(history.current, ())
         self.assertEqual([record.stream_id for record in history.superseded], [read.stream_id])
@@ -2778,7 +2815,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.assertEqual(replayed.document["x-complyroll"]["artifacts"], [])
         self.assertEqual(
             [item["parserVersion"] for item in stateless.document["x-complyroll"]["artifacts"]],
-            ["1"],
+            [SARIF_PARSER_VERSION],
         )
         self.assertEqual(
             [
@@ -2789,8 +2826,8 @@ class FailedImportDivergenceTests(FailureStoreFixture):
                 )
             ],
             [
-                [("2", ["execution_unsuccessful", "no_observations"])],
-                [("1", ["execution_unsuccessful"])],
+                [(SARIF_NEXT, ["execution_unsuccessful", "no_observations"])],
+                [(SARIF_PARSER_VERSION, ["execution_unsuccessful"])],
             ],
         )
         self.assertIn(
@@ -2850,7 +2887,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         )
 
         # A clean reading under version 2: the same bytes, with no failed invocation.
-        newer = bumped(source, "2")
+        newer = bumped(source, SARIF_NEXT)
         clean = replace(
             newer,
             diagnostics=tuple(
@@ -3041,7 +3078,8 @@ class FailureWorkedExampleTests(FailureStoreFixture):
             [appended for _, appended in self.record(INVOCATION, result=first)], [True, True]
         )
         second = replace(
-            bumped(ingest_stig_artifact(INVOCATION, ingested_at=at), "2"), failed_execution_at=None
+            bumped(ingest_stig_artifact(INVOCATION, ingested_at=at), SARIF_NEXT),
+            failed_execution_at=None,
         )
         written = self.record(INVOCATION, at=at, result=second)
         self.correlate()
@@ -3056,9 +3094,12 @@ class FailureWorkedExampleTests(FailureStoreFixture):
         self.assertEqual([appended for _, appended in written], [True, True])
         report = self.replay(as_of=self.AS_OF)
         self.assertEqual(
-            failures(report), [(INVOCATION.name, "1", "2026-08-21T12:00:00Z", INVOCATION_CASE)]
+            failures(report),
+            [(INVOCATION.name, SARIF_PARSER_VERSION, "2026-08-21T12:00:00Z", INVOCATION_CASE)],
         )
-        self.assertEqual(report.document["x-complyroll"]["artifacts"][0]["parserVersion"], "2")
+        self.assertEqual(
+            report.document["x-complyroll"]["artifacts"][0]["parserVersion"], SARIF_NEXT
+        )
         history = artifact_history(self.repository)
         self.assertEqual(len(history.current_failures), 1)
         self.assertEqual([record.stream_id for record in history.dormant_failures], [written[1][0]])
@@ -3074,8 +3115,8 @@ class FailureWorkedExampleTests(FailureStoreFixture):
         self.assertEqual(
             failures(report),
             [
-                (INVOCATION.name, "1", "2026-08-21T12:00:00Z", INVOCATION_CASE),
-                (INVOCATION.name, "2", "2026-08-22T12:00:00Z", INVOCATION_CASE),
+                (INVOCATION.name, SARIF_PARSER_VERSION, "2026-08-21T12:00:00Z", INVOCATION_CASE),
+                (INVOCATION.name, SARIF_NEXT, "2026-08-22T12:00:00Z", INVOCATION_CASE),
             ],
         )
         (record,) = [
@@ -3162,15 +3203,17 @@ class FailureSupersessionReplayTests(FailureStoreFixture):
         (_, (side, appended)) = self.record(INVOCATION)
         self.assertTrue(appended)
         self.reading("2", source=INVOCATION, parser_name=self.OTHER)
-        self.assertEqual(self.step()[1], ["1"])
+        self.assertEqual(self.step()[1], [SARIF_PARSER_VERSION])
 
-        still_failing = bumped(ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT), "3")
+        still_failing = bumped(
+            ingest_stig_artifact(INVOCATION, ingested_at=INGESTED_AT), SARIF_AFTER_NEXT
+        )
         self.record(INVOCATION, result=still_failing)
-        self.assertEqual(self.step()[1], ["1"])
+        self.assertEqual(self.step()[1], [SARIF_PARSER_VERSION])
 
-        self.reading("4", source=INVOCATION)
+        self.reading(SARIF_THIRD_AFTER, source=INVOCATION)
         manifest, current, notices = self.step()
-        self.assertEqual((manifest, current), ([(name, "4")], []))
+        self.assertEqual((manifest, current), ([(name, SARIF_THIRD_AFTER)], []))
         self.assertIn(("failure_superseded", side), notices)
 
     def test_failures_never_supersede_one_another(self) -> None:
@@ -3235,9 +3278,11 @@ class HeldFailureReplayTests(FailureStoreFixture):
 
         self.assertIn(("failure_held", hold), diagnostic_codes(before))
         (entry,) = before.document["x-complyroll"]["detectionFailures"]
-        self.assertEqual((entry["parser"], entry["parserVersion"]), ("complyroll.sarif", "1"))
+        self.assertEqual(
+            (entry["parser"], entry["parserVersion"]), ("complyroll.sarif", SARIF_PARSER_VERSION)
+        )
 
-        newer = bumped(source, "2")
+        newer = bumped(source, SARIF_NEXT)
         clean = replace(
             newer,
             diagnostics=tuple(

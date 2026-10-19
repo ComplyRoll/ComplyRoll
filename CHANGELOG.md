@@ -6,6 +6,18 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- An HDF profile that failed to load no longer vanishes when another profile in the same
+  document loads. InSpec writes such a profile with `status: "failed"` and `controls: []`, so it
+  yielded no observation and raised `profile_not_loaded` alone: the document imported as
+  successful, `--record-failed-imports` recorded nothing, and the coverage block read the target
+  as verified. It now also raises WARNING `execution_unsuccessful`, as a failed SARIF invocation
+  does, so with the flag it is an execution-class system record and case beside the loaded
+  profile's observations and the run exits 3, and on its own it is the execution class where it
+  was the content class. A skipped profile, which InSpec writes for an unsupported platform,
+  stays a WARNING, and a failed profile that still lists controls is unchanged. The HDF parser
+  version is `2`, so every HDF observation identifier moves; no release carried the adapter (ADR
+  0013 amendment of 2026-10-19).
+
 - A SARIF run with no results no longer becomes a clean-run PASS when the same log says the run
   did not complete: an invocation that declares `executionSuccessful: true` beside a nonzero
   `exitCode`, an exit signal, or an `error`-level tool execution or configuration notification

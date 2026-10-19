@@ -827,3 +827,48 @@ The report lists five vulnerabilities, four of them overdue.
   as parse failures, and the impact guard already runs before any arithmetic.
 - Rolling HDF into `stigroll`: the roll-up is locked to its original bytes and reads checklist
   rows.
+
+## Amendment 2026-10-19: a profile that failed to load is a failed detection process
+
+Found in a review of the slice against main, and decided by the maintainer. Decision 9 says a
+profile whose `status` is not `loaded` draws WARNING `profile_not_loaded` and that "its controls
+carry no results and yield error observations". InSpec writes a profile that failed to load with
+`controls: []`, so there were no controls to yield anything: beside a loaded profile the document
+imported as successful with the WARNING alone, `--record-failed-imports` recorded nothing, and
+the coverage block read the target as verified by the loaded profile's observations. The same
+profile on its own reached `no_observations` and was recorded as the content class. One failure
+was recorded or dropped by whether a sibling loaded. ADR 0014 Decision 17 had handed
+`profile_not_loaded` to the coverage and freshness slice, and ADR 0015 did not take it up.
+
+A profile whose `status` is exactly `failed` and whose `controls` array is empty now also raises
+WARNING `execution_unsuccessful` at its path ("profile status is failed and it brings no
+controls; its checks never ran"), the code a failed SARIF invocation raises (ADR 0014). The
+ADR 0014 classifier reads codes alone, so:
+
+- beside a loaded profile the reading is an execution side record: the loaded profile's
+  observations import as before, and with `--record-failed-imports` a `VDR-CSO-FAV` system
+  record and case of class `execution` is minted beside them and the run exits 3;
+- on its own the reading is the execution class, claimed before `no_observations`, where it was
+  the content class;
+- without the flag the reading imports, or fails, exactly as before, the WARNING aside.
+
+A profile has no clock of its own, so the record's clock is the run's as-of. A `skipped`
+profile, which InSpec writes for a profile whose `supports` excludes the target's platform, is
+the operator's platform choice rather than a failure, and keeps `profile_not_loaded` alone, as
+does any other status that is not `loaded`. A failed profile that still lists controls is
+unchanged: Decision 9's ERROR observations of its controls already say its checks did not run.
+
+`HDF_PARSER_VERSION` is `"2"`. No observation changes, but the reading of such bytes does: the
+artifact head stores the new WARNING, and a lone failed profile is another class. ADR 0002 makes
+the parser version an identity input so that a changed reading is a new fact, and ADR 0011's
+amendment of the same date records the cost of changing readings under one version. No release
+carried the adapter (0.3.0a0 predates this record). A store that recorded such a profile under
+version 1 keeps that record: a re-ingest at the same instant is held by it
+(`failure_held_by_another_stream`, ADR 0014's amendment of 2026-10-13), and a later re-ingest
+records the version 2 execution failure beside the version 1 content failure, since failure
+streams never supersede one another (ADR 0014 Decision 13, R5). Every HDF observation identifier
+moved with the version and no tracking identifier did; `vdt-hdf` moved by exactly those
+identifiers and the parser version in its provenance, verified by mapping every fixture's
+version 1 identifiers onto version 2, and no fixture carries a failed profile without controls.
+Why: a failed detection process must be eligible to become an observation and a case whether or
+not something else in the same document succeeded.

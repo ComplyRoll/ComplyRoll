@@ -54,7 +54,7 @@ from .safeio import DEFAULT_LIMITS, IngestLimits, InputLimitError
 
 # The parser version is an observation identity input (ADR 0002), so HDF owns its own:
 # an HDF correction can never re-mint a CKLB, CKL, XCCDF, or SARIF observation.
-HDF_PARSER_VERSION = "1"
+HDF_PARSER_VERSION = "2"
 HDF_MEDIA_TYPE = "application/json"
 HDF_SOURCE_TYPE = "hdf"
 HDF_NATIVE_TOOL = "inspec"
@@ -536,6 +536,18 @@ class _HdfParse(EvidenceParse):
         if not isinstance(controls, list):
             self._profile_error("profile controls must be an array", path)
             return
+        # A profile that failed to load brings no controls, so no observation says it ran:
+        # beside a loaded profile it vanished, and the target read as verified. It is a
+        # failed detection process, the execution class a failed SARIF invocation is (ADR
+        # 0013 amendment 2026-10-19). A skipped profile is the operator's platform choice
+        # and keeps profile_not_loaded alone.
+        if status == "failed" and not controls:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "execution_unsuccessful",
+                "profile status is failed and it brings no controls; its checks never ran",
+                path,
+            )
         if len(controls) > self.limits.max_results_per_run:
             raise InputLimitError(
                 f"{path} contains {len(controls)} controls; "

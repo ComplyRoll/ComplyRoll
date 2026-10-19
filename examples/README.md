@@ -831,9 +831,9 @@ After the four commands, `complyroll store verify --db hdf.db` prints
 Each input is read by the HDF parser, including the overlay, whose name has no `.hdf`:
 
 ```text
-| inspec-linux-host.hdf.json | 36e929218a49 | complyroll.hdf 1 | 6 |
-| inspec-overlay.json | a965c0f73307 | complyroll.hdf 1 | 3 |
-| saf-trivy-image.hdf.json | 6b36d5a302d0 | complyroll.hdf 1 | 3 |
+| inspec-linux-host.hdf.json | 36e929218a49 | complyroll.hdf 2 | 6 |
+| inspec-overlay.json | a965c0f73307 | complyroll.hdf 2 | 3 |
+| saf-trivy-image.hdf.json | 6b36d5a302d0 | complyroll.hdf 2 | 3 |
 ```
 
 The report also carries these diagnostics, which the stateless run prints on standard error:

@@ -2167,6 +2167,11 @@ def _select_for_period(
     KEV work stays in as well: under VDR-TFR-KEV a mitigated KEV is unresolved, so a
     record whose clock is open, detected and listed by the period end, is kept with no
     activity in the period (ADR 0012 Decision 7).
+
+    An accepted record is set aside for the VER-RPT-AVI report of the same period only
+    when that report would carry it, by the same activity rule (ADR 0010 Decision 2).
+    One with no activity in the period is in neither report and is counted as excluded,
+    so every record of the set lands in exactly one of the three Summary rows.
     """
 
     reported: list[CompiledVulnerability] = []
@@ -2175,6 +2180,18 @@ def _select_for_period(
 
     for record in records:
         if record.status is CaseStatus.ACCEPTED:
+            reason = _period_exclusion_reason(record, period, state="is accepted")
+            if reason is not None:
+                excluded += 1
+                diagnostics.append(
+                    ReportDiagnostic(
+                        level=DiagnosticLevel.INFO,
+                        code="excluded_by_period",
+                        message=f"{record.tracking_id} {reason}",
+                        location=record.source_record_id,
+                    )
+                )
+                continue
             evaluation = record.evaluation
             rationale = evaluation.acceptance_rationale if evaluation else None
             accepted.append(

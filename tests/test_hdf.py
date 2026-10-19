@@ -52,6 +52,7 @@ from complyroll.adapters.common import (
     MAX_TITLE_CHARS,
     TRUNCATION_MARKER,
 )
+from complyroll.adapters.failures import FailureClass, FailureClassification, classify_ingest
 from complyroll.adapters.hdf import (
     HDF_CONVERTER_PLATFORM,
     HDF_CONVERTER_TOOL,
@@ -109,32 +110,32 @@ CORNERS = "hdf-spec-corners.hdf.json"
 # Observation ids of every HDF fixture, in emitted order. Derived by running the adapter and
 # read field by field against the plan before they were frozen.
 LINUX_IDS = (
-    "obs-2b1f8b0785e86b295f3a1f4288734b5bfff35163745c4c6f2a88638a5abd5624",
-    "obs-425f620e25f521a8aebe4389df2eeab1d59a6ad0a9e02e9d0b13c4386b59020e",
-    "obs-651f1a2f92401b66166e7a6e06f424d6193d23a7926456700951453f63fe1fae",
-    "obs-e7f152fbf36db492fddc3ee75119906d9025acaf8bdea599cfd99c2a7d15da8f",
-    "obs-76866a38e4741201dbedf5dee2ea7fef39c0fadbaf2808e1d3382d9d2515109f",
-    "obs-563aaa914602fc585a264393ea9075f806eaf98218f6719a4332e7419bf00731",
+    "obs-006db45c8af4e0592c88d0da5e9d5f4b53cfc638eb0737304d85353e71eed457",
+    "obs-02e17799d6ca6e11883370a1288f327670c06aa1161f42bb7e8f8e9168cda07f",
+    "obs-ac2baa5cdb9277ac7141e1ce9f78635705c9d90de2ec581b7163d32e74863321",
+    "obs-4a5bd97c7c76de92a4948ac5dbe32cff15579d89018f06cbc4d6f47db2da57c2",
+    "obs-7283a9c17f757cc800b6a27f29d6745588322c3090f417e77d66908c30ed3770",
+    "obs-c91e952d3acc3682884a0a7738f09eb858d878506be72bb2dcd9dd965ad90c76",
 )
 TRIVY_IDS = (
-    "obs-57743407f37bbeba0fbac2295ff639f12c27fd77febc41dfc01dbeba65b39519",
-    "obs-a339485bcdccdf6217f93567e0f573f5aae57f9c90b6470afad26f35be765547",
-    "obs-a6049562adb7185a3ab4fcf65040462c0bcda7d85cf98ebeafa230fd34305b15",
+    "obs-2074d4a46ab8a9d51b0b36340726f3e48a4fa1f7a803b2a4f4ce76cb5d04a33f",
+    "obs-15fa87080090ed4df8d6b4dc71f4ac6a4f6fe31e00fd2e613290c55f07d37a8e",
+    "obs-d8b27b3d9e30c2e2309c1e4747bb50ce668b82816dac57cf4308a5ed5a0a711d",
 )
 OVERLAY_IDS = (
-    "obs-252ca5b9898729a0934843c0d6235316123782a983190f1f6a4248ff04ec6611",
-    "obs-db7c8c95b443dd6c9582be4d6025b7ff2f79f720f8c12f68ab35e2bd99aa41a7",
-    "obs-2bc344c966195dc16dfe77e68e678a989c68a57529939659fe7ce9acfa456759",
+    "obs-855b0c4d8a27cea30dbf12e9a514b4e393dd1681476ea85644bce3a2d2298449",
+    "obs-7f0133410ec24334922bb30eadb61c151bd4ded00f5d9e22d91f56df997de287",
+    "obs-f1b2cd87454d5247984f78c29a9d908aa37bcbafa583db837954672fa8c8a30e",
 )
 CORNER_IDS = (
-    "obs-9a9f67c57e3f7ff433c420813ad505572ed24d571f25b43907613b6ab2882168",
-    "obs-029ce3fd3b2b1299d9a483a3621af20f95ae8e8e88c4b45dbaf947d268adc5c2",
-    "obs-fb62875145a794712cf815dc130e07e5f282a61b0a8e7f4cac85f6c4c21e0cca",
-    "obs-9b4107e1f94292e6bc4b95adba6a2c7ff7e5947b4e3b75ad6d76043afbec2d85",
-    "obs-f89f8a418f17568c6717e418013f38a79c8b6ed7cddc4d5587e26c679c7cad8c",
-    "obs-008ad469f420fc300a900c155f87abe74c5c9af024e5642cb36668341f0ba86b",
-    "obs-ac28bf390cff588026464993956ddca265bcae71479296368ba0db25082a9922",
-    "obs-53afaf3750a7e0877364c0b1f6dd1794cc09706871ca8244db9b63a5d49cda0f",
+    "obs-70cf2b8f47835e05c8027e5423dd03dc93d103d3a4b8e91f0ed741f599df49dc",
+    "obs-7e3820aae30c79a92f75067a9ccd5774578da0ba78526e6d3cd516951ace57d3",
+    "obs-06b13a25d7ad26cef89e5174303f946142f1574dccc059d168cc742d0d20dbce",
+    "obs-fbdd597a6780ead2b180853a57f13696397bbfc72d34b6e901a3e9206ecd3567",
+    "obs-c253d1178ad02e4fd6f94d3bd081f1e9ec449406d79be87e8e7463a77bc34154",
+    "obs-073035be26c10a87183b88cf5977afe17e08fa22b659770fa131ea2053c146c3",
+    "obs-e2a9c43e41c2b874fd7267d2835b567f113399f189e5d88a2eaa7f58d7f422a9",
+    "obs-8cdd2e57c8d90405c57b7667f737f03dae3a60f6b1149745f85e73a5404fc772",
 )
 FIXTURE_IDS = {
     LINUX: LINUX_IDS,
@@ -1566,6 +1567,90 @@ class HdfDispositionTests(unittest.TestCase):
                     "skipped" if status == "skipped" else ("failed" if status == "failed" else None)
                 )
                 self.assertEqual(metadata(output.observations[0]).get("profile_status"), expected)
+
+    def test_a_failed_profile_with_no_controls_is_a_failed_detection_process(self) -> None:
+        # InSpec writes a profile that failed to load with `controls: []`. Beside a loaded
+        # profile it used to vanish with a WARNING alone; it is now an execution side record
+        # next to the loaded profile's observations, as a failed SARIF invocation is.
+        failed = make_profile(
+            "synthetic-failed",
+            controls=[],
+            status="failed",
+            status_message="Failed to load source for controls/x.rb: syntax error",
+        )
+        result = ingest_document(make_document(make_profile(), failed))
+        self.assertTrue(result.successful)
+        self.assertEqual(len(result.observations), 1)
+        unsuccessful = only_diagnostic(result, "execution_unsuccessful")
+        self.assertIs(unsuccessful.level, DiagnosticLevel.WARNING)
+        self.assertEqual(
+            unsuccessful.message,
+            "profile status is failed and it brings no controls; its checks never ran "
+            "(1 occurrence: profiles[1])",
+        )
+        self.assertEqual(
+            classify_ingest(result),
+            FailureClassification(
+                FailureClass.EXECUTION, None, ("execution_unsuccessful",), side_record=True
+            ),
+        )
+
+    def test_a_failed_profile_beside_a_loaded_one_reaches_the_report(self) -> None:
+        # With the flag the report lists the failure beside the loaded profile's finding;
+        # without it the run compiles exactly as before, the WARNING aside (ADR 0014).
+        failed = make_profile("synthetic-failed", controls=[], status="failed")
+        finding = make_control(results=[make_result("failed")])
+        document = make_document(make_profile(controls=[finding]), failed)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "two-profiles.hdf.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            options = report_options(detected_at=REPORT_DETECTED_AT)
+            flagged = compile_vdt_report([path], options=options, record_failed_imports=True)
+            plain = compile_vdt_report([path], options=options)
+
+        failures = flagged.document["x-complyroll"]["detectionFailures"]
+        self.assertEqual(
+            [(item["name"], item["failureClass"], item["clock"]) for item in failures],
+            [("two-profiles.hdf.json", "execution", "as-of")],
+        )
+        self.assertEqual(
+            {item.source_type for item in flagged.vulnerabilities},
+            {"hdf", "complyroll.detection-process"},
+        )
+        self.assertEqual(plain.document["x-complyroll"].get("detectionFailures", []), [])
+        self.assertEqual([item.source_type for item in plain.vulnerabilities], ["hdf"])
+
+    def test_a_lone_failed_profile_is_the_execution_class(self) -> None:
+        # On its own the document holds nothing usable; the failed profile claims the class
+        # before no_observations does, as a failed SARIF run with no results does.
+        failed = make_profile(controls=[], status="failed", status_message="")
+        result = ingest_document(make_document(failed))
+        self.assertFalse(result.successful)
+        self.assertEqual(
+            classify_ingest(result),
+            FailureClassification(
+                FailureClass.EXECUTION, None, ("execution_unsuccessful", "no_observations")
+            ),
+        )
+
+    def test_a_skipped_or_controlled_profile_is_no_execution_failure(self) -> None:
+        # A skipped profile is the operator's platform choice, and a failed profile that
+        # still lists controls already yields ERROR observations of them (Decision 9).
+        cases = {
+            "skipped, no controls": make_profile(
+                "synthetic-skipped", controls=[], status="skipped", status_message=SKIP_MESSAGE
+            ),
+            "failed, with controls": make_profile(
+                "synthetic-failed", controls=[make_control(results=[])], status="failed"
+            ),
+        }
+        for label, profile in cases.items():
+            with self.subTest(label):
+                result = ingest_document(make_document(make_profile(), profile))
+                self.assertTrue(result.successful)
+                self.assertIn("profile_not_loaded", diagnostic_codes(result))
+                self.assertNotIn("execution_unsuccessful", diagnostic_codes(result))
+                self.assertIsNone(classify_ingest(result))
 
     def test_a_loaded_or_absent_profile_status_is_silent(self) -> None:
         for status in ("loaded", ABSENT, None):
@@ -4273,7 +4358,7 @@ class HdfConverterTests(unittest.TestCase):
         self.assertEqual(HDF_NATIVE_TOOL, "inspec")
         self.assertEqual(HDF_CONVERTER_TOOL, "heimdall-tools")
         self.assertEqual(HDF_SOURCE_TYPE, "hdf")
-        self.assertEqual(HDF_PARSER_VERSION, "1")
+        self.assertEqual(HDF_PARSER_VERSION, "2")
         self.assertEqual(HDF_MEDIA_TYPE, "application/json")
         self.assertEqual(
             (HdfAdapter.name, HdfAdapter.version, HdfAdapter.media_type), HDF_ATTRIBUTION

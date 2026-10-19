@@ -1071,3 +1071,10 @@ read wider from this date; their text is not edited.
 - **Decision 18 is unchanged and applies to gaps.** A gap record detected after the report period
   ends is excluded from the official VDT, and it still counts for exit 3, is listed by the
   historical snapshot, and keeps its tracking id on its coverage window (ADR 0015 Decision 31).
+
+## Note 2026-10-19: `profile_not_loaded` is resolved for failed profiles
+
+Decision 17 handed `profile_not_loaded` to the coverage and freshness slice, which shipped
+without it. ADR 0013's amendment of 2026-10-19 resolves the failed case: a profile with `status`
+`failed` and no controls raises `execution_unsuccessful` and is this record's execution class. A
+skipped profile stays a WARNING.

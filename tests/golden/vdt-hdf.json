@@ -35,7 +35,7 @@
         "detectedAtSource": "attestation",
         "evaluator": null,
         "observationIds": [
-          "obs-57743407f37bbeba0fbac2295ff639f12c27fd77febc41dfc01dbeba65b39519"
+          "obs-2074d4a46ab8a9d51b0b36340726f3e48a4fa1f7a803b2a4f4ce76cb5d04a33f"
         ],
         "rationale": null,
         "remediated": false,
@@ -50,7 +50,7 @@
           "CWE-79"
         ],
         "untimestampedObservationIds": [
-          "obs-57743407f37bbeba0fbac2295ff639f12c27fd77febc41dfc01dbeba65b39519"
+          "obs-2074d4a46ab8a9d51b0b36340726f3e48a4fa1f7a803b2a4f4ce76cb5d04a33f"
         ]
       }
     },
@@ -84,7 +84,7 @@
         "detectedAtSource": "attestation",
         "evaluator": null,
         "observationIds": [
-          "obs-a339485bcdccdf6217f93567e0f573f5aae57f9c90b6470afad26f35be765547"
+          "obs-15fa87080090ed4df8d6b4dc71f4ac6a4f6fe31e00fd2e613290c55f07d37a8e"
         ],
         "rationale": null,
         "remediated": false,
@@ -98,7 +98,7 @@
           "CVE-2099-0102"
         ],
         "untimestampedObservationIds": [
-          "obs-a339485bcdccdf6217f93567e0f573f5aae57f9c90b6470afad26f35be765547"
+          "obs-15fa87080090ed4df8d6b4dc71f4ac6a4f6fe31e00fd2e613290c55f07d37a8e"
         ]
       }
     },
@@ -132,7 +132,7 @@
         "detectedAtSource": "attestation",
         "evaluator": null,
         "observationIds": [
-          "obs-a6049562adb7185a3ab4fcf65040462c0bcda7d85cf98ebeafa230fd34305b15"
+          "obs-d8b27b3d9e30c2e2309c1e4747bb50ce668b82816dac57cf4308a5ed5a0a711d"
         ],
         "rationale": null,
         "remediated": false,
@@ -146,7 +146,7 @@
           "CVE-2099-0103"
         ],
         "untimestampedObservationIds": [
-          "obs-a6049562adb7185a3ab4fcf65040462c0bcda7d85cf98ebeafa230fd34305b15"
+          "obs-d8b27b3d9e30c2e2309c1e4747bb50ce668b82816dac57cf4308a5ed5a0a711d"
         ]
       }
     },
@@ -179,7 +179,7 @@
         "detectedAtSource": "artifact",
         "evaluator": null,
         "observationIds": [
-          "obs-2b1f8b0785e86b295f3a1f4288734b5bfff35163745c4c6f2a88638a5abd5624"
+          "obs-006db45c8af4e0592c88d0da5e9d5f4b53cfc638eb0737304d85353e71eed457"
         ],
         "rationale": null,
         "remediated": false,
@@ -225,7 +225,7 @@
         "detectedAtSource": "artifact",
         "evaluator": null,
         "observationIds": [
-          "obs-252ca5b9898729a0934843c0d6235316123782a983190f1f6a4248ff04ec6611"
+          "obs-855b0c4d8a27cea30dbf12e9a514b4e393dd1681476ea85644bce3a2d2298449"
         ],
         "rationale": null,
         "remediated": false,
@@ -248,7 +248,7 @@
         "name": "inspec-linux-host.hdf.json",
         "observationCount": 6,
         "parser": "complyroll.hdf",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "36e929218a49784892b0d31d65e5db4f439b28631006057f23a809e0bff3b80d",
         "sizeBytes": 8822
       },
@@ -256,7 +256,7 @@
         "name": "inspec-overlay.json",
         "observationCount": 3,
         "parser": "complyroll.hdf",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "a965c0f733072067f1aa030f0c06c9e5dd18b7f2ec63cb5327bd5c7331228679",
         "sizeBytes": 7842
       },
@@ -264,7 +264,7 @@
         "name": "saf-trivy-image.hdf.json",
         "observationCount": 3,
         "parser": "complyroll.hdf",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "6b36d5a302d0ad131435a18d42c135ddb1506ea05e762bb1581cea7f39b1008c",
         "sizeBytes": 4001
       }
@@ -332,7 +332,7 @@
       "version": "0.3.0a0"
     },
     "parserVersions": {
-      "complyroll.hdf": "1"
+      "complyroll.hdf": "2"
     },
     "rulesSource": {
       "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",

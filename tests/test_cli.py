@@ -35,6 +35,7 @@ from complyroll.adapters import (
     classify_ingest,
     ingest_stig_artifact,
 )
+from complyroll.adapters.hdf import HDF_PARSER_VERSION
 from complyroll.adapters.sarif import SARIF_PARSER_VERSION
 from complyroll.cli import main
 from complyroll.events import (
@@ -2279,7 +2280,9 @@ class PersistedHdfRoundTripTests(PersistedStoreTestCase):
             [item["providerTrackingId"] for item in document["vulnerabilities"]],
             ["case-181b4b18c88fe895"],
         )
-        self.assertEqual(document["x-complyroll"]["parserVersions"], {"complyroll.hdf": "1"})
+        self.assertEqual(
+            document["x-complyroll"]["parserVersions"], {"complyroll.hdf": HDF_PARSER_VERSION}
+        )
         self.assertIsNone(document["x-complyroll"]["detectionTimeAttestation"])
 
     def test_the_persisted_hdf_report_validates_against_the_official_schema(self) -> None:

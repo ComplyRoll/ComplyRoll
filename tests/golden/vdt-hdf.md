@@ -47,7 +47,7 @@
 - **Description:** CVE-2099-0001: synthlib: synthetic cross-site scripting in the template renderer
 - **Detection source:** heimdall-tools
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
-- **Observations without a source timestamp:** obs-57743407f37bbeba0fbac2295ff639f12c27fd77febc41dfc01dbeba65b39519
+- **Observations without a source timestamp:** obs-2074d4a46ab8a9d51b0b36340726f3e48a4fa1f7a803b2a4f4ce76cb5d04a33f
 - **Affected resources:** target registry.example.test/web:1.4.2
 - **Source identifiers:** CVE-2099-0001, CWE-79
 - **Evaluation:** not yet completed
@@ -63,7 +63,7 @@
 - **Description:** CVE-2099-0102: synthcrypt: synthetic heap overflow in the record decoder
 - **Detection source:** heimdall-tools
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
-- **Observations without a source timestamp:** obs-a339485bcdccdf6217f93567e0f573f5aae57f9c90b6470afad26f35be765547
+- **Observations without a source timestamp:** obs-15fa87080090ed4df8d6b4dc71f4ac6a4f6fe31e00fd2e613290c55f07d37a8e
 - **Affected resources:** target registry.example.test/web:1.4.2
 - **Source identifiers:** CVE-2099-0102
 - **Evaluation:** not yet completed
@@ -79,7 +79,7 @@
 - **Description:** CVE-2099-0103: synthzip: synthetic path traversal on archive extraction
 - **Detection source:** heimdall-tools
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
-- **Observations without a source timestamp:** obs-a6049562adb7185a3ab4fcf65040462c0bcda7d85cf98ebeafa230fd34305b15
+- **Observations without a source timestamp:** obs-d8b27b3d9e30c2e2309c1e4747bb50ce668b82816dac57cf4308a5ed5a0a711d
 - **Affected resources:** target registry.example.test/web:1.4.2
 - **Source identifiers:** CVE-2099-0103
 - **Evaluation:** not yet completed
@@ -95,7 +95,7 @@
 - **Description:** SYN-LNX-0001: The synthd service must restrict its configuration file mode
 - **Detection source:** inspec
 - **Detected at:** 2026-09-10T21:02:11Z (source: artifact)
-- **Observations:** obs-2b1f8b0785e86b295f3a1f4288734b5bfff35163745c4c6f2a88638a5abd5624
+- **Observations:** obs-006db45c8af4e0592c88d0da5e9d5f4b53cfc638eb0737304d85353e71eed457
 - **Affected resources:** target 3f0c9a2e-6d4b-4c1e-9a7b-2f1e8d5c4b3a
 - **Source identifiers:** CCI-000366
 - **Evaluation:** not yet completed
@@ -111,7 +111,7 @@
 - **Description:** SYN-RHL-0001: The synthd daemon must not run as root
 - **Detection source:** inspec
 - **Detected at:** 2026-09-08T16:01:30Z (source: artifact)
-- **Observations:** obs-252ca5b9898729a0934843c0d6235316123782a983190f1f6a4248ff04ec6611
+- **Observations:** obs-855b0c4d8a27cea30dbf12e9a514b4e393dd1681476ea85644bce3a2d2298449
 - **Affected resources:** target 7d2e4f10-3b6a-4c8d-9e1f-5a6b7c8d9e0f
 - **Source identifiers:** CCI-000048
 - **Evaluation:** not yet completed
@@ -130,9 +130,9 @@ The operator attested a detection time of 2026-09-01T00:00:00Z for 3 vulnerabili
 
 | Artifact | SHA-256 | Parser | Observations |
 |---|---|---|---:|
-| inspec-linux-host.hdf.json | 36e929218a49 | complyroll.hdf 1 | 6 |
-| inspec-overlay.json | a965c0f73307 | complyroll.hdf 1 | 3 |
-| saf-trivy-image.hdf.json | 6b36d5a302d0 | complyroll.hdf 1 | 3 |
+| inspec-linux-host.hdf.json | 36e929218a49 | complyroll.hdf 2 | 6 |
+| inspec-overlay.json | a965c0f73307 | complyroll.hdf 2 | 3 |
+| saf-trivy-image.hdf.json | 6b36d5a302d0 | complyroll.hdf 2 | 3 |
 
 ## Diagnostics
 

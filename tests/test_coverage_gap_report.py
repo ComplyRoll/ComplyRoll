@@ -23,6 +23,7 @@ from unittest import mock
 from test_cli import (
     AVI_ARGUMENTS,
     COVERAGE_ARGUMENTS,
+    CYCLONEDX_COVERAGE_ARGUMENTS,
     EXAMPLE_INVENTORY,
     HISTORICAL_ARGUMENTS,
     REPORT_ARGUMENTS,
@@ -35,6 +36,7 @@ from test_cli import (
 )
 from test_coverage import derive, host, inventory_of, policy, resource_of
 from test_coverage_report import TIMED_ARTIFACTS, TIMED_INVENTORY, TIMED_OPTIONS
+from test_cyclonedx import compile_cyclonedx_golden, compile_cyclonedx_historical_golden
 from test_hdf import compile_hdf_golden
 from test_reports import (
     ACCEPTED_EVALUATIONS,
@@ -714,10 +716,16 @@ class GoldenRegistryTests(unittest.TestCase):
             **{f"{kind}-kev": (kev_argv(kind), 0) for kind in REPORT_KINDS},
             "vdt-coverage": (COVERAGE_ARGUMENTS, 0),
             "vdt-coverage-timed": (timed_argv(), 0),
+            "vdt-cyclonedx-coverage": (CYCLONEDX_COVERAGE_ARGUMENTS, 0),
             "vdt-failed": (failed_vdt, 3),
             "historical-failed": (failed_historical, 3),
         }
-        compiled = {"vdt-sarif": compile_sarif_golden(), "vdt-hdf": compile_hdf_golden()}
+        compiled = {
+            "vdt-sarif": compile_sarif_golden(),
+            "vdt-hdf": compile_hdf_golden(),
+            "vdt-cyclonedx": compile_cyclonedx_golden(),
+            "historical-cyclonedx": compile_cyclonedx_historical_golden(),
+        }
         reports = {
             path.stem
             for path in GOLDEN.glob("*.json")

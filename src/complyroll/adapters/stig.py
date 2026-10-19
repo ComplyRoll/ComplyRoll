@@ -34,6 +34,12 @@ from .common import (
     text_of,
     unique,
 )
+from .cyclonedx import (
+    CYCLONEDX_MEDIA_TYPE,
+    CYCLONEDX_PARSER_VERSION,
+    CycloneDxAdapter,
+    looks_like_cyclonedx,
+)
 from .hdf import HDF_MEDIA_TYPE, HDF_PARSER_VERSION, HdfAdapter, looks_like_hdf
 from .safeio import (
     DEFAULT_LIMITS,
@@ -570,7 +576,7 @@ def ingest_stig_artifact(
     ingested_at: datetime | None = None,
     limits: IngestLimits = DEFAULT_LIMITS,
 ) -> IngestResult:
-    """Ingest one CKLB, CKL, XCCDF, ARF, SARIF, or HDF artifact without network access."""
+    """Ingest one CKLB, CKL, XCCDF, ARF, SARIF, HDF, or CycloneDX artifact offline."""
 
     path = Path(path)
     now = ingested_at or datetime.now(UTC)
@@ -587,7 +593,7 @@ def ingest_stig_artifact(
         )
 
     suffix = path.suffix.lower()
-    adapter: CklbAdapter | CklAdapter | XccdfAdapter | SarifAdapter | HdfAdapter
+    adapter: CklbAdapter | CklAdapter | XccdfAdapter | SarifAdapter | HdfAdapter | CycloneDxAdapter
     document: ParsedDocument
     artifact: ArtifactProvenance
     try:
@@ -613,12 +619,26 @@ def ingest_stig_artifact(
                 ingested_at=now,
             )
             document = ParsedDocument("json", parse_json_bounded(content, limits))
+        # A CycloneDX file under its conventional name is never sniffed (ADR 0016).
+        elif path.name.lower().endswith(".cdx.json"):
+            adapter = CycloneDxAdapter(limits)
+            artifact = _artifact(
+                path,
+                content,
+                adapter_name=adapter.name,
+                adapter_version=adapter.version,
+                media_type=adapter.media_type,
+                ingested_at=now,
+            )
+            document = ParsedDocument("json", parse_json_bounded(content, limits))
         elif suffix in {".cklb", ".json"}:
             value = parse_json_bounded(content, limits)
             # SECURITY: Only a bare .json that parsed within the bounds is sniffed, never a
             # .cklb, and a document with a stigs key stays a checklist (ADR 0013 decision 1).
             if suffix == ".json" and looks_like_hdf(value):
                 adapter = HdfAdapter(limits)
+            elif suffix == ".json" and looks_like_cyclonedx(value):
+                adapter = CycloneDxAdapter(limits)
             else:
                 adapter = CklbAdapter()
             artifact = _artifact(
@@ -678,6 +698,9 @@ def ingest_stig_artifact(
         elif path.name.lower().endswith(".hdf.json"):
             name, version = HdfAdapter.name, HDF_PARSER_VERSION
             media_type = HDF_MEDIA_TYPE
+        elif path.name.lower().endswith(".cdx.json"):
+            name, version = CycloneDxAdapter.name, CYCLONEDX_PARSER_VERSION
+            media_type = CYCLONEDX_MEDIA_TYPE
         elif suffix in {".cklb", ".json"}:
             name, version = CklbAdapter.name, CklbAdapter.version
             media_type = CklbAdapter.media_type

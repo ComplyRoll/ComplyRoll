@@ -1,0 +1,36 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000006",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-02T08:00:00Z",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "author": "anchore",
+          "name": "grype",
+          "version": "0.87.0"
+        }
+      ]
+    },
+    "component": {
+      "bom-ref": "0000000000000061",
+      "type": "container",
+      "name": "registry.example.test/batch",
+      "version": "5.2"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:apk/alpine/musl@1.2.5-r0?arch=x86_64&distro=alpine-3.20.3&package-id=0000000000000062",
+      "type": "library",
+      "name": "musl",
+      "version": "1.2.5-r0",
+      "purl": "pkg:apk/alpine/musl@1.2.5-r0?arch=x86_64&distro=alpine-3.20.3&upstream=musl"
+    }
+  ],
+  "vulnerabilities": []
+}

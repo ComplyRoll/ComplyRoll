@@ -706,3 +706,42 @@ and the stream then held more observations than its head declared, so every late
 refused the store as `artifact_overfull`.
 Why: a clean run is coverage evidence, so it must fail closed on any signal in the log that the
 run did not complete, not on the one flag alone.
+
+## Amendment (2026-10-19): CycloneDX scope evidence, the package skip, and the inventory refusal
+
+ADR 0016 adds a second source of scope evidence beside the clean SARIF run of Decision 1. Each
+CycloneDX document yields one observation of its subject, record id `cyclonedx.bom`, on
+`image:<reference>` or `scan:<name>`. It verifies by local resolution only: it is PASS when at least
+one `affects` ref resolves to a component the document lists other than its subject, on a
+vulnerability record with no supplier judgment (no `analysis.state`, `justification`, or `detail`,
+or the state `exploitable` or `in_triage`), in an `affects` entry that does not mark the installed
+version `unaffected`, because that is positive evidence that a match ran against this inventory. An
+inventory with no `vulnerabilities` member, and an empty `vulnerabilities` list whatever tool is
+named, are NOT_REVIEWED, so under Decision 7 they examine the subject and never verify it; a
+document whose refs all fall back, name only the subject, sit on judged records, or sit on entries
+that mark the installed version `unaffected` is NOT_REVIEWED too. An untimed document never anchors
+a clock, so an entry reached only by untimed SBOMs reads `missing`. This follows the principle of
+the 2026-10-17 amendment: coverage evidence fails closed on any sign that a match did not run, and
+Trivy writes an empty list with vulnerability scanning turned off. A clean Grype or Trivy run
+therefore never verifies a clock under parser version 1.
+
+Coverage reads a `cyclonedx` source only through that observation, and it verifies only when it is
+PASS. This narrows Decision 7 for one source: a CycloneDX vulnerability observation, OPEN on a
+package or on the subject itself, never examines or verifies an entry and is never later or untimed
+evidence, though it still counts toward an unregistered resource's observations; and a producer
+record whose id is `cyclonedx.bom` takes the place of the observation of the subject, is OPEN, and
+examines without verifying. A CycloneDX finding is a package fact, not evidence that the subject was
+examined.
+
+The coverage reader skips an observation whose resource type is `package` before it counts later
+or unregistered evidence. A package is a component of its subject, whose scope observation
+carries the coverage; without the skip every vulnerable package would print as a resource the
+inventory omits.
+
+Decision 5's sentence that `resourceType` is an open, case-sensitive vocabulary is amended: the
+inventory refuses `package`, on an entry and on an alias alike, with the fixed text
+"resourceType package is not an information resource; inventory the image or host that carries
+it", exit 1 like every inventory refusal (Decision 16). The vocabulary stays open otherwise. No
+golden of this record moved; `vdt-cyclonedx-coverage` is new.
+Why: a package is never an information resource, so it can neither be inventoried nor reported
+as one the inventory omits.

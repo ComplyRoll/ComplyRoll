@@ -43,6 +43,16 @@ DRIFT_LIKELIHOOD_UNKNOWN = "drift_likelihood_unknown"
 SAMPLE_GROUP_TYPE = "logical"
 SAMPLE_GROUP_PREFIX = "sample-group/"
 
+# A CycloneDX package is a component of its subject, whose scope observation carries the
+# coverage. Pinned equal to the adapter's constant by a test, so reports/ imports no adapter.
+PACKAGE_RESOURCE_TYPE = "package"
+# The scope observation is the only SBOM evidence coverage reads (plan section 15): a
+# vulnerability row on the scope resource never examines or verifies it, and the scope record
+# verifies only as PASS. Both literals are pinned equal to the adapter's constants by a test,
+# as PACKAGE_RESOURCE_TYPE is.
+CYCLONEDX_SOURCE_TYPE = "cyclonedx"
+CYCLONEDX_SCOPE_RECORD_ID = "cyclonedx.bom"
+
 # The tool determined a status. NOT_REVIEWED, ERROR and UNKNOWN examine and never verify, so
 # a run full of errors does not satisfy a clock.
 VERIFYING_DISPOSITIONS = frozenset(
@@ -586,6 +596,9 @@ def _collect(
         # A system observation records a process failure; it never examines a resource.
         if observation.origin is not ObservationOrigin.ARTIFACT:
             continue
+        # A package never reads as unregistered, ref: fallbacks included: its subject is covered.
+        if observation.resource.resource_type == PACKAGE_RESOURCE_TYPE:
+            continue
         resource = observation.resource
         at = None if observation.observed_at is None else _utc(observation.observed_at)
         item = CoverageEvidence(
@@ -595,15 +608,28 @@ def _collect(
             reference=observation.observation_id,
             disposition=observation.disposition,
         )
+        # NOTE: A CycloneDX vulnerability row still counts its resource as unregistered, so
+        # the observed-resource count is unchanged; it is never later, untimed or examined.
+        row = (
+            observation.source_type == CYCLONEDX_SOURCE_TYPE
+            and observation.source_record_id != CYCLONEDX_SCOPE_RECORD_ID
+        )
         entry = inventory.entry_for(resource.resource_type, resource.resource_id)
         if at is not None and at > cutoff:
-            later.append(item)
+            if not row:
+                later.append(item)
         elif entry is None:
             unregistered[resource] += 1
+        elif row:
+            continue
         elif at is None:
             collected[entry.ref].untimed.append(item)
         else:
             verifies = entry.machine_based and observation.disposition in VERIFYING_DISPOSITIONS
+            # A cyclonedx scope record verifies only as PASS: a producer record that took the
+            # scope's id is OPEN and examines, never verifies (E1).
+            if observation.source_type == CYCLONEDX_SOURCE_TYPE:
+                verifies = verifies and observation.disposition is ObservationDisposition.PASS
             _file(collected[entry.ref], entry, at, item, verifies=verifies)
 
     for entry in inventory.entries:
@@ -801,9 +827,12 @@ def _utc(value: datetime) -> datetime:
 
 __all__ = [
     "COVERAGE_BASIS",
+    "CYCLONEDX_SCOPE_RECORD_ID",
+    "CYCLONEDX_SOURCE_TYPE",
     "DRIFT_LIKELIHOOD_UNKNOWN",
     "MVX_RULE",
     "NMV_RULE",
+    "PACKAGE_RESOURCE_TYPE",
     "PCD_RULE",
     "PDD_RULE",
     "PSD_RULE",

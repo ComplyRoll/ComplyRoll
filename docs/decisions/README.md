@@ -59,3 +59,7 @@ read a record's amendments before relying on it.
   clocks from the pinned dataset, reported as evidence with a status per clock; a window that
   closes with no verification becomes a `VDR-CSO-FAV` system observation and case, with
   `--record-coverage-gaps` on a report or `cases coverage` into a schema 4 store.
+- [ADR 0016: CycloneDX SBOM adapter](0016-cyclonedx-sbom-adapter.md): a vulnerability is located
+  on a `package` resource keyed by the subject's lineage and a version-free package key, a case
+  is one CVE from one tool, an inventory or an empty list never verifies coverage, and a
+  standalone VEX document is refused.

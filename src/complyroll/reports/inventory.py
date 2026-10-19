@@ -86,6 +86,12 @@ _NAME = re.compile(r"[\x21-\x7e]([\x20-\x7e]{0,126}[\x21-\x7e])?")
 # A context key is `<resourceType>:<resourceId>`; no type holds the separator, so every key
 # splits one way. The observation side never produces a type with a colon.
 _TYPE_SEPARATOR = ":"
+# A CycloneDX package is a component of an image or host, never an information resource.
+PACKAGE_RESOURCE_TYPE = "package"
+_PACKAGE_REFUSAL = (
+    "resourceType package is not an information resource; inventory the image or host that "
+    "carries it"
+)
 _INSTANT = _DATE_RELEASED
 _ABSENT = object()
 
@@ -464,10 +470,12 @@ def _text(value: str, key: str, where: str, cap: int) -> str:
 
 
 def _resource_type(raw: Mapping[str, Any], where: str) -> str:
-    """Return a resourceType, refused when it holds the context key's separator."""
+    """Return a resourceType, refused when it holds the context key's separator or is `package`."""
     value = _identity(_string(raw, "resourceType", where), "resourceType", where)
     if _TYPE_SEPARATOR in value:
         raise _refusal(where, f"resourceType must not contain a colon, got {_excerpt(value)}")
+    if value == PACKAGE_RESOURCE_TYPE:
+        raise _refusal(where, _PACKAGE_REFUSAL)
     return value
 
 
@@ -577,6 +585,7 @@ __all__ = [
     "MAX_INVENTORY_RESOURCES",
     "MAX_NAME_CHARS",
     "MAX_REFERENCE_CHARS",
+    "PACKAGE_RESOURCE_TYPE",
     "InformationResource",
     "Inventory",
     "Verification",

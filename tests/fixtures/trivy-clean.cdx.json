@@ -1,0 +1,53 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.7",
+  "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000002",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-01T12:00:00+00:00",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "manufacturer": {
+            "name": "Aqua Security Software Ltd."
+          },
+          "group": "aquasecurity",
+          "name": "trivy",
+          "version": "0.58.0"
+        }
+      ]
+    },
+    "component": {
+      "bom-ref": "pkg:oci/web@sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?arch=amd64&repository_url=registry.example.test%2Fweb",
+      "type": "container",
+      "name": "registry.example.test/web:1.4",
+      "purl": "pkg:oci/web@sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?arch=amd64&repository_url=registry.example.test%2Fweb",
+      "properties": [
+        {
+          "name": "aquasecurity:trivy:SchemaVersion",
+          "value": "2"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:apk/alpine/musl@1.2.5-r0?arch=x86_64&distro=3.20.3",
+      "type": "library",
+      "name": "musl",
+      "version": "1.2.5-r0",
+      "purl": "pkg:apk/alpine/musl@1.2.5-r0?arch=x86_64&distro=3.20.3"
+    },
+    {
+      "bom-ref": "pkg:apk/alpine/busybox@1.36.1-r29?arch=x86_64&distro=3.20.3",
+      "type": "library",
+      "name": "busybox",
+      "version": "1.36.1-r29",
+      "purl": "pkg:apk/alpine/busybox@1.36.1-r29?arch=x86_64&distro=3.20.3"
+    }
+  ],
+  "dependencies": [],
+  "vulnerabilities": []
+}

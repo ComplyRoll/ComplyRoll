@@ -9,6 +9,7 @@ from .base import (
     IngestResult,
     SourceAdapter,
 )
+from .cyclonedx import CYCLONEDX_PARSER_VERSION, CycloneDxAdapter
 from .failures import (
     DETECTION_FAILURE_SOURCE_TYPE,
     FAILURE_DIAGNOSTIC_CAP,
@@ -40,6 +41,8 @@ __all__ = [
     "CklAdapter",
     "CklbAdapter",
     "ControlMapping",
+    "CYCLONEDX_PARSER_VERSION",
+    "CycloneDxAdapter",
     "DEFAULT_LIMITS",
     "DETECTION_FAILURE_SOURCE_TYPE",
     "DiagnosticLevel",

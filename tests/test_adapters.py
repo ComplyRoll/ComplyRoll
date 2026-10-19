@@ -26,6 +26,11 @@ from complyroll.adapters import (
     stig,
 )
 from complyroll.adapters.common import observation_bytes
+from complyroll.adapters.cyclonedx import (
+    CYCLONEDX_MEDIA_TYPE,
+    CYCLONEDX_PARSER_VERSION,
+    looks_like_cyclonedx,
+)
 from complyroll.adapters.hdf import HDF_MEDIA_TYPE, looks_like_hdf
 from complyroll.adapters.safeio import InputLimitError
 from complyroll.adapters.sarif import SARIF_MEDIA_TYPE
@@ -66,6 +71,9 @@ HDF_FIXTURE = FIXTURES / "inspec-linux-host.hdf.json"
 HDF_OVERLAY_FIXTURE = FIXTURES / "inspec-overlay.json"
 HDF_ATTRIBUTION = ("complyroll.hdf", HDF_PARSER_VERSION, HDF_MEDIA_TYPE)
 CKLB_ATTRIBUTION = ("complyroll.cklb", CKLB_PARSER_VERSION, "application/json")
+CDX_FIXTURE = FIXTURES / "syft-image.cdx.json"
+CDX_BARE_FIXTURE = FIXTURES / "bom.json"
+CDX_ATTRIBUTION = ("complyroll.cyclonedx", CYCLONEDX_PARSER_VERSION, CYCLONEDX_MEDIA_TYPE)
 
 # Observation ids of every STIG fixture, recorded before the shared helpers moved from
 # stig.py to adapters/common.py (ADR 0011, decision 12). The goldens prove the move changed
@@ -742,6 +750,87 @@ class HdfDispatchTests(unittest.TestCase):
         self.assertIs(adapters.HDF_PARSER_VERSION, hdf.HDF_PARSER_VERSION)
         self.assertIs(HdfAdapter, hdf.HdfAdapter)
         self.assertIs(stig.HdfAdapter, hdf.HdfAdapter)
+
+
+class CycloneDxDispatchTests(unittest.TestCase):
+    """A .cdx.json name or a sniffed bare .json chooses CycloneDX; .cklb never sniffs (ADR 0016)."""
+
+    attribution_of = staticmethod(HdfDispatchTests.attribution_of)
+    ingest_as = staticmethod(HdfDispatchTests.ingest_as)
+
+    def test_the_cdx_suffix_routes_to_the_cyclonedx_adapter_in_any_case(self) -> None:
+        reference = ingest_stig_artifact(CDX_FIXTURE, ingested_at=FIRST_INGEST)
+        for name in ("scan.cdx.json", "Scan.CDX.JSON", "scan.Cdx.Json"):
+            with self.subTest(name=name):
+                result = self.ingest_as(name, CDX_FIXTURE.read_bytes())
+
+                self.assertTrue(result.successful, result.errors)
+                self.assertEqual(self.attribution_of(result), CDX_ATTRIBUTION)
+                self.assertEqual({item.source_type for item in result.observations}, {"cyclonedx"})
+                self.assertEqual(
+                    [item.observation_id for item in result.observations],
+                    [item.observation_id for item in reference.observations],
+                )
+
+    def test_a_bare_json_bom_is_sniffed_to_cyclonedx(self) -> None:
+        reference = ingest_stig_artifact(CDX_FIXTURE, ingested_at=FIRST_INGEST)
+        for name in ("bom.json", "BOM.JSON"):
+            with self.subTest(name=name):
+                result = self.ingest_as(name, CDX_BARE_FIXTURE.read_bytes())
+
+                self.assertTrue(result.successful, result.errors)
+                self.assertEqual(self.attribution_of(result), CDX_ATTRIBUTION)
+                self.assertEqual(
+                    [item.observation_id for item in result.observations],
+                    [item.observation_id for item in reference.observations],
+                )
+        self.assertTrue(looks_like_cyclonedx(json.loads(CDX_BARE_FIXTURE.read_bytes())))
+        self.assertFalse(looks_like_cyclonedx({"bomFormat": "CycloneDX", "stigs": []}))
+
+    def test_a_checklist_under_a_cdx_name_is_refused(self) -> None:
+        result = self.ingest_as("scan.cdx.json", (FIXTURES / "ubuntu-host.cklb").read_bytes())
+
+        self.assertEqual(self.attribution_of(result), CDX_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [
+                (
+                    "artifact_parse_failed",
+                    "CycloneDX document carries a 'stigs' member; a STIG Viewer checklist is "
+                    "read under its own name",
+                )
+            ],
+        )
+
+    def test_a_bom_under_a_cklb_name_stays_cklb(self) -> None:
+        result = self.ingest_as("scan.cklb", CDX_FIXTURE.read_bytes())
+
+        self.assertEqual(self.attribution_of(result), CKLB_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [("artifact_parse_failed", CKLB_SHAPE_MESSAGE)],
+        )
+
+    def test_a_bound_refused_bare_json_is_attributed_to_cklb(self) -> None:
+        result = self.ingest_as(
+            "bom.json", CDX_BARE_FIXTURE.read_bytes(), IngestLimits(max_json_nodes=20)
+        )
+
+        self.assertEqual(self.attribution_of(result), CKLB_ATTRIBUTION)
+        self.assertEqual(
+            [(item.code, item.message) for item in result.errors],
+            [("artifact_parse_failed", "JSON contains more than 20 values")],
+        )
+
+    def test_a_malformed_cdx_json_is_attributed_to_cyclonedx(self) -> None:
+        result = self.ingest_as("scan.cdx.json", b"{")
+
+        self.assertEqual(self.attribution_of(result), CDX_ATTRIBUTION)
+        self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+
+    def test_the_package_exports_the_cyclonedx_adapter_and_its_version(self) -> None:
+        self.assertIn("CycloneDxAdapter", adapters.__all__)
+        self.assertIn("CYCLONEDX_PARSER_VERSION", adapters.__all__)
 
 
 class ParserVersionIndependenceTests(unittest.TestCase):

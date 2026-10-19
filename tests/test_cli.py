@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from test_cyclonedx import compile_cyclonedx_golden, compile_cyclonedx_historical_golden
 from test_hdf import compile_hdf_golden
 from test_replay import bumped, moved
 from test_sarif import compile_sarif_golden, make_log, make_result, make_run
@@ -145,6 +146,37 @@ COVERAGE_ARGUMENTS = (*REPORT_ARGUMENTS, "--inventory", str(EXAMPLE_INVENTORY))
 TIMED_INVENTORY = FIXTURES / "inventory-timed.json"
 TIMED_ARTIFACTS = (str(FIXTURES / "codeql-repo.sarif"), str(FIXTURES / "clean-run.sarif"))
 TIMED_AS_OF = "2026-09-03T12:00:00Z"
+#: The `vdt-cyclonedx-coverage` run: a timed and an untimed syft inventory, a clean grype
+#: match, a trivy match and the spec corners over an inventory of their images (ADR 0016).
+CYCLONEDX_INVENTORY = FIXTURES / "inventory-cyclonedx.json"
+CYCLONEDX_COVERAGE_ARGUMENTS = (
+    "report",
+    "vdt",
+    *(
+        str(FIXTURES / name)
+        for name in (
+            "syft-image.cdx.json",
+            "syft-untimed.cdx.json",
+            "grype-clean.cdx.json",
+            "trivy-image.cdx.json",
+            "cyclonedx-spec-corners.cdx.json",
+        )
+    ),
+    "--class",
+    "C",
+    "--package-uri",
+    "https://example.test/cpo",
+    "--calendar-tz",
+    "UTC",
+    "--as-of",
+    "2026-10-03T12:00:00Z",
+    "--from",
+    "2026-10-01T00:00:00Z",
+    "--to",
+    "2026-10-31T23:59:59Z",
+    "--inventory",
+    str(CYCLONEDX_INVENTORY),
+)
 
 
 def timed_argv(kind: str = "vdt", *, inventory: bool = True, db: Path | None = None) -> list[str]:
@@ -1257,16 +1289,20 @@ class RecordFailedImportsTests(unittest.TestCase):
                 )
 
     def test_every_report_golden_recompiles_byte_identical_with_the_flag(self) -> None:
-        # The SARIF and HDF goldens are compiled through the library, as their own tests do.
+        # The SARIF, HDF and CycloneDX goldens are compiled through the library, as their own
+        # tests do.
         runs = {
             **{f"{command}-fixtures": argv for command, argv in self.COMMANDS},
             **{f"{kind}-kev": kev_argv(kind) for kind in KevReportCommandTests.KINDS},
             "vdt-coverage": COVERAGE_ARGUMENTS,
             "vdt-coverage-timed": timed_argv(),
+            "vdt-cyclonedx-coverage": CYCLONEDX_COVERAGE_ARGUMENTS,
         }
         compiled = {
             "vdt-sarif": compile_sarif_golden(record_failed_imports=True),
             "vdt-hdf": compile_hdf_golden(record_failed_imports=True),
+            "vdt-cyclonedx": compile_cyclonedx_golden(record_failed_imports=True),
+            "historical-cyclonedx": compile_cyclonedx_historical_golden(record_failed_imports=True),
         }
         reports = {
             path.stem
@@ -2298,6 +2334,176 @@ class PersistedHdfRoundTripTests(PersistedStoreTestCase):
         self.assertEqual(err, "")
         self.assertTrue(out.startswith("valid: https://fedramp.gov/schemas/"))
         self.assertIn("0.1.1", out)
+
+
+class PersistedCycloneDxRoundTripTests(PersistedStoreTestCase):
+    """CycloneDX SBOMs ingested into a store report exactly as they report statelessly.
+
+    `grype-image.cdx.json` and `trivy-image.cdx.json` are two producers' matches of one image,
+    each declaring `metadata.timestamp`, so neither path needs a detection attestation. The
+    persisted reports are the `vdt-cyclonedx` and `historical-cyclonedx` goldens byte for byte
+    (plan section 17, ADR 0010).
+    """
+
+    ARTIFACTS = (FIXTURES / "grype-image.cdx.json", FIXTURES / "trivy-image.cdx.json")
+    INGESTED_AT = "2026-10-02T12:00:00Z"
+    OPTIONS = (
+        "--class",
+        "C",
+        "--package-uri",
+        "https://example.test/cpo",
+        "--calendar-tz",
+        "UTC",
+        "--as-of",
+        "2026-10-03T12:00:00Z",
+    )
+    PERIOD = ("--from", "2026-10-01T00:00:00Z", "--to", "2026-10-31T23:59:59Z")
+    WEAK = "warning: package_identity_weak: an affected component has no usable purl"
+
+    def ingest_sboms(self, artifacts: Sequence[Path] = ARTIFACTS) -> tuple[str, str]:
+        return self.succeeds(
+            [
+                "ingest",
+                *(str(path) for path in artifacts),
+                "--db",
+                str(self.database),
+                "--as-of",
+                self.INGESTED_AT,
+                "--actor",
+                "golden",
+            ]
+        )
+
+    def report(self, kind: str, source: Sequence[str], stem: str) -> tuple[Path, Path, str]:
+        json_path = self.workspace / f"{stem}.json"
+        markdown_path = self.workspace / f"{stem}.md"
+        period = self.PERIOD if kind == "vdt" else ()
+        _, err = self.succeeds(
+            [
+                "report",
+                kind,
+                *source,
+                *self.OPTIONS,
+                *period,
+                "-o",
+                str(json_path),
+                "--markdown",
+                str(markdown_path),
+            ]
+        )
+        return json_path, markdown_path, err
+
+    def test_ingest_correlate_and_report_match_the_stateless_goldens(self) -> None:
+        out, err = self.ingest_sboms()
+
+        self.assertEqual(
+            out,
+            "grype-image.cdx.json: recorded 5 observation(s)\n"
+            "trivy-image.cdx.json: recorded 4 observation(s)\n",
+        )
+        self.assertIn(self.WEAK, err)
+        self.correlate()
+
+        for kind in ("vdt", "historical"):
+            with self.subTest(kind=kind):
+                persisted = self.report(kind, ["--db", str(self.database)], f"{kind}-persisted")
+                stateless = self.report(
+                    kind, [str(path) for path in self.ARTIFACTS], f"{kind}-stateless"
+                )
+                golden = f"{kind}-cyclonedx"
+                for rendering in (0, 1):
+                    self.assertEqual(
+                        persisted[rendering].read_bytes(), stateless[rendering].read_bytes()
+                    )
+                self.assertEqual(
+                    persisted[0].read_bytes(), (GOLDEN / f"{golden}.json").read_bytes()
+                )
+                self.assertEqual(persisted[1].read_bytes(), (GOLDEN / f"{golden}.md").read_bytes())
+                self.assertIn(self.WEAK, stateless[2])
+
+    def test_reversed_ingest_order_reports_the_same_bytes(self) -> None:
+        self.ingest_sboms(tuple(reversed(self.ARTIFACTS)))
+        self.correlate()
+
+        json_path, markdown_path, _ = self.report("vdt", ["--db", str(self.database)], "vdt")
+
+        self.assertEqual(json_path.read_bytes(), (GOLDEN / "vdt-cyclonedx.json").read_bytes())
+        self.assertEqual(markdown_path.read_bytes(), (GOLDEN / "vdt-cyclonedx.md").read_bytes())
+
+    def test_the_persisted_reports_validate_against_the_official_schemas(self) -> None:
+        self.ingest_sboms()
+        self.correlate()
+        schemas = (("vdt", "vulnerability-detail"), ("historical", "historical-activity"))
+        for kind, schema in schemas:
+            with self.subTest(kind=kind):
+                json_path, _, _ = self.report(kind, ["--db", str(self.database)], kind)
+
+                code, out, err = run(["validate", str(json_path), "--schema", schema])
+
+                self.assertEqual(code, 0)
+                self.assertEqual(err, "")
+                self.assertTrue(out.startswith("valid: https://fedramp.gov/schemas/"))
+
+    def tool_less_matched_bom(self) -> Path:
+        """Write the trivy match with its `metadata.tools` removed: a K3 with no producer."""
+        document = json.loads(self.ARTIFACTS[1].read_text(encoding="utf-8"))
+        del document["metadata"]["tools"]
+        path = self.workspace / "tool-less.cdx.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    # FX2 CL-5: a K1 or K2 identity refusal is a format refusal, never a detection failure.
+    def test_an_inventory_identity_refusal_records_no_failure_under_the_flag(self) -> None:
+        subject = {"type": "container", "name": "x" * 600}
+        for name, extra in (("k1.cdx.json", {}), ("k2.cdx.json", {"vulnerabilities": []})):
+            with self.subTest(name=name):
+                document = {
+                    "bomFormat": "CycloneDX",
+                    "specVersion": "1.6",
+                    "metadata": {"tools": [{"name": "syft"}], "component": subject},
+                    **extra,
+                }
+                path = self.workspace / name
+                path.write_text(json.dumps(document), encoding="utf-8")
+                output = self.workspace / f"{name}.report.json"
+                argv = ["report", "vdt", str(path), *self.OPTIONS, *self.PERIOD]
+                code, _, err = run([*argv, "--record-failed-imports", "-o", str(output)])
+                self.assertNotEqual(code, 3)
+                self.assertIn("artifact_parse_failed", err)
+                self.assertNotIn("VDR-CSO-FAV", err)
+                self.assertNotIn("detection_failure_recorded", err)
+
+    def test_a_tool_less_matched_bom_is_a_content_failure_under_the_flag(self) -> None:
+        path = self.tool_less_matched_bom()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        output = self.workspace / "report.json"
+        argv = ["report", "vdt", str(path), *self.OPTIONS, *self.PERIOD]
+
+        code, _, err = run([*argv, "-o", str(output)])
+
+        self.assertEqual(code, 1)
+        self.assertIn("error: invalid_bom: no tool named", err)
+        self.assertFalse(output.exists())
+
+        code, _, err = run([*argv, "--record-failed-imports", "-o", str(output)])
+
+        self.assertEqual(code, 3)
+        self.assertIn(
+            f"class content for source artifact sha256:{digest} (VDR-CSO-FAV) [tool-less.cdx.json]",
+            err,
+        )
+        self.assertIn("warning: invalid_bom: no tool named", err)
+        document = json.loads(output.read_text(encoding="utf-8"))
+        (failure,) = document["x-complyroll"]["detectionFailures"]
+        self.assertEqual(
+            [failure[key] for key in ("failureClass", "failureCodes", "parser", "sha256")],
+            ["content", ["invalid_bom"], "complyroll.cyclonedx", digest],
+        )
+        self.assertTrue(failure["trackingId"].startswith("case-"))
+        self.assertEqual(
+            [item["providerTrackingId"] for item in document["vulnerabilities"]],
+            [failure["trackingId"]],
+        )
 
 
 class PersistedAcceptedSequenceTests(PersistedStoreTestCase):
@@ -6365,7 +6571,8 @@ class HelpTextTests(unittest.TestCase):
                 self.assertIn("ARF", text)
                 self.assertIn("SARIF", text)
                 self.assertIn("HDF", text)
-                self.assertIn("CKLB, CKL, XCCDF, ARF, SARIF, or HDF file", text)
+                self.assertIn("CycloneDX", text)
+                self.assertIn("CKLB, CKL, XCCDF, ARF, SARIF, HDF, or CycloneDX file", text)
 
     def test_the_report_listing_names_every_command_with_its_rule(self) -> None:
         text = unwrapped_help_text(["report"])

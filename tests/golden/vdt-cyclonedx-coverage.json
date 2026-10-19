@@ -1,0 +1,1354 @@
+{
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "reportPeriod": {
+    "from": "2026-10-01T00:00:00Z",
+    "to": "2026-10-31T23:59:59Z"
+  },
+  "vulnerabilities": [
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00Z",
+        "detectionSource": "trivy"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-8b9104e175637348",
+      "vulnerabilityDescription": "CVE-2023-0286: A type confusion vulnerability relating to X.400 address processing",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-de2b67f016bab95eb0abfd15c9350634da019a52319800597379a777242511da",
+          "obs-767337656cb549771ba6cc082a8c05c57d7d5f1349d07836d43b9b402e1451e3"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "image:registry.example.test/api|pkg:rpm/centos/openssl-libs?arch=x86_64",
+            "resourceType": "package"
+          },
+          {
+            "resourceId": "image:registry.example.test/api|pkg:rpm/centos/openssl?arch=x86_64",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2023-0286",
+          "CWE-843"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00Z",
+        "detectionSource": "trivy"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-0f4d0f825af49a8a",
+      "vulnerabilityDescription": "CVE-2023-38037: ActiveSupport Encrypted File writes contents to a temporary file with default permissions.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-3ded09ae2784b5721b3a08442744726db79a0f70cd87e9c65e68f1554df8d75d"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "image:registry.example.test/api|pkg:gem/activesupport",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2023-38037",
+          "CWE-379",
+          "CWE-732"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-4c619110d2e65c85",
+      "vulnerabilityDescription": "CVE-2026-1001: Nested three deep; an integer score.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-1f6e0af9cf0d51941e8dc0e26a6c5b6b4d8446823f7fd52da8faac263b08cb0a"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:npm/deep-c",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1001"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-aed37cce570c05fc",
+      "vulnerabilityDescription": "CVE-2026-1002: A ref to metadata.component; a float score.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-251113e85d60528106c62254b9e3d073c18e4e2b28027941cc0d306385b8b22b"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "corner-app",
+            "resourceType": "scan"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1002"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-f13d012ca74eae0c",
+      "vulnerabilityDescription": "CVE-2026-1003: A same-serial BOM-Link whose fragment carries %2B; a zero score.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-dfe2fd619698ad7620299672c296e8bdeb49bcb6b281d8953805c7f3738f6421"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:deb/debian/libstdc%2B%2B6",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1003"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-60a761ebb61f83da",
+      "vulnerabilityDescription": "CVE-2026-1004: A foreign BOM-Link; a negative score.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-64bf76b23bcf9bad94575bf431b9e69cd6758340cfad271398f1cabfbdf3100b"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|ref:urn%3Acdx%3A9a1f8b2c-0000-4000-8000-000000000001%2F1%23deep-1",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1004"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-dd50f073074b64f7",
+      "vulnerabilityDescription": "CVE-2026-1005: An unresolved ref; no score.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-6c244b51076205853c0abb70517a936f4d4f909914987739d1827fed8bc5909d"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|ref:no-such-ref",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1005"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-87e87db3c19753ec",
+      "vulnerabilityDescription": "CVE-2026-1006: A duplicate bom-ref whose carriers differ in key.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-c7f63f43a8686c379420063234f6955bafe3c7a2f6691868e4566ce3c7659158"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|ref:dup-split",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1006"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-92464d53d8aa1507",
+      "vulnerabilityDescription": "CVE-2026-1007: A duplicate bom-ref whose carriers share a key.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-0eb2c68122e45dd63294fc60546f2579f76b4db6e7c01c71edf6f41683d9457d"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:npm/same",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1007"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-4aa39640078e6c65",
+      "vulnerabilityDescription": "CVE-2026-1009: not_affected with a justification and the response pair; a percent-encoded name.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-e1e73212cdd6c08ed3455ae31c7ac5a0a4b88b9864e523c082fe9972b36a0b77"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:generic/my%20tool",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1009"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-13330819b10de5b9",
+      "vulnerabilityDescription": "CVE-2026-1010: in_triage; an empty-valued qualifier.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-5417c4b18f7c13cf51503b2dceb84b6bd4b3550c0cc77eab397c6962ee45bf53"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:deb/debian/zlib1g",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1010"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-43d384539ee24ff5",
+      "vulnerabilityDescription": "CVE-2026-1011: An out-of-enum state; an empty-string version.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-18f0a751951fe9a7431c27530813f34fd5a8cafefb7271261092461d2bc03391"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:npm/emptyver",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1011"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-e5523693049d5b62",
+      "vulnerabilityDescription": "CVE-2026-1012: Listed twice for one component with two states; an invalid purl.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-59a86ce606bba62a1a2a833aad4c0591748241e37c3d32296b161d36733fc646"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|component:library//badpurl",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1012"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-257f637690a86249",
+      "vulnerabilityDescription": "CVE-2026-1013: A versions item marks the installed version unaffected.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-f5e81d5e48737f8571b87817896c084adc0281bb7de7dc35bcba39a09be0eb15"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:npm/twin",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1013"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-78d45678de7587bb",
+      "vulnerabilityDescription": "CVE-2026-1014: No affects.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-3a0cea0035f551483692cc0e085bef91b3af52066fed1190a101aa197e259d1c"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "corner-app",
+            "resourceType": "scan"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1014"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-c22877df7712e3a6",
+      "vulnerabilityDescription": "CVE-2026-1016: Two installs of one package with different versions and hashes.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-a1dee20a9a201653476c49a15912c79407ee3c4e91be15b892e09425642b68d2"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:npm/twin",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1016"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-4e69a3f35ead6499",
+      "vulnerabilityDescription": "GHSA-2c3f-4g5h-6j7m: A GHSA id whose references carry the CVE; a pypi name in upper case with _.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-76f062e88bd0a09dd9fae8a3a2433cf79a96d5c777f258a3836a411b2f7f58c4"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "scan:corner-app|pkg:pypi/flask-cors",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2026-1008",
+          "GHSA-2c3f-4g5h-6j7m"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00.250000Z",
+        "detectionSource": "corner-scanner"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-4e5a2e94d0b0a474",
+      "vulnerabilityDescription": "cyclonedx.bom: An id spelled like the scope record.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00.250000Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00.250000Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-969b21ab29ecb5fa9bea4ae509f7b87afc713201a925d291ab75875d58d1b439"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "corner-app",
+            "resourceType": "scan"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    }
+  ],
+  "x-complyroll": {
+    "artifacts": [
+      {
+        "name": "cyclonedx-spec-corners.cdx.json",
+        "observationCount": 16,
+        "parser": "complyroll.cyclonedx",
+        "parserVersion": "1",
+        "sha256": "55b4158b12c215576ddfe5f48c093803b80846095de68fb33dce9c180e3fc776",
+        "sizeBytes": 7341
+      },
+      {
+        "name": "grype-clean.cdx.json",
+        "observationCount": 1,
+        "parser": "complyroll.cyclonedx",
+        "parserVersion": "1",
+        "sha256": "3d1ee9ec5fbec85acd9c6b01290a430bb00c972deb459ae881e394fec9d0a30e",
+        "sizeBytes": 952
+      },
+      {
+        "name": "syft-image.cdx.json",
+        "observationCount": 1,
+        "parser": "complyroll.cyclonedx",
+        "parserVersion": "1",
+        "sha256": "fb5a9075ad4ed001892196f6aa663b7a3c90b5d08bf44bbd349dc098acc9d758",
+        "sizeBytes": 2244
+      },
+      {
+        "name": "syft-untimed.cdx.json",
+        "observationCount": 1,
+        "parser": "complyroll.cyclonedx",
+        "parserVersion": "1",
+        "sha256": "4774e171c529a0bb53d88edf757e4c4fb36705aa466a8de8e1404f1263a29339",
+        "sizeBytes": 905
+      },
+      {
+        "name": "trivy-image.cdx.json",
+        "observationCount": 4,
+        "parser": "complyroll.cyclonedx",
+        "parserVersion": "1",
+        "sha256": "dff25bd7b9d8f256db1627b86608245ae0729b4e77d20d22bfd0dd02c08bdd35",
+        "sizeBytes": 4906
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "coverage": {
+      "asOf": "2026-10-03T12:00:00Z",
+      "basis": "VDR-TFR-MVX is read from detection results until Phase 3 validation runs exist. Coverage is measured against the provider-supplied inventory named by its SHA-256 digest, so an observed resource the inventory omits is listed as unregistered and is never expected. Evidence that determined no status (NOT_REVIEWED, ERROR or UNKNOWN) examines a resource without verifying it, untimed evidence never anchors a clock, and a non-machine resource is verified only by an operator attestation. A current status is not a compliance finding.",
+      "inventory": {
+        "entries": 4,
+        "name": "cyclonedx-boundary",
+        "sha256": "daa7786280e1d46b42d67b42fad41b3e3dc30d9d4920ab0d5d5cf7350f161d19",
+        "sizeBytes": 1039
+      },
+      "later": [],
+      "resources": [
+        {
+          "afterDecommission": [],
+          "aliases": [],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-10-01T12:00:00Z",
+              "contextKey": "image:registry.example.test/api:2.1",
+              "dueAt": "2026-10-04T12:00:00Z",
+              "evidence": {
+                "at": "2026-10-01T12:00:00Z",
+                "disposition": "pass",
+                "kind": "observation",
+                "observationId": "obs-5eabacb2bd8c18086d7d734ef42d562d1206af7a37c362d5fbad47d1e2055890",
+                "resourceId": "registry.example.test/api:2.1",
+                "resourceType": "image"
+              },
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "current"
+            },
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-10-01T12:00:00Z",
+              "contextKey": "image:registry.example.test/api:2.1",
+              "dueAt": "2026-10-15T12:00:00Z",
+              "evidence": {
+                "at": "2026-10-01T12:00:00Z",
+                "disposition": "pass",
+                "kind": "observation",
+                "observationId": "obs-5eabacb2bd8c18086d7d734ef42d562d1206af7a37c362d5fbad47d1e2055890",
+                "resourceId": "registry.example.test/api:2.1",
+                "resourceType": "image"
+              },
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PDD",
+              "standIn": null,
+              "status": "current"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": true,
+          "examined": 1,
+          "expectedSince": "2026-09-01T00:00:00Z",
+          "job": "nightly-image-scan",
+          "lastExamined": "2026-10-01T12:00:00Z",
+          "lastVerified": "2026-10-01T12:00:00Z",
+          "machineBased": true,
+          "resourceId": "registry.example.test/api:2.1",
+          "resourceType": "image",
+          "sampleGroup": null,
+          "untimed": 0,
+          "untimedEvidence": []
+        },
+        {
+          "afterDecommission": [],
+          "aliases": [],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "image:registry.example.test/batch:5.2",
+              "dueAt": "2026-09-04T00:00:00Z",
+              "evidence": null,
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "undetermined"
+            },
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "image:registry.example.test/batch:5.2",
+              "dueAt": "2026-09-15T00:00:00Z",
+              "evidence": null,
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PDD",
+              "standIn": null,
+              "status": "undetermined"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": true,
+          "examined": 1,
+          "expectedSince": "2026-09-01T00:00:00Z",
+          "job": "nightly-image-scan",
+          "lastExamined": "2026-10-02T08:00:00Z",
+          "lastVerified": null,
+          "machineBased": true,
+          "resourceId": "registry.example.test/batch:5.2",
+          "resourceType": "image",
+          "sampleGroup": null,
+          "untimed": 0,
+          "untimedEvidence": []
+        },
+        {
+          "afterDecommission": [],
+          "aliases": [],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "image:registry.example.test/web:1.4",
+              "dueAt": "2026-09-04T00:00:00Z",
+              "evidence": null,
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "undetermined"
+            },
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "image:registry.example.test/web:1.4",
+              "dueAt": "2026-09-15T00:00:00Z",
+              "evidence": null,
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PDD",
+              "standIn": null,
+              "status": "undetermined"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": true,
+          "examined": 1,
+          "expectedSince": "2026-09-01T00:00:00Z",
+          "job": "nightly-sbom",
+          "lastExamined": "2026-10-01T12:00:00Z",
+          "lastVerified": null,
+          "machineBased": true,
+          "resourceId": "registry.example.test/web:1.4",
+          "resourceType": "image",
+          "sampleGroup": null,
+          "untimed": 0,
+          "untimedEvidence": []
+        },
+        {
+          "afterDecommission": [],
+          "aliases": [],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "image:registry.example.test/worker:3.0",
+              "dueAt": "2026-09-04T00:00:00Z",
+              "evidence": null,
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "missing"
+            },
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "image:registry.example.test/worker:3.0",
+              "dueAt": "2026-09-15T00:00:00Z",
+              "evidence": null,
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PDD",
+              "standIn": null,
+              "status": "missing"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": true,
+          "examined": 0,
+          "expectedSince": "2026-09-01T00:00:00Z",
+          "job": "nightly-sbom",
+          "lastExamined": null,
+          "lastVerified": null,
+          "machineBased": true,
+          "resourceId": "registry.example.test/worker:3.0",
+          "resourceType": "image",
+          "sampleGroup": null,
+          "untimed": 1,
+          "untimedEvidence": [
+            {
+              "at": null,
+              "disposition": "not_reviewed",
+              "kind": "observation",
+              "observationId": "obs-6a465d4dd35b73a39f45d07b4790f79997c0f207505dcd603d91d96fb86a0e66",
+              "resourceId": "registry.example.test/worker:3.0",
+              "resourceType": "image"
+            }
+          ]
+        }
+      ],
+      "summary": [
+        {
+          "current": 1,
+          "expected": 4,
+          "force": "MUST",
+          "missing": 1,
+          "ruleId": "VDR-TFR-MVX",
+          "stale": 0,
+          "unanchored": 0,
+          "undetermined": 2
+        },
+        {
+          "current": 0,
+          "expected": 0,
+          "force": "MUST",
+          "missing": 0,
+          "ruleId": "VDR-TFR-NMV",
+          "stale": 0,
+          "unanchored": 0,
+          "undetermined": 0
+        },
+        {
+          "current": 0,
+          "expected": 0,
+          "force": "SHOULD",
+          "missing": 0,
+          "ruleId": "VDR-TFR-PCD",
+          "stale": 0,
+          "unanchored": 0,
+          "undetermined": 0
+        },
+        {
+          "current": 1,
+          "expected": 4,
+          "force": "SHOULD",
+          "missing": 1,
+          "ruleId": "VDR-TFR-PDD",
+          "stale": 0,
+          "unanchored": 0,
+          "undetermined": 2
+        },
+        {
+          "current": 0,
+          "expected": 0,
+          "force": "SHOULD",
+          "missing": 0,
+          "ruleId": "VDR-TFR-PSD",
+          "stale": 0,
+          "unanchored": 0,
+          "undetermined": 0
+        }
+      ],
+      "unregistered": [
+        {
+          "observations": 3,
+          "resourceId": "corner-app",
+          "resourceType": "scan"
+        }
+      ],
+      "windows": [
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-09-01T00:00:00Z",
+          "closedAt": "2026-09-04T00:00:00Z",
+          "contextKey": "image:registry.example.test/api:2.1",
+          "evidence": null,
+          "force": "MUST",
+          "resumedAt": "2026-10-01T12:00:00Z",
+          "ruleId": "VDR-TFR-MVX",
+          "standIn": null
+        },
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-09-01T00:00:00Z",
+          "closedAt": "2026-09-04T00:00:00Z",
+          "contextKey": "image:registry.example.test/batch:5.2",
+          "evidence": null,
+          "force": "MUST",
+          "resumedAt": null,
+          "ruleId": "VDR-TFR-MVX",
+          "standIn": null
+        },
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-09-01T00:00:00Z",
+          "closedAt": "2026-09-04T00:00:00Z",
+          "contextKey": "image:registry.example.test/web:1.4",
+          "evidence": null,
+          "force": "MUST",
+          "resumedAt": null,
+          "ruleId": "VDR-TFR-MVX",
+          "standIn": null
+        },
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-09-01T00:00:00Z",
+          "closedAt": "2026-09-04T00:00:00Z",
+          "contextKey": "image:registry.example.test/worker:3.0",
+          "evidence": null,
+          "force": "MUST",
+          "resumedAt": null,
+          "ruleId": "VDR-TFR-MVX",
+          "standIn": null
+        },
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-09-01T00:00:00Z",
+          "closedAt": "2026-09-15T00:00:00Z",
+          "contextKey": "image:registry.example.test/api:2.1",
+          "evidence": null,
+          "force": "SHOULD",
+          "resumedAt": "2026-10-01T12:00:00Z",
+          "ruleId": "VDR-TFR-PDD",
+          "standIn": null
+        },
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-09-01T00:00:00Z",
+          "closedAt": "2026-09-15T00:00:00Z",
+          "contextKey": "image:registry.example.test/batch:5.2",
+          "evidence": null,
+          "force": "SHOULD",
+          "resumedAt": null,
+          "ruleId": "VDR-TFR-PDD",
+          "standIn": null
+        },
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-09-01T00:00:00Z",
+          "closedAt": "2026-09-15T00:00:00Z",
+          "contextKey": "image:registry.example.test/web:1.4",
+          "evidence": null,
+          "force": "SHOULD",
+          "resumedAt": null,
+          "ruleId": "VDR-TFR-PDD",
+          "standIn": null
+        },
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-09-01T00:00:00Z",
+          "closedAt": "2026-09-15T00:00:00Z",
+          "contextKey": "image:registry.example.test/worker:3.0",
+          "evidence": null,
+          "force": "SHOULD",
+          "resumedAt": null,
+          "ruleId": "VDR-TFR-PDD",
+          "standIn": null
+        }
+      ]
+    },
+    "detectionTimeAttestation": null,
+    "diagnostics": [
+      {
+        "code": "affects_missing",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "a vulnerability names no affected component; it is recorded on the subject (2 occurrences: vulnerabilities[14], vulnerabilities[16])"
+      },
+      {
+        "code": "affects_unresolved",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "an affects ref names no unique component of this document; the finding is kept on a ref: resource (3 occurrences: vulnerabilities[3].affects[0], vulnerabilities[4].affects[0], vulnerabilities[5].affects[0]; first: urn:cdx:9a1f8b2c-0000-4000-8000-000000000001/1#deep-1)"
+      },
+      {
+        "code": "affects_version_unaffected",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "an affects entry marks the installed version unaffected; the disposition stays OPEN until an evaluation is recorded (1 occurrence: vulnerabilities[13].affects[0].versions[0])"
+      },
+      {
+        "code": "analysis_conflict",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "one observation folds more than one analysis state; the disposition stays OPEN until an evaluation is recorded (1 occurrence: vulnerabilities[11].affects[0])"
+      },
+      {
+        "code": "analysis_false_positive",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "a supplier states the match is a false positive; the disposition stays OPEN until an evaluation is recorded (1 occurrence: vulnerabilities[12].analysis.state)"
+      },
+      {
+        "code": "analysis_in_triage",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "a supplier states the vulnerability is in triage; the disposition stays OPEN until an evaluation is recorded (1 occurrence: vulnerabilities[9].analysis.state)"
+      },
+      {
+        "code": "analysis_not_affected",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "a supplier states the component is not affected; the disposition stays OPEN until an evaluation is recorded (1 occurrence: vulnerabilities[8].analysis.state)"
+      },
+      {
+        "code": "analysis_state_invalid",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "an analysis state is outside the CycloneDX enumeration; the disposition stays OPEN until an evaluation is recorded (1 occurrence: vulnerabilities[10].analysis.state)"
+      },
+      {
+        "code": "bom_ref_conflict",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "a bom-ref is carried by components of different packages; it resolves to none (1 occurrence: vulnerabilities[5].affects[0]; first: dup-split)"
+      },
+      {
+        "code": "match_unverified",
+        "level": "warning",
+        "location": "grype-clean.cdx.json",
+        "message": "no unjudged vulnerability record resolves to a component this document lists besides its subject; the document does not show that a match ran (1 occurrence: vulnerabilities)"
+      },
+      {
+        "code": "package_identity_weak",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "an affected component has no usable purl; its key is built from its type, group and name (2 occurrences: vulnerabilities[11].affects[0], vulnerabilities[12].affects[0])"
+      },
+      {
+        "code": "package_instances_folded",
+        "level": "info",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "installs of one package with different bom-refs fold into one observation (1 occurrence: vulnerabilities[15].affects[1])"
+      },
+      {
+        "code": "response_will_not_fix",
+        "level": "warning",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "a supplier responds that it will not or cannot fix; the disposition stays OPEN until an evaluation is recorded (1 occurrence: vulnerabilities[8].analysis.response)"
+      },
+      {
+        "code": "scope_superseded",
+        "level": "info",
+        "location": "cyclonedx-spec-corners.cdx.json",
+        "message": "a vulnerability shares the scope observation's identity; the scope yields to it (1 occurrence: metadata.component)"
+      },
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "syft-untimed.cdx.json",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "vulnerabilities_absent",
+        "level": "warning",
+        "location": "syft-image.cdx.json",
+        "message": "the document carries no vulnerabilities member; it lists components only and is not a detection (1 occurrence: vulnerabilities)"
+      },
+      {
+        "code": "vulnerabilities_absent",
+        "level": "warning",
+        "location": "syft-untimed.cdx.json",
+        "message": "the document carries no vulnerabilities member; it lists components only and is not a detection (1 occurrence: vulnerabilities)"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "excludedByPeriod": 0,
+    "generatedAt": "2026-10-03T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.3.0a0"
+    },
+    "parserVersions": {
+      "complyroll.cyclonedx": "1"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "5e9499e8cb9d0367c888ce41040175270fc9f007ae4f61d0ced34cca81cfe497"
+    }
+  }
+}

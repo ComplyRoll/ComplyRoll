@@ -1,0 +1,345 @@
+{
+  "acceptedVulnerabilities": [],
+  "activeVulnerabilities": [
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00Z",
+        "detectionSource": "grype"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-b6bd658a4ffea56b",
+      "vulnerabilityDescription": "CVE-2022-48174",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-03f26b45916cb1d0cd87f242ce7ad64fea8a25bc99f0db4216bfe3eb4833ac90"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "image:registry.example.test/api|component:library//busybox-static",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2022-48174"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00Z",
+        "detectionSource": "trivy"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-8b9104e175637348",
+      "vulnerabilityDescription": "CVE-2023-0286: A type confusion vulnerability relating to X.400 address processing",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-de2b67f016bab95eb0abfd15c9350634da019a52319800597379a777242511da",
+          "obs-767337656cb549771ba6cc082a8c05c57d7d5f1349d07836d43b9b402e1451e3"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "image:registry.example.test/api|pkg:rpm/centos/openssl-libs?arch=x86_64",
+            "resourceType": "package"
+          },
+          {
+            "resourceId": "image:registry.example.test/api|pkg:rpm/centos/openssl?arch=x86_64",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2023-0286",
+          "CWE-843"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00Z",
+        "detectionSource": "trivy"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-0f4d0f825af49a8a",
+      "vulnerabilityDescription": "CVE-2023-38037: ActiveSupport Encrypted File writes contents to a temporary file with default permissions.",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-3ded09ae2784b5721b3a08442744726db79a0f70cd87e9c65e68f1554df8d75d"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "image:registry.example.test/api|pkg:gem/activesupport",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2023-38037",
+          "CWE-379",
+          "CWE-732"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00Z",
+        "detectionSource": "grype"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-316e8e2251393517",
+      "vulnerabilityDescription": "CVE-2023-5678",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-00ed41532d10f959bf6b6752ad645c5d2248a837b16d77c418857c4dccb5f13d"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "image:registry.example.test/api|pkg:deb/debian/libssl3?arch=amd64",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2023-5678"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00Z",
+        "detectionSource": "grype"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-b6cc25fd202e4964",
+      "vulnerabilityDescription": "CVE-2024-0727",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-7c23e13f450624ed77ccb4fccf32caa82e8377b42b9be7b4871fcd01899c8414"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "image:registry.example.test/api|pkg:deb/debian/libssl3?arch=amd64",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2024-0727"
+        ],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-10-01T12:00:00Z",
+        "detectionSource": "grype"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-031f4bfb066badaa",
+      "vulnerabilityDescription": "GHSA-rv95-896h-c2vc",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-10-06T12:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-10-01T12:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-923f768ac7f93f0d11aaf4b429fbcdd8a4d83da8e16b782c463ef1afc988abf4"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "image:registry.example.test/api|pkg:npm/express",
+            "resourceType": "package"
+          }
+        ],
+        "sourceIdentifiers": [
+          "GHSA-rv95-896h-c2vc"
+        ],
+        "untimestampedObservationIds": []
+      }
+    }
+  ],
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "generatedAt": "2026-10-03T12:00:00Z",
+  "x-complyroll": {
+    "artifacts": [
+      {
+        "name": "grype-image.cdx.json",
+        "observationCount": 5,
+        "parser": "complyroll.cyclonedx",
+        "parserVersion": "1",
+        "sha256": "01912bd68dedb6f875e6c567db91a6491f07fd5e4513bff78312e9fd70936c56",
+        "sizeBytes": 6824
+      },
+      {
+        "name": "trivy-image.cdx.json",
+        "observationCount": 4,
+        "parser": "complyroll.cyclonedx",
+        "parserVersion": "1",
+        "sha256": "dff25bd7b9d8f256db1627b86608245ae0729b4e77d20d22bfd0dd02c08bdd35",
+        "sizeBytes": 4906
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "detectionTimeAttestation": null,
+    "diagnostics": [
+      {
+        "code": "package_identity_weak",
+        "level": "warning",
+        "location": "grype-image.cdx.json",
+        "message": "an affected component has no usable purl; its key is built from its type, group and name (1 occurrence: vulnerabilities[4].affects[0])"
+      },
+      {
+        "code": "package_instances_folded",
+        "level": "info",
+        "location": "grype-image.cdx.json",
+        "message": "installs of one package with different bom-refs fold into one observation (1 occurrence: vulnerabilities[2].affects[0])"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "generatedAt": "2026-10-03T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.3.0a0"
+    },
+    "parserVersions": {
+      "complyroll.cyclonedx": "1"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-historical-ver-activity-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "dbbddb51ee25bfe9568c1dcfe1047ea206539dc91dad1fd2658f1a5accf2a6fb"
+    }
+  }
+}

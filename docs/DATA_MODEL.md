@@ -437,9 +437,12 @@ a directly built one holds the reader's rules:
 An alias is a `ResourceRef`, the type an observation's resource already uses, so an alias names
 exactly what an observation can carry. Observations carry `host` for the STIG sources and
 `image`, `file`, `logical`, or `scan` for SARIF (ADR 0011); `target` or `scan` for HDF (ADR
-0013); `artifact`, with `sha256:<digest>` of the failed artifact as the id, for a detection
-process failure (ADR 0014). The vocabulary stays open, so an entry may name a type no adapter
-emits yet, and no observation matches it until one does.
+0013); `image`, `scan`, or `package` for CycloneDX (ADR 0016); `artifact`, with
+`sha256:<digest>` of the failed artifact as the id, for a detection process failure (ADR 0014).
+The vocabulary stays open, so an entry may name a type no adapter emits yet, and no observation
+matches it until one does. The one exception is `package`: a package is a component of the image
+or host that carries it, so the inventory refuses it on an entry and on an alias, and the coverage
+reader never lists a package observation as unregistered.
 
 Planned fields not carried yet: `service_id` (cloud service or component membership),
 `boundary_status` (in, inherited, interconnected, customer-responsible, or unknown), and
@@ -454,7 +457,7 @@ Planned fields not carried yet: `service_id` (cloud service or component members
 | `fingerprint` | Stable deduplication key |
 | `source_tool` | Scanner, activity, or validation source |
 | `source_record_id` | Rule, CVE, check, ticket, or upstream identifier |
-| `source_type` | STIG, XCCDF, SARIF, SBOM, process health, etc. |
+| `source_type` | STIG, XCCDF, SARIF, HDF, CycloneDX (`cyclonedx`), process health, etc. |
 | `resource` | Affected information resource |
 | `observed_at` | When the condition was observed |
 | `ingested_at` | When ComplyRoll received it |
@@ -503,6 +506,28 @@ identity. A profile patch or a renamed leaf under the same root changes the docu
 the observation id moves with the artifact digest, as it does for every artifact, while the
 tracking id is kept: its context key is the root profile name, and the version, `sha256`, and
 leaf name are not in it.
+
+A CycloneDX observation (ADR 0016) takes its identity from the literal source type `cyclonedx`, the
+tool named in `metadata.tools` as `source_tool` and as `context_key`, the vulnerability `id` as
+`source_record_id`, a resource, and the artifact digest, through the same nine-input recipe. A
+vulnerability is located on a `package` resource whose id is `<scope type>:<lineage>|<package key>`,
+for example `image:registry.example.test/web|pkg:npm/lodash`. The scope type is `image` for a
+container subject and `scan` otherwise. The lineage is the subject name without its tag or digest,
+so `web:1.4` and `web:1.5` share it; a name that is wholly a digest of `md5`, `sha1`, `sha224`,
+`sha256`, `sha384`, `sha512` or `blake3`, at that digest's exact length, is its own lineage. The
+package key is version-free: a purl reduced
+by a frozen qualifier strip set and case table (`pkg:`; `oci` and `docker` keep `repository_url`),
+or `component:<type>/<group>/<name>` when there is no usable purl, or `ref:<ref>` when an `affects`
+ref resolves to no component. Each document also yields one observation of its subject under the
+record id `cyclonedx.bom`, on the scope resource `image:<name>[:<tag>|@<digest>]` or
+`scan:<group>/<name>`, which is the pair an inventory entry names: NOT_REVIEWED for an inventory or
+an empty list, PASS only when a vulnerability record whose `analysis` has the state `exploitable` or
+`in_triage`, or none of a `state`, a `justification`, and a `detail`, resolves to a component the
+document lists other than its subject, in an `affects` entry that does not mark the installed
+version `unaffected` (ADR 0016 Decision 9). Coverage reads only this observation of a CycloneDX
+document, and only a PASS one verifies. Versions, purls as written, bom-refs, the subject's tag and
+digest, and any embedded VEX analysis are recorded as metadata and are never identity, so an
+upgraded package keeps its resource and its case.
 
 ### Phase 0 observation identity
 

@@ -11,7 +11,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from complyroll.adapters import HdfAdapter, SarifAdapter, ingest_stig_artifact, load_cci_control_map
+from complyroll.adapters import (
+    CycloneDxAdapter,
+    HdfAdapter,
+    SarifAdapter,
+    ingest_stig_artifact,
+    load_cci_control_map,
+)
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
 
 SEVERITY_TO_CAT = {
@@ -312,6 +318,10 @@ def main(argv: list[str] | None = None) -> int:
             # An HDF document's controls are not checklist rows either, and a bare .json one
             # would otherwise be told it has no 'stigs' key (ADR 0013).
             kind = "an HDF document"
+        if result.artifact is not None and result.artifact.parser_name == CycloneDxAdapter.name:
+            # A BOM lists components, not checklist rows, and a bare bom.json would otherwise
+            # be told it has no 'stigs' key (ADR 0016).
+            kind = "a CycloneDX BOM"
         if kind:
             # One that failed to parse says why, as a checklist does, and is never named as
             # the log or document it could not be read as.

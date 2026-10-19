@@ -1,0 +1,39 @@
+{
+  "schema": "complyroll.inventory",
+  "schemaVersion": 1,
+  "name": "cyclonedx-boundary",
+  "resources": [
+    {
+      "resourceType": "image",
+      "resourceId": "registry.example.test/web:1.4",
+      "machineBased": true,
+      "driftLikely": true,
+      "job": "nightly-sbom",
+      "expectedSince": "2026-09-01T00:00:00Z"
+    },
+    {
+      "resourceType": "image",
+      "resourceId": "registry.example.test/batch:5.2",
+      "machineBased": true,
+      "driftLikely": true,
+      "job": "nightly-image-scan",
+      "expectedSince": "2026-09-01T00:00:00Z"
+    },
+    {
+      "resourceType": "image",
+      "resourceId": "registry.example.test/worker:3.0",
+      "machineBased": true,
+      "driftLikely": true,
+      "job": "nightly-sbom",
+      "expectedSince": "2026-09-01T00:00:00Z"
+    },
+    {
+      "resourceType": "image",
+      "resourceId": "registry.example.test/api:2.1",
+      "machineBased": true,
+      "driftLikely": true,
+      "job": "nightly-image-scan",
+      "expectedSince": "2026-09-01T00:00:00Z"
+    }
+  ]
+}

@@ -93,7 +93,7 @@
           "status": "pastDue"
         },
         "observationIds": [
-          "obs-d381463fef2c952a7a7e2274a607d9f27ea6142e1f76397eb310d6ed560d2795"
+          "obs-70f5bbcefde3c0717c3c6b987d5292dda9800960b8a3717b1fc7bc26b4907fd9"
         ],
         "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
         "remediated": false,
@@ -197,7 +197,7 @@
           "status": "pastDue"
         },
         "observationIds": [
-          "obs-dbac8172b00830769d652188353b4d62851eae1beef77781a8c5f4ef4131d05d"
+          "obs-c47a43253274987bb15af19e1b6613f7004242ac7279676fecb107e7d999db9a"
         ],
         "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
         "remediated": false,
@@ -277,7 +277,7 @@
           "status": "open"
         },
         "observationIds": [
-          "obs-ee33af54dd59c492a6b6f0f1f9bb7395c76dd3ed52b6987b77bea9f4c03fb18d"
+          "obs-368234084916415d3f3ca10504c6bfa5467e6862c2441ecced6904530af38569"
         ],
         "rationale": null,
         "remediated": false,
@@ -384,7 +384,7 @@
           "status": "pastDue"
         },
         "observationIds": [
-          "obs-c15514491b1444bedf9a7e1e12767e6d31c03f2e22c1671af6229d5b92bea720"
+          "obs-1f1833ac4c20387535636df8ba36be6ecf6eea80cc88ee4ebe51bd3146f45192"
         ],
         "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
         "remediated": false,
@@ -488,7 +488,7 @@
           "status": "remediated"
         },
         "observationIds": [
-          "obs-3abb7ded51f9d8d11b04165c1c5b5b1e6968556f27b12736724444bcccb36e85"
+          "obs-2e6b882bd6827969fc74657d6af81a9784d0e64c38e7c3e142f408309bea419f"
         ],
         "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
         "remediated": true,
@@ -592,7 +592,7 @@
           "status": "falsePositive"
         },
         "observationIds": [
-          "obs-a5d523acf3e4626fef3983e454167d98fdcbb4436d18dd4ee0522c571a02f45a"
+          "obs-4643e554521c669726dd5e0fb71afe25240be3b49cc0a3d19f439e28850299bb"
         ],
         "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
         "remediated": false,
@@ -669,7 +669,7 @@
         "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
         "kev": null,
         "observationIds": [
-          "obs-7f828b983a0eed4906b1876300403c47211a7b61496ac33c5741b4323db4bc33"
+          "obs-d6750e0bad0027389729da2ffa9f1a88884325092234439485cee32fb37328df"
         ],
         "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
         "remediated": false,
@@ -773,7 +773,7 @@
           "status": "pastDue"
         },
         "observationIds": [
-          "obs-241dad5b2367d88038b33ebd5c92d7a2c869cac56960ce108bb0196e295f9741"
+          "obs-dcbf31d3115f8fb450ccad9ce4a1fee35589c930cc41afc2e812ea1b58535626"
         ],
         "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
         "remediated": false,
@@ -846,7 +846,7 @@
           "status": "pastDue"
         },
         "observationIds": [
-          "obs-3e1b5b69bf4262f5bbd4dbef6d9e3ab920b07ddd8ef7d316a04f632a94696b5f"
+          "obs-cd6cf79195e199e35c66af32a5a8c4798a596b54abbd8f463ac135e8327c0922"
         ],
         "rationale": null,
         "remediated": false,
@@ -923,7 +923,7 @@
         "evaluator": "Example Provider vulnerability team (synthetic KEV fixture)",
         "kev": null,
         "observationIds": [
-          "obs-0df6ddaafb71230d0fe551d27ae4afb0048cb701206cc1ae5ec82c8d21c8be10"
+          "obs-ba33df3f7ef20a6811a2dea572cf6eb86d71aba285d0dad6dd12734e6455f57e"
         ],
         "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
         "remediated": false,
@@ -946,7 +946,7 @@
         "name": "kev-image-web.sarif",
         "observationCount": 10,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "37776a3ba338f102504df2734d8f89c084f89e538ea885946cb3ff1f0706fd33",
         "sizeBytes": 20447
       },
@@ -954,7 +954,7 @@
         "name": "kev-image-worker.sarif",
         "observationCount": 1,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "facea1dd3b8d005b3d768a55e82b468096a82e5d7c916ab2c091586162ae6e57",
         "sizeBytes": 2950
       }
@@ -993,7 +993,7 @@
       "sizeBytes": 8753
     },
     "parserVersions": {
-      "complyroll.sarif": "1"
+      "complyroll.sarif": "2"
     },
     "rulesSource": {
       "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",

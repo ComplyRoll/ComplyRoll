@@ -44,7 +44,7 @@
 - **Description:** CVE-2099-0006: example-cron: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-e6be6b137e1d8f189549f2d89528da85f1f58cb8d26a3f3de67515e6df2ad660
+- **Observations:** obs-236ab0190434375c821e5838513cf614bb0cbb2fa093d6a0bb7828e76f059aee
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/etc/example-cron/release
 - **Source identifiers:** CVE-2099-0006
 - **Known exploited:** CVE-2099-0006 (added 2026-08-10, due 2026-08-31, ransomware use Unknown, forensic triage No); the clock follows CVE-2099-0006, due date 2026-08-31 ended 2026-09-01T00:00:00Z; accepted, past due
@@ -73,8 +73,8 @@ Every reported vulnerability carried a detection time from its source artifact. 
 
 | Artifact | SHA-256 | Parser | Observations |
 |---|---|---|---:|
-| kev-image-web.sarif | 37776a3ba338 | complyroll.sarif 1 | 10 |
-| kev-image-worker.sarif | facea1dd3b8d | complyroll.sarif 1 | 1 |
+| kev-image-web.sarif | 37776a3ba338 | complyroll.sarif 2 | 10 |
+| kev-image-worker.sarif | facea1dd3b8d | complyroll.sarif 2 | 1 |
 
 ## Diagnostics
 

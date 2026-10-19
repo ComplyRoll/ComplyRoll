@@ -89,7 +89,7 @@
             "status": "accepted"
           },
           "observationIds": [
-            "obs-e6be6b137e1d8f189549f2d89528da85f1f58cb8d26a3f3de67515e6df2ad660"
+            "obs-236ab0190434375c821e5838513cf614bb0cbb2fa093d6a0bb7828e76f059aee"
           ],
           "rationale": "SYNTHETIC. The service is internal only and the flaw needs local access, so reachability is ruled out and exploitation stays plausible.",
           "remediated": false,
@@ -119,7 +119,7 @@
         "name": "kev-image-web.sarif",
         "observationCount": 10,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "37776a3ba338f102504df2734d8f89c084f89e538ea885946cb3ff1f0706fd33",
         "sizeBytes": 20447
       },
@@ -127,7 +127,7 @@
         "name": "kev-image-worker.sarif",
         "observationCount": 1,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "facea1dd3b8d005b3d768a55e82b468096a82e5d7c916ab2c091586162ae6e57",
         "sizeBytes": 2950
       }
@@ -160,7 +160,7 @@
       "sizeBytes": 8753
     },
     "parserVersions": {
-      "complyroll.sarif": "1"
+      "complyroll.sarif": "2"
     },
     "rulesSource": {
       "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",

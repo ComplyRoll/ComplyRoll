@@ -698,7 +698,8 @@ so this parser reads them differently under the same `SARIF_PARSER_VERSION`, `1`
 PR 1 of this record already did. ADR 0002 makes the parser version an identity input precisely
 so that a changed reading is a new fact. No released build carries the SARIF adapter (0.3.0a0
 predates it), so only a store built from main since 2026-09-22 can hold an older reading; bumping
-the version is left for a decision before the first release that ships SARIF. Meanwhile the ingest
+the version was left for a decision before the first release that ships SARIF, and was made on
+2026-10-19 (ADR 0011 amendment of that date). Meanwhile the ingest
 writer refuses, as `history_invalid`, to resume an artifact stream whose head declared another
 observation count than this parser reads from the same bytes. It used to append the difference,
 and the stream then held more observations than its head declared, so every later rebuild

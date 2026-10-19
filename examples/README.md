@@ -319,7 +319,7 @@ image) and `case-889c19760e425785` (CVE-2024-0002), the inputs table names the p
 diagnostics record that the five Trivy results folded into three observations:
 
 ```text
-| trivy-image.sarif | 5ec28341654c | complyroll.sarif 1 | 3 |
+| trivy-image.sarif | 5ec28341654c | complyroll.sarif 2 | 3 |
 ```
 
 ```text
@@ -334,7 +334,7 @@ observed at the invocation's start) and nothing for a report to list; the inputs
 and the diagnostics keep the `run_clean` note:
 
 ```text
-| clean-run.sarif | ee91754fbc49 | complyroll.sarif 1 | 1 |
+| clean-run.sarif | ee91754fbc49 | complyroll.sarif 2 | 1 |
 ```
 
 ```text
@@ -963,8 +963,8 @@ finding was read:
 | Artifact | SHA-256 | Parser | Class | Observed at | Clock | Tracking ID |
 |---|---|---|---|---|---|---|
 | failed-invalid-rules.cklb | f51e7b762495 | complyroll.cklb 1 | content | 2026-08-21T12:00:00Z | as-of | case-088261de64a0133c |
-| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 1 | execution | 2026-08-04T10:00:00Z | invocation | case-f03af85468885cad |
-| failed-truncated.sarif | a8aca932d8fc | complyroll.sarif 1 | parse | 2026-08-21T12:00:00Z | as-of | case-d3bb8e4fb3b61a5f |
+| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 2 | execution | 2026-08-04T10:00:00Z | invocation | case-f03af85468885cad |
+| failed-truncated.sarif | a8aca932d8fc | complyroll.sarif 2 | parse | 2026-08-21T12:00:00Z | as-of | case-d3bb8e4fb3b61a5f |
 ```
 
 Each failure is one vulnerability per failed artifact digest. Its detection time has the source

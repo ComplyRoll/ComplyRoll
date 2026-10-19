@@ -681,3 +681,46 @@ results and a failed invocation mints nothing from this decision, so run 1 of
 `tests/fixtures/failed-invocation.sarif` still carries `run_clean`, `execution_unsuccessful`
 and `no_observations`, and `vdt-failed` and `historical-failed` are byte-identical. No SARIF
 golden moved. The new fixture `tests/fixtures/clean-run.sarif` holds one clocked image run.
+
+## Amendment 2026-10-19: parser version 2, and a location-less result keeps its own resource
+
+`SARIF_PARSER_VERSION` is `"2"`. The parser read the same bytes differently three times under
+`"1"`: the driver and invocation order of the 2026-10-14 follow-up, the clean-run PASS of ADR
+0015 decision 1, and that decision's 2026-10-17 amendment. ADR 0002 makes the parser version an
+identity input precisely so that a changed reading is a new fact, and a store written by an
+earlier build of main could hold readings this parser no longer produces. No release carried the
+adapter (0.3.0a0 predates this record), so the bump costs no user a reading. A log already in a
+store re-ingests as a new artifact stream under version 2, which the ADR 0008 fold supersedes
+the version 1 stream with; correlation links the new observations to the existing cases, because
+a tracking identifier (Decision 2) holds no parser version.
+
+The bump carries one change to Decision 3, which changes identities and so needed it. Before,
+every result with no usable location took `scan:<driver>`, so one CVE that two runs reported
+against two images, results that name `run.logicalLocations` by index alone, and results that
+differ only in `analysisTarget` each folded into one observation that kept the first one's
+evidence, against the domain invariant that per-resource observations are never discarded. Now:
+
+- A logical location whose own `fullyQualifiedName` and `name` are absent reads the entry of
+  `run.logicalLocations` its `index` names (SARIF 3.33.3), as an artifact location reads
+  `run.artifacts`. A fully qualified name, inline first and then indexed, outranks a short name,
+  so two methods named alike in two classes stay two resources. An index past the array names
+  nothing.
+- A result with no usable location takes its `analysisTarget` (3.27.7), resolved exactly as a
+  physical location's `artifactLocation` is: the uri as written or by index into `run.artifacts`,
+  the same image or file scoping, the same identity and `uri_suspicious` checks, and the same
+  `location_uri`, `uri_base_id` and `uri_base` metadata, with INFO `analysis_target_resource`. A
+  result with a usable location never reads it.
+- A result with neither takes the run's scope as ADR 0015 decision 1 scopes a clean run:
+  `image:<image>`, else `scan:<repository uri>`, else `scan:<driver>`, with WARNING
+  `resource_identity_fallback` now reading "result has no usable location or analysis target;
+  the scope the run names is its resource". A log under two filenames still keeps one identity.
+
+Every SARIF observation identifier and fingerprint moves with the version; no tracking
+identifier does. Seven goldens moved by exactly those identifiers and the parser version in
+their provenance (`vdt-sarif`, the three KEV pairs, `vdt-coverage-timed`, `vdt-failed`,
+`historical-failed`), verified by mapping every fixture's version 1 identifiers onto version 2
+and finding no other difference: no fixture has a location-less result in a scoped run, so no
+resource moved. Coverage gains one reading: a location-less result in an image run names the
+image itself, which an inventory entry can match, where `scan:<driver>` matched none. Tests that
+re-read a SARIF fixture under another version now name that version relative to
+`SARIF_PARSER_VERSION`, so the next bump moves only the pinned identifiers and the goldens.

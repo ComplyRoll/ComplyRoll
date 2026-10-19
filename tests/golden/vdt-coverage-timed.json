@@ -34,7 +34,7 @@
         "detectedAtSource": "artifact",
         "evaluator": null,
         "observationIds": [
-          "obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e"
+          "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f"
         ],
         "rationale": null,
         "remediated": false,
@@ -77,7 +77,7 @@
         "detectedAtSource": "artifact",
         "evaluator": null,
         "observationIds": [
-          "obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b"
+          "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df"
         ],
         "rationale": null,
         "remediated": false,
@@ -101,7 +101,7 @@
         "name": "clean-run.sarif",
         "observationCount": 1,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "ee91754fbc49a575b46ed7cf7b11d118ec457a41d6bd8ef640b92956682e4c19",
         "sizeBytes": 1227
       },
@@ -109,7 +109,7 @@
         "name": "codeql-repo.sarif",
         "observationCount": 3,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "bf5a9a4d1bbb530ac3a7c1759cd40a77c8d8c1a1cda0ab2634b4f46deb8a5bb9",
         "sizeBytes": 9419
       }
@@ -141,7 +141,7 @@
                 "at": "2026-09-01T02:00:00.123456Z",
                 "disposition": "open",
                 "kind": "observation",
-                "observationId": "obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e",
+                "observationId": "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f",
                 "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
                 "resourceType": "file"
               },
@@ -159,7 +159,7 @@
                 "at": "2026-09-01T02:00:00.123456Z",
                 "disposition": "open",
                 "kind": "observation",
-                "observationId": "obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e",
+                "observationId": "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f",
                 "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
                 "resourceType": "file"
               },
@@ -219,7 +219,7 @@
                 "at": "2026-09-01T02:00:00.123456Z",
                 "disposition": "open",
                 "kind": "observation",
-                "observationId": "obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b",
+                "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
                 "resourceId": "https://github.com/example/webapp/src/ui/render.js",
                 "resourceType": "file"
               },
@@ -307,7 +307,7 @@
                 "at": "2026-09-01T02:00:00.123456Z",
                 "disposition": "open",
                 "kind": "observation",
-                "observationId": "obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b",
+                "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
                 "resourceId": "https://github.com/example/webapp/src/ui/render.js",
                 "resourceType": "file"
               },
@@ -325,7 +325,7 @@
                 "at": "2026-09-01T02:00:00.123456Z",
                 "disposition": "open",
                 "kind": "observation",
-                "observationId": "obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b",
+                "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
                 "resourceId": "https://github.com/example/webapp/src/ui/render.js",
                 "resourceType": "file"
               },
@@ -343,7 +343,7 @@
                 "at": "2026-09-01T02:00:00.123456Z",
                 "disposition": "open",
                 "kind": "observation",
-                "observationId": "obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b",
+                "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
                 "resourceId": "https://github.com/example/webapp/src/ui/render.js",
                 "resourceType": "file"
               },
@@ -384,7 +384,7 @@
                 "at": "2026-08-05T10:00:00Z",
                 "disposition": "pass",
                 "kind": "observation",
-                "observationId": "obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2",
+                "observationId": "obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",
                 "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
                 "resourceType": "image"
               },
@@ -402,7 +402,7 @@
                 "at": "2026-08-05T10:00:00Z",
                 "disposition": "pass",
                 "kind": "observation",
-                "observationId": "obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2",
+                "observationId": "obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",
                 "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
                 "resourceType": "image"
               },
@@ -501,7 +501,7 @@
             "at": "2026-08-05T10:00:00Z",
             "disposition": "pass",
             "kind": "observation",
-            "observationId": "obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2",
+            "observationId": "obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",
             "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
             "resourceType": "image"
           },
@@ -519,7 +519,7 @@
             "at": "2026-08-05T10:00:00Z",
             "disposition": "pass",
             "kind": "observation",
-            "observationId": "obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2",
+            "observationId": "obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",
             "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
             "resourceType": "image"
           },
@@ -559,7 +559,7 @@
       "version": "0.3.0a0"
     },
     "parserVersions": {
-      "complyroll.sarif": "1"
+      "complyroll.sarif": "2"
     },
     "rulesSource": {
       "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",

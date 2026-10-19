@@ -48,7 +48,7 @@
 - **Description:** CVE-2024-0001: requests: header leak on cross-origin redirect
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
-- **Observations without a source timestamp:** obs-d45792aec4765dc6ba636cfdad05efb765b64ea6a165967597bbeec48515645b, obs-25961fc0953d10e352b0ec08de870bbee884908cd0bab7caf25dfe5d25419da5
+- **Observations without a source timestamp:** obs-332bed1a07ff200779b02085e7293e6a5907d1ad5bdd953ffbb55cad87f38037, obs-7f44594825d875616e4d99e73ad97905324212a706139bb36d7dc2d4f768adc7
 - **Affected resources:** image ghcr.io/example/app:1.4.2/app/requirements.txt, image ghcr.io/example/app:1.4.2/usr/lib/python3.12/site-packages/requests-2.31.0.dist-info/METADATA
 - **Source identifiers:** CVE-2024-0001
 - **Evaluation:** not yet completed
@@ -64,7 +64,7 @@
 - **Description:** CVE-2024-0002: musl: out-of-bounds read in wcsnrtombs
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
-- **Observations without a source timestamp:** obs-5ea3291a292bb631cab60a71b119462521b8c0f7d3f3b24768d5118e80da6a26
+- **Observations without a source timestamp:** obs-17a6f60c6eca605a8b959469b9166ce415f52bdc21de05ae25078b79d608c21a
 - **Affected resources:** image ghcr.io/example/app:1.4.2/library/alpine
 - **Source identifiers:** CVE-2024-0002
 - **Evaluation:** not yet completed
@@ -80,7 +80,7 @@
 - **Description:** js/unused-local-variable: Unused variable, import, function or class
 - **Detection source:** CodeQL
 - **Detected at:** 2026-09-01T02:00:00.123456Z (source: artifact)
-- **Observations:** obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e
+- **Observations:** obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f
 - **Affected resources:** file https://github.com/example/webapp/src/ui/helpers.js
 - **Source identifiers:** n/a
 - **Evaluation:** not yet completed
@@ -96,7 +96,7 @@
 - **Description:** js/xss-through-dom: DOM text reinterpreted as HTML
 - **Detection source:** CodeQL
 - **Detected at:** 2026-09-01T02:00:00.123456Z (source: artifact)
-- **Observations:** obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b
+- **Observations:** obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df
 - **Affected resources:** file https://github.com/example/webapp/src/ui/render.js
 - **Source identifiers:** CWE-116, CWE-79
 - **Evaluation:** not yet completed
@@ -112,7 +112,7 @@
 - **Description:** python.lang.security.audit.exec-detected.exec-detected: Semgrep Finding: python.lang.security.audit.exec-detected.exec-detected
 - **Detection source:** Semgrep OSS
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
-- **Observations without a source timestamp:** obs-4d2cecbc01f1d26987474dcc62dfd9181ae535a3801d4497da5df0aa7b750ebf
+- **Observations without a source timestamp:** obs-45e05f930d5f91b636e6d26625044d9b4dd104ec40db9cdb3971697ed4711a66
 - **Affected resources:** file src/app/runner.py
 - **Source identifiers:** CWE-95
 - **Evaluation:** not yet completed
@@ -128,7 +128,7 @@
 - **Description:** python.lang.security.audit.subprocess-shell-true.subprocess-shell-true: Semgrep Finding: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
 - **Detection source:** Semgrep OSS
 - **Detected at:** 2026-09-01T00:00:00Z (source: attestation)
-- **Observations without a source timestamp:** obs-1c709c8cf32997e15f0d08ebae8d1234f40af69b2b30fdcc139ee27093b2d4d1
+- **Observations without a source timestamp:** obs-b6143153ace3697d49767f66473c0fa68ceab73dec61df50b03c6c3e77376dfc
 - **Affected resources:** file src/app/tasks.py
 - **Source identifiers:** CWE-78
 - **Evaluation:** not yet completed
@@ -147,9 +147,9 @@ The operator attested a detection time of 2026-09-01T00:00:00Z for 4 vulnerabili
 
 | Artifact | SHA-256 | Parser | Observations |
 |---|---|---|---:|
-| codeql-repo.sarif | bf5a9a4d1bbb | complyroll.sarif 1 | 3 |
-| semgrep-code.sarif | 1a19d26f7975 | complyroll.sarif 1 | 2 |
-| trivy-image.sarif | 5ec28341654c | complyroll.sarif 1 | 3 |
+| codeql-repo.sarif | bf5a9a4d1bbb | complyroll.sarif 2 | 3 |
+| semgrep-code.sarif | 1a19d26f7975 | complyroll.sarif 2 | 2 |
+| trivy-image.sarif | 5ec28341654c | complyroll.sarif 2 | 3 |
 
 ## Diagnostics
 

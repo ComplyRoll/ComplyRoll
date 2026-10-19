@@ -20,6 +20,7 @@ from complyroll.adapters.failures import (
     classify_ingest,
     system_observation_for,
 )
+from complyroll.adapters.sarif import SARIF_PARSER_VERSION
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.models import (
     CaseStatus,
@@ -3355,7 +3356,7 @@ class DetectionFailureRecordTests(unittest.TestCase):
                     "sha256": INVOCATION_SHA256,
                     "sizeBytes": 1756,
                     "parser": "complyroll.sarif",
-                    "parserVersion": "1",
+                    "parserVersion": SARIF_PARSER_VERSION,
                     "failureClass": "execution",
                     "failureCodes": ["execution_unsuccessful"],
                     "observedAt": "2026-08-04T10:00:00Z",
@@ -3367,7 +3368,7 @@ class DetectionFailureRecordTests(unittest.TestCase):
                     "sha256": TRUNCATED_SHA256,
                     "sizeBytes": 486,
                     "parser": "complyroll.sarif",
-                    "parserVersion": "1",
+                    "parserVersion": SARIF_PARSER_VERSION,
                     "failureClass": "parse",
                     "failureCodes": ["artifact_parse_failed"],
                     "observedAt": "2026-08-21T12:00:00Z",
@@ -3519,9 +3520,11 @@ class DetectionFailureRecordTests(unittest.TestCase):
             "|---|---|---|---|---|---|---|\n"
             "| failed-invalid-rules.cklb | f51e7b762495 | complyroll.cklb 1 | content "
             f"| 2026-08-21T12:00:00Z | as-of | {INVALID_RULES_CASE} |\n"
-            "| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 1 | execution "
+            f"| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif {SARIF_PARSER_VERSION} "
+            "| execution "
             f"| 2026-08-04T10:00:00Z | invocation | {INVOCATION_CASE} |\n"
-            "| failed-truncated.sarif | a8aca932d8fc | complyroll.sarif 1 | parse "
+            f"| failed-truncated.sarif | a8aca932d8fc | complyroll.sarif {SARIF_PARSER_VERSION} "
+            "| parse "
             f"| 2026-08-21T12:00:00Z | as-of | {TRUNCATED_CASE} |\n",
             inputs,
         )
@@ -4229,7 +4232,7 @@ class GoldenFailedVdtReportTests(unittest.TestCase):
                 "complyroll.ckl": "1",
                 "complyroll.cklb": "1",
                 "complyroll.detection-failures": "1",
-                "complyroll.sarif": "1",
+                "complyroll.sarif": SARIF_PARSER_VERSION,
                 "complyroll.xccdf": "1",
             },
         )
@@ -4472,7 +4475,7 @@ class GoldenFailedHistoricalReportTests(unittest.TestCase):
                 "complyroll.ckl": "1",
                 "complyroll.cklb": "1",
                 "complyroll.detection-failures": "1",
-                "complyroll.sarif": "1",
+                "complyroll.sarif": SARIF_PARSER_VERSION,
                 "complyroll.xccdf": "1",
             },
         )

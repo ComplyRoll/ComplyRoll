@@ -35,6 +35,7 @@ from complyroll.adapters import (
     classify_ingest,
     ingest_stig_artifact,
 )
+from complyroll.adapters.sarif import SARIF_PARSER_VERSION
 from complyroll.cli import main
 from complyroll.events import (
     FAILURE_STREAM_SCHEMA_VERSION,
@@ -54,6 +55,10 @@ from complyroll.history import (
 from complyroll.models import Observation
 from complyroll.reports import vdt as vdt_module
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
+
+# Versions after the shipped SARIF parser, for a fixture re-read under another version.
+SARIF_NEXT = str(int(SARIF_PARSER_VERSION) + 1)
+SARIF_AFTER_NEXT = str(int(SARIF_PARSER_VERSION) + 2)
 
 REPO_ROOT = Path(__file__).parent.parent
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
@@ -2043,7 +2048,9 @@ class PersistedSarifRoundTripTests(PersistedStoreTestCase):
             [item["providerTrackingId"] for item in document["vulnerabilities"]],
             ["case-04716522daa6f550", "case-d2b9f5abf1fe44ac"],
         )
-        self.assertEqual(document["x-complyroll"]["parserVersions"], {"complyroll.sarif": "1"})
+        self.assertEqual(
+            document["x-complyroll"]["parserVersions"], {"complyroll.sarif": SARIF_PARSER_VERSION}
+        )
         self.assertIsNone(document["x-complyroll"]["detectionTimeAttestation"])
 
     def test_the_persisted_sarif_report_validates_against_the_official_schema(self) -> None:
@@ -2157,7 +2164,9 @@ class CleanSarifLogTests(PersistedStoreTestCase):
         self.assertEqual(persisted.read_bytes(), stateless.read_bytes())
         document = json.loads(stateless.read_text(encoding="utf-8"))
         self.assertEqual(document["vulnerabilities"], [])
-        self.assertEqual(document["x-complyroll"]["parserVersions"], {"complyroll.sarif": "1"})
+        self.assertEqual(
+            document["x-complyroll"]["parserVersions"], {"complyroll.sarif": SARIF_PARSER_VERSION}
+        )
 
     def test_the_stateless_report_with_the_flag_exits_zero_and_records_nothing(self) -> None:
         output = self.workspace / "report.json"
@@ -2820,7 +2829,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertIs(classification.failure_class, FailureClass.EXECUTION)
         return path
 
-    def refusal(self, holder: str, name: str, under: str = "complyroll.sarif 1") -> str:
+    def refusal(
+        self, holder: str, name: str, under: str = f"complyroll.sarif {SARIF_PARSER_VERSION}"
+    ) -> str:
         """Return the line `ingest` refuses a failure with, the installed parser's by default."""
 
         return (
@@ -2829,7 +2840,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             f"nothing was recorded [{name}]"
         )
 
-    def held_warning(self, holder: str, name: str, under: str = "complyroll.sarif 1") -> str:
+    def held_warning(
+        self, holder: str, name: str, under: str = f"complyroll.sarif {SARIF_PARSER_VERSION}"
+    ) -> str:
         """Return the WARNING `ingest` names the stream holding a failure it records as a hold."""
 
         return (
@@ -3170,19 +3183,20 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
     def test_a_side_record_another_stream_holds_records_its_reading_and_names_the_holder(
         self,
     ) -> None:
-        # Version 2 reads the log a version 1 run recorded, so its reading is a new artifact
-        # stream while its failed invocation is the system observation version 1's side
-        # record holds. The failure is recorded as a hold on version 2's own failure stream:
-        # stdout names the holder after the class, and the WARNING follows the notice.
-        def read_by_version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
-            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+        # The next version reads the log a run of the installed version recorded, so its
+        # reading is a new artifact stream while its failed invocation is the system
+        # observation the installed version's side record holds. The failure is recorded as a
+        # hold on the next version's own failure stream: stdout names the holder after the
+        # class, and the WARNING follows the notice.
+        def read_by_the_next_version(path: Path, *, ingested_at: datetime) -> IngestResult:
+            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), SARIF_NEXT)
 
         self.assertEqual(self.ingest_flagged(INVOCATION_FIXTURE)[0], 3)
         (holder,) = [
             record.stream_id for record in self.records() if record.event_type == "failure.recorded"
         ]
 
-        with patch.object(cli_module, "ingest_stig_artifact", read_by_version_2):
+        with patch.object(cli_module, "ingest_stig_artifact", read_by_the_next_version):
             code, out, err = self.ingest_flagged(INVOCATION_FIXTURE)
 
         self.assertEqual(code, 3)
@@ -3195,7 +3209,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             ],
         )
         lines = err.splitlines()
-        warning = self.held_warning(holder, "failed-invocation.sarif", under="complyroll.sarif 2")
+        warning = self.held_warning(
+            holder, "failed-invocation.sarif", under=f"complyroll.sarif {SARIF_NEXT}"
+        )
         notices = [
             index
             for index, line in enumerate(lines)
@@ -3209,11 +3225,11 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
                 for record in self.records()
                 if record.event_type == "artifact.ingested"
             ),
-            ["complyroll.sarif/1", "complyroll.sarif/2"],
+            sorted([f"complyroll.sarif/{SARIF_PARSER_VERSION}", f"complyroll.sarif/{SARIF_NEXT}"]),
         )
+        hold = f"{holder.removesuffix(SARIF_PARSER_VERSION)}{SARIF_NEXT}"
         self.assertEqual(
-            self.failure_streams(),
-            [("failure.recorded", holder), ("failure.held", f"{holder[:-1]}2")],
+            self.failure_streams(), [("failure.recorded", holder), ("failure.held", hold)]
         )
         self.assertEqual(self.schema_version(), HELD_FAILURE_SCHEMA_VERSION)
 
@@ -3222,20 +3238,22 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         # `already_recorded`, so a pipeline sees the hold on every run. A rerun of the
         # holder's own reading is a rerun of a recorded failure and stays silent (ADR 0014,
         # amendment 2026-10-13).
-        def read_by_version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
-            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+        def read_by_the_next_version(path: Path, *, ingested_at: datetime) -> IngestResult:
+            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), SARIF_NEXT)
 
         self.assertEqual(self.ingest_flagged(INVOCATION_FIXTURE)[0], 3)
         ((_, holder),) = self.failure_streams()
-        warning = self.held_warning(holder, "failed-invocation.sarif", under="complyroll.sarif 2")
-        with patch.object(cli_module, "ingest_stig_artifact", read_by_version_2):
+        warning = self.held_warning(
+            holder, "failed-invocation.sarif", under=f"complyroll.sarif {SARIF_NEXT}"
+        )
+        with patch.object(cli_module, "ingest_stig_artifact", read_by_the_next_version):
             self.assertEqual(self.ingest_flagged(INVOCATION_FIXTURE)[0], 3)
         streams = self.failure_streams()
         self.assertEqual([head for head, _ in streams], ["failure.recorded", "failure.held"])
         before = self.database.read_bytes()
 
         for label, reader, warned in (
-            ("the held reading", read_by_version_2, True),
+            ("the held reading", read_by_the_next_version, True),
             ("the holder's reading", ingest_stig_artifact, False),
         ):
             with self.subTest(label):
@@ -3256,9 +3274,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         """Write a side record whose own reading supersedes the failure holding it.
 
         Version 0 of the installed parser failed to parse the log at the golden instant.
-        Version 1 reads it there, and its failed invocation declares no clock, so the side
-        record derives the system observation version 0's failure holds. Its own artifact
-        then supersedes that failure under R3, and R4 keeps the side record current.
+        The installed version reads it there, and its failed invocation declares no clock, so
+        the side record derives the system observation version 0's failure holds. Its own
+        artifact then supersedes that failure under R3, and R4 keeps the side record current.
         """
 
         side = self.clockless_side_record()
@@ -3274,10 +3292,10 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self,
     ) -> None:
         # The run's own artifact supersedes version 0's parse failure under R3, and R4 keeps
-        # the side record standing, so its hold carries the failure: the report names version
-        # 1's failure at the golden instant (ADR 0014, amendment 2026-10-13).
+        # the side record standing, so its hold carries the failure: the report names the
+        # installed version's failure at the golden instant (ADR 0014, amendment 2026-10-13).
         side, holder = self.superseded_parse_holder()
-        hold = f"{holder[:-1]}1"
+        hold = f"{holder[:-1]}{SARIF_PARSER_VERSION}"
 
         code, out, err = self.ingest_flagged(side)
 
@@ -3296,9 +3314,12 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             self.failure_streams(), [("failure.recorded", holder), ("failure.held", hold)]
         )
         extension = self.persisted()
-        self.assertEqual([item["parserVersion"] for item in extension["artifacts"]], ["1"])
         self.assertEqual(
-            self.entries(extension), [("complyroll.sarif", "1", "execution", INGESTED_AT)]
+            [item["parserVersion"] for item in extension["artifacts"]], [SARIF_PARSER_VERSION]
+        )
+        self.assertEqual(
+            self.entries(extension),
+            [("complyroll.sarif", SARIF_PARSER_VERSION, "execution", INGESTED_AT)],
         )
         self.assertIn(("failure_superseded", holder), self.codes(extension))
         before = self.database.read_bytes()
@@ -3313,7 +3334,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(self.database.read_bytes(), before)
         self.assertEqual(
             self.entries(self.persisted(as_of=self.LATER)),
-            [("complyroll.sarif", "1", "execution", INGESTED_AT)],
+            [("complyroll.sarif", SARIF_PARSER_VERSION, "execution", INGESTED_AT)],
         )
 
     def test_a_held_side_record_with_a_declared_clock_is_recorded_as_a_hold_at_any_as_of(
@@ -3328,7 +3349,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             parser_version="0",
             at=datetime(2026, 8, 4, 10, tzinfo=UTC),
         )
-        hold = f"{holder[:-1]}1"
+        hold = f"{holder[:-1]}{SARIF_PARSER_VERSION}"
         expected = {
             INGESTED_AT: [
                 "failed-invocation.sarif: recorded 1 observation(s)",
@@ -3353,7 +3374,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
 
         self.assertEqual(
             self.entries(self.persisted()),
-            [("complyroll.sarif", "1", "execution", "2026-08-04T10:00:00Z")],
+            [("complyroll.sarif", SARIF_PARSER_VERSION, "execution", "2026-08-04T10:00:00Z")],
         )
         out, _ = self.succeeds(
             ["ingest", str(INVOCATION_FIXTURE), "--db", str(self.database), "--as-of", INGESTED_AT]
@@ -3363,10 +3384,11 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
     def test_a_held_failure_whose_holder_a_newer_reading_superseded_is_carried_by_its_hold(
         self,
     ) -> None:
-        # Version 0.2 read the bytes after version 0.1 failed on them, so nothing keeps
-        # version 1's failure out before the writes. Its system observation is version 0.1's,
-        # which the 0.2 reading supersedes, so the hold carries the failure, and R2 retires
-        # the 0.2 reading in its favour as it would a recorded failure at version 1.
+        # Version 0.2 read the bytes after version 0.1 failed on them, so nothing keeps the
+        # installed version's failure out before the writes. Its system observation is version
+        # 0.1's, which the 0.2 reading supersedes, so the hold carries the failure, and R2
+        # retires the 0.2 reading in its favour as it would a recorded failure at the installed
+        # version.
         holder = self.record_failed_reading(parser_version="0.1")
         reading = self.record_reading(parser_name="complyroll.sarif", parser_version="0.2")
 
@@ -3380,9 +3402,12 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertIn(self.held_warning(holder, "failed-truncated.sarif"), err.splitlines())
         self.assertNotIn("error:", err)
         extension = self.persisted()
-        self.assertEqual(self.entries(extension), [("complyroll.sarif", "1", "parse", INGESTED_AT)])
+        self.assertEqual(
+            self.entries(extension),
+            [("complyroll.sarif", SARIF_PARSER_VERSION, "parse", INGESTED_AT)],
+        )
         self.assertIn(
-            "failed under the newer complyroll.sarif 1;",
+            f"failed under the newer complyroll.sarif {SARIF_PARSER_VERSION};",
             self.message(extension, "artifact_superseded_by_failure", reading),
         )
         self.assertIn(("failure_superseded", holder), self.codes(extension))
@@ -3457,9 +3482,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self,
     ) -> None:
         # R4 supersedes version 0.1's execution failure by the clean 0.2 reading, and nothing
-        # reads the bytes cleanly at version 1, so the hold carries the failure and R2 retires
-        # the 0.2 reading. The log declares its clock, so a run at another `--as-of` is a
-        # rerun, and without the flag its ERRORs stop the run as they always have.
+        # reads the bytes cleanly at the installed version, so the hold carries the failure and
+        # R2 retires the 0.2 reading. The log declares its clock, so a run at another `--as-of`
+        # is a rerun, and without the flag its ERRORs stop the run as they always have.
         failed = self.held_execution_failure()
         holder = self.record_failed_reading(parser_version="0.1", path=failed)
         reading = self.record_reading(
@@ -3476,10 +3501,10 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         extension = self.persisted()
         self.assertEqual(
             self.entries(extension),
-            [("complyroll.sarif", "1", "execution", "2026-08-21T09:30:00Z")],
+            [("complyroll.sarif", SARIF_PARSER_VERSION, "execution", "2026-08-21T09:30:00Z")],
         )
         self.assertIn(
-            "failed under the newer complyroll.sarif 1;",
+            f"failed under the newer complyroll.sarif {SARIF_PARSER_VERSION};",
             self.message(extension, "artifact_superseded_by_failure", reading),
         )
         self.assertIn(("failure_superseded", holder), self.codes(extension))
@@ -3506,9 +3531,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(self.database.read_bytes(), before)
 
     def test_a_held_failure_its_bytes_supersede_at_birth_keeps_the_warning(self) -> None:
-        # A clean reading under version 2 supersedes the side record's failure at birth under
-        # R4, so no report carries it whoever holds it. It is recorded as a hold all the same
-        # and is superseded from the start, as a recorded side record would be.
+        # A clean reading under the next version supersedes the side record's failure at birth
+        # under R4, so no report carries it whoever holds it. It is recorded as a hold all the
+        # same and is superseded from the start, as a recorded side record would be.
         side = self.clockless_side_record()
         holder = self.record_parse_failure(
             side,
@@ -3516,7 +3541,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             parser_version="0",
             at=datetime(2026, 8, 21, 12, tzinfo=UTC),
         )
-        self.record_reading(parser_name="complyroll.sarif", parser_version="2", path=side)
+        self.record_reading(parser_name="complyroll.sarif", parser_version=SARIF_NEXT, path=side)
 
         code, out, err = self.ingest_flagged(side)
 
@@ -3531,17 +3556,19 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertIn(self.held_warning(holder, "no-clock.sarif"), err.splitlines())
         extension = self.persisted()
         self.assertEqual(self.entries(extension), [])
-        self.assertIn(("failure_superseded", f"{holder[:-1]}1"), self.codes(extension))
+        self.assertIn(
+            ("failure_superseded", f"{holder[:-1]}{SARIF_PARSER_VERSION}"), self.codes(extension)
+        )
 
     def test_a_held_failure_whose_holder_stays_current_keeps_the_warning(self) -> None:
-        # Version 2's parse failure is newer than the reading, so it stays current and R2
-        # supersedes the reading instead: the report carries the holder's failure. The side
+        # The next version's parse failure is newer than the reading, so it stays current and
+        # R2 supersedes the reading instead: the report carries the holder's failure. The side
         # record's failure is recorded as a hold, dormant beneath it, and the report names it.
         side = self.clockless_side_record()
         holder = self.record_parse_failure(
             side,
             parser_name="complyroll.sarif",
-            parser_version="2",
+            parser_version=SARIF_NEXT,
             at=datetime(2026, 8, 21, 12, tzinfo=UTC),
         )
 
@@ -3571,8 +3598,11 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         report, _ = self.report()
         extension = json.loads(report)["x-complyroll"]
         self.assertIn(("artifact_superseded_by_failure", reading), self.codes(extension))
-        self.assertIn(("failure_held", f"{holder[:-1]}1"), self.codes(extension))
-        self.assertEqual(self.entries(extension), [("complyroll.sarif", "2", "parse", INGESTED_AT)])
+        hold = f"{holder.removesuffix(SARIF_NEXT)}{SARIF_PARSER_VERSION}"
+        self.assertIn(("failure_held", hold), self.codes(extension))
+        self.assertEqual(
+            self.entries(extension), [("complyroll.sarif", SARIF_NEXT, "parse", INGESTED_AT)]
+        )
 
     def test_a_run_that_fails_after_its_hold_leaves_the_store_and_its_directory_as_they_were(
         self,
@@ -3736,7 +3766,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
                         for line in err.splitlines()
                         if line.startswith("warning: failure_held_by_another_stream: ")
                     ],
-                    [self.held_warning(holder, "b.sarif")],
+                    [self.held_warning(holder, "b.sarif", under="complyroll.sarif 1")],
                 )
                 self.assertEqual(
                     self.failure_streams(), [("failure.recorded", holder), ("failure.held", hold)]
@@ -3781,9 +3811,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             [self.held_warning(holder, "a.sarif"), self.held_warning(holder, "b.sarif")],
         )
         self.assertNotIn("error:", err)
+        hold = f"{holder[:-1]}{SARIF_PARSER_VERSION}"
         self.assertEqual(
-            self.failure_streams(),
-            [("failure.recorded", holder), ("failure.held", f"{holder[:-1]}1")],
+            self.failure_streams(), [("failure.recorded", holder), ("failure.held", hold)]
         )
 
     def test_a_rerun_of_a_failure_recorded_at_another_instant_is_not_a_hold(self) -> None:
@@ -3809,13 +3839,15 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         holder = self.record_parse_failure(
             side,
             parser_name="complyroll.sarif",
-            parser_version="2",
+            parser_version=SARIF_NEXT,
             at=datetime(2026, 8, 21, 12, tzinfo=UTC),
         )
         code, _, err = self.ingest_flagged(side)
         self.assertEqual(code, 3, msg=err)
         self.assertIn(f"warning: failure_held_by_another_stream: {holder} ", err)
-        self.record_reading(parser_name="complyroll.sarif", parser_version="3", path=side)
+        self.record_reading(
+            parser_name="complyroll.sarif", parser_version=SARIF_AFTER_NEXT, path=side
+        )
         before = self.database.read_bytes()
 
         code, out, err = self.ingest_flagged(side)
@@ -3833,15 +3865,16 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self,
     ) -> None:
         # The hdf reading supersedes the holder under R3 but not the side record's execution
-        # failure under R4, which needs the same parser; the sarif 2 reading recorded before
-        # the first run does, even though the hdf reading has superseded that reading by
-        # then. A rerun finds the hold and names its holder (ADR 0014, amendment 2026-10-13).
+        # failure under R4, which needs the same parser; the next version's sarif reading
+        # recorded before the first run does, even though the hdf reading has superseded that
+        # reading by then. A rerun finds the hold and names its holder (ADR 0014, amendment
+        # 2026-10-13).
         side = self.clockless_side_record()
-        self.record_reading(parser_name="complyroll.sarif", parser_version="2", path=side)
+        self.record_reading(parser_name="complyroll.sarif", parser_version=SARIF_NEXT, path=side)
         holder = self.record_parse_failure(
             side,
             parser_name="complyroll.sarif",
-            parser_version="3",
+            parser_version=SARIF_AFTER_NEXT,
             at=datetime(2026, 8, 21, 12, tzinfo=UTC),
         )
         code, _, err = self.ingest_flagged(side)
@@ -3862,9 +3895,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(self.database.read_bytes(), before)
 
     def test_a_held_pure_failure_a_current_reading_outranks_is_refused_first(self) -> None:
-        # The version 2 reading is current under R1 and outranks version 1, so the rerun is
-        # refused by reading_elsewhere's current-reading check before the writes and never
-        # reaches the hold the first run recorded (ADR 0014 Decisions 11 and 13).
+        # The next version's reading is current under R1 and outranks the installed version, so
+        # the rerun is refused by reading_elsewhere's current-reading check before the writes
+        # and never reaches the hold the first run recorded (ADR 0014 Decisions 11 and 13).
         holder = self.record_failed_reading(parser_version="0.1")
         code, out, err = self.ingest_flagged(TRUNCATED_FIXTURE)
         self.assertEqual(code, 3, msg=err)
@@ -3881,7 +3914,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
                 self.held_warning(holder, "failed-truncated.sarif"),
             ],
         )
-        reading = self.record_reading(parser_name="complyroll.sarif", parser_version="2")
+        reading = self.record_reading(parser_name="complyroll.sarif", parser_version=SARIF_NEXT)
         before = self.database.read_bytes()
 
         code, out, err = self.ingest_flagged(TRUNCATED_FIXTURE)
@@ -3894,11 +3927,11 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(self.database.read_bytes(), before)
 
     def test_a_held_pure_failure_a_superseded_reading_supersedes_at_birth_is_refused(self) -> None:
-        # The sarif 0.7 reading is current under R1 but below version 1, so the current-reading
-        # check finds nothing; the superseded hdf 0.5 reading would still supersede version
-        # 1's parse failure at birth under R3, so the at-birth leg of reading_elsewhere refuses
-        # the rerun before the writes and it never reaches the hold the first run recorded
-        # (ADR 0014 Decisions 11 and 13).
+        # The sarif 0.7 reading is current under R1 but below the installed version, so the
+        # current-reading check finds nothing; the superseded hdf 0.5 reading would still
+        # supersede the installed version's parse failure at birth under R3, so the at-birth
+        # leg of reading_elsewhere refuses the rerun before the writes and it never reaches the
+        # hold the first run recorded (ADR 0014 Decisions 11 and 13).
         holder = self.record_failed_reading(parser_version="0.1")
         code, out, err = self.ingest_flagged(TRUNCATED_FIXTURE)
         self.assertEqual(code, 3, msg=err)
@@ -4028,7 +4061,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
                 path,
                 ingested_at=ingested_at,
                 parser_name="complyroll.sarif",
-                parser_version="2",
+                parser_version=SARIF_NEXT,
                 clean=True,
             )
 
@@ -4045,7 +4078,8 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
                 f"failed-truncated.sarif: recorded detection failure (parse), held by {holder}\n",
             )
             self.assertEqual(
-                self.entries(self.persisted()), [("complyroll.sarif", "1", "parse", INGESTED_AT)]
+                self.entries(self.persisted()),
+                [("complyroll.sarif", SARIF_PARSER_VERSION, "parse", INGESTED_AT)],
             )
 
         with self.subTest("a side record whose holder a later ingest superseded"):
@@ -4138,8 +4172,8 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         # Decision 15's fifth condition, read from the store for history written from the
         # amendment on: the digests with a `failure.held` stream are exactly the digests some
         # run warned `failure_held_by_another_stream` for (ADR 0014, amendment 2026-10-13).
-        def version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
-            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+        def newer(path: Path, *, ingested_at: datetime) -> IngestResult:
+            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), SARIF_NEXT)
 
         digests = {
             Path(path).name: hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -4147,9 +4181,9 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         }
         runs = (
             ("the golden failures", ingest_stig_artifact, FAILED_ARTIFACTS, INGESTED_AT, False),
-            ("a newer parser, one instant", version_2, (INVOCATION_FIXTURE,), INGESTED_AT, True),
-            ("its rerun", version_2, (INVOCATION_FIXTURE,), INGESTED_AT, True),
-            ("a newer parser, another instant", version_2, (TRUNCATED_FIXTURE,), self.LATER, False),
+            ("a newer parser, one instant", newer, (INVOCATION_FIXTURE,), INGESTED_AT, True),
+            ("its rerun", newer, (INVOCATION_FIXTURE,), INGESTED_AT, True),
+            ("a newer parser, another instant", newer, (TRUNCATED_FIXTURE,), self.LATER, False),
         )
         warned_for: set[str] = set()
         for label, reader, artifacts, as_of, warns in runs:
@@ -4176,13 +4210,13 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         self.assertEqual(warned_for, {digests[INVOCATION_FIXTURE.name]})
 
     def test_only_an_older_reading_by_the_same_parser_lets_a_failure_be_recorded(self) -> None:
-        # The installed SARIF parser is version 1. A failure joins history only to replace
-        # an older reading by it, which R2 then supersedes (ADR 0014).
+        # The installed SARIF parser is version `SARIF_PARSER_VERSION`. A failure joins history
+        # only to replace an older reading by it, which R2 then supersedes (ADR 0014).
         for parser_name, parser_version, expected in (
             ("complyroll.sarif", "0", 3),
-            ("complyroll.sarif", "1", 1),
-            ("complyroll.sarif", "1.0", 1),
-            ("complyroll.sarif", "2", 1),
+            ("complyroll.sarif", SARIF_PARSER_VERSION, 1),
+            ("complyroll.sarif", f"{SARIF_PARSER_VERSION}.0", 1),
+            ("complyroll.sarif", SARIF_NEXT, 1),
             ("complyroll.other", "0", 1),
         ):
             with self.subTest(parser=parser_name, version=parser_version):
@@ -4224,10 +4258,11 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             return record
 
         def r2_then_older_version() -> str:
-            # Version 2 read the bytes and version 3 failed on them, so R2 left no reading
-            # current; version 1 failing is still superseded at birth by version 2.
-            reading = self.record_reading(parser_name="complyroll.sarif", parser_version="2")
-            self.record_failed_reading(parser_version="3")
+            # The next version read the bytes and the one after failed on them, so R2 left no
+            # reading current; the installed version failing is still superseded at birth by
+            # the next version.
+            reading = self.record_reading(parser_name="complyroll.sarif", parser_version=SARIF_NEXT)
+            self.record_failed_reading(parser_version=SARIF_AFTER_NEXT)
             return reading
 
         for label, record in (
@@ -5255,7 +5290,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         # is a fault on every event of the stream rather than an exception out of the audit.
         self.populate()
         _, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
-        stream_id = "failure/not-a-digest/complyroll.sarif/1"
+        stream_id = f"failure/not-a-digest/complyroll.sarif/{SARIF_PARSER_VERSION}"
         sequences = self.smuggle_failure(
             stream_id, [("failure.recorded", head), ("observation.recorded", observation)]
         )
@@ -5282,14 +5317,14 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.populate()
         populated = self.database
 
-        def read_by_version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
-            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), "2")
+        def read_by_the_next_version(path: Path, *, ingested_at: datetime) -> IngestResult:
+            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), SARIF_NEXT)
 
         for fixture in (TRUNCATED_FIXTURE, INVOCATION_FIXTURE):
             _, head, observation = self.failed_reading(fixture)
             for parts, stream_id in (
                 (2, f"failure/{head['sha256']}/{head['parserName']}"),
-                (4, f"failure/{head['sha256']}/{head['parserName']}/1/extra"),
+                (4, f"failure/{head['sha256']}/{head['parserName']}/{SARIF_PARSER_VERSION}/extra"),
             ):
                 with self.subTest(fixture=fixture.name, parts=parts):
                     self.copy_store(populated, f"{fixture.stem}-{parts}.db")
@@ -5299,7 +5334,9 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                     )
                     before = self.latest_sequence()
 
-                    with patch.object(cli_module, "ingest_stig_artifact", read_by_version_2):
+                    with patch.object(
+                        cli_module, "ingest_stig_artifact", read_by_the_next_version
+                    ):
                         code, out, err = run(
                             [
                                 "ingest",

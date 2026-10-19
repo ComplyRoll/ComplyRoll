@@ -439,6 +439,19 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- The SARIF parser version is `2` (ADR 0011 amendment of 2026-10-19). Its readings of the same
+  bytes had changed three times under `1`, and the parser version is an identity input (ADR
+  0002), so every SARIF observation identifier and fingerprint moves; tracking identifiers do
+  not, so a log already in a store re-ingests as a new artifact stream whose observations join
+  the existing cases. No release carried the SARIF adapter. With the bump, a result with no
+  usable location keeps its own resource instead of folding into `scan:<driver>`: a logical
+  location that names `run.logicalLocations` by `index` reads that entry, with a fully qualified
+  name outranking a short one; a result's `analysisTarget` names its resource as a physical
+  location would (INFO `analysis_target_resource`); and with neither, the resource is the run's
+  scope, `image:<image>`, else `scan:<repository uri>`, else `scan:<driver>`, as a clean run's is.
+  One CVE reported without a location against two images used to be one observation that kept
+  the first image's evidence alone; it is now two. The goldens moved only by observation
+  identifiers and the parser version.
 - A SARIF log that yields nothing and has a run with no results under an unverified invocation
   (an `executionSuccessful` that is absent, null or not a boolean, or an `invocations` member
   that is not an array) now raises ERROR `clean_run_unverified` beside `no_observations`. The

@@ -71,7 +71,7 @@ _identity_problem = identity_problem
 
 # The parser version is an observation identity input (ADR 0002), so SARIF owns its own:
 # a SARIF correction can never re-mint a CKLB, CKL, or XCCDF observation.
-SARIF_PARSER_VERSION = "1"
+SARIF_PARSER_VERSION = "2"
 SARIF_MEDIA_TYPE = "application/sarif+json"
 SARIF_SOURCE_TYPE = "sarif"
 SARIF_VERSION = "2.1.0"
@@ -283,6 +283,7 @@ class _RunScope:
     extensions: list[Any]
     components: list[tuple[str, Mapping[str, Any]]]
     artifacts: list[Any]
+    logical_locations: list[Any]
     invocations: list[Any]
     original_uri_base_ids: Mapping[str, Any]
     context_key: str
@@ -792,6 +793,33 @@ def _artifact_uri(scope: _RunScope, index: int) -> str:
     return uri
 
 
+# SARIF 3.33.3: a location's logical location can name an entry of run.logicalLocations by
+# index, as the artifact location names run.artifacts. A fully qualified name, inline or
+# indexed, outranks a short name, so two methods named alike in two classes stay apart.
+def _logical_name(scope: _RunScope, entry: Mapping[str, Any]) -> str:
+    """Return a logical location's fully qualified name, else its name, else empty text."""
+    indexed: Mapping[str, Any] | None = None
+    position = _natural(entry.get("index"))
+    if position is not None and position < len(scope.logical_locations):
+        indexed = _mapping(scope.logical_locations[position])
+    for key in ("fullyQualifiedName", "name"):
+        for source in (entry, indexed):
+            if source is not None:
+                name = text_of(source.get(key))
+                if name:
+                    return name
+    return ""
+
+
+def _scope_resource(scope: _RunScope) -> tuple[str, str]:
+    """Return the resource a run's scope names: its image, its repository, else its driver."""
+    if scope.image_name:
+        return RESOURCE_TYPE_IMAGE, scope.image_name
+    if scope.repository_uri:
+        return RESOURCE_TYPE_SCAN, scope.repository_uri
+    return RESOURCE_TYPE_SCAN, scope.driver_name
+
+
 def _base_uri(scope: _RunScope, base_id: str) -> str:
     """Return the uri originalUriBaseIds gives a base id, or empty text, read once."""
     uri = scope.cache.base_uris.get(base_id)
@@ -1228,6 +1256,7 @@ class _ArtifactParse(EvidenceParse):
             extensions=extensions,
             components=components,
             artifacts=_sequence(run.get("artifacts")),
+            logical_locations=_sequence(run.get("logicalLocations")),
             invocations=invocations,
             original_uri_base_ids=_mapping(run.get("originalUriBaseIds")) or {},
             context_key=context_key,
@@ -1284,12 +1313,7 @@ class _ArtifactParse(EvidenceParse):
             self.diagnostics.add_fixed(missing_time_diagnostic(self.artifact))
         # The scope the run names is the resource, so clean runs of two repositories by one
         # driver never fold into one record that keeps only the first repository's evidence.
-        if scope.image_name:
-            resource_type, resource_id = RESOURCE_TYPE_IMAGE, scope.image_name
-        elif scope.repository_uri:
-            resource_type, resource_id = RESOURCE_TYPE_SCAN, scope.repository_uri
-        else:
-            resource_type, resource_id = RESOURCE_TYPE_SCAN, scope.driver_name
+        resource_type, resource_id = _scope_resource(scope)
         candidate = _Candidate(
             order=(
                 _NO_REGION,
@@ -1479,17 +1503,22 @@ class _ArtifactParse(EvidenceParse):
 
         hits = self._locations(scope, result, path)
         if not hits:
+            target = self._analysis_target(scope, result, path)
+            if target is not None:
+                hits = {(target.resource_type, target.resource_id): target}
+        if not hits:
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
                 "resource_identity_fallback",
-                "result has no usable location; the driver name is the scan resource",
+                "result has no usable location or analysis target; the scope the run names "
+                "is its resource",
                 path,
             )
-            hits = {
-                (RESOURCE_TYPE_SCAN, scope.driver_name): _Hit(
-                    RESOURCE_TYPE_SCAN, scope.driver_name, [], [], {}, [], set()
-                )
-            }
+            # Scoped as a clean run is, so results of two images or two repositories by
+            # one driver stay two observations instead of folding into the first one's.
+            resource_type, resource_id = _scope_resource(scope)
+            fallback = _Hit(resource_type, resource_id, [], [], {}, [], set())
+            hits = {(resource_type, resource_id): fallback}
         for (resource_type, resource_id), hit in hits.items():
             first_region = min((key for key, _text in hit.regions), default=_NO_REGION)
             candidate_scalars = {**scalars, **hit.scalars}
@@ -1749,16 +1778,6 @@ class _ArtifactParse(EvidenceParse):
         truncated: set[str] = set()
         physical = _mapping(location.get("physicalLocation"))
         artifact_location = _mapping(physical.get("artifactLocation")) if physical else None
-        uri = ""
-        # A run artifact's uri is shared by every location that names it by index.
-        memo: dict[str, str | None] | None = None
-        if artifact_location is not None:
-            uri = text_of(artifact_location.get("uri"))
-            if not uri:
-                artifact_index = _natural(artifact_location.get("index"))
-                if artifact_index is not None and artifact_index < len(scope.artifacts):
-                    uri = _artifact_uri(scope, artifact_index)
-                    memo = scope.cache.uri_problems
         region_key, region_text = _region(_mapping(physical.get("region")) if physical else None)
         # The message is cut before its region prefix joins it, so the finished item is at
         # most MAX_LIST_ITEM_CHARS with one marker.
@@ -1776,46 +1795,21 @@ class _ArtifactParse(EvidenceParse):
             entry = _mapping(logical_location)
             if entry is None:
                 continue
-            name = text_of(entry.get("fullyQualifiedName")) or text_of(entry.get("name"))
+            name = _logical_name(scope, entry)
             if name:
                 logical_names.append(name)
 
         scalars: dict[str, str] = {}
-        if uri:
-            uri_path = f"{path}.physicalLocation.artifactLocation.uri"
-            self._require_identity(uri, MAX_URI_CHARS, "location uri", uri_path, memo)
-            verdicts = scope.cache.uri_suspicious if memo is not None else None
-            if verdicts is None:
-                suspicious = _uri_is_suspicious(uri)
-            elif uri in verdicts:
-                suspicious = verdicts[uri]
-            else:
-                suspicious = verdicts[uri] = _uri_is_suspicious(uri)
-            if suspicious:
-                self.diagnostics.add(
-                    DiagnosticLevel.WARNING,
-                    "uri_suspicious",
-                    "location uri has a '..' segment or a '//' prefix; kept verbatim, never opened",
-                    uri_path,
-                )
-            scalars["location_uri"] = uri
-            base_id = text_of(artifact_location.get("uriBaseId")) if artifact_location else ""
-            if base_id:
-                self._scalar(scalars, "uri_base_id", base_id, path, truncated)
-                base_uri = self._uri(
-                    _base_uri(scope, base_id),
-                    "original uri base",
-                    f"{scope.path}.originalUriBaseIds.{base_id}.uri",
-                    scope.cache.uri_problems,
-                )
-                if base_uri:
-                    scalars["uri_base"] = base_uri
-            if scope.image_name:
-                resource_type, resource_id = RESOURCE_TYPE_IMAGE, f"{scope.image_name}/{uri}"
-            elif scope.repository_uri:
-                resource_type, resource_id = RESOURCE_TYPE_FILE, f"{scope.repository_uri}/{uri}"
-            else:
-                resource_type, resource_id = RESOURCE_TYPE_FILE, uri
+        located = self._artifact_resource(
+            scope,
+            artifact_location,
+            f"{path}.physicalLocation.artifactLocation",
+            path,
+            scalars,
+            truncated,
+        )
+        if located is not None:
+            resource_type, resource_id = located
         elif logical_names:
             name = logical_names[0]
             self._require_identity(
@@ -1835,6 +1829,89 @@ class _ArtifactParse(EvidenceParse):
         return _Hit(
             resource_type, resource_id, regions, messages, scalars, list(logical), truncated
         )
+
+    # SARIF 3.27.7: the artifact the tool was analyzing when it found the result. It names
+    # the resource of a result that has no usable location, before the run's scope does.
+    def _analysis_target(
+        self, scope: _RunScope, result: Mapping[str, Any], path: str
+    ) -> _Hit | None:
+        """Resolve result.analysisTarget into a resource hit, or None when it names nothing."""
+        truncated: set[str] = set()
+        scalars: dict[str, str] = {}
+        located = self._artifact_resource(
+            scope,
+            _mapping(result.get("analysisTarget")),
+            f"{path}.analysisTarget",
+            path,
+            scalars,
+            truncated,
+        )
+        if located is None:
+            return None
+        self.diagnostics.add(
+            DiagnosticLevel.INFO,
+            "analysis_target_resource",
+            "result has no usable location; its analysisTarget is its resource",
+            path,
+        )
+        resource_type, resource_id = located
+        return _Hit(resource_type, resource_id, [], [], scalars, [], truncated)
+
+    def _artifact_resource(
+        self,
+        scope: _RunScope,
+        artifact_location: Mapping[str, Any] | None,
+        where: str,
+        path: str,
+        scalars: dict[str, str],
+        truncated: set[str],
+    ) -> tuple[str, str] | None:
+        """Return the resource an artifactLocation names, recording its uri evidence."""
+        if artifact_location is None:
+            return None
+        uri = text_of(artifact_location.get("uri"))
+        # A run artifact's uri is shared by every location that names it by index.
+        memo: dict[str, str | None] | None = None
+        if not uri:
+            artifact_index = _natural(artifact_location.get("index"))
+            if artifact_index is not None and artifact_index < len(scope.artifacts):
+                uri = _artifact_uri(scope, artifact_index)
+                memo = scope.cache.uri_problems
+        if not uri:
+            return None
+        uri_path = f"{where}.uri"
+        self._require_identity(uri, MAX_URI_CHARS, "location uri", uri_path, memo)
+        verdicts = scope.cache.uri_suspicious if memo is not None else None
+        if verdicts is None:
+            suspicious = _uri_is_suspicious(uri)
+        elif uri in verdicts:
+            suspicious = verdicts[uri]
+        else:
+            suspicious = verdicts[uri] = _uri_is_suspicious(uri)
+        if suspicious:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "uri_suspicious",
+                "location uri has a '..' segment or a '//' prefix; kept verbatim, never opened",
+                uri_path,
+            )
+        scalars["location_uri"] = uri
+        base_id = text_of(artifact_location.get("uriBaseId"))
+        if base_id:
+            self._scalar(scalars, "uri_base_id", base_id, path, truncated)
+            base_uri = self._uri(
+                _base_uri(scope, base_id),
+                "original uri base",
+                f"{scope.path}.originalUriBaseIds.{base_id}.uri",
+                scope.cache.uri_problems,
+            )
+            if base_uri:
+                scalars["uri_base"] = base_uri
+        if scope.image_name:
+            return RESOURCE_TYPE_IMAGE, f"{scope.image_name}/{uri}"
+        if scope.repository_uri:
+            return RESOURCE_TYPE_FILE, f"{scope.repository_uri}/{uri}"
+        return RESOURCE_TYPE_FILE, uri
 
     # Folding
 

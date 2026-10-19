@@ -34,6 +34,7 @@ from complyroll.adapters import (
     ingest_stig_artifact,
     system_observation_for,
 )
+from complyroll.adapters.sarif import SARIF_PARSER_VERSION
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import (
     FAILURE_HELD,
@@ -146,6 +147,9 @@ SPARE_CASE = "case-00000000000000ff"
 RUN_ID = "run-00000000-0000-4000-8000-000000000002"
 
 #: A failed reading: the log stops partway and does not parse (parse class).
+# Versions after the shipped SARIF parser, for a fixture re-read under another version.
+SARIF_NEXT = str(int(SARIF_PARSER_VERSION) + 1)
+SARIF_AFTER_NEXT = str(int(SARIF_PARSER_VERSION) + 2)
 TRUNCATED = FIXTURES / "failed-truncated.sarif"
 #: A failed reading: the checklist parses, but its rules are invalid and nothing imports
 #: (content class).
@@ -3421,8 +3425,8 @@ class RecordFailureTests(WriterFixture):
         assert artifact is not None
         first = self.record(result, classification)
         sequence = self.latest_sequence
-        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
-        bumped_stream = failure_stream_id(artifact.digest_sha256, artifact.parser_name, "2")
+        bumped = replace(result, artifact=replace(artifact, parser_version=SARIF_NEXT))
+        bumped_stream = failure_stream_id(artifact.digest_sha256, artifact.parser_name, SARIF_NEXT)
 
         outcome = self.record(bumped, classification)
 
@@ -3449,14 +3453,14 @@ class RecordFailureTests(WriterFixture):
         assert artifact is not None
         first = self.record(result, classification)
         later = INGESTED_AT + timedelta(days=1)
-        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+        bumped = replace(result, artifact=replace(artifact, parser_version=SARIF_NEXT))
 
         outcome = self.record(bumped, classification, ingested_at=later)
 
         self.assertTrue(outcome.appended)
         self.assertEqual(
             outcome.stream_id,
-            failure_stream_id(artifact.digest_sha256, artifact.parser_name, "2"),
+            failure_stream_id(artifact.digest_sha256, artifact.parser_name, SARIF_NEXT),
         )
         self.assertNotEqual(outcome.observation_id, first.observation_id)
 
@@ -3586,13 +3590,15 @@ class RecordFailureTests(WriterFixture):
         artifact = result.artifact
         assert artifact is not None
         first = self.record(result, classification)
-        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+        bumped = replace(result, artifact=replace(artifact, parser_version=SARIF_NEXT))
         hold = self.record(bumped, classification)
         sequence = self.latest_sequence
         later = INGESTED_AT + timedelta(days=1)
         moved_result, moved_classification = self.read(TRUNCATED, ingested_at=later)
         assert moved_result.artifact is not None
-        moved = replace(moved_result, artifact=replace(moved_result.artifact, parser_version="2"))
+        moved = replace(
+            moved_result, artifact=replace(moved_result.artifact, parser_version=SARIF_NEXT)
+        )
         self.assertIs(hold.failure_class, FailureClass.PARSE)
 
         for label, (reading, reading_classification, at) in {
@@ -3623,7 +3629,7 @@ class RecordFailureTests(WriterFixture):
         first = self.record(result, classification)
         readings = [
             replace(result, artifact=replace(artifact, parser_version=version))
-            for version in ("2", "3")
+            for version in (SARIF_NEXT, SARIF_AFTER_NEXT)
         ]
 
         holds = [self.record(reading, classification) for reading in readings]
@@ -3647,7 +3653,7 @@ class RecordFailureTests(WriterFixture):
         result, classification = self.read(TRUNCATED)
         artifact = result.artifact
         assert artifact is not None
-        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+        bumped = replace(result, artifact=replace(artifact, parser_version=SARIF_NEXT))
         alone = self.record(bumped, classification)
         head, observation = self.events_of(alone.stream_id)
         self.assertEqual(head[0], FAILURE_RECORDED)
@@ -3668,13 +3674,14 @@ class RecordFailureTests(WriterFixture):
         artifact = result.artifact
         assert artifact is not None
         self.record(result, classification)
-        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+        bumped = replace(result, artifact=replace(artifact, parser_version=SARIF_NEXT))
         hold = self.record(bumped, classification)
         (_, head), observation = self.events_of(hold.stream_id)
         # Version 3's recorded failure of the same observation, restaged below as a hold.
         self.fresh_repository()
         above = self.record(
-            replace(result, artifact=replace(artifact, parser_version="3")), classification
+            replace(result, artifact=replace(artifact, parser_version=SARIF_AFTER_NEXT)),
+            classification,
         ).stream_id
         (_, above_head), above_observation = self.events_of(above)
         shapes = {
@@ -3723,7 +3730,7 @@ class RecordFailureTests(WriterFixture):
                 for version, (event_type, payload) in enumerate(events):
                     self.append_unchecked(holder, event_type, payload, expected_version=version)
                 sequence = self.latest_sequence
-                bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+                bumped = replace(result, artifact=replace(artifact, parser_version=SARIF_NEXT))
 
                 with self.assertRaises(HistoryError) as caught:
                     self.record(bumped, classification)
@@ -3745,7 +3752,7 @@ class RecordFailureTests(WriterFixture):
             self.append_unchecked(holder, event_type, payload, expected_version=version)
         sequence = self.latest_sequence
         schema = self.repository.store.schema_version
-        bumped = replace(result, artifact=replace(artifact, parser_version="2"))
+        bumped = replace(result, artifact=replace(artifact, parser_version=SARIF_NEXT))
 
         with self.repository.transaction(), self.assertRaises(HistoryError):
             self.record(bumped, classification)
@@ -4052,16 +4059,19 @@ class FailureHistoryTests(WriterFixture):
         # would rehydrate one failure twice. The copy's metadata names its own stream's
         # version, which the fingerprint does not cover, so its identity is the original's.
         stream_id, head, observation = self.recorded_pair()
-        other = failure_stream_id(head["sha256"], head["parserName"], "2")
+        other = failure_stream_id(head["sha256"], head["parserName"], SARIF_NEXT)
         copied = {
             **observation,
-            "source_metadata": {**observation["source_metadata"], "artifact.parserVersion": "2"},
+            "source_metadata": {
+                **observation["source_metadata"],
+                "artifact.parserVersion": SARIF_NEXT,
+            },
         }
         self.stage(stream_id, [(FAILURE_RECORDED, head), (OBSERVATION_RECORDED, observation)])
         self.stage(
             other,
             [
-                (FAILURE_RECORDED, {**head, "parserVersion": "2"}),
+                (FAILURE_RECORDED, {**head, "parserVersion": SARIF_NEXT}),
                 (OBSERVATION_RECORDED, copied),
             ],
         )
@@ -4080,7 +4090,7 @@ class FailureHistoryTests(WriterFixture):
         self.stage(
             stream_id,
             [
-                (FAILURE_RECORDED, {**head, "parserVersion": "2"}),
+                (FAILURE_RECORDED, {**head, "parserVersion": SARIF_NEXT}),
                 (OBSERVATION_RECORDED, observation),
             ],
         )

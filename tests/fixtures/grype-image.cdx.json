@@ -1,0 +1,223 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.7",
+  "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000003",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-01T12:00:00Z",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "author": "anchore",
+          "name": "grype",
+          "version": "0.87.0"
+        }
+      ]
+    },
+    "component": {
+      "bom-ref": "a1b2c3d4e5f60718",
+      "type": "container",
+      "name": "registry.example.test/api",
+      "version": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:deb/debian/libssl3@3.0.15-1?arch=amd64&distro=debian-12&package-id=1111aaaa2222bbbb",
+      "type": "library",
+      "name": "libssl3",
+      "version": "3.0.15-1",
+      "cpe": "cpe:2.3:a:libssl3:libssl3:3.0.15-1:*:*:*:*:*:*:*",
+      "purl": "pkg:deb/debian/libssl3@3.0.15-1?arch=amd64&distro=debian-12",
+      "properties": [
+        {"name": "syft:package:type", "value": "deb"},
+        {"name": "syft:location:0:path", "value": "/var/lib/dpkg/status"}
+      ]
+    },
+    {
+      "bom-ref": "pkg:deb/debian/libssl3@3.0.15-1?arch=amd64&distro=debian-12&package-id=3333cccc4444dddd",
+      "type": "library",
+      "name": "libssl3",
+      "version": "3.0.15-1",
+      "cpe": "cpe:2.3:a:libssl3:libssl3:3.0.15-1:*:*:*:*:*:*:*",
+      "purl": "pkg:deb/debian/libssl3@3.0.15-1?arch=amd64&distro=debian-12",
+      "properties": [
+        {"name": "syft:package:type", "value": "deb"},
+        {"name": "syft:location:0:path", "value": "/var/lib/dpkg/status.d/libssl3"}
+      ]
+    },
+    {
+      "bom-ref": "9f8e7d6c5b4a3921",
+      "type": "library",
+      "name": "busybox-static",
+      "version": "1.36.1",
+      "cpe": "cpe:2.3:a:busybox:busybox:1.36.1:*:*:*:*:*:*:*",
+      "properties": [
+        {"name": "syft:package:type", "value": "binary"}
+      ]
+    },
+    {
+      "bom-ref": "pkg:npm/express@4.18.2?package-id=5555eeee6666ffff",
+      "type": "library",
+      "name": "express",
+      "version": "4.18.2",
+      "purl": "pkg:npm/express@4.18.2"
+    }
+  ],
+  "vulnerabilities": [
+    {
+      "bom-ref": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+      "id": "CVE-2024-0727",
+      "source": {
+        "name": "nvd:cpe",
+        "url": "https://nvd.nist.gov/vuln/detail/CVE-2024-0727"
+      },
+      "references": [
+        {"id": "CVE-2024-0727", "source": {"name": "nvd:cpe"}}
+      ],
+      "ratings": [
+        {
+          "score": 5.5,
+          "severity": "medium",
+          "method": "CVSSv31",
+          "vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H"
+        },
+        {
+          "source": {"name": "FIRST", "url": "https://www.first.org/epss/"},
+          "score": 0.00422,
+          "method": "other"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:deb/debian/libssl3@3.0.15-1?arch=amd64&distro=debian-12&package-id=1111aaaa2222bbbb",
+          "versions": [
+            {"version": "3.0.15-1", "status": "affected"},
+            {"range": "vers:deb/>=3.0.16-1", "status": "unaffected"}
+          ]
+        }
+      ]
+    },
+    {
+      "bom-ref": "urn:uuid:00000000-0000-4000-8000-0000000000a2",
+      "id": "CVE-2024-0727",
+      "source": {
+        "name": "debian:distro:debian:12",
+        "url": "https://security-tracker.debian.org/tracker/CVE-2024-0727"
+      },
+      "references": [
+        {"id": "CVE-2024-0727", "source": {"name": "debian:distro:debian:12"}}
+      ],
+      "ratings": [
+        {"severity": "low", "method": "other"}
+      ],
+      "affects": [
+        {
+          "ref": "pkg:deb/debian/libssl3@3.0.15-1?arch=amd64&distro=debian-12&package-id=1111aaaa2222bbbb",
+          "versions": [
+            {"version": "3.0.15-1", "status": "affected"},
+            {"range": "vers:deb/>=3.0.16-1", "status": "unaffected"}
+          ]
+        }
+      ]
+    },
+    {
+      "bom-ref": "urn:uuid:00000000-0000-4000-8000-0000000000a3",
+      "id": "CVE-2023-5678",
+      "source": {"name": "nvd:cpe"},
+      "ratings": [
+        {
+          "score": 9.1,
+          "severity": "critical",
+          "method": "CVSSv31",
+          "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H"
+        },
+        {
+          "source": {"name": "FIRST", "url": "https://www.first.org/epss/"},
+          "score": 0.08,
+          "method": "other"
+        },
+        {
+          "source": {
+            "name": "CISA KEV Catalog",
+            "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+          },
+          "score": 1,
+          "method": "other",
+          "justification": "Listed in CISA KEV"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:deb/debian/libssl3@3.0.15-1?arch=amd64&distro=debian-12&package-id=1111aaaa2222bbbb",
+          "versions": [{"version": "3.0.15-1", "status": "affected"}]
+        }
+      ]
+    },
+    {
+      "bom-ref": "urn:uuid:00000000-0000-4000-8000-0000000000a4",
+      "id": "CVE-2023-5678",
+      "source": {"name": "nvd:cpe"},
+      "ratings": [
+        {
+          "score": 9.1,
+          "severity": "critical",
+          "method": "CVSSv31",
+          "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:H"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:deb/debian/libssl3@3.0.15-1?arch=amd64&distro=debian-12&package-id=3333cccc4444dddd",
+          "versions": [{"version": "3.0.15-1", "status": "affected"}]
+        }
+      ]
+    },
+    {
+      "bom-ref": "urn:uuid:00000000-0000-4000-8000-0000000000a5",
+      "id": "CVE-2022-48174",
+      "source": {"name": "nvd:cpe"},
+      "ratings": [
+        {
+          "score": 9.8,
+          "severity": "critical",
+          "method": "CVSSv31",
+          "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "9f8e7d6c5b4a3921",
+          "versions": [{"version": "1.36.1", "status": "affected"}]
+        }
+      ]
+    },
+    {
+      "bom-ref": "urn:uuid:00000000-0000-4000-8000-0000000000a6",
+      "id": "GHSA-rv95-896h-c2vc",
+      "source": {"name": "github:language:javascript"},
+      "references": [
+        {"id": "GHSA-rv95-896h-c2vc", "source": {"name": "github:language:javascript"}}
+      ],
+      "ratings": [
+        {
+          "score": 6.1,
+          "severity": "medium",
+          "method": "CVSSv31",
+          "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:npm/express@4.18.2?package-id=5555eeee6666ffff",
+          "versions": [
+            {"version": "4.18.2", "status": "affected"},
+            {"range": "vers:npm/>=4.19.2", "status": "unaffected"}
+          ]
+        }
+      ]
+    }
+  ]
+}

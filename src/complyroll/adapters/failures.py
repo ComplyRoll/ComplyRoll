@@ -70,6 +70,8 @@ CONTENT_CODES = frozenset(
         "clean_run_unverified",
         "invalid_bom",
         "invalid_component",
+        "invalid_vulnerability",
+        "vulnerability_id_missing",
     }
 )
 CLASS_CODES = PARSE_CODES | CONTENT_CODES

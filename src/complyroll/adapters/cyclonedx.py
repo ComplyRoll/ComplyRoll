@@ -1,12 +1,9 @@
 # ******************************************************************************
 # *Title: CycloneDX Adapter*
 # *Author: Kyle Versluis*
-# *Description: CycloneDX SBOM adapter: package key, subject and scope.*
+# *Description: CycloneDX SBOM adapter: package key, scope and vulnerabilities.*
 # ******************************************************************************
 """CycloneDX SBOM source adapter (ADR 0016)."""
-
-# *--- TODO List ---*
-# TODO-1: Fold vulnerabilities, test K4 and resolve affects refs (plan step 3).
 
 # *--- Imports ---*
 
@@ -14,9 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import string
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any
@@ -31,21 +30,29 @@ from .base import (
     ParsedDocument,
 )
 from .common import (
+    EVIDENCE_TRUNCATED_SUMMARY,
+    MAX_DESCRIPTION_CHARS,
     MAX_IDENTITY_CHARS,
+    MAX_LIST_ITEM_CHARS,
+    MAX_LIST_ITEMS,
     MAX_OBSERVATION_JSON_BYTES,
     MAX_TITLE_CHARS,
+    SEVERITY_RANK,
     EvidenceParse,
     IdentityRefused,
     clean,
     diagnostic_text,
     encode_list,
+    extract_identifiers,
+    first_identifiers,
     identity_problem,
     make_observation,
     missing_time_diagnostic,
     observation_bytes,
     quoted,
+    sanitize,
 )
-from .safeio import DEFAULT_LIMITS, IngestLimits
+from .safeio import DEFAULT_LIMITS, IngestLimits, InputLimitError
 
 # *--- Configuration ---*
 
@@ -86,10 +93,82 @@ UNMATCHED_DESCRIPTION = (
     "This document carries no vulnerability record tied to a component it lists; it does not "
     "show that a match ran and verifies no coverage clock."
 )
+MATCHED_DESCRIPTION = (
+    "The tool matched the components this document lists against its vulnerability data; it is "
+    "not evidence that the subject is free of vulnerabilities or that the list is complete."
+)
+# A VEX file is not a failed detection, so it is refused as a format, never minted (Decision N).
+VEX_REFUSAL = (
+    "a standalone CycloneDX VEX document cannot be resolved without the BOM it describes; "
+    "ComplyRoll does not join artifacts; record its statements as evaluations"
+)
+
+PACKAGE_RESOURCE_TYPE = "package"
+# The role MAX_LOCATIONS_PER_RESULT plays for SARIF: checked before any fold work (Decision K).
+MAX_AFFECTS_PER_VULNERABILITY = 1024
+MAX_INSTANCES_PER_PACKAGE = 64
+MAX_SCORE_INTEGER = 10**6
+MAX_CWE = 99_999
+BOM_LINK_PREFIX = "urn:cdx:"
+SERIAL_PREFIX = "urn:uuid:"
+# The subject's target in the carrier index; a package key is never the empty string.
+SUBJECT_TARGET = ""
+
+# Scores are never banded (Decision V): only the vendor's own word sets the display severity.
+RATING_SEVERITIES: Mapping[str, SourceSeverity] = MappingProxyType(
+    {
+        "critical": SourceSeverity.CRITICAL,
+        "high": SourceSeverity.HIGH,
+        "medium": SourceSeverity.MEDIUM,
+        "low": SourceSeverity.LOW,
+        "info": SourceSeverity.INFORMATIONAL,
+        "none": SourceSeverity.INFORMATIONAL,
+        "unknown": SourceSeverity.UNKNOWN,
+    }
+)
+ANALYSIS_STATES = frozenset(
+    {
+        "resolved",
+        "resolved_with_pedigree",
+        "exploitable",
+        "in_triage",
+        "false_positive",
+        "not_affected",
+    }
+)
+NOT_FIXED_RESPONSES = frozenset({"will_not_fix", "can_not_fix"})
+ANALYSIS_KEPT = "; the disposition stays OPEN until an evaluation is recorded"
 
 # Fixed and snake_case; a foreign key is an adapter bug, raised in assembly (section 19).
 CYCLONEDX_METADATA_KEYS = frozenset(
     {
+        "subject_ref",
+        "package_identity",
+        "package_versions",
+        "purls",
+        "cpes",
+        "bom_refs",
+        "component_hashes",
+        "instances",
+        "instances_cut",
+        "vulnerability_sources",
+        "vulnerability_bom_refs",
+        "ratings",
+        "severity_source",
+        "advisories",
+        "recommendation",
+        "published",
+        "created",
+        "updated",
+        "analysis_states",
+        "analysis_justifications",
+        "analysis_responses",
+        "analysis_details",
+        "analysis_first_issued",
+        "analysis_last_updated",
+        "affects_statuses",
+        "affects_ranges",
+        "tool_version",
         "bom_kind",
         "spec_version",
         "serial_number",
@@ -348,13 +427,15 @@ def subject_lineage(scope_type: str, name: str) -> str:
     """Return the subject part of a package resource id; for scan, the scope id unchanged."""
     if scope_type != IMAGE_SCOPE_TYPE:
         return name
+    written = name
     head, at, digest = name.rpartition("@")
     if at and digest_shaped(digest):
         name = head
     colon = name.rfind(":")
     if colon > name.rfind("/"):
         name = name[:colon]
-    return name
+    # An empty strip would give every such subject one lineage, a merge (R-S2-1).
+    return name or written
 
 
 # *--- Package Resource ---*
@@ -430,6 +511,136 @@ def _image_id(name: str, version: object) -> str:
     return f"{name}@{encoded}" if digest_shaped(version) else f"{name}:{encoded}"
 
 
+# The key never holds these characters, so encoding them in the version keeps one line per
+# component and two different sets from printing one line set (R-S2-2).
+def _line_version(version: str) -> str:
+    return (
+        version.replace("%", "%25").replace("\t", "%09").replace("\n", "%0A").replace("\r", "%0D")
+    )
+
+
+def _text(value: object) -> str | None:
+    """Return a string member, or None: a non-string scalar counts as absent (D2)."""
+    return value if isinstance(value, str) else None
+
+
+# *--- Vulnerability Records ---*
+
+
+@dataclass(frozen=True, slots=True)
+class _Carrier:
+    """One indexed component: its target (package key, or the subject) and instance facts."""
+
+    target: str
+    weak: bool
+    bom_ref: str
+    version: str | None
+    purl: str | None
+    cpe: str | None
+    hashes: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class _Candidate:
+    """One affects entry's contribution to one observation before folding."""
+
+    path: str
+    # Content only, never position, so the fold ignores document order (section 20).
+    order: tuple[str, ...]
+    title: str
+    description: str
+    severity: SourceSeverity
+    severity_source: str
+    identifiers: tuple[str, ...]
+    identifiers_cut: bool
+    scalars: dict[str, str]
+    lists: dict[str, tuple[str, ...]]
+    carriers: tuple[_Carrier, ...]
+    package_identity: str | None
+    truncated: set[str]
+
+
+_FoldKey = tuple[str, str, str]
+
+
+def _carrier(component: Mapping[str, Any], target: str, weak: bool, bom_ref: str) -> _Carrier:
+    """Record one component's instance facts; a non-string member is absent (D2)."""
+    hashes = {
+        f"{item['alg']}:{item['content']}"
+        for item in component.get("hashes", ())
+        if isinstance(item.get("alg"), str) and isinstance(item.get("content"), str)
+    }
+    return _Carrier(
+        target,
+        weak,
+        bom_ref,
+        _text(component.get("version")),
+        _text(component.get("purl")),
+        _text(component.get("cpe")),
+        tuple(sorted(hashes)),
+    )
+
+
+# The shape check runs before any field is read, so a wrong type is never repaired or guessed
+# (A10). It returns the fixed check text and the JSON path suffix where it failed.
+def _shape_problem(item: object) -> tuple[str, str] | None:
+    """Say why one vulnerability record cannot be read, or None when its shape is sound."""
+    if not isinstance(item, Mapping):
+        return "a vulnerability is not an object", ""
+    for member in ("affects", "ratings", "references", "advisories"):
+        if member not in item:
+            continue
+        if not isinstance(item[member], list):
+            return f"{member} is not an array", f".{member}"
+        if not all(isinstance(entry, Mapping) for entry in item[member]):
+            return f"an item of {member} is not an object", f".{member}"
+    if "cwes" in item and not isinstance(item["cwes"], list):
+        return "cwes is not an array", ".cwes"
+    for index, entry in enumerate(item.get("affects", ())):
+        where = f".affects[{index}]"
+        if not isinstance(entry.get("ref"), str):
+            return "an affects ref is missing or not a string", f"{where}.ref"
+        if "versions" in entry:
+            if not isinstance(entry["versions"], list):
+                return "affects versions is not an array", f"{where}.versions"
+            if not all(isinstance(version, Mapping) for version in entry["versions"]):
+                return "an affects version is not an object", f"{where}.versions"
+    if "analysis" in item:
+        analysis = item["analysis"]
+        if not isinstance(analysis, Mapping):
+            return "analysis is not an object", ".analysis"
+        if "response" in analysis and not isinstance(analysis["response"], list):
+            return "analysis.response is not an array", ".analysis.response"
+    return None
+
+
+# SECURITY: bool is refused first and an int is range-checked before any float(), so a
+# 400-digit integer never raises OverflowError, and 1e400 (parsed to inf) is refused.
+def _rating_score(raw: object) -> str | None:
+    """Render a usable score verbatim-ish, or None when it is unusable (section 18)."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return str(raw) if abs(raw) <= MAX_SCORE_INTEGER else None
+    if isinstance(raw, float) and math.isfinite(raw):
+        return repr(raw)
+    return None
+
+
+def _source_name(holder: Mapping[str, Any]) -> str | None:
+    source = holder.get("source")
+    return _text(source.get("name")) if isinstance(source, Mapping) else None
+
+
+def _first_line(text: str) -> str:
+    """Return the first non-blank line of sanitized text."""
+    cleaned, _changed = sanitize(text)
+    for line in cleaned.split("\n"):
+        if line.strip():
+            return line
+    return ""
+
+
 # *--- Core Logic ---*
 
 
@@ -450,23 +661,45 @@ class _CycloneDxParse(EvidenceParse):
         else:
             self.kind = BOM_KIND_MATCHED if vulnerabilities else BOM_KIND_EMPTY
         self.matched = self.kind == BOM_KIND_MATCHED
-        # TODO-1: Step 3 fills the vulnerability folds; the scope candidate stays outside them.
-        self.folds: dict[Any, list[Any]] = {}
+        # The vulnerability folds; the scope candidate stays outside them (A13).
+        self.folds: dict[_FoldKey, list[_Candidate]] = {}
         self.scalars: dict[str, str] = {}
         self.truncated: set[str] = set()
-        # bom-ref to the package keys of its carriers; step 3 resolves affects through it.
-        self.index: dict[str, set[str]] = {}
+        # bom-ref to every carrier of it, the subject included; affects resolve through it.
+        self.index: dict[str, list[_Carrier]] = {}
         self.component_count = 0
         self.package_keys: set[str] = set()
         self.weak_keys: set[str] = set()
         self.component_lines: set[str] = set()
+        self.lineage = ""
+        self.serial: str | None = None
+        self.bom_version = "1"
+        self.tool_version = ""
+        # Whether any affects ref resolved through the index, directly or by a same-document
+        # BOM-Link: the only evidence that a match ran against this inventory (A1).
+        self.resolved_locally = False
+        self.tool = ""
+        self.scope: tuple[str, str] = ("", "")
+        self.observed_at: datetime | None = None
 
     def run(self, data: Mapping[str, Any]) -> AdapterOutput:
-        """Check the document, then build its one scope observation; fail closed on errors."""
+        """Check the document, fold its vulnerabilities, then the scope; fail closed on errors."""
         scope = self._read(data)
         observations: list[Observation] = []
-        if scope is not None and not self.diagnostics.has_errors:
-            observations.append(scope)
+        if not self.diagnostics.has_errors:
+            observations = [
+                self._assemble_fold(key, items) for key, items in sorted(self.folds.items())
+            ]
+            if scope is not None:
+                observations.append(scope)
+            observations.sort(
+                key=lambda item: (
+                    item.resource.resource_type,
+                    item.resource.resource_id,
+                    item.source_record_id,
+                    item.observation_id,
+                )
+            )
         # The scope candidate is outside the folds, so it never makes a reading withheld (A13).
         return AdapterOutput(
             tuple(observations),
@@ -522,6 +755,10 @@ class _CycloneDxParse(EvidenceParse):
         self._walk(subject, components)
         if self.diagnostics.has_errors:
             return None
+        # SECURITY: K4 is decided after indexing and before the tool requirement, so a
+        # tool-less VEX file is refused as VEX and never minted as invalid_bom (A9).
+        if self.matched and self.component_count == 0:
+            raise AdapterParseError(VEX_REFUSAL)
         tool = self._tool(tools)
         if tool is None:
             return None
@@ -529,6 +766,24 @@ class _CycloneDxParse(EvidenceParse):
         if scope is None:
             return None
         self._document_scalars(data, metadata, tools)
+        self.tool, self.scope = tool, scope
+        # One document clock for every observation; never a vulnerability's own dates (Q).
+        self.observed_at = self._clock(metadata.get("timestamp"), "metadata.timestamp")
+        if self.observed_at is None:
+            self.diagnostics.add_fixed(missing_time_diagnostic(self.artifact))
+        if self.matched:
+            self._vulnerabilities(scope)
+        if self.diagnostics.has_errors:
+            return None
+        # A producer finding spelled like the scope record takes the observation (section 10).
+        if (SCOPE_RECORD_ID, *scope) in self.folds:
+            self.diagnostics.add(
+                DiagnosticLevel.INFO,
+                "scope_superseded",
+                "a vulnerability shares the scope observation's identity; the scope yields to it",
+                "metadata.component",
+            )
+            return None
         return self._assemble(tool, scope, metadata)
 
     # Tools
@@ -595,6 +850,8 @@ class _CycloneDxParse(EvidenceParse):
             )
             return CYCLONEDX_FALLBACK_TOOL
         tool = "+".join(names)
+        versions = {item["version"] for item in chosen if isinstance(item.get("version"), str)}
+        self.tool_version = "+".join(sorted(_escape(text, "+", "%2B") for text in versions))
         try:
             for name in names:
                 self._require_identity(name, MAX_IDENTITY_CHARS, "tool name", "metadata.tools")
@@ -632,14 +889,17 @@ class _CycloneDxParse(EvidenceParse):
             key, weak, _purl = package_key(component)
             bom_ref = component.get("bom-ref")
             if isinstance(bom_ref, str) and bom_ref:
-                self.index.setdefault(bom_ref, set()).add(key)
+                target = SUBJECT_TARGET if is_subject else key
+                self.index.setdefault(bom_ref, []).append(
+                    _carrier(component, target, weak, bom_ref)
+                )
             if not is_subject:
                 self.component_count += 1
                 self.package_keys.add(key)
                 if weak:
                     self.weak_keys.add(key)
-                version = component.get("version")
-                self.component_lines.add(f"{key}\t{version if isinstance(version, str) else ''}")
+                version = _line_version(_text(component.get("version")) or "")
+                self.component_lines.add(f"{key}\t{version}")
             pending.extend(
                 (child, f"{path}.components[{index}]", False)
                 for index, child in reversed(list(enumerate(children)))
@@ -684,7 +944,7 @@ class _CycloneDxParse(EvidenceParse):
                 "metadata.component names no subject; the scope resource is the tool",
                 "metadata.component",
             )
-            self.scalars["subject_lineage"] = tool
+            self.scalars["subject_lineage"] = self.lineage = tool
             return SCAN_SCOPE_TYPE, tool
         if _is_container(subject):
             scope_type, resource_id = IMAGE_SCOPE_TYPE, _image_id(name, subject.get("version"))
@@ -701,7 +961,7 @@ class _CycloneDxParse(EvidenceParse):
             )
         except IdentityRefused:
             return None
-        lineage = subject_lineage(
+        self.lineage = lineage = subject_lineage(
             scope_type, name if scope_type == IMAGE_SCOPE_TYPE else resource_id
         )
         for key, member in (
@@ -732,6 +992,7 @@ class _CycloneDxParse(EvidenceParse):
         )
         serial = data.get("serialNumber")
         if isinstance(serial, str):
+            self.serial = serial.removeprefix(SERIAL_PREFIX)
             self._scalar(self.scalars, "serial_number", serial, "serialNumber", self.truncated)
         elif serial is not None:
             self.diagnostics.add(
@@ -747,7 +1008,7 @@ class _CycloneDxParse(EvidenceParse):
             and not isinstance(version, bool)
             and 1 <= version <= MAX_BOM_VERSION
         ):
-            self.scalars["bom_version"] = str(version)
+            self.scalars["bom_version"] = self.bom_version = str(version)
         elif version is not None:
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
@@ -779,9 +1040,7 @@ class _CycloneDxParse(EvidenceParse):
     ) -> Observation:
         """Build the one scope observation of section 10."""
         scope_type, resource_id = scope
-        observed_at = self._clock(metadata.get("timestamp"), "metadata.timestamp")
-        if observed_at is None:
-            self.diagnostics.add_fixed(missing_time_diagnostic(self.artifact))
+        observed_at = self.observed_at
         if self.kind == BOM_KIND_INVENTORY:
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
@@ -791,7 +1050,13 @@ class _CycloneDxParse(EvidenceParse):
                 "vulnerabilities",
             )
             description = INVENTORY_DESCRIPTION
+            disposition = ObservationDisposition.NOT_REVIEWED
+        elif self.resolved_locally:
+            # A resolved affects record is positive evidence that a match ran (A1).
+            description = MATCHED_DESCRIPTION
+            disposition = ObservationDisposition.PASS
         else:
+            disposition = ObservationDisposition.NOT_REVIEWED
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
                 "match_unverified",
@@ -825,6 +1090,11 @@ class _CycloneDxParse(EvidenceParse):
                 "occurrence_count": "1",
             }
         )
+        if self.matched:
+            affected = {
+                (resource_type, resource_id) for _, resource_type, resource_id in self.folds
+            }
+            metadata_out["affected_count"] = str(len(affected))
         if self.truncated:
             metadata_out["truncated"] = encode_list(sorted(self.truncated))
         foreign = sorted(set(metadata_out) - CYCLONEDX_METADATA_KEYS)
@@ -839,13 +1109,542 @@ class _CycloneDxParse(EvidenceParse):
             resource_type=scope_type,
             observed_at=observed_at,
             ingested_at=self.ingested_at,
-            disposition=ObservationDisposition.NOT_REVIEWED,
+            disposition=disposition,
             severity=SourceSeverity.UNKNOWN,
             title=title.text,
             description=description,
             identifiers=(),
             context_key=tool,
             metadata=metadata_out,
+        )
+        size = observation_bytes(
+            observation,
+            ceiling=MAX_OBSERVATION_JSON_BYTES,
+            budget=self.limits.max_observation_bytes_per_artifact,
+            spent=self.observation_bytes,
+        )
+        self.observation_bytes += size
+        return observation
+
+    # Vulnerabilities
+
+    def _vulnerabilities(self, scope: tuple[str, str]) -> None:
+        """Check both count bounds, then fold every vulnerability record (sections 8 to 13)."""
+        # SECURITY: Both bounds are checked before any fold work (Decision K).
+        limit = self.limits.max_results_per_run
+        if len(self.vulnerabilities) > limit:
+            raise InputLimitError(
+                f"CycloneDX document has {len(self.vulnerabilities)} vulnerabilities; "
+                f"maximum is {limit}"
+            )
+        for item in self.vulnerabilities:
+            affects = item.get("affects") if isinstance(item, Mapping) else None
+            if isinstance(affects, list) and len(affects) > MAX_AFFECTS_PER_VULNERABILITY:
+                raise InputLimitError(
+                    f"a CycloneDX vulnerability affects {len(affects)} components; maximum is "
+                    f"{MAX_AFFECTS_PER_VULNERABILITY}"
+                )
+        for index, item in enumerate(self.vulnerabilities):
+            self._vulnerability(f"vulnerabilities[{index}]", item, scope)
+
+    def _vulnerability(self, path: str, item: object, scope: tuple[str, str]) -> None:
+        """Fold one record: one candidate per affects entry, or one on the scope resource."""
+        problem = _shape_problem(item)
+        if problem is not None:
+            check, where = problem
+            self.diagnostics.add(
+                DiagnosticLevel.ERROR,
+                "invalid_vulnerability",
+                "CycloneDX vulnerability cannot be read",
+                path + where,
+                detail=check,
+            )
+            return
+        assert isinstance(item, Mapping)
+        record_id = item.get("id")
+        if not isinstance(record_id, str) or not record_id.strip():
+            self.diagnostics.add(
+                DiagnosticLevel.ERROR,
+                "vulnerability_id_missing",
+                "CycloneDX vulnerability has no id",
+                f"{path}.id",
+            )
+            return
+        try:
+            self._require_identity(record_id, MAX_IDENTITY_CHARS, "vulnerability id", f"{path}.id")
+        except IdentityRefused:
+            return
+        base = self._facts(path, item, record_id)
+        affects = item.get("affects", [])
+        if not affects:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "affects_missing",
+                "a vulnerability names no affected component; it is recorded on the subject",
+                path,
+            )
+            self._fold((record_id, *scope), self._candidate(base, path, (), None, {}))
+            return
+        for index, entry in enumerate(affects):
+            here = f"{path}.affects[{index}]"
+            ref = entry["ref"]
+            carriers = self._resolve(ref, here)
+            identity: str | None = None
+            resource: tuple[str, str] | None = scope
+            if carriers is None:
+                identity = "ref"
+                resource = self._package_resource(scope[0], ref_key(ref), here)
+            elif carriers[0].target != SUBJECT_TARGET:
+                key = carriers[0].target
+                identity = "component" if carriers[0].weak else "purl"
+                if carriers[0].weak:
+                    self.diagnostics.add(
+                        DiagnosticLevel.WARNING,
+                        "package_identity_weak",
+                        "an affected component has no usable purl; its key is built from its "
+                        "type, group and name",
+                        here,
+                    )
+                resource = self._package_resource(scope[0], key, here)
+            if resource is None:
+                continue
+            truncated = set(base.truncated)
+            lists = self._affects_lists(entry, carriers or (), here, truncated)
+            # A product-level statement sits on the scope resource and names no instance.
+            instances = () if carriers is None or identity is None else carriers
+            candidate = self._candidate(base, here, instances, identity, lists)
+            candidate.truncated = truncated
+            self._fold((record_id, *resource), candidate)
+
+    def _candidate(
+        self,
+        base: _Candidate,
+        path: str,
+        carriers: tuple[_Carrier, ...],
+        identity: str | None,
+        lists: dict[str, tuple[str, ...]],
+    ) -> _Candidate:
+        """Specialize a record's shared facts to one affects entry."""
+        merged = {**base.lists, **lists}
+        content = {
+            "scalars": base.scalars,
+            "lists": merged,
+            "severity": base.severity.value,
+            "severity_source": base.severity_source,
+            "identifiers": base.identifiers,
+            "identity": identity,
+            "carriers": [repr(carrier) for carrier in sorted(carriers, key=repr)],
+        }
+        order = (base.title, base.description, json.dumps(content, sort_keys=True))
+        return _Candidate(
+            path,
+            order,
+            base.title,
+            base.description,
+            base.severity,
+            base.severity_source,
+            base.identifiers,
+            base.identifiers_cut,
+            base.scalars,
+            merged,
+            carriers,
+            identity,
+            set(base.truncated),
+        )
+
+    def _facts(self, path: str, item: Mapping[str, Any], record_id: str) -> _Candidate:
+        """Read the field map of section 9 that every affects entry of a record shares."""
+        truncated: set[str] = set()
+        written = [
+            text
+            for text in (_text(item.get("description")), _text(item.get("detail")))
+            if text is not None and text.strip()
+        ]
+        source_text = written[0] if written else ""
+        description = self._evidence(
+            source_text, MAX_DESCRIPTION_CHARS, "description", f"{path}.description", truncated
+        )
+        title = self._evidence(
+            _first_line(source_text), MAX_TITLE_CHARS, "title", f"{path}.description", truncated
+        )
+        severity, severity_source, ratings = self._ratings(path, item.get("ratings", ()))
+        texts = [record_id]
+        texts.extend(
+            text for entry in item.get("references", ()) if (text := _text(entry.get("id")))
+        )
+        found = extract_identifiers(texts)
+        for index, cwe in enumerate(item.get("cwes", ())):
+            if isinstance(cwe, int) and not isinstance(cwe, bool) and 1 <= cwe <= MAX_CWE:
+                found.add(f"CWE-{cwe}")
+            else:
+                self.diagnostics.add(
+                    DiagnosticLevel.WARNING,
+                    "cwe_invalid",
+                    f"a cwes item is not an integer from 1 to {MAX_CWE}; it is ignored",
+                    f"{path}.cwes[{index}]",
+                )
+        identifiers, identifiers_cut = first_identifiers(found)
+        scalars: dict[str, str] = {}
+        for member in ("recommendation", "published", "created", "updated"):
+            self._scalar(scalars, member, _text(item.get(member)), f"{path}.{member}", truncated)
+        analysis = item.get("analysis", {})
+        values: dict[str, list[str | None]] = {
+            "vulnerability_sources": [_source_name(item)],
+            "vulnerability_bom_refs": [_text(item.get("bom-ref"))],
+            "advisories": [_text(entry.get("url")) for entry in item.get("advisories", ())],
+            "ratings": list(ratings),
+            "analysis_states": [_text(analysis.get("state"))],
+            "analysis_justifications": [_text(analysis.get("justification"))],
+            "analysis_responses": [_text(entry) for entry in analysis.get("response", ())],
+            "analysis_details": [_text(analysis.get("detail"))],
+            "analysis_first_issued": [_text(analysis.get("firstIssued"))],
+            "analysis_last_updated": [_text(analysis.get("lastUpdated"))],
+        }
+        self._analysis_codes(f"{path}.analysis", values)
+        lists = {
+            member: self._evidence_list(
+                sorted(text for text in entries if text is not None), member, path, truncated
+            )
+            for member, entries in values.items()
+        }
+        return _Candidate(
+            path,
+            (),
+            title,
+            description,
+            severity,
+            severity_source,
+            identifiers,
+            identifiers_cut,
+            scalars,
+            lists,
+            (),
+            None,
+            truncated,
+        )
+
+    def _ratings(self, path: str, ratings: Any) -> tuple[SourceSeverity, str, tuple[str, ...]]:
+        """Return the highest vendor word, its smallest source name and every rating record."""
+        records: list[str] = []
+        words: list[tuple[SourceSeverity, str]] = []
+        for index, rating in enumerate(ratings):
+            record: dict[str, str] = {}
+            name = _source_name(rating)
+            if name is not None:
+                record["source"] = name
+            for member in ("severity", "method", "vector"):
+                text = _text(rating.get(member))
+                if text is not None:
+                    record[member] = text
+            if "score" in rating:
+                score = _rating_score(rating["score"])
+                if score is None:
+                    self.diagnostics.add(
+                        DiagnosticLevel.WARNING,
+                        "rating_score_invalid",
+                        "a rating score is not a finite number in range; it is omitted",
+                        f"{path}.ratings[{index}].score",
+                    )
+                else:
+                    record["score"] = score
+            if record:
+                records.append(
+                    json.dumps(record, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                )
+            level = RATING_SEVERITIES.get(record.get("severity", ""))
+            if level is not None:
+                words.append((level, name or ""))
+        if not words:
+            return SourceSeverity.UNKNOWN, "", tuple(records)
+        # A maximum over content, never the first rating (Decision V).
+        severity = max((level for level, _ in words), key=SEVERITY_RANK.__getitem__)
+        sources = sorted(name for level, name in words if level is severity and name)
+        return severity, sources[0] if sources else "", tuple(records)
+
+    # Each kind of supplier claim draws its own warning and never moves the disposition (O).
+    def _analysis_codes(self, path: str, values: dict[str, list[str | None]]) -> None:
+        state = values["analysis_states"][0]
+        if state is not None and state not in ANALYSIS_STATES:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "analysis_state_invalid",
+                "an analysis state is outside the CycloneDX enumeration" + ANALYSIS_KEPT,
+                f"{path}.state",
+            )
+        elif state == "not_affected":
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "analysis_not_affected",
+                "a supplier states the component is not affected" + ANALYSIS_KEPT,
+                f"{path}.state",
+            )
+        elif state == "false_positive":
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "analysis_false_positive",
+                "a supplier states the match is a false positive" + ANALYSIS_KEPT,
+                f"{path}.state",
+            )
+        elif state in ("resolved", "resolved_with_pedigree"):
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "analysis_resolved",
+                "a supplier states the vulnerability is resolved" + ANALYSIS_KEPT,
+                f"{path}.state",
+            )
+        elif state == "in_triage":
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "analysis_in_triage",
+                "a supplier states the vulnerability is in triage" + ANALYSIS_KEPT,
+                f"{path}.state",
+            )
+        if any(text in NOT_FIXED_RESPONSES for text in values["analysis_responses"]):
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "response_will_not_fix",
+                "a supplier responds that it will not or cannot fix" + ANALYSIS_KEPT,
+                f"{path}.response",
+            )
+
+    def _affects_lists(
+        self,
+        entry: Mapping[str, Any],
+        carriers: tuple[_Carrier, ...],
+        path: str,
+        truncated: set[str],
+    ) -> dict[str, tuple[str, ...]]:
+        """Keep an entry's version statements verbatim; ranges are never evaluated."""
+        installed = {carrier.version for carrier in carriers if carrier.version is not None}
+        statuses: list[str] = []
+        ranges: list[str] = []
+        for index, item in enumerate(entry.get("versions", ())):
+            fields = {member: _text(item.get(member)) for member in ("version", "range", "status")}
+            record = {member: text for member, text in fields.items() if text is not None}
+            if record:
+                statuses.append(
+                    json.dumps(record, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                )
+            if fields["range"] is not None:
+                ranges.append(fields["range"])
+            # The scanner contradicting its own match is for an assessor to see (E3).
+            if fields["status"] == "unaffected" and fields["version"] in installed:
+                self.diagnostics.add(
+                    DiagnosticLevel.WARNING,
+                    "affects_version_unaffected",
+                    "an affects entry marks the installed version unaffected" + ANALYSIS_KEPT,
+                    f"{path}.versions[{index}]",
+                )
+        return {
+            "affects_statuses": self._evidence_list(
+                sorted(statuses), "affects_statuses", path, truncated
+            ),
+            "affects_ranges": self._evidence_list(
+                sorted(ranges), "affects_ranges", path, truncated
+            ),
+        }
+
+    # Resolution
+
+    def _resolve(self, ref: str, path: str) -> tuple[_Carrier, ...] | None:
+        """Resolve a ref through the index, or None when it takes the ref: fallback (J)."""
+        target = ref
+        if ref not in self.index:
+            fragment = self._local_fragment(ref)
+            if fragment is not None:
+                target = fragment
+        carriers = self.index.get(target)
+        # Carriers that share one key are instances of one package and resolve (A15).
+        if carriers is not None and len({carrier.target for carrier in carriers}) > 1:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "bom_ref_conflict",
+                "a bom-ref is carried by components of different packages; it resolves to none",
+                path,
+                detail=target,
+            )
+            carriers = None
+        if carriers is None:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "affects_unresolved",
+                "an affects ref names no unique component of this document; the finding is "
+                "kept on a ref: resource",
+                path,
+                detail=ref,
+            )
+            return None
+        self.resolved_locally = True
+        return tuple(carriers)
+
+    # SECURITY: The link's version is compared as digit text, never int() of producer text,
+    # and the fragment is an opaque bom-ref, never URL-decoded (Decision J).
+    def _local_fragment(self, ref: str) -> str | None:
+        """Return a same-document BOM-Link's fragment, or None for any other ref."""
+        if not ref.startswith(BOM_LINK_PREFIX) or self.serial is None:
+            return None
+        head, mark, fragment = ref[len(BOM_LINK_PREFIX) :].partition("#")
+        serial, slash, version = head.partition("/")
+        if not mark or not slash or serial != self.serial or version != self.bom_version:
+            return None
+        return fragment
+
+    def _package_resource(self, scope_type: str, key: str, path: str) -> tuple[str, str] | None:
+        """Compose the package resource, refused whole past the identity cap (section 7)."""
+        resource_id, _problem = package_resource_id(scope_type, self.lineage, key)
+        try:
+            self._require_identity(resource_id, MAX_IDENTITY_CHARS, "resource id", path)
+        except IdentityRefused:
+            return None
+        return PACKAGE_RESOURCE_TYPE, resource_id
+
+    def _fold(self, key: _FoldKey, candidate: _Candidate) -> None:
+        """Add one candidate to its identity's fold, refusing the artifact past the cap."""
+        bucket = self.folds.get(key)
+        if bucket is None:
+            if len(self.folds) >= self.limits.max_observations_per_artifact:
+                raise InputLimitError(
+                    f"artifact yields more than "
+                    f"{self.limits.max_observations_per_artifact} observations"
+                )
+            bucket = self.folds[key] = []
+        bucket.append(candidate)
+
+    # Fold
+
+    def _instances(self, carriers: list[_Carrier], path: str) -> tuple[list[dict[str, Any]], bool]:
+        """Keep each instance's facts together, sorted by (version, bom_ref) and capped (A3)."""
+        cut = False
+        # Instance cuts are reported, but never under truncated, which cve_may_be_missing reads.
+        scratch: set[str] = set()
+        records: dict[str, dict[str, Any]] = {}
+        for carrier in carriers:
+            record: dict[str, Any] = {}
+            for member, value in (
+                ("bom_ref", carrier.bom_ref),
+                ("version", carrier.version),
+                ("purl", carrier.purl),
+            ):
+                cleaned = clean((value,), MAX_LIST_ITEM_CHARS)
+                self._replay(cleaned, "instances", path, scratch)
+                cut = cut or cleaned.cut > 0
+                if cleaned.text:
+                    record[member] = cleaned.text
+            hashes = carrier.hashes
+            if len(hashes) > MAX_LIST_ITEMS:
+                hashes, cut = hashes[:MAX_LIST_ITEMS], True
+            if hashes:
+                cleaned = clean(hashes, MAX_LIST_ITEM_CHARS)
+                self._replay(cleaned, "instances", path, scratch)
+                cut = cut or cleaned.cut > 0
+                record["hashes"] = sorted(set(cleaned.items))
+            records[json.dumps(record, ensure_ascii=False, sort_keys=True)] = record
+        ordered = sorted(
+            records.items(),
+            key=lambda pair: (pair[1].get("version", ""), pair[1].get("bom_ref", ""), pair[0]),
+        )
+        if len(ordered) > MAX_INSTANCES_PER_PACKAGE:
+            ordered, cut = ordered[:MAX_INSTANCES_PER_PACKAGE], True
+        return [record for _, record in ordered], cut
+
+    # The fold is a pure function of the candidate multiset: every choice is a max, a min or a
+    # sorted union, so document order never reaches the observation (section 20).
+    def _assemble_fold(self, key: _FoldKey, candidates: list[_Candidate]) -> Observation:
+        """Fold every candidate that shares an identity into one OPEN observation."""
+        record_id, resource_type, resource_id = key
+        ordered = sorted(candidates, key=lambda candidate: candidate.order)
+        primary = ordered[0]
+        path = primary.path
+        truncated: set[str] = set()
+        for candidate in ordered:
+            truncated |= candidate.truncated
+        severity = max((candidate.severity for candidate in ordered), key=SEVERITY_RANK.__getitem__)
+        sources = sorted(
+            candidate.severity_source
+            for candidate in ordered
+            if candidate.severity is severity and candidate.severity_source
+        )
+        metadata = dict(primary.scalars)
+        if sources:
+            metadata["severity_source"] = sources[0]
+        if primary.package_identity is not None:
+            metadata["package_identity"] = primary.package_identity
+        scope_type, scope_id = self.scope
+        self._scalar(metadata, "subject_ref", f"{scope_type}:{scope_id}", path, truncated)
+        if "subject_version" in self.scalars:
+            metadata["subject_version"] = self.scalars["subject_version"]
+        self._scalar(metadata, "tool_version", self.tool_version, path, truncated)
+        unions: dict[str, set[str]] = {}
+        for candidate in ordered:
+            for member, items in candidate.lists.items():
+                unions.setdefault(member, set()).update(items)
+        carriers = sorted(
+            {carrier for candidate in ordered for carrier in candidate.carriers}, key=repr
+        )
+        carrier_values: dict[str, list[str | None]] = {
+            "package_versions": [carrier.version for carrier in carriers],
+            "purls": [carrier.purl for carrier in carriers],
+            "cpes": [carrier.cpe for carrier in carriers],
+            "bom_refs": [carrier.bom_ref for carrier in carriers],
+            "component_hashes": [text for carrier in carriers for text in carrier.hashes],
+        }
+        for member, texts in carrier_values.items():
+            kept = self._evidence_list(
+                sorted({text for text in texts if text is not None}), member, path, truncated
+            )
+            unions.setdefault(member, set()).update(kept)
+        for member, union in sorted(unions.items()):
+            if union:
+                metadata[member] = encode_list(self._cut(sorted(union), member, path, truncated))
+        if carriers:
+            instances, instances_cut = self._instances(carriers, path)
+            metadata["instances"] = encode_list(instances)
+            if instances_cut:
+                metadata["instances_cut"] = "true"
+        if len(unions.get("analysis_states", ())) > 1:
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING,
+                "analysis_conflict",
+                "one observation folds more than one analysis state" + ANALYSIS_KEPT,
+                path,
+            )
+        if len({carrier.bom_ref for carrier in carriers}) > 1:
+            self.diagnostics.add(
+                DiagnosticLevel.INFO,
+                "package_instances_folded",
+                "installs of one package with different bom-refs fold into one observation",
+                path,
+            )
+        identifiers, identifiers_cut = first_identifiers(
+            identifier for candidate in ordered for identifier in candidate.identifiers
+        )
+        if identifiers_cut or any(candidate.identifiers_cut for candidate in ordered):
+            truncated.add("source_identifiers")
+            self.diagnostics.add(
+                DiagnosticLevel.WARNING, "evidence_truncated", EVIDENCE_TRUNCATED_SUMMARY, path
+            )
+        metadata["occurrence_count"] = str(len(ordered))
+        if truncated:
+            metadata["truncated"] = encode_list(sorted(truncated))
+        foreign = sorted(set(metadata) - CYCLONEDX_METADATA_KEYS)
+        if foreign:
+            raise RuntimeError(f"metadata keys outside the fixed vocabulary: {foreign}")
+        observation = make_observation(
+            artifact=self.artifact,
+            source_type=CYCLONEDX_SOURCE_TYPE,
+            source_tool=self.tool,
+            source_record_id=record_id,
+            resource_id=resource_id,
+            resource_type=resource_type,
+            observed_at=self.observed_at,
+            ingested_at=self.ingested_at,
+            disposition=ObservationDisposition.OPEN,
+            severity=severity,
+            title=primary.title,
+            description=primary.description,
+            identifiers=identifiers,
+            context_key=self.tool,
+            metadata=metadata,
         )
         size = observation_bytes(
             observation,

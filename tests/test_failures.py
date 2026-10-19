@@ -532,6 +532,15 @@ CDX_MALFORMED_INVENTORIES: tuple[tuple[dict[str, Any], str], ...] = (
         {"components": [{"name": "a", "components": {}}]},
         "a component components member is not an array",
     ),
+    # A nested component with no name is refused like a top-level one (R-S2-3).
+    (
+        {"components": [{"name": "a", "components": [{"type": "library"}]}]},
+        "a component name is missing or not a string",
+    ),
+    (
+        {"metadata": {"component": {"name": "s", "components": [{"type": "library"}]}}},
+        "a component name is missing or not a string",
+    ),
 )
 
 
@@ -674,6 +683,13 @@ PARSE_ERROR_CASES = (
     _cdx_case(
         "CycloneDX specVersion '1.3' is not supported; this build reads 1.4 to 1.7",
         specVersion="1.3",
+    ),
+    # A standalone VEX: every ref names the subject, the only component (A9, Decision N).
+    _cdx_case(
+        "a standalone CycloneDX VEX document cannot be resolved without the BOM it describes; "
+        "ComplyRoll does not join artifacts; record its statements as evaluations",
+        metadata={"component": {"type": "application", "name": "p", "bom-ref": "product-ABC"}},
+        vulnerabilities=[{"id": "CVE-2021-44228", "affects": [{"ref": "product-ABC"}]}],
     ),
     *(
         _cdx_case("CycloneDX vulnerabilities is not an array", vulnerabilities=value)
@@ -1379,19 +1395,24 @@ class StructuredFieldTests(unittest.TestCase):
                 expanded |= matched
         self.assertEqual(cases["K1"], texts | expanded)
 
-    # One check text is met on two roads into the walk, so the text gate cannot see either
-    # road dropped: the subject and the component list are each a case (D1).
-    def test_the_subject_and_the_component_list_each_reach_the_walk_as_a_case(self) -> None:
+    # One check text is met on four roads into the walk, so the text gate cannot see a road
+    # dropped: the subject, the component list and a child of each are each a case (D1, R-S2-3).
+    def test_every_road_into_the_component_name_check_is_a_case(self) -> None:
         roads: set[tuple[str, bool]] = set()
         for case in PARSE_ERROR_CASES:
             value = case.document.value
             if case.message != CDX_INVENTORY + "a component name is missing or not a string":
                 continue
-            road = "subject" if "component" in value.get("metadata", {}) else "components"
+            if "component" in value.get("metadata", {}):
+                road, holder = "subject", value["metadata"]["component"]
+            else:
+                road, holder = "components", value["components"][0]
+            # A holder that has its name refuses a child, so the case is the nested road.
+            if isinstance(holder.get("name"), str):
+                road += " nested"
             roads.add((road, "vulnerabilities" in value))
-        self.assertEqual(
-            roads, {(road, k2) for road in ("subject", "components") for k2 in (False, True)}
-        )
+        expected = ("subject", "subject nested", "components", "components nested")
+        self.assertEqual(roads, {(road, k2) for road in expected for k2 in (False, True)})
 
     def test_every_non_list_vulnerabilities_shape_is_a_case(self) -> None:
         shapes = {

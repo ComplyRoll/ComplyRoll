@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import random
@@ -25,15 +26,32 @@ from complyroll.adapters import (
     classify_ingest,
     ingest_stig_artifact,
 )
-from complyroll.adapters.base import ArtifactProvenance, ParsedDocument
-from complyroll.adapters.common import MAX_IDENTITY_CHARS, MAX_OBSERVATION_JSON_BYTES
+from complyroll.adapters.base import (
+    AdapterOutput,
+    AdapterParseError,
+    ArtifactProvenance,
+    ParsedDocument,
+)
+from complyroll.adapters.common import (
+    MAX_DESCRIPTION_CHARS,
+    MAX_IDENTITY_CHARS,
+    MAX_LIST_ITEM_CHARS,
+    MAX_LIST_ITEMS,
+    MAX_METADATA_VALUE_CHARS,
+    MAX_OBSERVATION_JSON_BYTES,
+    MAX_TITLE_CHARS,
+)
 from complyroll.adapters.cyclonedx import (
     CYCLONEDX_MEDIA_TYPE,
     CYCLONEDX_METADATA_KEYS,
     CYCLONEDX_PARSER_VERSION,
     CYCLONEDX_SOURCE_TYPE,
+    MATCHED_DESCRIPTION,
+    MAX_AFFECTS_PER_VULNERABILITY,
+    MAX_INSTANCES_PER_PACKAGE,
     PURL_CASE_FOLDS,
     PURL_DASHED_NAME_TYPES,
+    VEX_REFUSAL,
     CycloneDxAdapter,
     ascii_fold,
     digest_shaped,
@@ -44,7 +62,9 @@ from complyroll.adapters.cyclonedx import (
     split_package_resource_id,
     subject_lineage,
 )
-from complyroll.models import Observation
+from complyroll.adapters.safeio import DEFAULT_LIMITS, InputLimitError
+from complyroll.models import Observation, ObservationDisposition, SourceSeverity
+from complyroll.reports.kev import cve_may_be_missing
 
 # *--- Configuration ---*
 
@@ -1112,6 +1132,38 @@ FIXTURE_IDS = {
     "trivy-clean.cdx.json": (
         "obs-1b9c4765ce29ba0e290a73498d80d22aff2748e120f0127cc80d456e65525f1e",
     ),
+    "grype-image.cdx.json": (
+        "obs-2e1d41be29610edb180e8d2bcb546dfda29eb1419f419f6a60ace5f3a0f304ea",
+        "obs-03f26b45916cb1d0cd87f242ce7ad64fea8a25bc99f0db4216bfe3eb4833ac90",
+        "obs-00ed41532d10f959bf6b6752ad645c5d2248a837b16d77c418857c4dccb5f13d",
+        "obs-7c23e13f450624ed77ccb4fccf32caa82e8377b42b9be7b4871fcd01899c8414",
+        "obs-923f768ac7f93f0d11aaf4b429fbcdd8a4d83da8e16b782c463ef1afc988abf4",
+    ),
+    "trivy-image.cdx.json": (
+        "obs-5eabacb2bd8c18086d7d734ef42d562d1206af7a37c362d5fbad47d1e2055890",
+        "obs-3ded09ae2784b5721b3a08442744726db79a0f70cd87e9c65e68f1554df8d75d",
+        "obs-de2b67f016bab95eb0abfd15c9350634da019a52319800597379a777242511da",
+        "obs-767337656cb549771ba6cc082a8c05c57d7d5f1349d07836d43b9b402e1451e3",
+    ),
+    # The spec-corners fixture raises WARNING and INFO only, so every invariant holds on it too.
+    "cyclonedx-spec-corners.cdx.json": (
+        "obs-59a86ce606bba62a1a2a833aad4c0591748241e37c3d32296b161d36733fc646",
+        "obs-dfe2fd619698ad7620299672c296e8bdeb49bcb6b281d8953805c7f3738f6421",
+        "obs-5417c4b18f7c13cf51503b2dceb84b6bd4b3550c0cc77eab397c6962ee45bf53",
+        "obs-e1e73212cdd6c08ed3455ae31c7ac5a0a4b88b9864e523c082fe9972b36a0b77",
+        "obs-1f6e0af9cf0d51941e8dc0e26a6c5b6b4d8446823f7fd52da8faac263b08cb0a",
+        "obs-18f0a751951fe9a7431c27530813f34fd5a8cafefb7271261092461d2bc03391",
+        "obs-0eb2c68122e45dd63294fc60546f2579f76b4db6e7c01c71edf6f41683d9457d",
+        "obs-f5e81d5e48737f8571b87817896c084adc0281bb7de7dc35bcba39a09be0eb15",
+        "obs-a1dee20a9a201653476c49a15912c79407ee3c4e91be15b892e09425642b68d2",
+        "obs-76f062e88bd0a09dd9fae8a3a2433cf79a96d5c777f258a3836a411b2f7f58c4",
+        "obs-c7f63f43a8686c379420063234f6955bafe3c7a2f6691868e4566ce3c7659158",
+        "obs-6c244b51076205853c0abb70517a936f4d4f909914987739d1827fed8bc5909d",
+        "obs-64bf76b23bcf9bad94575bf431b9e69cd6758340cfad271398f1cabfbdf3100b",
+        "obs-251113e85d60528106c62254b9e3d073c18e4e2b28027941cc0d306385b8b22b",
+        "obs-3a0cea0035f551483692cc0e085bef91b3af52066fed1190a101aa197e259d1c",
+        "obs-969b21ab29ecb5fa9bea4ae509f7b87afc713201a925d291ab75875d58d1b439",
+    ),
 }
 
 
@@ -1270,3 +1322,1411 @@ class PermutationTests(unittest.TestCase):
             self.canonical(permutation_document([first], tools, None)),
             self.canonical(permutation_document([second], tools, None)),
         )
+
+
+# *--- Step 3: Vulnerabilities ---*
+
+SERIAL = "3e671687-395b-41f5-a30f-a58921a69b79"
+OTHER_SERIAL = "9a1f8b2c-0000-4000-8000-000000000001"
+SUBJECT = {
+    "type": "container",
+    "name": "registry.example.test/web",
+    "version": "1.4",
+    "bom-ref": "subject",
+}
+SCOPE = ("image", "registry.example.test/web:1.4")
+PKG = "image:registry.example.test/web|"
+LODASH = {
+    "type": "library",
+    "name": "lodash",
+    "version": "4.17.20",
+    "purl": "pkg:npm/lodash@4.17.20",
+    "bom-ref": "lodash-ref",
+    "hashes": [{"alg": "SHA-256", "content": "aa"}],
+}
+STEP3_ARTIFACT = ArtifactProvenance.from_bytes(
+    path=Path("synthetic.cdx.json"),
+    content=b"{}",
+    media_type=CYCLONEDX_MEDIA_TYPE,
+    parser_name="complyroll.cyclonedx",
+    parser_version=CYCLONEDX_PARSER_VERSION,
+    ingested_at=NOW,
+)
+
+
+def vuln(record_id: str = "CVE-2026-0001", refs: tuple[str, ...] = ("lodash-ref",), **members: Any):
+    """Build one vulnerability record whose affects name the given refs."""
+    return {"id": record_id, "affects": [{"ref": ref} for ref in refs], **members}
+
+
+def k3(components: list[dict[str, Any]], vulnerabilities: list[Any]) -> dict[str, Any]:
+    """Build a matched document of a container subject named by one tool."""
+    metadata = {
+        "timestamp": "2026-10-01T12:00:00Z",
+        "tools": [{"name": "grype", "version": "0.99.0"}],
+        "component": dict(SUBJECT),
+    }
+    return bom(
+        serialNumber=f"urn:uuid:{SERIAL}",
+        version=1,
+        metadata=metadata,
+        components=components,
+        vulnerabilities=vulnerabilities,
+    )
+
+
+def run(document: dict[str, Any], limits: Any = DEFAULT_LIMITS) -> AdapterOutput:
+    return CycloneDxAdapter(limits).parse(
+        ParsedDocument("json", document), STEP3_ARTIFACT, ingested_at=NOW
+    )
+
+
+def level_codes(output: AdapterOutput, level: str) -> list[str]:
+    return [item.code for item in output.diagnostics if item.level.value == level]
+
+
+def finding(output: AdapterOutput, record_id: str = "CVE-2026-0001") -> Observation:
+    found = [item for item in output.observations if item.source_record_id == record_id]
+    assert len(found) == 1, (found, output.diagnostics)
+    return found[0]
+
+
+def scope(output: AdapterOutput) -> Observation:
+    return finding(output, "cyclonedx.bom")
+
+
+def md(observation: Observation) -> dict[str, str]:
+    return dict(observation.source_metadata)
+
+
+def resource(observation: Observation) -> tuple[str, str]:
+    return observation.resource.resource_type, observation.resource.resource_id
+
+
+class StepTwoRulingTests(unittest.TestCase):
+    """The three main-loop rulings on step 2's open questions (R-S2-1 to R-S2-3)."""
+
+    def test_an_empty_strip_keeps_the_name_as_written(self) -> None:
+        for name in (":1.4", "@" + SHA256):
+            with self.subTest(name=name):
+                self.assertEqual(subject_lineage("image", name), name)
+        self.assertEqual(
+            subject_lineage("image", "registry.example.test/web:1.4"), "registry.example.test/web"
+        )
+
+    def test_a_version_cannot_forge_a_component_set(self) -> None:
+        def digest(components: list[dict[str, Any]]) -> str:
+            observation = only(
+                ingest(bom(metadata={"tools": [{"name": "syft"}]}, components=components))
+            )
+            return dict(observation.source_metadata)["component_set_sha256"]
+
+        forged = [{"name": "a", "purl": "pkg:npm/a@1", "version": "1\npkg:npm/b\t2"}]
+        plain = [
+            {"name": "a", "purl": "pkg:npm/a@1", "version": "1"},
+            {"name": "b", "purl": "pkg:npm/b@2", "version": "2"},
+        ]
+        self.assertNotEqual(digest(forged), digest(plain))
+        encoded = [{"name": "a", "purl": "pkg:npm/a@1", "version": "1%\r"}]
+        self.assertEqual(digest(encoded), hashlib.sha256(b"pkg:npm/a\t1%25%0D\n").hexdigest())
+        self.assertEqual(
+            digest(forged), hashlib.sha256(b"pkg:npm/a\t1%0Apkg:npm/b%092\n").hexdigest()
+        )
+
+
+class StandaloneVexTests(unittest.TestCase):
+    """K4 is decided after indexing, with the subject left out (A9, Decision N)."""
+
+    def assert_vex(self, document: dict[str, Any]) -> None:
+        with self.assertRaises(AdapterParseError) as caught:
+            run(document)
+        self.assertEqual(str(caught.exception), VEX_REFUSAL)
+
+    def test_a_vex_whose_refs_name_the_subject_is_refused(self) -> None:
+        self.assert_vex(k3([], [vuln(refs=("subject",))]))
+
+    def test_the_cisa_case_shape_is_refused_as_vex_not_invalid_bom(self) -> None:
+        document = bom(
+            metadata={
+                "component": {
+                    "type": "application",
+                    "name": "acme-product",
+                    "bom-ref": "product-ABC",
+                }
+            },
+            vulnerabilities=[
+                {
+                    "id": "CVE-2021-44228",
+                    "analysis": {"state": "not_affected", "justification": "code_not_reachable"},
+                    "affects": [{"ref": "product-ABC"}],
+                }
+            ],
+        )
+        self.assert_vex(document)
+
+    def test_the_bomex_vex_shape_is_refused(self) -> None:
+        link = f"urn:cdx:{OTHER_SERIAL}/1#pkg:maven/a/b@1"
+        self.assert_vex(bom(vulnerabilities=[vuln("CVE-2020-25649", (link,))]))
+
+    def test_components_nested_under_the_subject_make_k3_and_resolve(self) -> None:
+        document = k3([], [vuln()])
+        document["metadata"]["component"]["components"] = [dict(LODASH)]
+        output = run(document)
+        self.assertEqual(resource(finding(output)), ("package", PKG + "pkg:npm/lodash"))
+        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+
+
+class ResolutionTests(unittest.TestCase):
+    """Refs resolve through the index or degrade to ref:, never to an ERROR (Decision J)."""
+
+    def test_a_direct_ref_lands_on_the_package_resource_and_the_scope_passes(self) -> None:
+        output = run(k3([dict(LODASH)], [vuln()]))
+        observation = finding(output)
+        self.assertEqual(resource(observation), ("package", PKG + "pkg:npm/lodash"))
+        self.assertIs(observation.disposition, ObservationDisposition.OPEN)
+        self.assertEqual(md(observation)["package_identity"], "purl")
+        self.assertEqual(md(observation)["subject_ref"], "image:registry.example.test/web:1.4")
+        self.assertEqual(md(observation)["tool_version"], "0.99.0")
+        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+        self.assertEqual(scope(output).description, MATCHED_DESCRIPTION)
+        self.assertEqual(md(scope(output))["affected_count"], "1")
+        self.assertNotIn("match_unverified", level_codes(output, "warning"))
+        self.assertEqual(level_codes(output, "error"), [])
+
+    def test_a_ref_to_the_subject_lands_on_the_scope_resource(self) -> None:
+        output = run(k3([dict(LODASH)], [vuln(refs=("subject",))]))
+        observation = finding(output)
+        self.assertEqual(resource(observation), SCOPE)
+        self.assertNotIn("package_identity", md(observation))
+        self.assertNotIn("instances", md(observation))
+        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+
+    def test_a_same_serial_bom_link_fragment_is_never_decoded(self) -> None:
+        components = [
+            {"name": "other", "purl": "pkg:deb/debian/other@1", "bom-ref": "libstdc++6"},
+            {
+                "name": "libstdc++6",
+                "purl": "pkg:deb/debian/libstdc%2B%2B6@1",
+                "bom-ref": "libstdc%2B%2B6",
+            },
+        ]
+        link = f"urn:cdx:{SERIAL}/1#libstdc%2B%2B6"
+        output = run(k3(components, [vuln(refs=(link,))]))
+        self.assertEqual(
+            resource(finding(output)), ("package", PKG + "pkg:deb/debian/libstdc%2B%2B6")
+        )
+        self.assertNotIn("affects_unresolved", level_codes(output, "warning"))
+
+    def test_a_bom_link_resolves_only_on_this_serial_and_version_text(self) -> None:
+        for link in (
+            f"urn:cdx:{OTHER_SERIAL}/1#lodash-ref",
+            f"urn:cdx:{SERIAL}/01#lodash-ref",
+            f"urn:cdx:{SERIAL}/2#lodash-ref",
+            f"urn:cdx:{SERIAL}/1lodash-ref",
+        ):
+            with self.subTest(link=link):
+                output = run(k3([dict(LODASH)], [vuln(refs=(link,))]))
+                self.assertEqual(resource(finding(output)), ("package", PKG + ref_key(link)))
+                self.assertIn("affects_unresolved", level_codes(output, "warning"))
+                self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+
+    def test_a_bom_link_version_defaults_to_one(self) -> None:
+        document = k3([dict(LODASH)], [vuln(refs=(f"urn:cdx:{SERIAL}/1#lodash-ref",))])
+        del document["version"]
+        self.assertEqual(resource(finding(run(document))), ("package", PKG + "pkg:npm/lodash"))
+
+    def test_an_unresolved_ref_keeps_the_finding_and_the_scope_is_unverified(self) -> None:
+        output = run(k3([dict(LODASH)], [vuln(refs=("missing ref",))]))
+        observation = finding(output)
+        self.assertEqual(resource(observation), ("package", PKG + "ref:missing%20ref"))
+        self.assertEqual(md(observation)["package_identity"], "ref")
+        self.assertIs(observation.disposition, ObservationDisposition.OPEN)
+        self.assertEqual(level_codes(output, "error"), [])
+        self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+        self.assertIn("match_unverified", level_codes(output, "warning"))
+        self.assertEqual(md(scope(output))["bom_kind"], "matched")
+
+    def test_one_resolved_ref_makes_the_scope_pass(self) -> None:
+        vulnerabilities = [vuln(refs=("missing",)), vuln("CVE-2026-0002")]
+        output = run(k3([dict(LODASH)], vulnerabilities))
+        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+
+    def test_a_duplicate_bom_ref_with_two_keys_falls_back(self) -> None:
+        components = [
+            {**LODASH, "bom-ref": "dup"},
+            {"name": "z", "purl": "pkg:npm/z@1", "bom-ref": "dup"},
+        ]
+        output = run(k3(components, [vuln(refs=("dup",))]))
+        self.assertEqual(resource(finding(output)), ("package", PKG + "ref:dup"))
+        self.assertIn("bom_ref_conflict", level_codes(output, "warning"))
+
+    def test_a_duplicate_bom_ref_with_one_key_resolves_as_instances(self) -> None:
+        components = [
+            {**LODASH, "bom-ref": "dup"},
+            {**LODASH, "bom-ref": "dup", "version": "4.17.21", "purl": "pkg:npm/lodash@4.17.21"},
+        ]
+        output = run(k3(components, [vuln(refs=("dup",))]))
+        observation = finding(output)
+        self.assertEqual(resource(observation), ("package", PKG + "pkg:npm/lodash"))
+        self.assertNotIn("bom_ref_conflict", level_codes(output, "warning"))
+        self.assertEqual(len(json.loads(md(observation)["instances"])), 2)
+        self.assertEqual(md(observation)["occurrence_count"], "1")
+
+    def test_no_affects_goes_on_the_scope_resource(self) -> None:
+        output = run(k3([dict(LODASH)], [{"id": "CVE-2026-0001"}]))
+        self.assertEqual(resource(finding(output)), SCOPE)
+        self.assertIn("affects_missing", level_codes(output, "warning"))
+        self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+
+    def test_a_component_without_a_purl_is_the_weak_identity(self) -> None:
+        output = run(k3([{"type": "library", "name": "musl", "bom-ref": "m"}], [vuln(refs=("m",))]))
+        observation = finding(output)
+        self.assertEqual(resource(observation), ("package", PKG + "component:library//musl"))
+        self.assertEqual(md(observation)["package_identity"], "component")
+        self.assertIn("package_identity_weak", level_codes(output, "warning"))
+
+    def test_an_over_long_resource_id_is_refused(self) -> None:
+        output = run(k3([dict(LODASH)], [vuln(refs=("x" * 600,))]))
+        self.assertEqual(output.observations, ())
+        self.assertEqual(level_codes(output, "error"), ["identity_input_invalid"])
+
+    def test_the_vulnerability_count_is_bounded(self) -> None:
+        limits = dataclasses.replace(DEFAULT_LIMITS, max_results_per_run=1)
+        with self.assertRaises(InputLimitError):
+            run(k3([dict(LODASH)], [vuln(), vuln("CVE-2026-0002")]), limits)
+        run(k3([dict(LODASH)], [vuln()]), limits)
+
+    def test_the_affects_list_is_bounded(self) -> None:
+        refs = ("lodash-ref",) * MAX_AFFECTS_PER_VULNERABILITY
+        observation = finding(run(k3([dict(LODASH)], [vuln(refs=refs)])))
+        self.assertEqual(md(observation)["occurrence_count"], str(MAX_AFFECTS_PER_VULNERABILITY))
+        with self.assertRaises(InputLimitError):
+            run(k3([dict(LODASH)], [vuln(refs=(*refs, "lodash-ref"))]))
+
+
+class FieldMapTests(unittest.TestCase):
+    """The field map of section 9, ratings (Decision V) and analysis codes (Decision O)."""
+
+    def one(self, **members: Any) -> tuple[AdapterOutput, Observation]:
+        output = run(k3([dict(LODASH)], [vuln(**members)]))
+        return output, finding(output)
+
+    def test_the_severity_is_the_highest_word_and_never_a_banded_score(self) -> None:
+        ratings = [
+            {"source": {"name": "nvd"}, "score": 9.8, "severity": "low", "method": "CVSSv31"},
+            {"source": {"name": "ghsa"}, "severity": "medium"},
+            {"source": {"name": "alpha"}, "severity": "medium"},
+        ]
+        _output, observation = self.one(ratings=ratings)
+        self.assertIs(observation.source_severity, SourceSeverity.MEDIUM)
+        self.assertEqual(md(observation)["severity_source"], "alpha")
+        self.assertEqual(len(json.loads(md(observation)["ratings"])), 3)
+
+    def test_a_score_alone_sets_no_severity(self) -> None:
+        _output, observation = self.one(ratings=[{"score": 9.8, "method": "CVSSv31"}])
+        self.assertIs(observation.source_severity, SourceSeverity.UNKNOWN)
+
+    def test_info_and_none_are_informational(self) -> None:
+        for word in ("info", "none"):
+            with self.subTest(word=word):
+                _output, observation = self.one(ratings=[{"severity": word}])
+                self.assertIs(observation.source_severity, SourceSeverity.INFORMATIONAL)
+
+    def test_scores_are_read_int_before_float_and_kept_verbatim(self) -> None:
+        good = [{"score": 7}, {"score": 0.0, "severity": "none"}, {"score": -1}, {"score": 2.5}]
+        bad = [{"score": float("inf")}, {"score": 10**400}, {"score": True}, {"score": "7"}]
+        output, observation = self.one(ratings=good + bad + [{"method": "other"}])
+        ratings = json.loads(md(observation)["ratings"])
+        for text in ('"score":"7"', '"score":"0.0"', '"score":"-1"', '"score":"2.5"'):
+            self.assertTrue(any(text in item for item in ratings), text)
+        messages = [
+            item.message for item in output.diagnostics if item.code == "rating_score_invalid"
+        ]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("(4 occurrences", messages[0])
+
+    def test_identifiers_come_from_the_id_the_references_and_the_cwes(self) -> None:
+        output = run(
+            k3(
+                [dict(LODASH)],
+                [
+                    vuln(
+                        "GHSA-29mw-wpgm-hmr9",
+                        references=[{"id": "CVE-2026-1234"}, {"id": 7}],
+                        cwes=[79, 0, True, 100_000],
+                    )
+                ],
+            )
+        )
+        observation = finding(output, "GHSA-29mw-wpgm-hmr9")
+        self.assertEqual(
+            observation.source_identifiers, ("CVE-2026-1234", "CWE-79", "GHSA-29mw-wpgm-hmr9")
+        )
+        messages = [item.message for item in output.diagnostics if item.code == "cwe_invalid"]
+        self.assertIn("(3 occurrences", messages[0])
+
+    def test_the_title_is_the_first_line_and_detail_the_fallback(self) -> None:
+        _output, observation = self.one(description="\n first line\nsecond", detail="d")
+        self.assertEqual(observation.title, "first line")
+        self.assertEqual(observation.description, "first line\nsecond")
+        _output, observation = self.one(detail="d1\nd2")
+        self.assertEqual((observation.title, observation.description), ("d1", "d1\nd2"))
+
+    def test_each_analysis_state_draws_its_own_code_and_stays_open(self) -> None:
+        expected = {
+            "not_affected": "analysis_not_affected",
+            "false_positive": "analysis_false_positive",
+            "resolved": "analysis_resolved",
+            "resolved_with_pedigree": "analysis_resolved",
+            "in_triage": "analysis_in_triage",
+            "exploitable": None,
+            "bogus": "analysis_state_invalid",
+        }
+        family = set(filter(None, expected.values())) | {"response_will_not_fix"}
+        for state, code in expected.items():
+            with self.subTest(state=state):
+                output, observation = self.one(analysis={"state": state})
+                self.assertIs(observation.disposition, ObservationDisposition.OPEN)
+                drawn = set(level_codes(output, "warning")) & family
+                self.assertEqual(drawn, {code} if code else set())
+                self.assertEqual(json.loads(md(observation)["analysis_states"]), [state])
+
+    def test_the_response_pair_draws_will_not_fix(self) -> None:
+        analysis = {"state": "not_affected", "justification": "code_not_reachable"}
+        output, observation = self.one(
+            analysis={**analysis, "response": ["will_not_fix", "update"]}
+        )
+        self.assertIn("response_will_not_fix", level_codes(output, "warning"))
+        self.assertEqual(
+            json.loads(md(observation)["analysis_responses"]), ["update", "will_not_fix"]
+        )
+        self.assertEqual(
+            json.loads(md(observation)["analysis_justifications"]), ["code_not_reachable"]
+        )
+
+    def test_two_states_in_one_fold_conflict(self) -> None:
+        vulnerabilities = [
+            vuln(analysis={"state": "not_affected"}),
+            vuln(analysis={"state": "in_triage"}),
+        ]
+        output = run(k3([dict(LODASH)], vulnerabilities))
+        observation = finding(output)
+        self.assertEqual(md(observation)["occurrence_count"], "2")
+        self.assertIn("analysis_conflict", level_codes(output, "warning"))
+        self.assertIs(observation.disposition, ObservationDisposition.OPEN)
+
+    def test_an_unaffected_installed_version_is_named_and_stays_open(self) -> None:
+        versions = [
+            {"version": "4.17.20", "status": "unaffected"},
+            {"range": "vers:npm/<4.17.21", "status": "affected"},
+        ]
+        document = k3(
+            [dict(LODASH)],
+            [{"id": "CVE-2026-0001", "affects": [{"ref": "lodash-ref", "versions": versions}]}],
+        )
+        output = run(document)
+        observation = finding(output)
+        self.assertIn("affects_version_unaffected", level_codes(output, "warning"))
+        self.assertIs(observation.disposition, ObservationDisposition.OPEN)
+        self.assertEqual(json.loads(md(observation)["affects_ranges"]), ["vers:npm/<4.17.21"])
+
+    def test_a_non_string_scalar_counts_as_absent(self) -> None:
+        document = k3(
+            [dict(LODASH)],
+            [
+                {
+                    "id": "CVE-2026-0001",
+                    "references": [{"id": 5}],
+                    "analysis": {"state": 1, "justification": 2, "detail": 3},
+                    "affects": [{"ref": "lodash-ref", "versions": [{"version": 1, "status": 2}]}],
+                }
+            ],
+        )
+        output = run(document)
+        observation = finding(output)
+        self.assertEqual(level_codes(output, "error"), [])
+        self.assertNotIn("analysis_states", md(observation))
+
+
+class VulnerabilityShapeTests(unittest.TestCase):
+    """Every wrong-type read fails closed as a per-vulnerability ERROR (A10, D2)."""
+
+    SHAPES = {
+        "string item": "CVE-2026-0001",
+        "affects object": {"id": "CVE-1", "affects": {}},
+        "affects string item": {"id": "CVE-1", "affects": ["lodash-ref"]},
+        "ref missing": {"id": "CVE-1", "affects": [{}]},
+        "ref numeric": {"id": "CVE-1", "affects": [{"ref": 1}]},
+        "versions object": {"id": "CVE-1", "affects": [{"ref": "lodash-ref", "versions": {}}]},
+        "versions string item": {"id": "CVE-1", "affects": [{"ref": "x", "versions": ["1"]}]},
+        "ratings object": {"id": "CVE-1", "ratings": {}},
+        "ratings string item": {"id": "CVE-1", "ratings": ["high"]},
+        "references string": {"id": "CVE-1", "references": "x"},
+        "references string item": {"id": "CVE-1", "references": ["x"]},
+        "analysis list": {"id": "CVE-1", "analysis": []},
+        "response string": {"id": "CVE-1", "analysis": {"response": "update"}},
+        "cwes string": {"id": "CVE-1", "cwes": "79"},
+        "cwes integer": {"id": "CVE-1", "cwes": 79},
+        "advisories string": {"id": "CVE-1", "advisories": "x"},
+        "advisories string item": {"id": "CVE-1", "advisories": ["x"]},
+        "affects null": {"id": "CVE-1", "affects": None},
+    }
+
+    def test_each_shape_is_invalid_vulnerability(self) -> None:
+        for label, item in self.SHAPES.items():
+            with self.subTest(shape=label):
+                output = run(k3([dict(LODASH)], [item]))
+                self.assertEqual(level_codes(output, "error"), ["invalid_vulnerability"])
+                self.assertEqual(output.observations, ())
+                self.assertFalse(output.withheld)
+
+    def test_an_absent_blank_or_non_string_id_is_vulnerability_id_missing(self) -> None:
+        for record_id in (None, "", "  ", 7):
+            with self.subTest(record_id=record_id):
+                item = {"affects": [{"ref": "lodash-ref"}]}
+                if record_id is not None:
+                    item["id"] = record_id
+                output = run(k3([dict(LODASH)], [item]))
+                self.assertEqual(level_codes(output, "error"), ["vulnerability_id_missing"])
+
+    def test_an_over_long_id_is_identity_input_invalid(self) -> None:
+        output = run(k3([dict(LODASH)], [vuln("CVE-" + "9" * 600)]))
+        self.assertEqual(level_codes(output, "error"), ["identity_input_invalid"])
+
+    def test_an_error_beside_a_good_fold_is_a_withheld_partial_reading(self) -> None:
+        output = run(k3([dict(LODASH)], [vuln(), {"id": "CVE-2026-0002", "affects": {}}]))
+        self.assertEqual(output.observations, ())
+        self.assertTrue(output.withheld)
+
+
+class FoldTests(unittest.TestCase):
+    """One observation per resource keeps each instance's facts together (A3, D3)."""
+
+    def test_two_installs_fold_with_their_own_facts(self) -> None:
+        components = [
+            {
+                **LODASH,
+                "bom-ref": "b",
+                "version": "4.17.21",
+                "purl": "pkg:npm/lodash@4.17.21",
+                "hashes": [{"alg": "SHA-1", "content": "22"}],
+            },
+            {
+                **LODASH,
+                "bom-ref": "a",
+                "version": "4.17.15",
+                "purl": "pkg:npm/lodash@4.17.15",
+                "hashes": [{"alg": "SHA-256", "content": "11"}],
+            },
+        ]
+        output = run(k3(components, [vuln(refs=("b", "a"))]))
+        metadata = md(finding(output))
+        self.assertEqual(metadata["occurrence_count"], "2")
+        self.assertEqual(
+            json.loads(metadata["instances"]),
+            [
+                {
+                    "bom_ref": "a",
+                    "version": "4.17.15",
+                    "purl": "pkg:npm/lodash@4.17.15",
+                    "hashes": ["SHA-256:11"],
+                },
+                {
+                    "bom_ref": "b",
+                    "version": "4.17.21",
+                    "purl": "pkg:npm/lodash@4.17.21",
+                    "hashes": ["SHA-1:22"],
+                },
+            ],
+        )
+        self.assertEqual(json.loads(metadata["package_versions"]), ["4.17.15", "4.17.21"])
+        self.assertIn("package_instances_folded", level_codes(output, "info"))
+
+    def test_the_text_winner_is_chosen_by_content_not_position(self) -> None:
+        first = vuln(description="b text")
+        second = vuln(description="a text")
+        for order in ([first, second], [second, first]):
+            with self.subTest(order=[item["description"] for item in order]):
+                observation = finding(run(k3([dict(LODASH)], order)))
+                self.assertEqual(observation.description, "a text")
+                self.assertEqual(md(observation)["occurrence_count"], "2")
+
+    def test_sixty_five_instances_keep_sixty_four_without_truncated_identifiers(self) -> None:
+        components = [
+            {**LODASH, "bom-ref": f"r{index:02d}", "version": f"1.{index:02d}"}
+            for index in range(MAX_INSTANCES_PER_PACKAGE + 1)
+        ]
+        refs = tuple(item["bom-ref"] for item in components)
+        metadata = md(finding(run(k3(components, [vuln(refs=refs)]))))
+        instances = json.loads(metadata["instances"])
+        self.assertEqual(len(instances), MAX_INSTANCES_PER_PACKAGE)
+        self.assertEqual(instances[0]["version"], "1.00")
+        self.assertEqual(metadata["instances_cut"], "true")
+        truncated = json.loads(metadata.get("truncated", "[]"))
+        self.assertNotIn("instances", truncated)
+        self.assertNotIn("source_identifiers", truncated)
+
+    def test_an_instance_keeps_sixty_four_hashes(self) -> None:
+        hashes = [{"alg": "SHA-256", "content": f"{index:03d}"} for index in range(65)]
+        metadata = md(finding(run(k3([{**LODASH, "hashes": hashes}], [vuln()]))))
+        self.assertEqual(len(json.loads(metadata["instances"])[0]["hashes"]), 64)
+        self.assertEqual(metadata["instances_cut"], "true")
+
+    def test_an_instance_with_no_version_sorts_first(self) -> None:
+        components = [dict(LODASH), {**LODASH, "bom-ref": "z-ref"}]
+        del components[1]["version"]
+        metadata = md(finding(run(k3(components, [vuln(refs=("lodash-ref", "z-ref"))]))))
+        instances = json.loads(metadata["instances"])
+        self.assertEqual([item.get("version") for item in instances], [None, "4.17.20"])
+
+    def test_the_scope_yields_to_a_vulnerability_spelled_like_it(self) -> None:
+        output = run(k3([dict(LODASH)], [{"id": "cyclonedx.bom"}]))
+        self.assertEqual(len(output.observations), 1)
+        self.assertIs(output.observations[0].disposition, ObservationDisposition.OPEN)
+        self.assertEqual(resource(output.observations[0]), SCOPE)
+        self.assertIn("scope_superseded", level_codes(output, "info"))
+
+    def test_output_is_sorted_and_free_of_duplicate_identities(self) -> None:
+        vulnerabilities = [vuln("CVE-2026-0009"), vuln(refs=("subject",)), vuln(refs=("nope",))]
+        output = run(k3([dict(LODASH)], vulnerabilities))
+        keys = [
+            (
+                item.resource.resource_type,
+                item.resource.resource_id,
+                item.source_record_id,
+                item.observation_id,
+            )
+            for item in output.observations
+        ]
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(len({key[3] for key in keys}), len(keys))
+
+
+class VulnerabilityPermutationTests(unittest.TestCase):
+    """Vulnerability, affects, ratings, references and instance order never change output."""
+
+    def canonical(self, document: dict[str, Any]) -> tuple[list[str], list[str]]:
+        output = run(document)
+        return (
+            [item.to_canonical_json() for item in output.observations],
+            sorted(item.code for item in output.diagnostics),
+        )
+
+    def test_vulnerability_documents_are_order_free(self) -> None:
+        components = [
+            {**LODASH, "bom-ref": "a", "version": "1", "hashes": [{"alg": "MD5", "content": "1"}]},
+            {**LODASH, "bom-ref": "b", "version": "2"},
+            {"name": "z", "purl": "pkg:npm/z@1", "bom-ref": "z"},
+        ]
+        ratings = [{"severity": "low", "source": {"name": "s1"}}, {"severity": "high", "score": 8}]
+        references = [{"id": "CVE-2026-0005"}, {"id": "GHSA-29mw-wpgm-hmr9"}]
+        vulnerabilities = [
+            vuln(refs=("a", "b", "z"), ratings=ratings, references=references, description="x"),
+            vuln(refs=("b",), description="y", analysis={"state": "in_triage"}),
+            vuln("CVE-2026-0002", refs=("subject", "missing")),
+        ]
+        expected = self.canonical(k3(components, vulnerabilities))
+        chooser = random.Random(30)
+        for trial in range(12):
+            shuffled = []
+            for item in chooser.sample(vulnerabilities, len(vulnerabilities)):
+                copy = dict(item)
+                for member in ("affects", "ratings", "references"):
+                    if member in copy:
+                        copy[member] = chooser.sample(copy[member], len(copy[member]))
+                shuffled.append(copy)
+            document = k3(chooser.sample(components, len(components)), shuffled)
+            with self.subTest(trial=trial):
+                self.assertEqual(self.canonical(document), expected)
+
+
+# *--- Step 3: Fixtures ---*
+
+GRYPE_IMAGE = FIXTURES / "grype-image.cdx.json"
+TRIVY_IMAGE = FIXTURES / "trivy-image.cdx.json"
+SPEC_CORNERS = FIXTURES / "cyclonedx-spec-corners.cdx.json"
+CORNER_PKG = "scan:corner-app|"
+# What each named corner of the spec-corners fixture yields: (record id, resource type, id).
+CORNER_IDS = {
+    "components nested three deep": ("CVE-2026-1001", "package", CORNER_PKG + "pkg:npm/deep-c"),
+    "a ref to metadata.component": ("CVE-2026-1002", "scan", "corner-app"),
+    "a same-serial BOM-Link with a %2B fragment": (
+        "CVE-2026-1003",
+        "package",
+        CORNER_PKG + "pkg:deb/debian/libstdc%2B%2B6",
+    ),
+    "a foreign BOM-Link": (
+        "CVE-2026-1004",
+        "package",
+        CORNER_PKG + "ref:urn%3Acdx%3A9a1f8b2c-0000-4000-8000-000000000001%2F1%23deep-1",
+    ),
+    "an unresolved ref": ("CVE-2026-1005", "package", CORNER_PKG + "ref:no-such-ref"),
+    "a duplicate bom-ref whose carriers differ in key": (
+        "CVE-2026-1006",
+        "package",
+        CORNER_PKG + "ref:dup-split",
+    ),
+    "a duplicate bom-ref whose carriers share a key": (
+        "CVE-2026-1007",
+        "package",
+        CORNER_PKG + "pkg:npm/same",
+    ),
+    "a GHSA id whose references carry the CVE": (
+        "GHSA-2c3f-4g5h-6j7m",
+        "package",
+        CORNER_PKG + "pkg:pypi/flask-cors",
+    ),
+    "not_affected with the response pair": (
+        "CVE-2026-1009",
+        "package",
+        CORNER_PKG + "pkg:generic/my%20tool",
+    ),
+    "in_triage": ("CVE-2026-1010", "package", CORNER_PKG + "pkg:deb/debian/zlib1g"),
+    "an out-of-enum state": ("CVE-2026-1011", "package", CORNER_PKG + "pkg:npm/emptyver"),
+    "one vulnerability listed twice with two states": (
+        "CVE-2026-1012",
+        "package",
+        CORNER_PKG + "component:library//badpurl",
+    ),
+    "the installed version marked unaffected": (
+        "CVE-2026-1013",
+        "package",
+        CORNER_PKG + "pkg:npm/twin",
+    ),
+    "a vulnerability with no affects": ("CVE-2026-1014", "scan", "corner-app"),
+    "two installs of one package": ("CVE-2026-1016", "package", CORNER_PKG + "pkg:npm/twin"),
+    "an id of cyclonedx.bom": ("cyclonedx.bom", "scan", "corner-app"),
+}
+# Every diagnostic the spec-corners fixture raises, in output order; none is an ERROR.
+CORNER_DIAGNOSTICS = (
+    ("warning", "affects_unresolved"),
+    ("warning", "bom_ref_conflict"),
+    ("warning", "analysis_not_affected"),
+    ("warning", "response_will_not_fix"),
+    ("warning", "analysis_in_triage"),
+    ("warning", "analysis_state_invalid"),
+    ("warning", "package_identity_weak"),
+    ("warning", "analysis_false_positive"),
+    ("warning", "affects_version_unaffected"),
+    ("warning", "affects_missing"),
+    ("info", "scope_superseded"),
+    ("warning", "analysis_conflict"),
+    ("info", "package_instances_folded"),
+)
+
+
+def fixture_result(path: Path) -> IngestResult:
+    return ingest_stig_artifact(path, ingested_at=NOW)
+
+
+def by_record(result: IngestResult, record_id: str) -> list[Observation]:
+    return [item for item in result.observations if item.source_record_id == record_id]
+
+
+def rating_scores(observation: Observation) -> list[str | None]:
+    return [json.loads(item).get("score") for item in json.loads(md(observation)["ratings"])]
+
+
+class SpecCornerFixtureTests(unittest.TestCase):
+    """Each corner of the 1.5 spec-corners fixture yields what section 8 and 9 say (step 3)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.result = fixture_result(SPEC_CORNERS)
+
+    def corner(self, label: str) -> Observation:
+        record_id, resource_type, resource_id = CORNER_IDS[label]
+        found = [
+            item
+            for item in by_record(self.result, record_id)
+            if resource(item) == (resource_type, resource_id)
+        ]
+        self.assertEqual(len(found), 1, label)
+        return found[0]
+
+    def message(self, code: str) -> str:
+        messages = [item.message for item in self.result.diagnostics if item.code == code]
+        self.assertEqual(len(messages), 1, code)
+        return messages[0]
+
+    def test_every_corner_is_pinned_and_every_observation_is_a_corner(self) -> None:
+        pinned = {CORNER_IDS[label] for label in CORNER_IDS}
+        observed = {(item.source_record_id, *resource(item)) for item in self.result.observations}
+        self.assertEqual(observed, pinned)
+        for item in self.result.observations:
+            self.assertIs(item.disposition, ObservationDisposition.OPEN)
+
+    def test_the_diagnostics_are_pinned_and_none_is_an_error(self) -> None:
+        self.assertEqual(
+            tuple((item.level.value, item.code) for item in self.result.diagnostics),
+            CORNER_DIAGNOSTICS,
+        )
+        self.assertTrue(self.result.successful)
+
+    def test_an_application_subject_with_no_oci_purl_is_a_scan(self) -> None:
+        observation = self.corner("a ref to metadata.component")
+        self.assertEqual(observation.source_tool, "corner-scanner")
+        self.assertEqual(md(observation)["subject_ref"], "scan:corner-app")
+        self.assertEqual(md(observation)["tool_version"], "1.0.0")
+
+    def test_the_fractional_second_offset_timestamp_is_the_clock(self) -> None:
+        clock = datetime(2026, 10, 1, 12, 0, 0, 250_000, tzinfo=UTC)
+        for item in self.result.observations:
+            assert item.observed_at is not None
+            self.assertEqual(item.observed_at, clock)
+
+    def test_scores_of_every_kind_are_kept_and_never_set_the_severity(self) -> None:
+        expected = {
+            "components nested three deep": ("7", SourceSeverity.HIGH),
+            "a ref to metadata.component": ("5.5", SourceSeverity.MEDIUM),
+            "a same-serial BOM-Link with a %2B fragment": ("0.0", SourceSeverity.INFORMATIONAL),
+            "a foreign BOM-Link": ("-1.5", SourceSeverity.LOW),
+            "an unresolved ref": (None, SourceSeverity.CRITICAL),
+        }
+        for label, (score, severity) in expected.items():
+            with self.subTest(corner=label):
+                observation = self.corner(label)
+                self.assertEqual(rating_scores(observation), [score])
+                self.assertIs(observation.source_severity, severity)
+        self.assertNotIn("rating_score_invalid", [item.code for item in self.result.diagnostics])
+
+    def test_refs_resolve_or_fall_back_as_section_8_says(self) -> None:
+        self.assertEqual(
+            md(self.corner("components nested three deep"))["package_identity"], "purl"
+        )
+        self.assertNotIn("package_identity", md(self.corner("a ref to metadata.component")))
+        for label in (
+            "a foreign BOM-Link",
+            "an unresolved ref",
+            "a duplicate bom-ref whose carriers differ in key",
+        ):
+            with self.subTest(corner=label):
+                self.assertEqual(md(self.corner(label))["package_identity"], "ref")
+        # The conflicting duplicate takes the fallback too (leg 1 decision 1).
+        self.assertIn("(3 occurrences", self.message("affects_unresolved"))
+        self.assertIn("(1 occurrence", self.message("bom_ref_conflict"))
+        shared = md(self.corner("a duplicate bom-ref whose carriers share a key"))
+        self.assertEqual(json.loads(shared["package_versions"]), ["1.0.0", "1.0.1"])
+        self.assertEqual(json.loads(shared["bom_refs"]), ["dup-same"])
+
+    def test_the_ghsa_record_carries_the_cve_from_its_references(self) -> None:
+        observation = self.corner("a GHSA id whose references carry the CVE")
+        self.assertEqual(observation.source_identifiers, ("CVE-2026-1008", "GHSA-2c3f-4g5h-6j7m"))
+        self.assertFalse(cve_may_be_missing(observation))
+        self.assertEqual(json.loads(md(observation)["purls"]), ["pkg:pypi/Flask_Cors@4.0.0"])
+
+    def test_the_analysis_corners_draw_their_codes_and_stay_open(self) -> None:
+        pair = md(self.corner("not_affected with the response pair"))
+        self.assertEqual(json.loads(pair["analysis_states"]), ["not_affected"])
+        self.assertEqual(json.loads(pair["analysis_justifications"]), ["code_not_reachable"])
+        self.assertEqual(json.loads(pair["analysis_responses"]), ["update", "will_not_fix"])
+        self.assertEqual(json.loads(md(self.corner("in_triage"))["analysis_states"]), ["in_triage"])
+        self.assertEqual(
+            json.loads(md(self.corner("an out-of-enum state"))["analysis_states"]),
+            ["maybe_affected"],
+        )
+        twice = self.corner("one vulnerability listed twice with two states")
+        self.assertEqual(md(twice)["occurrence_count"], "2")
+        self.assertEqual(
+            json.loads(md(twice)["analysis_states"]), ["exploitable", "false_positive"]
+        )
+        for code in (
+            "analysis_not_affected",
+            "response_will_not_fix",
+            "analysis_in_triage",
+            "analysis_state_invalid",
+            "analysis_false_positive",
+            "analysis_conflict",
+            "affects_version_unaffected",
+        ):
+            with self.subTest(code=code):
+                self.assertIn("(1 occurrence", self.message(code))
+
+    def test_the_package_key_corners(self) -> None:
+        empty = md(self.corner("an out-of-enum state"))
+        self.assertNotIn("package_versions", empty)
+        self.assertEqual(
+            json.loads(empty["instances"]),
+            [{"bom_ref": "empty-version", "purl": "pkg:npm/emptyver"}],
+        )
+        weak = md(self.corner("one vulnerability listed twice with two states"))
+        self.assertEqual(weak["package_identity"], "component")
+        self.assertEqual(json.loads(weak["purls"]), ["pkg:npm"])
+        self.assertIn("(2 occurrences", self.message("package_identity_weak"))
+        qualifier = md(self.corner("in_triage"))
+        self.assertEqual(
+            json.loads(qualifier["purls"]), ["pkg:deb/debian/zlib1g@1.2.13?arch=&distro=debian-12"]
+        )
+
+    def test_two_installs_keep_their_own_versions_and_hashes(self) -> None:
+        metadata = md(self.corner("two installs of one package"))
+        instances = json.loads(metadata["instances"])
+        self.assertEqual(
+            [(item["bom_ref"], item["version"], item["hashes"]) for item in instances],
+            [
+                ("twin-1", "1.0", ["SHA-256:" + "1" * 64]),
+                ("twin-2", "2.0", ["SHA-256:" + "2" * 64]),
+            ],
+        )
+        self.assertEqual(metadata["occurrence_count"], "2")
+        unaffected = md(self.corner("the installed version marked unaffected"))
+        self.assertEqual(json.loads(unaffected["affects_ranges"]), ["vers:npm/>=2.0"])
+        self.assertEqual(len(json.loads(unaffected["instances"])), 1)
+
+    def test_the_scope_yields_and_a_record_with_no_affects_lands_on_the_subject(self) -> None:
+        (superseding,) = by_record(self.result, "cyclonedx.bom")
+        self.assertEqual(superseding.title, "An id spelled like the scope record.")
+        self.assertIn("(2 occurrences", self.message("affects_missing"))
+        self.assertIn("(1 occurrence", self.message("scope_superseded"))
+        self.assertNotIn(
+            "bom_kind", md(self.corner("an id of cyclonedx.bom")), "the scope observation yields"
+        )
+
+
+class ProducerFixtureTests(unittest.TestCase):
+    """The grype and trivy image fixtures read the producer shapes the plan names (step 3)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.grype = fixture_result(GRYPE_IMAGE)
+        cls.trivy = fixture_result(TRIVY_IMAGE)
+
+    def test_both_scopes_pass_on_a_resolved_match(self) -> None:
+        for result, scope_id in (
+            (self.grype, "registry.example.test/api@sha256:" + "b" * 64),
+            (self.trivy, "registry.example.test/api:2.1"),
+        ):
+            with self.subTest(scope=scope_id):
+                observation = by_record(result, "cyclonedx.bom")[0]
+                self.assertEqual(resource(observation), ("image", scope_id))
+                self.assertIs(observation.disposition, ObservationDisposition.PASS)
+                self.assertEqual(md(observation)["bom_kind"], "matched")
+                self.assertEqual(md(observation)["affected_count"], "3")
+
+    def test_grype_folds_one_cve_from_two_namespaces_on_one_component(self) -> None:
+        (observation,) = by_record(self.grype, "CVE-2024-0727")
+        metadata = md(observation)
+        self.assertEqual(metadata["occurrence_count"], "2")
+        self.assertEqual(
+            json.loads(metadata["vulnerability_sources"]), ["debian:distro:debian:12", "nvd:cpe"]
+        )
+        self.assertIs(observation.source_severity, SourceSeverity.MEDIUM)
+        self.assertEqual(json.loads(metadata["affects_ranges"]), ["vers:deb/>=3.0.16-1"])
+
+    def test_grype_epss_and_kev_ratings_are_kept_and_never_set_the_severity(self) -> None:
+        (observation,) = by_record(self.grype, "CVE-2023-5678")
+        ratings = [json.loads(item) for item in json.loads(md(observation)["ratings"])]
+        sources = sorted(item.get("source", "") for item in ratings)
+        self.assertEqual(sources, ["", "CISA KEV Catalog", "FIRST"])
+        self.assertIs(observation.source_severity, SourceSeverity.CRITICAL)
+
+    def test_grype_two_package_id_bom_refs_on_one_purl_fold(self) -> None:
+        (observation,) = by_record(self.grype, "CVE-2023-5678")
+        metadata = md(observation)
+        self.assertEqual(metadata["occurrence_count"], "2")
+        self.assertEqual(len(json.loads(metadata["bom_refs"])), 2)
+        self.assertEqual(len(json.loads(metadata["instances"])), 2)
+        self.assertEqual(
+            observation.resource.resource_id,
+            "image:registry.example.test/api|pkg:deb/debian/libssl3?arch=amd64",
+        )
+        self.assertIn("package_instances_folded", codes(self.grype, "info"))
+
+    def test_grype_a_component_with_no_purl_is_weak(self) -> None:
+        (observation,) = by_record(self.grype, "CVE-2022-48174")
+        self.assertEqual(md(observation)["package_identity"], "component")
+        self.assertEqual(
+            json.loads(md(observation)["cpes"]),
+            ["cpe:2.3:a:busybox:busybox:1.36.1:*:*:*:*:*:*:*"],
+        )
+        self.assertEqual(codes(self.grype, "warning"), ["package_identity_weak"])
+
+    def test_trivy_unsorted_qualifiers_and_a_gem_bom_ref_make_stable_keys(self) -> None:
+        resources = sorted(item.resource.resource_id for item in self.trivy.observations)
+        lineage = "image:registry.example.test/api|"
+        self.assertEqual(
+            resources,
+            [
+                lineage + "pkg:gem/activesupport",
+                lineage + "pkg:rpm/centos/openssl-libs?arch=x86_64",
+                lineage + "pkg:rpm/centos/openssl?arch=x86_64",
+                "registry.example.test/api:2.1",
+            ],
+        )
+
+    def test_trivy_one_cve_over_two_packages_is_two_observations(self) -> None:
+        found = by_record(self.trivy, "CVE-2023-0286")
+        self.assertEqual(len(found), 2)
+        for observation in found:
+            with self.subTest(resource=observation.resource.resource_id):
+                self.assertEqual(md(observation)["occurrence_count"], "1")
+                self.assertEqual(observation.source_identifiers, ("CVE-2023-0286", "CWE-843"))
+
+    def test_trivy_eight_severity_only_ratings_take_the_highest_word(self) -> None:
+        observation = by_record(self.trivy, "CVE-2023-0286")[0]
+        ratings = [json.loads(item) for item in json.loads(md(observation)["ratings"])]
+        self.assertEqual(len(ratings), 8)
+        self.assertTrue(all("score" not in item for item in ratings))
+        self.assertIs(observation.source_severity, SourceSeverity.HIGH)
+        self.assertEqual(md(observation)["severity_source"], "alma")
+        (gem,) = by_record(self.trivy, "CVE-2023-38037")
+        self.assertEqual(gem.source_identifiers, ("CVE-2023-38037", "CWE-379", "CWE-732"))
+        self.assertEqual(self.trivy.diagnostics, ())
+
+
+# *--- Step 3: Built-in Cases ---*
+
+
+class BomexVexShapeTests(unittest.TestCase):
+    """The two standalone VEX shapes of external/bomex-VEX-*, rebuilt in code, are K4 (A9)."""
+
+    def assert_vex(self, document: dict[str, Any]) -> None:
+        with self.assertRaises(AdapterParseError) as caught:
+            run(document)
+        self.assertEqual(str(caught.exception), VEX_REFUSAL)
+        result = ingest(document)
+        self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+
+    def test_the_bomex_vex_shape_with_every_member_is_refused(self) -> None:
+        # bomex-VEX-vex.json: no metadata, no components, no serial, one full record whose ref
+        # is a BOM-Link into another document.
+        link = f"urn:cdx:{SERIAL}/1#pkg:maven/com.example/databind@2.10.0?type=jar"
+        record = {
+            "id": "CVE-2020-25649",
+            "source": {"name": "NVD", "url": "https://nvd.example.test/CVE-2020-25649"},
+            "references": [{"id": "SNYK-JAVA-EXAMPLE-1", "source": {"name": "SNYK"}}],
+            "ratings": [
+                {"source": {"name": "NVD"}, "score": 7.5, "severity": "high", "method": "CVSSv31"},
+                {"source": {"name": "Acme"}, "score": 0.0, "severity": "none", "method": "CVSSv31"},
+            ],
+            "cwes": [611],
+            "description": "An XML external entity flaw.",
+            "detail": "XXE detail.",
+            "recommendation": "Upgrade.",
+            "advisories": [{"title": "Commit", "url": "https://example.test/commit"}],
+            "created": "2020-12-03T00:00:00.000Z",
+            "published": "2020-12-03T00:00:00.000Z",
+            "updated": "2021-10-26T00:00:00.000Z",
+            "credits": {"individuals": [{"name": "Researcher"}]},
+            "analysis": {
+                "state": "not_affected",
+                "justification": "code_not_reachable",
+                "response": ["will_not_fix", "update"],
+                "detail": "Not reachable.",
+            },
+            "affects": [{"ref": link}],
+        }
+        document = {"bomFormat": "CycloneDX", "specVersion": "1.4", "version": 1}
+        self.assert_vex({**document, "vulnerabilities": [record]})
+
+    def test_the_cisa_not_affected_shape_is_refused(self) -> None:
+        # bomex-VEX-CISA-Case-1-vex-not_affected.json: a subject, no tools, no components, and
+        # the only ref names the subject.
+        document = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "metadata": {
+                "timestamp": "2022-03-03T00:00:00Z",
+                "component": {
+                    "name": "ABC",
+                    "version": "4.2",
+                    "type": "application",
+                    "bom-ref": "product-ABC",
+                },
+            },
+            "vulnerabilities": [
+                {
+                    "id": "CVE-2021-44228",
+                    "source": {"name": "NVD", "url": "https://nvd.example.test/CVE-2021-44228"},
+                    "analysis": {
+                        "state": "not_affected",
+                        "justification": "code_not_present",
+                        "response": ["will_not_fix"],
+                        "detail": "The vulnerable class was removed before shipping.",
+                    },
+                    "affects": [{"ref": "product-ABC"}],
+                }
+            ],
+        }
+        self.assert_vex(document)
+
+
+class MalformedMatchedTests(unittest.TestCase):
+    """Step 2's malformed K1/K2 shapes beside one good vulnerability are K3 CONTENT ERRORs (A12)."""
+
+    def test_each_shape_is_a_mintable_content_error(self) -> None:
+        for members, check in MalformedInventoryTests.SHAPES:
+            with self.subTest(check=check):
+                document = bom(
+                    metadata={"tools": [{"name": "grype"}]},
+                    components=[dict(LODASH)],
+                    vulnerabilities=[vuln()],
+                )
+                document.update(members)
+                result = ingest(document)
+                self.assertEqual(result.observations, ())
+                error_codes = [item.code for item in result.errors]
+                self.assertTrue(error_codes)
+                self.assertNotIn("artifact_parse_failed", error_codes)
+                self.assertTrue(set(error_codes) <= {"invalid_bom", "invalid_component"})
+                classification = classify_ingest(result)
+                assert classification is not None
+                self.assertIs(classification.failure_class, FailureClass.CONTENT)
+                self.assertIsNone(classification.reason)
+
+
+def saturated_document(char: str) -> dict[str, Any]:
+    """Return a K3 document whose one fold saturates every cap, padded with char.
+
+    65 carriers of one package and 65 records of one id fill every list past 64 items of past
+    256 characters, every scalar past 512, the title, the description and the identifiers; the
+    record id and the resource id sit exactly at 512. Identity inputs stay ASCII.
+    """
+    over = MAX_LIST_ITEMS + 1
+    name = "n" * (MAX_IDENTITY_CHARS - len(PKG) - len("pkg:npm/"))
+
+    def pad(index: int) -> str:
+        return f"{index:02d}" + char * (MAX_LIST_ITEM_CHARS + 44)
+
+    components = [
+        {
+            "type": "library",
+            "name": name,
+            "version": pad(index),
+            "purl": f"pkg:npm/{name}@{index:02d}",
+            "bom-ref": "r" + pad(index),
+            "cpe": "cpe:2.3:a:" + pad(index),
+            "hashes": [{"alg": "SHA-256", "content": pad(index)}],
+        }
+        for index in range(over)
+    ]
+    refs = [item["bom-ref"] for item in components]
+    record_id = "SAT-" + "x" * (MAX_IDENTITY_CHARS - 4)
+    shared = {
+        "description": "t" * (MAX_TITLE_CHARS + 88) + "\n" + char * MAX_DESCRIPTION_CHARS,
+        **{member: char * 600 for member in ("recommendation", "published", "created", "updated")},
+    }
+    ranges = [{"range": "vers:npm/" + pad(index), "status": "affected"} for index in range(over)]
+    first = {
+        "id": record_id,
+        **shared,
+        "references": [{"id": f"CVE-2026-{1000 + index}"} for index in range(over)],
+        "advisories": [{"url": "https://example.test/" + pad(index)} for index in range(over)],
+        "affects": [{"ref": refs[0], "versions": ranges}] + [{"ref": ref} for ref in refs[1:]],
+    }
+    rest = [
+        {
+            "id": record_id,
+            **shared,
+            "bom-ref": "v" + pad(index),
+            "source": {"name": pad(index)},
+            "ratings": [{"source": {"name": pad(index)}, "severity": "high"}],
+            "analysis": {
+                member: pad(index)
+                for member in ("state", "justification", "detail", "firstIssued", "lastUpdated")
+            }
+            | {"response": [pad(index)]},
+            "affects": [{"ref": refs[0]}],
+        }
+        for index in range(over)
+    ]
+    return k3(components, [first, *rest])
+
+
+# Every list and text the saturated fold cuts; `instances` is never among them (A3).
+SATURATED_TRUNCATED = [
+    "advisories",
+    "affects_ranges",
+    "affects_statuses",
+    "analysis_details",
+    "analysis_first_issued",
+    "analysis_justifications",
+    "analysis_last_updated",
+    "analysis_responses",
+    "analysis_states",
+    "bom_refs",
+    "component_hashes",
+    "cpes",
+    "created",
+    "description",
+    "package_versions",
+    "published",
+    "purls",
+    "ratings",
+    "recommendation",
+    "source_identifiers",
+    "title",
+    "updated",
+    "vulnerability_bom_refs",
+    "vulnerability_sources",
+]
+
+
+class SaturatedCapTests(unittest.TestCase):
+    """Every cap holds at saturation; four-byte text past the ceiling fails closed (sec. 18)."""
+
+    def test_an_ascii_fold_saturating_every_cap_is_one_bounded_observation(self) -> None:
+        output = run(saturated_document("a"))
+        observation = finding(output, "SAT-" + "x" * (MAX_IDENTITY_CHARS - 4))
+        metadata = md(observation)
+        self.assertEqual(json.loads(metadata["truncated"]), SATURATED_TRUNCATED)
+        for member in SATURATED_TRUNCATED:
+            if member in ("description", "title", "source_identifiers", "purls"):
+                continue
+            with self.subTest(member=member):
+                value = metadata[member]
+                if value.startswith("["):
+                    items = json.loads(value)
+                    self.assertEqual(len(items), MAX_LIST_ITEMS)
+                    self.assertEqual({len(item) for item in items}, {MAX_LIST_ITEM_CHARS})
+                else:
+                    self.assertEqual(len(value), MAX_METADATA_VALUE_CHARS)
+        # The 65 purls differ only past the 256-character cut, so they collapse to one item.
+        self.assertEqual([len(item) for item in json.loads(metadata["purls"])], [256])
+        instances = json.loads(metadata["instances"])
+        self.assertEqual(len(instances), MAX_INSTANCES_PER_PACKAGE)
+        self.assertEqual(metadata["instances_cut"], "true")
+        for instance in instances:
+            for member in ("bom_ref", "version", "purl"):
+                self.assertLessEqual(len(instance[member]), MAX_LIST_ITEM_CHARS)
+        self.assertEqual(len(observation.title), MAX_TITLE_CHARS)
+        self.assertEqual(len(observation.description), MAX_DESCRIPTION_CHARS)
+        self.assertEqual(len(observation.source_identifiers), MAX_LIST_ITEMS)
+        self.assertEqual(len(observation.source_record_id), MAX_IDENTITY_CHARS)
+        self.assertEqual(len(observation.resource.resource_id), MAX_IDENTITY_CHARS)
+        size = len(observation.to_canonical_json().encode("utf-8"))
+        self.assertLess(size, MAX_OBSERVATION_JSON_BYTES)
+        self.assertTrue(cve_may_be_missing(observation))
+
+    def test_four_byte_and_escaped_text_past_the_ceiling_fail_closed(self) -> None:
+        # Measured 2026-10-19: 350,195 bytes in ASCII, 1,222,490 in four-byte text and
+        # 1,210,944 for a quote; the instances alone hold 64 x 4 cut strings.
+        pattern = r"^observation obs-[0-9a-f]{64} is [0-9]+ bytes of canonical JSON; maximum is "
+        for char in ("\U0001f600", '"', "\\"):
+            with self.subTest(char=repr(char)):
+                with self.assertRaisesRegex(
+                    InputLimitError, pattern + f"{MAX_OBSERVATION_JSON_BYTES}$"
+                ):
+                    run(saturated_document(char))
+                result = ingest(saturated_document(char))
+                self.assertEqual(result.observations, ())
+                self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+
+
+class CveMayBeMissingTests(unittest.TestCase):
+    """`truncated` feeds kev.py's cve_may_be_missing; an instance cut never does (A3)."""
+
+    def identifiers(self, references: list[str], record_id: str = "CVE-2026-0001") -> Observation:
+        record = vuln(record_id, references=[{"id": text} for text in references])
+        return finding(run(k3([dict(LODASH)], [record])), record_id)
+
+    def test_a_cut_list_of_cves_may_have_lost_one(self) -> None:
+        observation = self.identifiers([f"CVE-2026-{1000 + index}" for index in range(70)])
+        self.assertIn("source_identifiers", json.loads(md(observation)["truncated"]))
+        self.assertTrue(cve_may_be_missing(observation))
+
+    def test_a_cut_list_whose_largest_kept_item_passes_cve_lost_none(self) -> None:
+        alphabet = "23456789cfghjmpqrvwx"
+        ghsa = [
+            f"GHSA-2c3f-4g5h-{alphabet[index // 20]}{alphabet[index % 20]}xx" for index in range(70)
+        ]
+        observation = self.identifiers(ghsa)
+        kept = observation.source_identifiers
+        self.assertEqual(len(kept), MAX_LIST_ITEMS)
+        self.assertIn("CVE-2026-0001", kept)
+        self.assertIn("source_identifiers", json.loads(md(observation)["truncated"]))
+        self.assertFalse(cve_may_be_missing(observation))
+
+    def test_an_instance_cut_never_says_a_cve_may_be_missing(self) -> None:
+        components = [
+            {**LODASH, "bom-ref": f"r{index:02d}", "version": f"1.{index:02d}"}
+            for index in range(MAX_INSTANCES_PER_PACKAGE + 1)
+        ]
+        refs = tuple(item["bom-ref"] for item in components)
+        observation = finding(run(k3(components, [vuln(refs=refs)])))
+        self.assertEqual(md(observation)["instances_cut"], "true")
+        self.assertFalse(cve_may_be_missing(observation))
+
+
+class AnalysisCodeOnceTests(unittest.TestCase):
+    """Each analysis code is one diagnostic however many records draw it (Decision O)."""
+
+    def test_each_code_is_raised_once_with_its_count(self) -> None:
+        states = ("not_affected", "false_positive", "resolved", "in_triage", "bogus")
+        vulnerabilities = [
+            vuln(f"CVE-2026-{index:04d}", analysis={"state": state, "response": ["will_not_fix"]})
+            for index, state in enumerate(states * 2, start=1)
+        ]
+        output = run(k3([dict(LODASH)], vulnerabilities))
+        family = (
+            "analysis_not_affected",
+            "analysis_false_positive",
+            "analysis_resolved",
+            "analysis_in_triage",
+            "analysis_state_invalid",
+        )
+        warnings = level_codes(output, "warning")
+        for code in family:
+            with self.subTest(code=code):
+                self.assertEqual(warnings.count(code), 1)
+                (message,) = [item.message for item in output.diagnostics if item.code == code]
+                self.assertIn("(2 occurrences", message)
+        self.assertEqual(warnings.count("response_will_not_fix"), 1)
+        for observation in output.observations:
+            if observation.source_record_id != "cyclonedx.bom":
+                self.assertIs(observation.disposition, ObservationDisposition.OPEN)
+
+
+# *--- Step 3: Determinism ---*
+
+
+class MatchedPermutationTests(unittest.TestCase):
+    """Step 2's permutation test on a K3 document: nesting, tool and qualifier order (sec. 20)."""
+
+    TOOLS = (
+        {"type": "application", "name": "grype", "version": "0.99.0"},
+        {"type": "library", "name": "lib", "version": "1"},
+    )
+    COMPONENTS = (
+        {"type": "library", "name": "a", "version": "1", "purl": "pkg:npm/a@1", "bom-ref": "a"},
+        {"type": "library", "name": "m", "purl": "pkg:apk/alpine/m@1?arch=x86_64&os=a"},
+        {"type": "library", "name": "z", "version": "3", "purl": "pkg:npm/z@3", "bom-ref": "z"},
+        {"type": "file", "name": "/etc/os-release", "bom-ref": "f"},
+    )
+
+    def document(self, chooser: random.Random | None, reordered: bool) -> dict[str, Any]:
+        components = [dict(item) for item in self.COMPONENTS]
+        components[1]["bom-ref"] = "m"
+        if reordered:
+            components[1]["purl"] = "pkg:apk/alpine/m@1?os=a&arch=x86_64"
+        tools = list(self.TOOLS)
+        nested = None
+        if chooser is not None:
+            components = chooser.sample(components, len(components))
+            tools = chooser.sample(tools, len(tools))
+            nested = chooser.choice([None, "component", "subject"])
+        document = k3([], [vuln(refs=("a", "m", "z", "subject")), vuln("CVE-2026-0002", ("m",))])
+        document["metadata"]["tools"] = {"components": tools}
+        if nested == "subject":
+            document["metadata"]["component"]["components"] = components
+        elif nested == "component":
+            components[0]["components"] = components[1:]
+            document["components"] = components[:1]
+        else:
+            document["components"] = components
+        return document
+
+    def canonical(self, document: dict[str, Any]) -> tuple[list[str], list[str]]:
+        output = run(document)
+        return (
+            [item.to_canonical_json() for item in output.observations],
+            [item.code for item in output.diagnostics],
+        )
+
+    def identities(self, document: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+        return [
+            (item.source_record_id, *resource(item), item.observation_id)
+            for item in run(document).observations
+        ]
+
+    def test_k3_documents_are_order_and_nesting_free(self) -> None:
+        expected = {flag: self.canonical(self.document(None, flag)) for flag in (False, True)}
+        self.assertEqual(len(expected[False][0]), 6)
+        chooser = random.Random(40)
+        for trial in range(16):
+            reordered = chooser.random() < 0.5
+            with self.subTest(trial=trial, reordered=reordered):
+                document = self.document(chooser, reordered)
+                self.assertEqual(self.canonical(document), expected[reordered])
+
+    def test_qualifier_order_never_moves_an_identity(self) -> None:
+        # The purl is evidence kept verbatim (section 9), so `purls` and `instances` show the
+        # order as written; the key, the resource and every observation id do not move.
+        self.assertEqual(
+            self.identities(self.document(None, False)), self.identities(self.document(None, True))
+        )
+
+
+class FoldPropertyTests(unittest.TestCase):
+    """The fold is a function of the candidate multiset: any arrangement, one output (sec. 13)."""
+
+    def test_random_folds_survive_every_permutation(self) -> None:
+        for seed in range(20):
+            chooser = random.Random(seed)
+            components = [
+                {
+                    **LODASH,
+                    "bom-ref": f"r{index}",
+                    "version": chooser.choice(["1", "2", "3", ""]),
+                    "hashes": [
+                        {"alg": chooser.choice(["MD5", "SHA-1"]), "content": f"{index}{item}"}
+                        for item in range(chooser.randint(0, 3))
+                    ],
+                }
+                for index in range(chooser.randint(1, 6))
+            ]
+            refs = [item["bom-ref"] for item in components]
+            records = [
+                vuln(
+                    refs=tuple(chooser.sample(refs, chooser.randint(1, len(refs)))),
+                    description=chooser.choice(["a", "b", "c"]),
+                    ratings=[{"severity": chooser.choice(["low", "high", "medium"])}],
+                    analysis={"state": chooser.choice(["in_triage", "resolved", "exploitable"])},
+                )
+                for _ in range(chooser.randint(1, 5))
+            ]
+            expected = run(k3(components, records))
+            for trial in range(4):
+                shuffled = []
+                for item in chooser.sample(records, len(records)):
+                    shuffled.append(
+                        {**item, "affects": chooser.sample(item["affects"], len(item["affects"]))}
+                    )
+                arranged = [
+                    {**item, "hashes": chooser.sample(item["hashes"], len(item["hashes"]))}
+                    for item in chooser.sample(components, len(components))
+                ]
+                with self.subTest(seed=seed, trial=trial):
+                    output = run(k3(arranged, shuffled))
+                    self.assertEqual(
+                        [item.to_canonical_json() for item in output.observations],
+                        [item.to_canonical_json() for item in expected.observations],
+                    )
+                    self.assertEqual(
+                        sorted(item.code for item in output.diagnostics),
+                        sorted(item.code for item in expected.diagnostics),
+                    )
+
+
+class RawNumberTests(unittest.TestCase):
+    """Scores written as JSON text reach the int-before-float read through the real parser."""
+
+    def test_raw_overflowing_scores_are_rating_score_invalid(self) -> None:
+        document = k3([dict(LODASH)], [vuln(ratings=[{"severity": "low", "score": 0}] * 3)])
+        text = json.dumps(document)
+        text = text.replace('"score": 0}', '"score": 1e400}', 1)
+        text = text.replace('"score": 0}', '"score": ' + "9" * 400 + "}", 1)
+        text = text.replace('"score": 0}', '"score": true}', 1)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "raw.cdx.json"
+            path.write_text(text, encoding="utf-8")
+            result = ingest_stig_artifact(path, ingested_at=NOW)
+        self.assertEqual(result.errors, ())
+        (message,) = [
+            item.message for item in result.diagnostics if item.code == "rating_score_invalid"
+        ]
+        self.assertIn("(3 occurrences", message)
+        observation = [
+            item for item in result.observations if item.source_record_id != "cyclonedx.bom"
+        ][0]
+        self.assertIs(observation.source_severity, SourceSeverity.LOW)
+
+
+class ComponentHashShapeTests(unittest.TestCase):
+    """A component `hashes` that is a string is a structural ERROR on K3, never a TypeError (D2)."""
+
+    def test_a_string_hashes_is_invalid_component(self) -> None:
+        output = run(k3([{**LODASH, "hashes": "aa"}], [vuln()]))
+        self.assertEqual(output.observations, ())
+        self.assertEqual(level_codes(output, "error"), ["invalid_component"])

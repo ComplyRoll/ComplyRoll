@@ -1,0 +1,250 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000005",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-01T21:00:00.250+09:00",
+    "tools": {
+      "components": [
+        {"type": "application", "name": "corner-scanner", "version": "1.0.0"},
+        {"type": "library", "name": "corner-lib", "version": "9.9"}
+      ]
+    },
+    "component": {
+      "bom-ref": "app-subject",
+      "type": "application",
+      "name": "corner-app",
+      "version": "2.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "deep-1",
+      "type": "library",
+      "name": "deep-a",
+      "version": "1",
+      "purl": "pkg:npm/deep-a@1",
+      "components": [
+        {
+          "bom-ref": "deep-2",
+          "type": "library",
+          "name": "deep-b",
+          "version": "1",
+          "purl": "pkg:npm/deep-b@1",
+          "components": [
+            {
+              "bom-ref": "deep-3",
+              "type": "library",
+              "name": "deep-c",
+              "version": "1",
+              "purl": "pkg:npm/deep-c@1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:deb/debian/libstdc%2B%2B6@12.2.0-14",
+      "type": "library",
+      "name": "libstdc++6",
+      "version": "12.2.0-14",
+      "purl": "pkg:deb/debian/libstdc%2B%2B6@12.2.0-14"
+    },
+    {
+      "bom-ref": "dup-split",
+      "type": "library",
+      "name": "split-a",
+      "version": "1",
+      "purl": "pkg:npm/split-a@1"
+    },
+    {
+      "bom-ref": "dup-split",
+      "type": "library",
+      "name": "split-b",
+      "version": "1",
+      "purl": "pkg:npm/split-b@1"
+    },
+    {
+      "bom-ref": "dup-same",
+      "type": "library",
+      "name": "same",
+      "version": "1.0.0",
+      "purl": "pkg:npm/same@1.0.0"
+    },
+    {
+      "bom-ref": "dup-same",
+      "type": "library",
+      "name": "same",
+      "version": "1.0.1",
+      "purl": "pkg:npm/same@1.0.1"
+    },
+    {
+      "bom-ref": "twin-1",
+      "type": "library",
+      "name": "twin",
+      "version": "1.0",
+      "purl": "pkg:npm/twin@1.0",
+      "hashes": [{"alg": "SHA-256", "content": "1111111111111111111111111111111111111111111111111111111111111111"}]
+    },
+    {
+      "bom-ref": "twin-2",
+      "type": "library",
+      "name": "twin",
+      "version": "2.0",
+      "purl": "pkg:npm/twin@2.0",
+      "hashes": [{"alg": "SHA-256", "content": "2222222222222222222222222222222222222222222222222222222222222222"}]
+    },
+    {
+      "bom-ref": "empty-version",
+      "type": "library",
+      "name": "emptyver",
+      "version": "",
+      "purl": "pkg:npm/emptyver"
+    },
+    {
+      "bom-ref": "empty-qualifier",
+      "type": "library",
+      "name": "zlib1g",
+      "version": "1.2.13",
+      "purl": "pkg:deb/debian/zlib1g@1.2.13?arch=&distro=debian-12"
+    },
+    {
+      "bom-ref": "pypi-case",
+      "type": "library",
+      "name": "Flask_Cors",
+      "version": "4.0.0",
+      "purl": "pkg:pypi/Flask_Cors@4.0.0"
+    },
+    {
+      "bom-ref": "encoded-name",
+      "type": "library",
+      "name": "my tool",
+      "version": "1.0",
+      "purl": "pkg:generic/my%20tool@1.0"
+    },
+    {
+      "bom-ref": "invalid-purl",
+      "type": "library",
+      "name": "badpurl",
+      "version": "3",
+      "purl": "pkg:npm",
+      "properties": [
+        {"name": "corner:note", "value": "one"},
+        {"name": "corner:note", "value": "two"}
+      ]
+    }
+  ],
+  "vulnerabilities": [
+    {
+      "id": "CVE-2026-1001",
+      "description": "Nested three deep; an integer score.",
+      "ratings": [{"source": {"name": "int-src"}, "score": 7, "severity": "high"}],
+      "affects": [{"ref": "deep-3"}]
+    },
+    {
+      "id": "CVE-2026-1002",
+      "description": "A ref to metadata.component; a float score.",
+      "ratings": [{"source": {"name": "float-src"}, "score": 5.5, "severity": "medium"}],
+      "affects": [{"ref": "app-subject"}]
+    },
+    {
+      "id": "CVE-2026-1003",
+      "description": "A same-serial BOM-Link whose fragment carries %2B; a zero score.",
+      "ratings": [{"source": {"name": "zero-src"}, "score": 0.0, "severity": "none"}],
+      "affects": [
+        {"ref": "urn:cdx:00000000-0000-4000-8000-000000000005/1#pkg:deb/debian/libstdc%2B%2B6@12.2.0-14"}
+      ]
+    },
+    {
+      "id": "CVE-2026-1004",
+      "description": "A foreign BOM-Link; a negative score.",
+      "ratings": [{"source": {"name": "negative-src"}, "score": -1.5, "severity": "low"}],
+      "affects": [{"ref": "urn:cdx:9a1f8b2c-0000-4000-8000-000000000001/1#deep-1"}]
+    },
+    {
+      "id": "CVE-2026-1005",
+      "description": "An unresolved ref; no score.",
+      "ratings": [{"source": {"name": "word-src"}, "severity": "critical"}],
+      "affects": [{"ref": "no-such-ref"}]
+    },
+    {
+      "id": "CVE-2026-1006",
+      "description": "A duplicate bom-ref whose carriers differ in key.",
+      "affects": [{"ref": "dup-split"}]
+    },
+    {
+      "id": "CVE-2026-1007",
+      "description": "A duplicate bom-ref whose carriers share a key.",
+      "affects": [{"ref": "dup-same"}]
+    },
+    {
+      "id": "GHSA-2c3f-4g5h-6j7m",
+      "description": "A GHSA id whose references carry the CVE; a pypi name in upper case with _.",
+      "references": [{"id": "CVE-2026-1008", "source": {"name": "nvd"}}],
+      "affects": [{"ref": "pypi-case"}]
+    },
+    {
+      "id": "CVE-2026-1009",
+      "description": "not_affected with a justification and the response pair; a percent-encoded name.",
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_reachable",
+        "response": ["will_not_fix", "update"],
+        "detail": "The parser is never called."
+      },
+      "affects": [{"ref": "encoded-name"}]
+    },
+    {
+      "id": "CVE-2026-1010",
+      "description": "in_triage; an empty-valued qualifier.",
+      "analysis": {"state": "in_triage"},
+      "affects": [{"ref": "empty-qualifier"}]
+    },
+    {
+      "id": "CVE-2026-1011",
+      "description": "An out-of-enum state; an empty-string version.",
+      "analysis": {"state": "maybe_affected"},
+      "affects": [{"ref": "empty-version"}]
+    },
+    {
+      "id": "CVE-2026-1012",
+      "description": "Listed twice for one component with two states; an invalid purl.",
+      "analysis": {"state": "exploitable"},
+      "affects": [{"ref": "invalid-purl"}]
+    },
+    {
+      "id": "CVE-2026-1012",
+      "description": "Listed twice for one component with two states; an invalid purl.",
+      "analysis": {"state": "false_positive"},
+      "affects": [{"ref": "invalid-purl"}]
+    },
+    {
+      "id": "CVE-2026-1013",
+      "description": "A versions item marks the installed version unaffected.",
+      "affects": [
+        {
+          "ref": "twin-1",
+          "versions": [
+            {"version": "1.0", "status": "unaffected"},
+            {"range": "vers:npm/>=2.0", "status": "affected"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "CVE-2026-1014",
+      "description": "No affects."
+    },
+    {
+      "id": "CVE-2026-1016",
+      "description": "Two installs of one package with different versions and hashes.",
+      "affects": [{"ref": "twin-2"}, {"ref": "twin-1"}]
+    },
+    {
+      "id": "cyclonedx.bom",
+      "description": "An id spelled like the scope record."
+    }
+  ]
+}

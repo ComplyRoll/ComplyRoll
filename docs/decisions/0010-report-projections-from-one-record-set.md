@@ -179,3 +179,33 @@ stateless path cannot reproduce. A `case.accepted` event, version 2, carrying an
 acceptance instant that both an evaluations file and a store could record, would remove the
 Decision 2 limitation; it is listed here as future work and is not built now, because it changes
 the input contract of both paths and nothing in the current rules requires the instant.
+
+## Amendment 2026-10-19: the detail report applies Decision 2, and the snapshot counts both arrays
+
+Found in a review of the slice against main, and decided by the maintainer.
+
+The detail report set every accepted record aside and counted it in its Summary row "Accepted,
+reported under VER-RPT-AVI", with an INFO `accepted_excluded` saying it belongs in that report.
+That row predates Decision 2 and was left unchanged by it ("`report vdt` is unchanged"), so for a
+period with no activity on an accepted record the two reports disagreed: September's detail
+report counted the banner record of `examples/evaluations-accepted.json` as reported under
+VER-RPT-AVI, and September's AVI report excluded it. The detail report now applies Decision 2's
+predicate to accepted records. One the AVI of the period carries is set aside as before. One it
+leaves out is excluded by the period in the detail report too: it is counted in
+`excludedByPeriod` and the "Excluded by report period" row, and named by the INFO
+`excluded_by_period` that the AVI report raises for it, in the same words. Every record of the
+set still lands in exactly one of the detail report's three Summary rows, and the detail report's
+accepted row equals the AVI report's "Accepted vulnerabilities reported" for the same period.
+
+The historical Summary counted its Evaluated, Not yet evaluated, Overdue, KEV and Current PAIN
+rows over `activeVulnerabilities` alone, while the snapshot publishes `acceptedVulnerabilities`
+too (Decision 3), so the Markdown said fewer than the JSON carried: `historical-kev` published 9
+records in the KEV catalog, 6 past their due date, and its Summary said 8 and 5, against ADR 0012
+Decision 5's rule that an accepted past-due record is counted. Every row but the two array sizes
+now counts both arrays. An accepted record is always evaluated and never overdue, so it moves the
+Evaluated, KEV and PAIN rows and never the Overdue row.
+
+No JSON byte moved and no detail or AVI golden moved: no golden compiles an accepted record
+outside its period. Three historical Markdown twins moved in their Summary rows alone
+(`historical-fixtures`, `historical-kev`, `historical-coverage-gaps`); `historical-failed`
+holds no accepted record and is unchanged.

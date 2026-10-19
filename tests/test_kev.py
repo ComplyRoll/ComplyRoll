@@ -1093,7 +1093,8 @@ class KevReportClockTests(unittest.TestCase):
         expected = {
             "vdt": (self.vdt, 6, 8, 5),
             "avi": (self.avi, 0, 1, 1),
-            "historical": (self.historical, 6, 8, 5),
+            # The snapshot counts its accepted past-due record too (CVE-2099-0006).
+            "historical": (self.historical, 6, 9, 6),
         }
         for kind, (report, overdue, known, past_due) in expected.items():
             with self.subTest(report=kind):
@@ -2145,8 +2146,16 @@ class KevGoldenTests(unittest.TestCase):
         self.assertEqual(counts["Active vulnerabilities"], 10)
         self.assertEqual(counts["Accepted vulnerabilities"], 1)
         self.assertEqual(counts["Overdue"], 6)
-        self.assertEqual(counts["Known exploited, CISA KEV"], 8)
-        self.assertEqual(counts["Past a CISA KEV due date"], 5)
+        self.assertEqual(counts["Known exploited, CISA KEV"], 9)
+        self.assertEqual(counts["Past a CISA KEV due date"], 6)
+        published = [
+            *report.document["activeVulnerabilities"],
+            *(item["vulnerabilityDetail"] for item in report.document["acceptedVulnerabilities"]),
+        ]
+        # A record the catalog does not list carries `kev: null`.
+        kev = [item["x-complyroll"]["kev"] for item in published if item["x-complyroll"]["kev"]]
+        self.assertEqual(counts["Known exploited, CISA KEV"], len(kev))
+        self.assertEqual(counts["Past a CISA KEV due date"], sum(item["pastDue"] for item in kev))
 
     def test_the_goldens_name_the_catalog_the_run_used(self) -> None:
         for kind in self.reports:

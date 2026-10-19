@@ -19,11 +19,11 @@
 |---|---:|
 | Active vulnerabilities | 5 |
 | Accepted vulnerabilities | 1 |
-| Evaluated | 2 |
+| Evaluated | 3 |
 | Not yet evaluated | 3 |
 | Overdue | 4 |
 | Current PAIN N1 | 0 |
-| Current PAIN N2 | 0 |
+| Current PAIN N2 | 1 |
 | Current PAIN N3 | 1 |
 | Current PAIN N4 | 1 |
 | Current PAIN N5 | 0 |

@@ -439,6 +439,16 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- The detail report's "Accepted, reported under VER-RPT-AVI" row counts only the accepted
+  records the AVI report of the same period carries, by ADR 0010 Decision 2's activity rule. An
+  accepted record with no activity in the period is excluded by it in both reports, in the same
+  words, and counted under "Excluded by report period" and `excludedByPeriod`, so every record
+  still lands in exactly one Summary row. Before, a September detail report counted an
+  accepted record evaluated in August as reported under VER-RPT-AVI while September's AVI
+  report left it out. The historical snapshot's Summary now counts both of its arrays in every
+  row but the two array sizes, so its KEV rows match the JSON it publishes: `historical-kev`
+  reads 9 known exploited and 6 past due, counting its accepted past-due record, where it read
+  8 and 5 (ADR 0010 amendment of 2026-10-19, ADR 0012 Decision 5). No JSON byte moved.
 - The SARIF parser version is `2` (ADR 0011 amendment of 2026-10-19). Its readings of the same
   bytes had changed three times under `1`, and the parser version is an identity input (ADR
   0002), so every SARIF observation identifier and fingerprint moves; tracking identifiers do

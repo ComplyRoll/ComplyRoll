@@ -20,13 +20,13 @@
 |---|---:|
 | Active vulnerabilities | 10 |
 | Accepted vulnerabilities | 1 |
-| Evaluated | 8 |
+| Evaluated | 9 |
 | Not yet evaluated | 2 |
 | Overdue | 6 |
-| Known exploited, CISA KEV | 8 |
-| Past a CISA KEV due date | 5 |
+| Known exploited, CISA KEV | 9 |
+| Past a CISA KEV due date | 6 |
 | Current PAIN N1 | 0 |
-| Current PAIN N2 | 8 |
+| Current PAIN N2 | 9 |
 | Current PAIN N3 | 0 |
 | Current PAIN N4 | 0 |
 | Current PAIN N5 | 0 |

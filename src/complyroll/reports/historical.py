@@ -189,12 +189,16 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
     write("|---|---:|")
     write(f"| Active vulnerabilities | {len(active)} |")
     write(f"| Accepted vulnerabilities | {len(accepted)} |")
-    write(f"| Evaluated | {sum(1 for item in active if item.is_evaluated)} |")
-    write(f"| Not yet evaluated | {sum(1 for item in active if not item.is_evaluated)} |")
-    write(f"| Overdue | {sum(1 for item in active if item.is_overdue)} |")
-    _write_kev_summary(write, active, metadata.options)
+    # The snapshot publishes both arrays, so every other row counts both: an accepted
+    # record is evaluated, never overdue, and still past a KEV due date when it is
+    # (ADR 0010 Decision 3, ADR 0012 Decision 5).
+    population = _population(report)
+    write(f"| Evaluated | {sum(1 for item in population if item.is_evaluated)} |")
+    write(f"| Not yet evaluated | {sum(1 for item in population if not item.is_evaluated)} |")
+    write(f"| Overdue | {sum(1 for item in population if item.is_overdue)} |")
+    _write_kev_summary(write, population, metadata.options)
     for rating in PainRating:
-        count = sum(1 for item in active if item.current_rating is rating)
+        count = sum(1 for item in population if item.current_rating is rating)
         write(f"| Current PAIN {rating.name} | {count} |")
     write("")
 

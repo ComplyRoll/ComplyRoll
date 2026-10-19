@@ -414,7 +414,8 @@ commands compile from a store by replacing the two logs and `--evaluations` with
 `--db complyroll.db`: `--kev` sits beside `--db` rather than conflicting with it, because no
 store holds a catalog.
 
-Each report names the catalog in its Provenance table and counts the clock in its Summary:
+Each report names the catalog in its Provenance table and counts the clock in its Summary. The
+detail report's Summary reads:
 
 ```text
 | KEV catalog | kev-catalog.json, CISA KEV catalog version 2026.09.14, released 2026-09-14T17:00:00.123400Z, 11 entries | 40c6d1465ca52c5ddb3b7bf1a6d92cfe884e33b4d2e90ac4551090e66d6c49fd |
@@ -435,7 +436,9 @@ where that clock stands:
 That record is fully mitigated, and it is overdue anyway, which is what the rule's parenthetical
 asks for. A remediated or false-positive record stops the clock; acceptance does not. An
 accepted record is never officially overdue, so the AVI report shows "Overdue 0" beside "Past a
-CISA KEV due date 1" and publishes the missed date on the record.
+CISA KEV due date 1" and publishes the missed date on the record. The historical snapshot counts
+both of its arrays, so its Summary reads 9 and 6: the same eight and five, and the accepted
+record past its due date.
 
 The run also reports what the catalog could not answer for. One fixture entry is dated after
 `--as-of`, so it was not applied:

@@ -1124,17 +1124,21 @@ class GoldenHistoricalReportTests(unittest.TestCase):
         active = official_records(self.report, "activeVulnerabilities")
         accepted = official_records(self.report, "acceptedVulnerabilities")
         summary = summary_counts(markdown)
-        evaluated = sum(1 for item in active if "evaluationCompletedAt" in item)
+        # Every count but the two array sizes covers the whole snapshot, both arrays.
+        population = [*active, *accepted]
+        evaluated = sum(1 for item in population if "evaluationCompletedAt" in item)
 
         self.assertEqual(summary["Active vulnerabilities"], len(active))
         self.assertEqual(summary["Accepted vulnerabilities"], len(accepted))
+        self.assertGreater(len(accepted), 0)
         self.assertEqual(summary["Evaluated"], evaluated)
-        self.assertEqual(summary["Not yet evaluated"], len(active) - evaluated)
+        self.assertEqual(summary["Not yet evaluated"], len(population) - evaluated)
         self.assertEqual(
-            summary["Overdue"], sum(1 for item in active if item["overdueStatus"]["isOverdue"])
+            summary["Overdue"],
+            sum(1 for item in population if item["overdueStatus"]["isOverdue"]),
         )
         for rating in range(1, 6):
-            expected = sum(1 for item in active if item.get("currentRating") == rating)
+            expected = sum(1 for item in population if item.get("currentRating") == rating)
             self.assertEqual(summary[f"Current PAIN N{rating}"], expected)
         active_table = markdown_table_rows(
             markdown_section(markdown, "Active vulnerabilities"), 11, "Tracking ID"
@@ -1483,6 +1487,71 @@ class DispositionMappingTests(unittest.TestCase):
         self.assertIn(
             "accepted_excluded", [item.code for item in report.diagnostics]
         )
+
+    def test_the_detail_report_sets_aside_only_what_the_avi_of_its_period_reports(self) -> None:
+        # The banner record was accepted with an August evaluation. September's AVI leaves
+        # it out by ADR 0010 Decision 2, so the detail report of the same period must not
+        # say it is reported there: it is excluded by the period in both, in one wording.
+        september = {
+            "period_from": datetime(2026, 9, 1, tzinfo=UTC),
+            "period_to": datetime(2026, 9, 30, 23, 59, 59, tzinfo=UTC),
+            "as_of": datetime(2026, 10, 1, tzinfo=UTC),
+        }
+        evaluations = load_evaluations(ACCEPTED_EVALUATIONS)
+        vdt = compile_fixtures(evaluations=evaluations, **september)
+        avi = compile_fixtures(evaluations=evaluations, kind="avi", **september)
+        vdt_summary = summary_counts(vdt.to_markdown())
+        avi_summary = summary_counts(avi.to_markdown())
+        message = (
+            f"{BANNER_CASE} is accepted and no recorded activity between "
+            "2026-09-01T00:00:00Z and 2026-09-30T23:59:59Z"
+        )
+
+        self.assertEqual(vdt.accepted, ())
+        self.assertEqual(
+            vdt_summary["Accepted, reported under VER-RPT-AVI"],
+            avi_summary["Accepted vulnerabilities reported"],
+        )
+        self.assertEqual(avi_summary["Accepted vulnerabilities reported"], 0)
+        for report in (vdt, avi):
+            with self.subTest(report=type(report).__name__):
+                excluded = [
+                    item.message for item in report.diagnostics if item.code == "excluded_by_period"
+                ]
+                self.assertIn(message, excluded)
+        self.assertNotIn("accepted_excluded", [item.code for item in vdt.diagnostics])
+        self.assertIn(BANNER_CASE, [item.message.split()[0] for item in vdt.diagnostics])
+
+    def test_every_record_lands_in_exactly_one_detail_summary_row(self) -> None:
+        # Reported, set aside for the AVI of the period, or excluded by it: the three rows
+        # account for the whole record set in a period with the accepted record and without.
+        evaluations = load_evaluations(ACCEPTED_EVALUATIONS)
+        snapshot = compile_fixtures(evaluations=evaluations, kind="historical")
+        total = len(snapshot.active) + len(snapshot.accepted)
+        periods = {
+            "August": {},
+            "September": {
+                "period_from": datetime(2026, 9, 1, tzinfo=UTC),
+                "period_to": datetime(2026, 9, 30, 23, 59, 59, tzinfo=UTC),
+                "as_of": datetime(2026, 10, 1, tzinfo=UTC),
+            },
+        }
+        for label, overrides in periods.items():
+            with self.subTest(period=label):
+                vdt = compile_fixtures(evaluations=evaluations, **overrides)
+                summary = summary_counts(vdt.to_markdown())
+                self.assertEqual(
+                    summary["Vulnerabilities reported"]
+                    + summary["Accepted, reported under VER-RPT-AVI"]
+                    + summary["Excluded by report period"],
+                    total,
+                )
+                self.assertEqual(
+                    summary["Excluded by report period"],
+                    vdt.document["x-complyroll"]["excludedByPeriod"],
+                )
+        august = summary_counts(compile_fixtures(evaluations=evaluations).to_markdown())
+        self.assertEqual(august["Accepted, reported under VER-RPT-AVI"], 1)
 
     def test_false_positive_flag_alone_records_the_disposition(self) -> None:
         report = compile_fixtures(evaluations=evaluations_from(isFalsePositive=True))

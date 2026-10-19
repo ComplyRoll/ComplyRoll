@@ -34,16 +34,19 @@ it yields depends on its `vulnerabilities` member:
 |---|---|
 | No `vulnerabilities` member (K1, an inventory such as Syft writes) | One NOT_REVIEWED observation of its subject and WARNING `vulnerabilities_absent`. It is not a detection and verifies no coverage clock |
 | `"vulnerabilities": []` (K2) | One NOT_REVIEWED observation of its subject and WARNING `match_unverified`, whatever tool is named, because Trivy writes the same empty list with vulnerability scanning turned off. A clean Grype or Trivy run therefore never verifies a coverage clock |
-| Vulnerability records and components besides the subject (K3) | One OPEN observation per vulnerability and `package` resource, plus one observation of the subject: PASS when at least one `affects` ref resolves to a component the document lists, else NOT_REVIEWED with `match_unverified`. A document that names no tool is ERROR `invalid_bom`, which `--record-failed-imports` records as a detection process failure |
+| Vulnerability records and components besides the subject (K3) | One OPEN observation per vulnerability and `package` resource, plus one observation of the subject: PASS when at least one `affects` ref resolves to a component the document lists other than the subject, on a record whose `analysis` has the state `exploitable` or `in_triage`, or none of a `state`, a `justification`, and a `detail`, in an `affects` entry that does not mark the installed version `unaffected`, else NOT_REVIEWED with `match_unverified`. Only that observation of the subject is coverage evidence, and only as PASS: the vulnerability observations never examine or verify an image. A document that names no tool is ERROR `invalid_bom`, which `--record-failed-imports` records as a detection process failure |
 | Vulnerability records and no component but the subject (K4, a standalone VEX document) | Refused: ComplyRoll does not join artifacts, so record its statements as evaluations |
 
-A standalone VEX document, a K1 or K2 document that is structurally malformed, and a
+A standalone VEX document, a K1 or K2 document that is structurally malformed or whose tool name,
+tool, or scope id cannot be an identity (over 512 characters, or a control character), and a
 `vulnerabilities` member that is not an array are refused as formats, with exit 1 and nothing
-written, with or without `--record-failed-imports`, because none of them is a failed detection.
-One such file in an `ingest` or `report` glob stops the whole run. An embedded `analysis` state
-such as `not_affected` never changes a disposition: it draws a warning naming the claim, and the
-outcome is recorded with `--evaluations` or `cases evaluate`. Detection time is the document's
-`metadata.timestamp`; `--detected-at` applies only to a document without one.
+written, with or without `--record-failed-imports`, because none of them is a failed detection. One
+such file in an `ingest` or `report` glob stops the whole run. An embedded `analysis` state such as
+`not_affected` never changes a finding's disposition: it draws a warning naming the claim, and the
+outcome is recorded with `--evaluations` or `cases evaluate`. A judged record, a `justification` or
+a `detail` with no `state` included, never makes the observation of the subject PASS, and neither
+does an `affects` entry that marks the installed version `unaffected`. Detection time is the
+document's `metadata.timestamp`; `--detected-at` applies only to a document without one.
 
 A case is one CVE from one tool, across every image and package it affects. Ingest one export
 format per tool per target: a Grype SARIF log and a Grype CycloneDX document of the same image

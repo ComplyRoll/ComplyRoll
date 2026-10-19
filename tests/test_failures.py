@@ -543,6 +543,20 @@ CDX_MALFORMED_INVENTORIES: tuple[tuple[dict[str, Any], str], ...] = (
     ),
 )
 
+CDX_IDENTITY = "CycloneDX inventory identity cannot be used as written: "
+# One refused input per identity the adapter checks on K1 and K2, keyed by its name (CL-5).
+CDX_REFUSED_IDENTITIES: tuple[tuple[dict[str, Any], str], ...] = (
+    ({"tools": [{"name": "sy\u0000ft"}]}, "tool name contains prohibited code point U+0000"),
+    (
+        {"tools": [{"name": "a" * 300}, {"name": "b" * 300}]},
+        "tool is 601 characters; maximum is 512",
+    ),
+    (
+        {"component": {"type": "container", "name": "x" * 600}},
+        "scope id is 600 characters; maximum is 512",
+    ),
+)
+
 
 def _cdx_case(message: str, **members: Any) -> ParseErrorCase:
     """Build a CycloneDX 1.6 refusal case reachable under a .cdx.json name."""
@@ -700,6 +714,12 @@ PARSE_ERROR_CASES = (
     *(
         _cdx_case(CDX_INVENTORY + check, **members, **extra)
         for members, check in CDX_MALFORMED_INVENTORIES
+        for extra in ({}, {"vulnerabilities": []})
+    ),
+    # Every identity input of a K1 or K2 document, once as K1 and once as K2 (A12, CL-5).
+    *(
+        _cdx_case(CDX_IDENTITY + check, metadata=metadata, **extra)
+        for metadata, check in CDX_REFUSED_IDENTITIES
         for extra in ({}, {"vulnerabilities": []})
     ),
 )
@@ -1394,6 +1414,30 @@ class StructuredFieldTests(unittest.TestCase):
                 )
                 expanded |= matched
         self.assertEqual(cases["K1"], texts | expanded)
+
+    # Each _identity call names its input; each name is refused as K1 and as K2 (CL-5).
+    def test_every_cyclonedx_inventory_identity_is_a_case_as_k1_and_k2(self) -> None:
+        tree = ast.parse((ADAPTERS / "cyclonedx.py").read_text(encoding="utf-8"))
+        names = {
+            node.args[1].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_identity"
+            and isinstance(node.args[1], ast.Constant)
+        }
+        cases: dict[str, set[str]] = {"K1": set(), "K2": set()}
+        for case in PARSE_ERROR_CASES:
+            value = case.document.value
+            if case.adapter is not CycloneDxAdapter or not case.message.startswith(CDX_IDENTITY):
+                continue
+            kind = "K2" if "vulnerabilities" in value else "K1"
+            check = case.message.removeprefix(CDX_IDENTITY)
+            # The longest name that leads the check, so "tool name" is never read as "tool".
+            cases[kind].add(max((n for n in names if check.startswith(n + " ")), key=len))
+        self.assertEqual(names, {"tool name", "tool", "scope id"})
+        self.assertEqual(cases["K1"], names)
+        self.assertEqual(cases["K2"], names)
 
     # One check text is met on four roads into the walk, so the text gate cannot see a road
     # dropped: the subject, the component list and a child of each are each a case (D1, R-S2-3).

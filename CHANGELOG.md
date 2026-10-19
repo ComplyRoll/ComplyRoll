@@ -160,23 +160,28 @@ All notable project changes will be documented here.
 
 ### Added
 
-- CycloneDX SBOM adapter (ADR 0016). `*.cdx.json` files, and bare `.json` files whose
-  `bomFormat` is `CycloneDX`, are read as CycloneDX 1.4 to 1.7 JSON under parser
-  `complyroll.cyclonedx` version 1 and source type `cyclonedx`. A vulnerability becomes one OPEN
-  observation per affected package, on a new `package` resource whose id joins the subject's
-  lineage (its name without tag or digest) to a version-free package key built from the purl by
-  a frozen qualifier strip set and per-type case table, so an upgrade or a retag keeps the row and
-  the case. A case is one CVE from one tool. Each document adds one observation of its subject,
-  `cyclonedx.bom`: NOT_REVIEWED for an inventory (`vulnerabilities_absent`) and for an empty
-  vulnerability list whatever tool is named (`match_unverified`), PASS only when a vulnerability
-  record resolves to a component the document lists, so a clean scan never verifies a coverage
-  clock yet. A vulnerability document that names no tool is ERROR `invalid_bom`; a standalone VEX
-  document, a malformed inventory or empty BOM, and a non-array `vulnerabilities` are refused as
-  formats and stop the run under every flag. Embedded VEX analysis is recorded and draws a
-  warning per claim, and never moves a disposition. Detection time is `metadata.timestamp`. The
-  coverage reader skips `package` observations and the inventory refuses `resourceType`
-  `package`. New goldens `vdt-cyclonedx`, `historical-cyclonedx`, and `vdt-cyclonedx-coverage`;
-  every earlier golden is byte-identical. SPDX is not read.
+- CycloneDX SBOM adapter (ADR 0016). `*.cdx.json` files, and bare `.json` files whose `bomFormat` is
+  `CycloneDX`, are read as CycloneDX 1.4 to 1.7 JSON under parser `complyroll.cyclonedx` version 1
+  and source type `cyclonedx`. A vulnerability becomes one OPEN observation per affected package, on
+  a new `package` resource whose id joins the subject's lineage (its name without tag or digest) to
+  a version-free package key built from the purl by a frozen qualifier strip set and per-type case
+  table, so an upgrade or a retag keeps the row and the case. A case is one CVE from one tool. Each
+  document adds one observation of its subject, `cyclonedx.bom`: NOT_REVIEWED for an inventory
+  (`vulnerabilities_absent`) and for an empty vulnerability list whatever tool is named
+  (`match_unverified`), PASS only when a vulnerability record with no supplier judgment resolves to
+  a component the document lists other than its subject, so a clean scan never verifies a coverage
+  clock yet. A `justification` or a `detail` with no state is a judgment, and an `affects` entry
+  that marks the installed version `unaffected` never counts toward that PASS. Coverage reads only
+  that observation of a CycloneDX document, and only a PASS one verifies. A vulnerability document
+  that names no tool is ERROR `invalid_bom`; a standalone VEX document, a malformed inventory or
+  empty BOM (an unusable tool name or scope id included), and a non-array `vulnerabilities` are
+  refused as formats and stop the run under every flag. Memory does not grow with components sharing
+  one bom-ref times the `affects` entries naming it, and each install's texts are cleaned once per
+  document, so CPU does not grow with purl length times the vulnerabilities naming it. Embedded VEX
+  analysis is recorded and draws a warning per claim, and never moves a disposition. Detection time
+  is `metadata.timestamp`. The coverage reader skips `package` observations and the inventory
+  refuses `resourceType` `package`. New goldens `vdt-cyclonedx`, `historical-cyclonedx`, and
+  `vdt-cyclonedx-coverage`; every earlier golden is byte-identical. SPDX is not read.
 - Coverage gaps become cases (ADR 0015, PR 3, Decisions 19 to 40). A coverage window that closed
   with no verification recorded can now be recorded as a system-generated observation, and so a
   vulnerability case, on both paths. The gap observation carries a reserved source type, the

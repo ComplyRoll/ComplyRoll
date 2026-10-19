@@ -20,7 +20,9 @@ from typing import Any
 from test_coverage import DAY, SINCE, host, inventory_document, observation, policy
 
 from complyroll.adapters import ingest_stig_artifact
+from complyroll.adapters.cyclonedx import CYCLONEDX_SOURCE_TYPE as ADAPTER_SOURCE_TYPE
 from complyroll.adapters.cyclonedx import PACKAGE_RESOURCE_TYPE as ADAPTER_PACKAGE_TYPE
+from complyroll.adapters.cyclonedx import SCOPE_RECORD_ID as ADAPTER_SCOPE_RECORD_ID
 from complyroll.models import Observation, ObservationDisposition, ResourceRef
 from complyroll.reports import Inventory, ReportInputError, load_inventory, parse_inventory
 from complyroll.reports import coverage as coverage_module
@@ -352,6 +354,140 @@ class PackageRefusalTests(unittest.TestCase):
                 entry = image_entry(API, resourceType=resource_type, aliases=[alias])
                 (read,) = parse_inventory(inventory_document(entry)).entries
                 self.assertEqual(read.resource_type, resource_type)
+
+
+# *--- Scope-Only Evidence (FX F1) ---*
+
+AUDIT = "registry.example.test/audit:1.0"
+AUDIT_AT = datetime(2026, 10, 1, 12, tzinfo=UTC)
+CYCLONEDX_SCOPE = "cyclonedx.bom"
+
+
+def audit_document(affects: list[dict[str, str]] | None) -> dict[str, Any]:
+    """Build a grype K3 document on the audit image; None leaves its record without affects."""
+    record: dict[str, Any] = {"id": "CVE-2026-0001"}
+    if affects is not None:
+        record["affects"] = affects
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "version": 1,
+        "metadata": {
+            "timestamp": "2026-10-01T12:00:00Z",
+            "tools": [{"name": "grype", "version": "0.99.0"}],
+            "component": {
+                "type": "container",
+                "name": "registry.example.test/audit",
+                "version": "1.0",
+                "bom-ref": "subject",
+            },
+        },
+        "components": [
+            {
+                "type": "library",
+                "name": "lodash",
+                "version": "4.17.20",
+                "purl": "pkg:npm/lodash@4.17.20",
+                "bom-ref": "lodash-ref",
+            }
+        ],
+        "vulnerabilities": [record],
+    }
+
+
+def ingest_document(document: dict[str, Any]) -> list[Observation]:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "audit.cdx.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return ingest(path)
+
+
+class ScopeOnlyEvidenceTests(unittest.TestCase):
+    """FX F1: a cyclonedx source contributes only its scope record to coverage (section 15)."""
+
+    #: The audit's two reproductions, each a row on the scope resource beside a non-PASS scope.
+    SCOPE_ROWS = {"no affects": None, "subject only": [{"ref": "subject"}]}
+
+    def inventory(self) -> Inventory:
+        return parse_inventory(inventory_document(image_entry(AUDIT)))
+
+    def coverage(self, found: list[Observation], as_of: datetime = AS_OF) -> CoverageResult:
+        return derive_coverage(found, self.inventory(), policy("C"), as_of)
+
+    def test_the_literals_are_the_adapters(self) -> None:
+        self.assertEqual(coverage_module.CYCLONEDX_SOURCE_TYPE, "cyclonedx")
+        self.assertEqual(coverage_module.CYCLONEDX_SOURCE_TYPE, ADAPTER_SOURCE_TYPE)
+        self.assertEqual(coverage_module.CYCLONEDX_SCOPE_RECORD_ID, "cyclonedx.bom")
+        self.assertEqual(coverage_module.CYCLONEDX_SCOPE_RECORD_ID, ADAPTER_SCOPE_RECORD_ID)
+
+    def test_an_open_row_on_the_scope_resource_never_verifies_it(self) -> None:
+        for name, affects in self.SCOPE_ROWS.items():
+            with self.subTest(name):
+                found = ingest_document(audit_document(affects))
+                row = [item for item in found if item.source_record_id == "CVE-2026-0001"]
+                self.assertEqual([item.resource.resource_id for item in row], [AUDIT])
+                self.assertIs(row[0].disposition, ObservationDisposition.OPEN)
+                scope = scope_of(found, AUDIT)
+                self.assertIs(scope.disposition, ObservationDisposition.NOT_REVIEWED)
+                resource = resource_of(self.coverage(found), AUDIT)
+                self.assertEqual(
+                    statuses(self.coverage(found), AUDIT),
+                    {MVX_RULE: CoverageStatus.UNDETERMINED, PDD_RULE: CoverageStatus.UNDETERMINED},
+                )
+                self.assertEqual(resource.examined_observations, 1)
+                subject = ResourceRef(resource_id=AUDIT, resource_type="image")
+                self.assertEqual(
+                    verifying_evidence(
+                        found, self.inventory(), AS_OF, rule_id=MVX_RULE, subject=subject
+                    ),
+                    (),
+                )
+
+    def test_a_listed_component_ref_still_verifies_through_the_scope(self) -> None:
+        found = ingest_document(audit_document([{"ref": "lodash-ref"}]))
+        result = self.coverage(found)
+        self.assertEqual(statuses(result, AUDIT)[MVX_RULE], CoverageStatus.CURRENT)
+        self.assertEqual(resource_of(result, AUDIT).last_verified, AUDIT_AT)
+
+    def test_a_row_still_counts_its_unregistered_resource(self) -> None:
+        # The reading kept: the observed-resource count is unchanged, so the spec-corners scan
+        # subject reads unregistered with every observation on it, as the step 4 golden shows.
+        found = ingest_document(audit_document(None))
+        result = derive_coverage(
+            found, parse_inventory(inventory_document(host())), policy("C"), AS_OF
+        )
+        self.assertEqual(
+            result.unregistered,
+            (UnregisteredResource(ResourceRef(AUDIT, "image"), 2),),
+        )
+
+    def test_a_row_past_the_cutoff_is_not_later_evidence(self) -> None:
+        found = ingest_document(audit_document(None))
+        result = self.coverage(found, AUDIT_AT - DAY)
+        self.assertEqual(
+            [item.reference for item in result.later], [scope_of(found, AUDIT).observation_id]
+        )
+
+    def test_a_producer_record_named_like_the_scope_never_verifies(self) -> None:
+        # E1: a producer record with the scope's id supersedes the scope and is OPEN; it
+        # examines the image and never verifies it, whatever its disposition.
+        document = audit_document(None)
+        document["vulnerabilities"][0]["id"] = CYCLONEDX_SCOPE
+        found = ingest_document(document)
+        (record,) = [item for item in found if item.source_record_id == CYCLONEDX_SCOPE]
+        self.assertIs(record.disposition, ObservationDisposition.OPEN)
+        self.assertEqual(record.resource.resource_id, AUDIT)
+        result = self.coverage(found)
+        self.assertEqual(
+            statuses(result, AUDIT),
+            {MVX_RULE: CoverageStatus.UNDETERMINED, PDD_RULE: CoverageStatus.UNDETERMINED},
+        )
+        self.assertEqual(resource_of(result, AUDIT).examined_observations, 1)
+        subject = ResourceRef(resource_id=AUDIT, resource_type="image")
+        self.assertEqual(
+            verifying_evidence(found, self.inventory(), AS_OF, rule_id=MVX_RULE, subject=subject),
+            (),
+        )
 
 
 if __name__ == "__main__":

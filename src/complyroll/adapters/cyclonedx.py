@@ -14,8 +14,8 @@ import json
 import math
 import re
 import string
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any
@@ -38,6 +38,7 @@ from .common import (
     MAX_OBSERVATION_JSON_BYTES,
     MAX_TITLE_CHARS,
     SEVERITY_RANK,
+    Cleaned,
     EvidenceParse,
     IdentityRefused,
     clean,
@@ -76,6 +77,8 @@ SCAN_SCOPE_TYPE = "scan"
 # A malformed document that carries no vulnerability record is an unreadable inventory, never
 # a detection failure (A12), so each structural check of K1 and K2 is a format refusal.
 INVENTORY_REFUSAL = "CycloneDX inventory document cannot be read: "
+# The same holds for an identity input of K1 or K2, a tool name or the scope id (CL-5).
+IDENTITY_REFUSAL = "CycloneDX inventory identity cannot be used as written: "
 NO_TOOL_SUMMARY = "no tool named; a vulnerability statement without a producer is not a detection"
 
 SCOPE_TITLES = MappingProxyType(
@@ -90,8 +93,8 @@ INVENTORY_DESCRIPTION = (
     "and verifies no coverage clock."
 )
 UNMATCHED_DESCRIPTION = (
-    "This document carries no vulnerability record tied to a component it lists; it does not "
-    "show that a match ran and verifies no coverage clock."
+    "This document carries no unjudged vulnerability record tied to a component it lists "
+    "besides its subject; it does not show that a match ran and verifies no coverage clock."
 )
 MATCHED_DESCRIPTION = (
     "The tool matched the components this document lists against its vulnerability data; it is "
@@ -136,8 +139,16 @@ ANALYSIS_STATES = frozenset(
         "not_affected",
     }
 )
+# A resolved ref counts toward K3 PASS only when its record has one of these states, or no
+# state, justification or detail (F3, Kyle 2026-10-19; CL-2, XV-4): a supplier judgment is not
+# evidence that a match ran. Any other state, an out-of-enum or non-string one included, never
+# verifies; the reading fails closed.
+MATCH_ANALYSIS_STATES = frozenset({"exploitable", "in_triage"})
 NOT_FIXED_RESPONSES = frozenset({"will_not_fix", "can_not_fix"})
 ANALYSIS_KEPT = "; the disposition stays OPEN until an evaluation is recorded"
+
+# The fold's carrier members, in the order each is cleaned and reported.
+CARRIER_MEMBERS = ("package_versions", "purls", "cpes", "bom_refs", "component_hashes")
 
 # Fixed and snake_case; a foreign key is an adapter bug, raised in assembly (section 19).
 CYCLONEDX_METADATA_KEYS = frozenset(
@@ -257,6 +268,12 @@ PURL_STRIPPED_QUALIFIERS = frozenset(
 )
 # A tag is a mutable name for one oci artifact; the repository tells same-named images apart.
 OCI_STRIPPED_QUALIFIERS = (PURL_STRIPPED_QUALIFIERS - {"repository_url"}) | {"tag"}
+# NOTE: docker keeps repository_url as oci does (F6, Kyle 2026-10-19): stripping it merged
+# same-named images from two registries. The churn when one export omits it is A16's trade-off.
+DOCKER_STRIPPED_QUALIFIERS = PURL_STRIPPED_QUALIFIERS - {"repository_url"}
+STRIPPED_QUALIFIERS_BY_TYPE: Mapping[str, frozenset[str]] = MappingProxyType(
+    {"oci": OCI_STRIPPED_QUALIFIERS, "docker": DOCKER_STRIPPED_QUALIFIERS}
+)
 
 PKG_KEY_PREFIX = "pkg:"
 COMPONENT_KEY_PREFIX = "component:"
@@ -273,6 +290,23 @@ _ASCII_FOLD = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 _PURL_TYPE = re.compile(r"[A-Za-z][A-Za-z0-9.-]*")
 _QUALIFIER_KEY = re.compile(r"[a-z][a-z0-9._-]*")
 _DIGEST = re.compile(r"(?:sha256|sha512):[0-9a-f]+")
+# The named algorithms and their digest lengths in hex, for the whole-name guard only; Y1's
+# rule 3 stays sha256 and sha512 (CX-1). Naming them keeps a hex tag such as app:<git sha>
+# stripping as a tag (XV-1), and the exact length keeps a repository named sha256 with a git
+# sha tag stripping too (XV-9); redis:7 never matches.
+# NOTE: An unlisted algorithm strips as a tag (ADR 0016 open risks).
+_DIGEST_HEX_LENGTHS = {
+    "md5": 32,
+    "sha1": 40,
+    "sha224": 56,
+    "sha256": 64,
+    "sha384": 96,
+    "sha512": 128,
+    "blake3": 64,
+}
+_WHOLE_DIGEST = re.compile(
+    "|".join(f"{alg}:[0-9a-f]{{{length}}}" for alg, length in _DIGEST_HEX_LENGTHS.items())
+)
 
 
 # *--- Package Key ---*
@@ -339,7 +373,7 @@ def _qualifiers(purl_type: str, text: str) -> str | None:
     if len({key for key, _ in pairs}) != len(pairs):
         return None
     defaults = PURL_DEFAULT_QUALIFIERS.get(purl_type, {})
-    stripped = OCI_STRIPPED_QUALIFIERS if purl_type == "oci" else PURL_STRIPPED_QUALIFIERS
+    stripped = STRIPPED_QUALIFIERS_BY_TYPE.get(purl_type, PURL_STRIPPED_QUALIFIERS)
     # purl-how-to-build sorts the built key=value strings, not the keys alone.
     return "&".join(
         sorted(
@@ -426,6 +460,11 @@ def digest_shaped(text: str) -> bool:
 def subject_lineage(scope_type: str, name: str) -> str:
     """Return the subject part of a package resource id; for scan, the scope id unchanged."""
     if scope_type != IMAGE_SCOPE_TYPE:
+        return name
+    # A name that is wholly <alg>:<hex>, a named algorithm at its digest's exact length, would
+    # strip to its algorithm, one lineage for every such subject, a merge; it keeps the name as
+    # written, as R-S2-1 does (F5, CX-1, XV-1, XV-8).
+    if _WHOLE_DIGEST.fullmatch(name) is not None:
         return name
     written = name
     head, at, digest = name.rpartition("@")
@@ -538,6 +577,9 @@ class _Carrier:
     purl: str | None
     cpe: str | None
     hashes: tuple[str, ...]
+    # A bounded stand-in for repr() in every ordering: its prefix, then a digest of the whole,
+    # so a candidate's order never holds an uncapped purl (F4). Derived, so never compared.
+    token: str = field(default="", compare=False, repr=False)
 
 
 @dataclass(slots=True)
@@ -555,9 +597,57 @@ class _Candidate:
     identifiers_cut: bool
     scalars: dict[str, str]
     lists: dict[str, tuple[str, ...]]
-    carriers: tuple[_Carrier, ...]
+    facts: _Resolved | None
     package_identity: str | None
     truncated: set[str]
+
+
+# One distinct install's evidence, cleaned once for every fold that names its ref, so a fold
+# reads capped text and ranks, never the raw purl, cpe or hashes again (XV-2).
+@dataclass(frozen=True, slots=True)
+class _Instance:
+    """One distinct carrier's texts, each cleaned alone, and its instance record."""
+
+    token: str
+    # (member, rank of the raw text, the text cleaned alone), one per raw text it carries.
+    texts: tuple[tuple[str, int, Cleaned], ...]
+    bom_ref_rank: int
+    # What cleaning the record's fields reported, in the order _instances replays it.
+    replays: tuple[Cleaned, ...]
+    key: str
+    # NOTE: Shared by every fold that names the ref; it is only ever read.
+    record: dict[str, Any]
+    cut: bool
+
+
+# One distinct ref's carrier facts, built once however many affects entries name it, so
+# memory never grows with carriers times entries (CL-4). Every candidate shares the object.
+@dataclass(frozen=True, slots=True)
+class _Resolved:
+    """The carriers of one bom-ref, their sorted tokens as JSON, versions and instances."""
+
+    carriers: tuple[_Carrier, ...]
+    tokens: str
+    installed: frozenset[str]
+    # Carriers of more than one package key resolve to none (A15).
+    conflict: bool
+    # The distinct carriers in token order; empty for a conflict, which never folds them.
+    instances: tuple[_Instance, ...]
+
+
+def _joined(parts: Iterable[Cleaned]) -> Cleaned:
+    """Join texts cleaned one at a time into what clean() returns for all of them in order."""
+    items: list[str] = []
+    sanitized = cut = 0
+    cut_first = False
+    for part in parts:
+        sanitized += part.sanitized
+        if part.cut:
+            if not cut:
+                cut_first = not sanitized
+            cut += part.cut
+        items.extend(part.items)
+    return Cleaned(tuple(items), sanitized, cut, cut_first)
 
 
 _FoldKey = tuple[str, str, str]
@@ -570,7 +660,7 @@ def _carrier(component: Mapping[str, Any], target: str, weak: bool, bom_ref: str
         for item in component.get("hashes", ())
         if isinstance(item.get("alg"), str) and isinstance(item.get("content"), str)
     }
-    return _Carrier(
+    carrier = _Carrier(
         target,
         weak,
         bom_ref,
@@ -579,6 +669,9 @@ def _carrier(component: Mapping[str, Any], target: str, weak: bool, bom_ref: str
         _text(component.get("cpe")),
         tuple(sorted(hashes)),
     )
+    whole = repr(carrier)
+    digest = hashlib.sha256(whole.encode("utf-8", "surrogatepass")).hexdigest()
+    return replace(carrier, token=f"{whole[:MAX_LIST_ITEM_CHARS]}#{digest}")
 
 
 # The shape check runs before any field is read, so a wrong type is never repaired or guessed
@@ -667,6 +760,10 @@ class _CycloneDxParse(EvidenceParse):
         self.truncated: set[str] = set()
         # bom-ref to every carrier of it, the subject included; affects resolve through it.
         self.index: dict[str, list[_Carrier]] = {}
+        self.resolved: dict[str, _Resolved] = {}
+        # Every raw carrier text's rank in sorted order, and each text cleaned once (XV-2).
+        self.ranks: dict[str, int] = {}
+        self.cleaned: dict[int, Cleaned] = {}
         self.component_count = 0
         self.package_keys: set[str] = set()
         self.weak_keys: set[str] = set()
@@ -676,7 +773,9 @@ class _CycloneDxParse(EvidenceParse):
         self.bom_version = "1"
         self.tool_version = ""
         # Whether any affects ref resolved through the index, directly or by a same-document
-        # BOM-Link: the only evidence that a match ran against this inventory (A1).
+        # BOM-Link, to a listed component other than the subject (F2), on a record with no
+        # supplier judgment (F3, CL-2, XV-4) and no installed version marked unaffected (CL-1): the
+        # only evidence that a match ran against this inventory (A1).
         self.resolved_locally = False
         self.tool = ""
         self.scope: tuple[str, str] = ("", "")
@@ -731,6 +830,21 @@ class _CycloneDxParse(EvidenceParse):
             detail=check,
         )
 
+    # SECURITY: A K1 or K2 identity input is refused as a format, as its structure is (A12,
+    # CL-5); on K3 it is identity_input_invalid (CONTENT), which a failure record can mint.
+    def _identity(self, value: str, what: str, path: str) -> bool:
+        """Return whether text can be an identity input; refuse a K1 or K2 document if not."""
+        if not self.matched:
+            problem = identity_problem(value, MAX_IDENTITY_CHARS)
+            if problem is not None:
+                raise AdapterParseError(f"{IDENTITY_REFUSAL}{what} {problem}")
+            return True
+        try:
+            self._require_identity(value, MAX_IDENTITY_CHARS, what, path)
+        except IdentityRefused:
+            return False
+        return True
+
     def _read(self, data: Mapping[str, Any]) -> Observation | None:
         """Run the document-level checks in the order of section 3, then the scope."""
         metadata: Mapping[str, Any] = {}
@@ -784,6 +898,11 @@ class _CycloneDxParse(EvidenceParse):
                 "metadata.component",
             )
             return None
+        # F12: the one place the scope observation counts toward the cap, for K1, K2 and K3
+        # alike. It follows the superseded return, so a scope that yields is not counted.
+        limit = self.limits.max_observations_per_artifact
+        if len(self.folds) + 1 > limit:
+            raise InputLimitError(f"artifact yields more than {limit} observations")
         return self._assemble(tool, scope, metadata)
 
     # Tools
@@ -852,11 +971,10 @@ class _CycloneDxParse(EvidenceParse):
         tool = "+".join(names)
         versions = {item["version"] for item in chosen if isinstance(item.get("version"), str)}
         self.tool_version = "+".join(sorted(_escape(text, "+", "%2B") for text in versions))
-        try:
-            for name in names:
-                self._require_identity(name, MAX_IDENTITY_CHARS, "tool name", "metadata.tools")
-            self._require_identity(tool, MAX_IDENTITY_CHARS, "tool", "metadata.tools")
-        except IdentityRefused:
+        for name in names:
+            if not self._identity(name, "tool name", "metadata.tools"):
+                return None
+        if not self._identity(tool, "tool", "metadata.tools"):
             return None
         if len(names) > 1:
             self.diagnostics.add(
@@ -955,11 +1073,7 @@ class _CycloneDxParse(EvidenceParse):
                 encoded = _escape(group, "/", "%2F") + "/" + encoded
             scope_type, resource_id = SCAN_SCOPE_TYPE, encoded
         # SECURITY: The composed id is refused whole, never repaired (Y1 amendment).
-        try:
-            self._require_identity(
-                resource_id, MAX_IDENTITY_CHARS, "scope id", "metadata.component"
-            )
-        except IdentityRefused:
+        if not self._identity(resource_id, "scope id", "metadata.component"):
             return None
         self.lineage = lineage = subject_lineage(
             scope_type, name if scope_type == IMAGE_SCOPE_TYPE else resource_id
@@ -1060,8 +1174,8 @@ class _CycloneDxParse(EvidenceParse):
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
                 "match_unverified",
-                "no vulnerability record resolves to a component this document lists; the "
-                "document does not show that a match ran",
+                "no unjudged vulnerability record resolves to a component this document lists "
+                "besides its subject; the document does not show that a match ran",
                 "vulnerabilities",
             )
             description = UNMATCHED_DESCRIPTION
@@ -1144,6 +1258,17 @@ class _CycloneDxParse(EvidenceParse):
                     f"a CycloneDX vulnerability affects {len(affects)} components; maximum is "
                     f"{MAX_AFFECTS_PER_VULNERABILITY}"
                 )
+        # A rank orders and deduplicates raw texts as sorting them would, so a fold never
+        # compares two raw purls (XV-2). The sort runs once, never per fold.
+        texts = {
+            text
+            for carriers in self.index.values()
+            for carrier in carriers
+            for text in (carrier.version, carrier.purl, carrier.cpe, carrier.bom_ref)
+            + carrier.hashes
+            if text is not None
+        }
+        self.ranks = {text: rank for rank, text in enumerate(sorted(texts))}
         for index, item in enumerate(self.vulnerabilities):
             self._vulnerability(f"vulnerabilities[{index}]", item, scope)
 
@@ -1175,6 +1300,14 @@ class _CycloneDxParse(EvidenceParse):
         except IdentityRefused:
             return
         base = self._facts(path, item, record_id)
+        analysis = item.get("analysis", {})
+        # A non-string state reads as None, which is not a match state: it fails closed. With
+        # no state, a justification or a detail is still a judgment; a response alone is not
+        # (CL-2, XV-4).
+        if "state" in analysis:
+            matched = _text(analysis["state"]) in MATCH_ANALYSIS_STATES
+        else:
+            matched = "justification" not in analysis and "detail" not in analysis
         affects = item.get("affects", [])
         if not affects:
             self.diagnostics.add(
@@ -1183,21 +1316,22 @@ class _CycloneDxParse(EvidenceParse):
                 "a vulnerability names no affected component; it is recorded on the subject",
                 path,
             )
-            self._fold((record_id, *scope), self._candidate(base, path, (), None, {}))
+            self._fold((record_id, *scope), self._candidate(base, path, None, None, {}))
             return
         for index, entry in enumerate(affects):
             here = f"{path}.affects[{index}]"
             ref = entry["ref"]
-            carriers = self._resolve(ref, here)
+            facts = self._resolve(ref, here)
             identity: str | None = None
             resource: tuple[str, str] | None = scope
-            if carriers is None:
+            if facts is None:
                 identity = "ref"
                 resource = self._package_resource(scope[0], ref_key(ref), here)
-            elif carriers[0].target != SUBJECT_TARGET:
-                key = carriers[0].target
-                identity = "component" if carriers[0].weak else "purl"
-                if carriers[0].weak:
+            elif facts.carriers[0].target != SUBJECT_TARGET:
+                key = facts.carriers[0].target
+                weak = facts.carriers[0].weak
+                identity = "component" if weak else "purl"
+                if weak:
                     self.diagnostics.add(
                         DiagnosticLevel.WARNING,
                         "package_identity_weak",
@@ -1209,9 +1343,14 @@ class _CycloneDxParse(EvidenceParse):
             if resource is None:
                 continue
             truncated = set(base.truncated)
-            lists = self._affects_lists(entry, carriers or (), here, truncated)
+            installed = frozenset() if facts is None else facts.installed
+            lists, unaffected = self._affects_lists(entry, installed, here, truncated)
+            # A subject ref is a product-level statement and never shows a match ran (F2); an
+            # entry marking an installed version unaffected contradicts its own match (CL-1).
+            if facts is not None and identity is not None and not unaffected:
+                self.resolved_locally = self.resolved_locally or matched
             # A product-level statement sits on the scope resource and names no instance.
-            instances = () if carriers is None or identity is None else carriers
+            instances = None if facts is None or identity is None else facts
             candidate = self._candidate(base, here, instances, identity, lists)
             candidate.truncated = truncated
             self._fold((record_id, *resource), candidate)
@@ -1220,7 +1359,7 @@ class _CycloneDxParse(EvidenceParse):
         self,
         base: _Candidate,
         path: str,
-        carriers: tuple[_Carrier, ...],
+        facts: _Resolved | None,
         identity: str | None,
         lists: dict[str, tuple[str, ...]],
     ) -> _Candidate:
@@ -1233,9 +1372,12 @@ class _CycloneDxParse(EvidenceParse):
             "severity_source": base.severity_source,
             "identifiers": base.identifiers,
             "identity": identity,
-            "carriers": [repr(carrier) for carrier in sorted(carriers, key=repr)],
         }
-        order = (base.title, base.description, json.dumps(content, sort_keys=True))
+        # The carriers' JSON sorts first and closes its own array, so (tokens, rest) orders as
+        # the one string with tokens inside it did; the tokens are the ref's shared string, so
+        # no candidate copies them (CL-4).
+        tokens = "[]" if facts is None else facts.tokens
+        order = (base.title, base.description, tokens, json.dumps(content, sort_keys=True))
         return _Candidate(
             path,
             order,
@@ -1247,7 +1389,7 @@ class _CycloneDxParse(EvidenceParse):
             base.identifiers_cut,
             base.scalars,
             merged,
-            carriers,
+            facts,
             identity,
             set(base.truncated),
         )
@@ -1318,7 +1460,7 @@ class _CycloneDxParse(EvidenceParse):
             identifiers_cut,
             scalars,
             lists,
-            (),
+            None,
             None,
             truncated,
         )
@@ -1410,12 +1552,13 @@ class _CycloneDxParse(EvidenceParse):
     def _affects_lists(
         self,
         entry: Mapping[str, Any],
-        carriers: tuple[_Carrier, ...],
+        installed: frozenset[str],
         path: str,
         truncated: set[str],
-    ) -> dict[str, tuple[str, ...]]:
-        """Keep an entry's version statements verbatim; ranges are never evaluated."""
-        installed = {carrier.version for carrier in carriers if carrier.version is not None}
+    ) -> tuple[dict[str, tuple[str, ...]], bool]:
+        """Keep an entry's version statements verbatim; say if one marks an install unaffected."""
+        # Ranges are never evaluated; only a listed version equal to an install's counts (CL-1).
+        unaffected = False
         statuses: list[str] = []
         ranges: list[str] = []
         for index, item in enumerate(entry.get("versions", ())):
@@ -1429,13 +1572,14 @@ class _CycloneDxParse(EvidenceParse):
                 ranges.append(fields["range"])
             # The scanner contradicting its own match is for an assessor to see (E3).
             if fields["status"] == "unaffected" and fields["version"] in installed:
+                unaffected = True
                 self.diagnostics.add(
                     DiagnosticLevel.WARNING,
                     "affects_version_unaffected",
                     "an affects entry marks the installed version unaffected" + ANALYSIS_KEPT,
                     f"{path}.versions[{index}]",
                 )
-        return {
+        lists = {
             "affects_statuses": self._evidence_list(
                 sorted(statuses), "affects_statuses", path, truncated
             ),
@@ -1443,10 +1587,11 @@ class _CycloneDxParse(EvidenceParse):
                 sorted(ranges), "affects_ranges", path, truncated
             ),
         }
+        return lists, unaffected
 
     # Resolution
 
-    def _resolve(self, ref: str, path: str) -> tuple[_Carrier, ...] | None:
+    def _resolve(self, ref: str, path: str) -> _Resolved | None:
         """Resolve a ref through the index, or None when it takes the ref: fallback (J)."""
         target = ref
         if ref not in self.index:
@@ -1454,8 +1599,13 @@ class _CycloneDxParse(EvidenceParse):
             if fragment is not None:
                 target = fragment
         carriers = self.index.get(target)
+        facts: _Resolved | None = None
+        if carriers is not None:
+            facts = self.resolved.get(target)
+            if facts is None:
+                facts = self.resolved[target] = self._ref_facts(carriers)
         # Carriers that share one key are instances of one package and resolve (A15).
-        if carriers is not None and len({carrier.target for carrier in carriers}) > 1:
+        if facts is not None and facts.conflict:
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
                 "bom_ref_conflict",
@@ -1463,8 +1613,8 @@ class _CycloneDxParse(EvidenceParse):
                 path,
                 detail=target,
             )
-            carriers = None
-        if carriers is None:
+            facts = None
+        if facts is None:
             self.diagnostics.add(
                 DiagnosticLevel.WARNING,
                 "affects_unresolved",
@@ -1474,8 +1624,72 @@ class _CycloneDxParse(EvidenceParse):
                 detail=ref,
             )
             return None
-        self.resolved_locally = True
-        return tuple(carriers)
+        return facts
+
+    def _ref_facts(self, carriers: list[_Carrier]) -> _Resolved:
+        """Build one ref's shared facts from its carriers in index order."""
+        conflict = len({carrier.target for carrier in carriers}) > 1
+        distinct = {carrier.token: carrier for carrier in carriers}
+        instances = () if conflict else tuple(self._instance(distinct[t]) for t in sorted(distinct))
+        return _Resolved(
+            tuple(carriers),
+            json.dumps(sorted(carrier.token for carrier in carriers)),
+            frozenset(carrier.version for carrier in carriers if carrier.version is not None),
+            conflict,
+            instances,
+        )
+
+    def _cleaned(self, text: str) -> tuple[int, Cleaned]:
+        """Return a raw carrier text's rank and the text cleaned alone, once per parse."""
+        rank = self.ranks[text]
+        cleaned = self.cleaned.get(rank)
+        if cleaned is None:
+            cleaned = self.cleaned[rank] = clean((text,), MAX_LIST_ITEM_CHARS)
+        return rank, cleaned
+
+    # The record is the one _instances built per fold before XV-2, field for field: bom_ref,
+    # version and purl cut alone, then the first 64 hashes cleaned together.
+    def _instance(self, carrier: _Carrier) -> _Instance:
+        """Clean one distinct carrier's texts and build its instance record."""
+        texts: list[tuple[str, int, Cleaned]] = []
+        for member, value in zip(
+            CARRIER_MEMBERS[:4],
+            (carrier.version, carrier.purl, carrier.cpe, carrier.bom_ref),
+            strict=True,
+        ):
+            if value is not None:
+                texts.append((member, *self._cleaned(value)))
+        hashes = [self._cleaned(text) for text in carrier.hashes]
+        texts.extend((CARRIER_MEMBERS[4], rank, cleaned) for rank, cleaned in hashes)
+        cut = len(hashes) > MAX_LIST_ITEMS
+        replays: list[Cleaned] = []
+        record: dict[str, Any] = {}
+        for member, value in (
+            ("bom_ref", carrier.bom_ref),
+            ("version", carrier.version),
+            ("purl", carrier.purl),
+        ):
+            if value is None:
+                continue
+            cleaned = self._cleaned(value)[1]
+            replays.append(cleaned)
+            cut = cut or cleaned.cut > 0
+            if cleaned.text:
+                record[member] = cleaned.text
+        if hashes:
+            cleaned = _joined(cleaned for _, cleaned in hashes[:MAX_LIST_ITEMS])
+            replays.append(cleaned)
+            cut = cut or cleaned.cut > 0
+            record["hashes"] = sorted(set(cleaned.items))
+        return _Instance(
+            carrier.token,
+            tuple(texts),
+            self.ranks[carrier.bom_ref],
+            tuple(replays),
+            json.dumps(record, ensure_ascii=False, sort_keys=True),
+            record,
+            cut,
+        )
 
     # SECURITY: The link's version is compared as digit text, never int() of producer text,
     # and the fragment is an opaque bom-ref, never URL-decoded (Decision J).
@@ -1502,6 +1716,7 @@ class _CycloneDxParse(EvidenceParse):
         """Add one candidate to its identity's fold, refusing the artifact past the cap."""
         bucket = self.folds.get(key)
         if bucket is None:
+            # The folds alone are capped here, before more fold work; _read counts the scope.
             if len(self.folds) >= self.limits.max_observations_per_artifact:
                 raise InputLimitError(
                     f"artifact yields more than "
@@ -1512,33 +1727,19 @@ class _CycloneDxParse(EvidenceParse):
 
     # Fold
 
-    def _instances(self, carriers: list[_Carrier], path: str) -> tuple[list[dict[str, Any]], bool]:
+    def _instances(
+        self, instances: list[_Instance], path: str
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Keep each instance's facts together, sorted by (version, bom_ref) and capped (A3)."""
         cut = False
         # Instance cuts are reported, but never under truncated, which cve_may_be_missing reads.
         scratch: set[str] = set()
         records: dict[str, dict[str, Any]] = {}
-        for carrier in carriers:
-            record: dict[str, Any] = {}
-            for member, value in (
-                ("bom_ref", carrier.bom_ref),
-                ("version", carrier.version),
-                ("purl", carrier.purl),
-            ):
-                cleaned = clean((value,), MAX_LIST_ITEM_CHARS)
+        for instance in instances:
+            for cleaned in instance.replays:
                 self._replay(cleaned, "instances", path, scratch)
-                cut = cut or cleaned.cut > 0
-                if cleaned.text:
-                    record[member] = cleaned.text
-            hashes = carrier.hashes
-            if len(hashes) > MAX_LIST_ITEMS:
-                hashes, cut = hashes[:MAX_LIST_ITEMS], True
-            if hashes:
-                cleaned = clean(hashes, MAX_LIST_ITEM_CHARS)
-                self._replay(cleaned, "instances", path, scratch)
-                cut = cut or cleaned.cut > 0
-                record["hashes"] = sorted(set(cleaned.items))
-            records[json.dumps(record, ensure_ascii=False, sort_keys=True)] = record
+            cut = cut or instance.cut
+            records[instance.key] = instance.record
         ordered = sorted(
             records.items(),
             key=lambda pair: (pair[1].get("version", ""), pair[1].get("bom_ref", ""), pair[0]),
@@ -1578,27 +1779,28 @@ class _CycloneDxParse(EvidenceParse):
         for candidate in ordered:
             for member, items in candidate.lists.items():
                 unions.setdefault(member, set()).update(items)
-        carriers = sorted(
-            {carrier for candidate in ordered for carrier in candidate.carriers}, key=repr
-        )
-        carrier_values: dict[str, list[str | None]] = {
-            "package_versions": [carrier.version for carrier in carriers],
-            "purls": [carrier.purl for carrier in carriers],
-            "cpes": [carrier.cpe for carrier in carriers],
-            "bom_refs": [carrier.bom_ref for carrier in carriers],
-            "component_hashes": [text for carrier in carriers for text in carrier.hashes],
-        }
-        for member, texts in carrier_values.items():
-            kept = self._evidence_list(
-                sorted({text for text in texts if text is not None}), member, path, truncated
-            )
-            unions.setdefault(member, set()).update(kept)
+        # Candidates of one ref share its facts, so each ref's instances are read once (CL-4).
+        # Their texts were cleaned once per parse, and a rank stands in for each raw text, so
+        # joining them in rank order reports what cleaning the sorted texts here did (XV-2).
+        shared = {id(item.facts): item.facts for item in ordered if item.facts is not None}
+        distinct = {item.token: item for facts in shared.values() for item in facts.instances}
+        instances = [distinct[token] for token in sorted(distinct)]
+        for member in CARRIER_MEMBERS:
+            parts = {
+                rank: cleaned
+                for instance in instances
+                for name, rank, cleaned in instance.texts
+                if name == member
+            }
+            joined = _joined(parts[rank] for rank in sorted(parts))
+            self._replay(joined, member, path, truncated)
+            unions.setdefault(member, set()).update(joined.items)
         for member, union in sorted(unions.items()):
             if union:
                 metadata[member] = encode_list(self._cut(sorted(union), member, path, truncated))
-        if carriers:
-            instances, instances_cut = self._instances(carriers, path)
-            metadata["instances"] = encode_list(instances)
+        if instances:
+            records, instances_cut = self._instances(instances, path)
+            metadata["instances"] = encode_list(records)
             if instances_cut:
                 metadata["instances_cut"] = "true"
         if len(unions.get("analysis_states", ())) > 1:
@@ -1608,7 +1810,7 @@ class _CycloneDxParse(EvidenceParse):
                 "one observation folds more than one analysis state" + ANALYSIS_KEPT,
                 path,
             )
-        if len({carrier.bom_ref for carrier in carriers}) > 1:
+        if len({instance.bom_ref_rank for instance in instances}) > 1:
             self.diagnostics.add(
                 DiagnosticLevel.INFO,
                 "package_instances_folded",

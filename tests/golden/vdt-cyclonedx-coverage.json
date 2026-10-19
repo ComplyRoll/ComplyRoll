@@ -1281,7 +1281,7 @@
         "code": "match_unverified",
         "level": "warning",
         "location": "grype-clean.cdx.json",
-        "message": "no vulnerability record resolves to a component this document lists; the document does not show that a match ran (1 occurrence: vulnerabilities)"
+        "message": "no unjudged vulnerability record resolves to a component this document lists besides its subject; the document does not show that a match ran (1 occurrence: vulnerabilities)"
       },
       {
         "code": "package_identity_weak",

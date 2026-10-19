@@ -2452,6 +2452,27 @@ class PersistedCycloneDxRoundTripTests(PersistedStoreTestCase):
         path.write_text(json.dumps(document), encoding="utf-8")
         return path
 
+    # FX2 CL-5: a K1 or K2 identity refusal is a format refusal, never a detection failure.
+    def test_an_inventory_identity_refusal_records_no_failure_under_the_flag(self) -> None:
+        subject = {"type": "container", "name": "x" * 600}
+        for name, extra in (("k1.cdx.json", {}), ("k2.cdx.json", {"vulnerabilities": []})):
+            with self.subTest(name=name):
+                document = {
+                    "bomFormat": "CycloneDX",
+                    "specVersion": "1.6",
+                    "metadata": {"tools": [{"name": "syft"}], "component": subject},
+                    **extra,
+                }
+                path = self.workspace / name
+                path.write_text(json.dumps(document), encoding="utf-8")
+                output = self.workspace / f"{name}.report.json"
+                argv = ["report", "vdt", str(path), *self.OPTIONS, *self.PERIOD]
+                code, _, err = run([*argv, "--record-failed-imports", "-o", str(output)])
+                self.assertNotEqual(code, 3)
+                self.assertIn("artifact_parse_failed", err)
+                self.assertNotIn("VDR-CSO-FAV", err)
+                self.assertNotIn("detection_failure_recorded", err)
+
     def test_a_tool_less_matched_bom_is_a_content_failure_under_the_flag(self) -> None:
         path = self.tool_less_matched_bom()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()

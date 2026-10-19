@@ -14,12 +14,14 @@ import hashlib
 import json
 import random
 import tempfile
+import tracemalloc
 import unittest
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta, timezone
 from itertools import permutations
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from test_replay import StoreFixture, bumped
 
@@ -28,6 +30,7 @@ from complyroll.adapters import (
     IngestResult,
     UnmintableReason,
     classify_ingest,
+    common,
     ingest_stig_artifact,
 )
 from complyroll.adapters.base import (
@@ -55,8 +58,11 @@ from complyroll.adapters.cyclonedx import (
     MAX_INSTANCES_PER_PACKAGE,
     PURL_CASE_FOLDS,
     PURL_DASHED_NAME_TYPES,
+    PURL_STRIPPED_QUALIFIERS,
+    UNMATCHED_DESCRIPTION,
     VEX_REFUSAL,
     CycloneDxAdapter,
+    _carrier,
     ascii_fold,
     digest_shaped,
     package_key,
@@ -106,6 +112,7 @@ PLAN_FOLD_TABLE = """
 """
 
 SHA256 = "sha256:" + "0123456789abcdef" * 4
+IDENTITY = "CycloneDX inventory identity cannot be used as written: "
 SHA512 = "sha512:" + "0123456789abcdef" * 8
 UPPER_A_DIAERESIS = "\u00c4"
 LOWER_A_DIAERESIS = "\u00e4"
@@ -993,9 +1000,13 @@ class ToolTests(unittest.TestCase):
                 self.assertEqual(tool, "cyclonedx")
                 self.assertIn("tool_identity_fallback", warnings)
 
-    def test_an_over_long_tool_is_identity_input_invalid(self) -> None:
+    # FX2 CL-5: on an inventory the refusal is a format refusal; K3 keeps CONTENT.
+    def test_an_over_long_tool_on_an_inventory_is_a_format_refusal(self) -> None:
         result = ingest(bom(metadata={"tools": [{"name": "t" * 513}]}))
-        self.assertEqual([item.code for item in result.errors], ["identity_input_invalid"])
+        self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+        self.assertEqual(
+            result.errors[0].message, IDENTITY + "tool name is 513 characters; maximum is 512"
+        )
 
     def test_tool_metadata_has_one_schema(self) -> None:
         trivy = dict(only(ingest_stig_artifact(TRIVY_FIXTURE, ingested_at=NOW)).source_metadata)
@@ -1041,11 +1052,14 @@ class ScopeIdTests(unittest.TestCase):
         self.assertEqual(observation.resource.resource_id, "web")
         self.assertEqual(dict(observation.source_metadata)["subject_group"], "g")
 
-    def test_an_over_long_composed_id_is_identity_input_invalid(self) -> None:
+    def test_an_over_long_composed_id_on_an_inventory_is_a_format_refusal(self) -> None:
         subject = {"type": "container", "name": "w" * 500, "version": "v" * 20}
         result = ingest(bom(metadata={"component": subject}))
         self.assertEqual(result.observations, ())
-        self.assertEqual([item.code for item in result.errors], ["identity_input_invalid"])
+        self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+        self.assertEqual(
+            result.errors[0].message, IDENTITY + "scope id is 521 characters; maximum is 512"
+        )
 
     def test_an_oci_purl_makes_an_image_whatever_the_type(self) -> None:
         oci = {"type": "application", "name": "org/app", "purl": "pkg:oci/app@sha256%3A" + HEX64}
@@ -1523,7 +1537,9 @@ class ResolutionTests(unittest.TestCase):
         self.assertEqual(resource(observation), SCOPE)
         self.assertNotIn("package_identity", md(observation))
         self.assertNotIn("instances", md(observation))
-        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+        # FX F2: a subject ref is a product-level statement and never makes the scope PASS.
+        self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+        self.assertIn("match_unverified", level_codes(output, "warning"))
 
     def test_a_same_serial_bom_link_fragment_is_never_decoded(self) -> None:
         components = [
@@ -3167,3 +3183,570 @@ class CycloneDxCrossImageMemberOrderTests(StoreFixture):
                 self.assert_members_follow_the_resource(persisted)
                 self.assertEqual(persisted.to_json(), stateless.to_json())
                 self.assertEqual(persisted.to_markdown(), stateless.to_markdown())
+
+
+# *--- Audit Fixes (FX) ---*
+
+
+def judged(state: object) -> dict[str, Any]:
+    """Build a vulnerability on lodash whose analysis carries the given state."""
+    return vuln(analysis={"state": state})
+
+
+class SubjectRefScopeTests(unittest.TestCase):
+    """FX F2: a ref resolving to metadata.component never counts toward K3 PASS."""
+
+    def test_a_subject_only_document_is_not_reviewed(self) -> None:
+        # The audit's reproduction: the only ref names the subject.
+        output = run(k3([dict(LODASH)], [vuln(refs=("subject",))]))
+        self.assertEqual(resource(finding(output)), SCOPE)
+        self.assertIs(finding(output).disposition, ObservationDisposition.OPEN)
+        self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+        self.assertIn("match_unverified", level_codes(output, "warning"))
+
+    def test_a_same_document_bom_link_to_the_subject_is_not_reviewed(self) -> None:
+        link = f"urn:cdx:{SERIAL}/1#subject"
+        output = run(k3([dict(LODASH)], [vuln(refs=(link,))]))
+        self.assertEqual(resource(finding(output)), SCOPE)
+        self.assertNotIn("affects_unresolved", level_codes(output, "warning"))
+        self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+
+    def test_a_listed_component_ref_beside_a_subject_ref_passes(self) -> None:
+        output = run(k3([dict(LODASH)], [vuln(refs=("subject", "lodash-ref"))]))
+        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+        self.assertNotIn("match_unverified", level_codes(output, "warning"))
+
+
+class AnalysisStateScopeTests(unittest.TestCase):
+    """FX F3 (Kyle 2026-10-19): a supplier judgment never shows that a match ran."""
+
+    def test_judgment_states_never_verify_and_still_mint(self) -> None:
+        for state in ("not_affected", "false_positive", "resolved", "resolved_with_pedigree"):
+            with self.subTest(state=state):
+                output = run(k3([dict(LODASH)], [judged(state)]))
+                observation = finding(output)
+                self.assertEqual(resource(observation), ("package", PKG + "pkg:npm/lodash"))
+                self.assertIs(observation.disposition, ObservationDisposition.OPEN)
+                self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+                self.assertIn("match_unverified", level_codes(output, "warning"))
+
+    def test_an_out_of_enum_or_non_string_state_fails_closed(self) -> None:
+        for state in ("maybe_affected", "EXPLOITABLE", 7, None, ["exploitable"]):
+            with self.subTest(state=state):
+                output = run(k3([dict(LODASH)], [judged(state)]))
+                self.assertIs(finding(output).disposition, ObservationDisposition.OPEN)
+                self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+
+    def test_no_state_exploitable_and_in_triage_verify(self) -> None:
+        for record in (
+            vuln(),
+            vuln(analysis={}),
+            judged("exploitable"),
+            judged("in_triage"),
+        ):
+            with self.subTest(record=record):
+                output = run(k3([dict(LODASH)], [record]))
+                self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+
+    def test_one_unjudged_resolved_record_is_enough(self) -> None:
+        records = [judged("not_affected"), vuln("CVE-2026-0002")]
+        output = run(k3([dict(LODASH)], records))
+        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+
+
+class UnmatchedWordingTests(unittest.TestCase):
+    """FX E2: the unmatched text names judged and subject-only records, never overstating."""
+
+    MESSAGE = (
+        "no unjudged vulnerability record resolves to a component this document lists besides "
+        "its subject; the document does not show that a match ran"
+    )
+    DESCRIPTION = (
+        "This document carries no unjudged vulnerability record tied to a component it lists "
+        "besides its subject; it does not show that a match ran and verifies no coverage clock."
+    )
+
+    def test_every_unmatched_shape_carries_the_text(self) -> None:
+        shapes = {
+            "empty": k3([dict(LODASH)], []),
+            "subject only": k3([dict(LODASH)], [vuln(refs=("subject",))]),
+            "judged": k3([dict(LODASH)], [judged("not_affected")]),
+        }
+        for name, document in shapes.items():
+            with self.subTest(name):
+                output = run(document)
+                (diagnostic,) = [
+                    item for item in output.diagnostics if item.code == "match_unverified"
+                ]
+                self.assertTrue(diagnostic.message.startswith(self.MESSAGE), diagnostic.message)
+                self.assertEqual(UNMATCHED_DESCRIPTION, self.DESCRIPTION)
+                self.assertEqual(scope(output).description, self.DESCRIPTION)
+
+
+class CarrierOrderBoundTests(unittest.TestCase):
+    """FX F4: a candidate's order is built from bounded facts, never an uncapped purl."""
+
+    PURL = "pkg:npm/lodash@4.17.20?download_url=" + "x" * (1 << 18)
+
+    def test_a_carrier_token_is_bounded_whatever_the_purl(self) -> None:
+        carrier = _carrier({"name": "lodash", "purl": self.PURL}, "pkg:npm/lodash", False, "r")
+        longer = {"name": "lodash", "purl": self.PURL + "y"}
+        self.assertLessEqual(len(carrier.token), MAX_LIST_ITEM_CHARS + 65)
+        self.assertNotEqual(carrier.token, _carrier(longer, "pkg:npm/lodash", False, "r").token)
+
+    def test_memory_does_not_scale_with_purl_size_times_affects(self) -> None:
+        # The audit's shape at a quarter of its size: before the fix every one of the 256
+        # candidates held the whole purl in its order, 64 MiB; now well under 8 purls' worth.
+        component = {**LODASH, "purl": self.PURL}
+        document = k3([component], [vuln(refs=("lodash-ref",) * 256)])
+        tracemalloc.start()
+        try:
+            output = run(document)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(md(finding(output))["occurrence_count"], "256")
+        self.assertLess(peak, 8 * len(self.PURL))
+
+    def test_carriers_tied_on_the_token_prefix_order_by_content(self) -> None:
+        # Two installs whose reprs agree past the prefix cap: the digest still decides, so the
+        # same carrier leads the fold whatever the affects order.
+        refs = ("a" * 300 + "1", "a" * 300 + "2")
+        components = [{**LODASH, "bom-ref": ref} for ref in refs]
+        winners = set()
+        for order in (refs, refs[::-1]):
+            output = run(k3(components, [vuln(refs=order)]))
+            (message,) = [
+                item.message
+                for item in output.diagnostics
+                if item.code == "package_instances_folded"
+            ]
+            winners.add(order[0 if "affects[0]" in message else 1])
+        self.assertEqual(len(winners), 1)
+
+
+class DigestNamedSubjectTests(unittest.TestCase):
+    """FX F5(b): a subject name that is wholly a digest keeps itself as its lineage."""
+
+    def test_a_digest_name_is_its_own_lineage(self) -> None:
+        for name in (SHA256, SHA512):
+            with self.subTest(name=name):
+                self.assertEqual(subject_lineage("image", name), name)
+
+    def test_two_digest_named_subjects_keep_apart(self) -> None:
+        other = "sha256:" + "f" * 64
+        self.assertNotEqual(subject_lineage("image", SHA256), subject_lineage("image", other))
+
+    def test_a_digest_named_container_scopes_its_packages_by_the_digest(self) -> None:
+        document = k3([dict(LODASH)], [vuln()])
+        document["metadata"]["component"] = {**SUBJECT, "name": SHA256}
+        observation = finding(run(document))
+        self.assertEqual(resource(observation), ("package", f"image:{SHA256}|pkg:npm/lodash"))
+
+
+class DockerRepositoryUrlTests(unittest.TestCase):
+    """FX F6 (Kyle 2026-10-19): pkg:docker keeps repository_url, as oci does (A16)."""
+
+    BASE = "pkg:docker/library/nginx@1.25"
+
+    def test_two_registries_are_two_keys(self) -> None:
+        first = key(self.BASE + "?repository_url=docker.io")
+        second = key(self.BASE + "?repository_url=registry.example.test")
+        self.assertEqual(first, "pkg:docker/library/nginx?repository_url=docker.io")
+        self.assertNotEqual(first, second)
+
+    def test_other_docker_qualifiers_behave_as_before(self) -> None:
+        self.assertEqual(
+            key(self.BASE + "?arch=amd64&download_url=https://x.test&tag=t&checksum=c"),
+            "pkg:docker/library/nginx?arch=amd64&tag=t",
+        )
+        self.assertEqual(key(self.BASE), "pkg:docker/library/nginx")
+        self.assertIn("repository_url", PURL_STRIPPED_QUALIFIERS)
+
+    def test_other_types_still_strip_repository_url(self) -> None:
+        self.assertEqual(key("pkg:npm/lodash@1?repository_url=r.test"), "pkg:npm/lodash")
+
+
+class ScopeObservationCapTests(unittest.TestCase):
+    """FX F12: max_observations_per_artifact counts the scope observation."""
+
+    def limited(self, count: int) -> Any:
+        return dataclasses.replace(DEFAULT_LIMITS, max_observations_per_artifact=count)
+
+    def test_k3_counts_the_scope(self) -> None:
+        with self.assertRaises(InputLimitError):
+            run(k3([dict(LODASH)], [vuln()]), self.limited(1))
+        self.assertEqual(len(run(k3([dict(LODASH)], [vuln()]), self.limited(2)).observations), 2)
+
+    def test_k1_and_k2_count_the_scope(self) -> None:
+        inventory = k3([dict(LODASH)], [])
+        del inventory["vulnerabilities"]
+        for document in (inventory, k3([dict(LODASH)], [])):
+            with self.subTest(kind="vulnerabilities" in document):
+                with self.assertRaises(InputLimitError):
+                    run(document, self.limited(0))
+                self.assertEqual(len(run(document, self.limited(1)).observations), 1)
+
+    def test_a_superseded_scope_is_not_counted_twice(self) -> None:
+        output = run(k3([dict(LODASH)], [{"id": "cyclonedx.bom"}]), self.limited(1))
+        self.assertEqual(len(output.observations), 1)
+        self.assertIn("scope_superseded", level_codes(output, "info"))
+
+
+# *--- Second Audit Fixes (FX2) ---*
+
+
+def unaffected(version: str = "4.17.20", status: str = "unaffected") -> dict[str, Any]:
+    """Build a vulnerability on lodash whose affects entry states one version's status."""
+    entry = {"ref": "lodash-ref", "versions": [{"version": version, "status": status}]}
+    return {"id": "CVE-2026-0001", "affects": [entry]}
+
+
+class UnaffectedVersionScopeTests(unittest.TestCase):
+    """FX2 CL-1: an entry marking the installed version unaffected never counts toward PASS."""
+
+    def test_an_unaffected_install_is_not_reviewed_and_still_mints(self) -> None:
+        # The audit's reproduction: no analysis, the installed version marked unaffected.
+        output = run(k3([dict(LODASH)], [unaffected()]))
+        self.assertEqual(resource(finding(output)), ("package", PKG + "pkg:npm/lodash"))
+        self.assertIs(finding(output).disposition, ObservationDisposition.OPEN)
+        self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+        warnings = level_codes(output, "warning")
+        self.assertIn("affects_version_unaffected", warnings)
+        self.assertIn("match_unverified", warnings)
+
+    def test_an_affected_install_or_another_version_unaffected_passes(self) -> None:
+        for record in (unaffected(status="affected"), unaffected("4.17.21")):
+            with self.subTest(record=record):
+                output = run(k3([dict(LODASH)], [record]))
+                self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+
+    def test_one_install_of_a_shared_ref_marked_unaffected_withholds_it(self) -> None:
+        other = {**LODASH, "version": "4.17.21", "purl": "pkg:npm/lodash@4.17.21"}
+        output = run(k3([dict(LODASH), other], [unaffected()]))
+        self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+
+    def test_another_unjudged_record_still_passes(self) -> None:
+        output = run(k3([dict(LODASH)], [unaffected(), vuln("CVE-2026-0002")]))
+        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+
+
+class JustificationScopeTests(unittest.TestCase):
+    """FX2 CL-2: a justification with no unjudged state is a judgment; a response is not."""
+
+    def test_a_justification_without_a_state_is_not_reviewed(self) -> None:
+        for analysis in (
+            {"justification": "code_not_present"},
+            {"justification": "code_not_present", "response": ["will_not_fix"]},
+            {"justification": None},
+        ):
+            with self.subTest(analysis=analysis):
+                output = run(k3([dict(LODASH)], [vuln(analysis=analysis)]))
+                self.assertIs(finding(output).disposition, ObservationDisposition.OPEN)
+                self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+                self.assertIn("match_unverified", level_codes(output, "warning"))
+
+    def test_a_response_alone_or_a_match_state_with_a_justification_passes(self) -> None:
+        for analysis in (
+            {"response": ["will_not_fix"]},
+            {"state": "in_triage", "justification": "code_not_present"},
+            {"state": "exploitable", "justification": "requires_environment"},
+        ):
+            with self.subTest(analysis=analysis):
+                output = run(k3([dict(LODASH)], [vuln(analysis=analysis)]))
+                self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+
+
+class SharedRefMemoryTests(unittest.TestCase):
+    """FX2 CL-4: memory never grows with components sharing a bom-ref times entries naming it."""
+
+    def test_memory_does_not_scale_with_carriers_times_affects(self) -> None:
+        # The audit's amp.py shape at a twentieth of its size: before the fix every one of the
+        # 256 candidates held a JSON string of all 1000 carriers' tokens in its order.
+        components = [
+            {
+                "type": "library",
+                "name": "lodash",
+                "version": f"4.17.{index}",
+                "purl": f"pkg:npm/lodash@4.17.{index}",
+                "bom-ref": "r",
+            }
+            for index in range(1000)
+        ]
+        tokens = sorted(
+            _carrier(component, "pkg:npm/lodash", False, "r").token for component in components
+        )
+        once = len(json.dumps(tokens))
+        document = k3(components, [vuln(refs=("r",) * 256)])
+        tracemalloc.start()
+        try:
+            output = run(document)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(md(finding(output))["occurrence_count"], "256")
+        self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+        self.assertLess(peak, 32 * once)
+
+    def test_the_fold_is_the_same_whatever_the_order_of_shared_refs(self) -> None:
+        components = [
+            {**LODASH, "version": f"4.17.{index}", "bom-ref": ref}
+            for index, ref in enumerate(("a", "a", "b"))
+        ]
+        records = [vuln(refs=("a", "b", "a")), vuln(refs=("b", "a", "a"))]
+        outputs = {repr(run(k3(components, [record])).observations) for record in records}
+        self.assertEqual(len(outputs), 1)
+
+
+class InventoryIdentityRefusalTests(unittest.TestCase):
+    """FX2 CL-5: every K1 and K2 identity refusal is a format refusal (A12); K3 keeps CONTENT."""
+
+    SHAPES: tuple[tuple[dict[str, Any], str], ...] = (
+        ({"tools": [{"name": "sy\u0000ft"}]}, "tool name contains prohibited code point U+0000"),
+        (
+            {"tools": [{"name": "a" * 300}, {"name": "b" * 300}]},
+            "tool is 601 characters; maximum is 512",
+        ),
+        (
+            {"component": {"type": "container", "name": "x" * 600}},
+            "scope id is 600 characters; maximum is 512",
+        ),
+    )
+
+    def test_each_is_a_format_refusal_as_k1_and_k2(self) -> None:
+        for metadata, check in self.SHAPES:
+            for extra in ({}, {"vulnerabilities": []}):
+                with self.subTest(check=check, k2=bool(extra)):
+                    result = ingest(bom(metadata=metadata, **extra))
+                    self.assertEqual(
+                        [item.code for item in result.errors], ["artifact_parse_failed"]
+                    )
+                    self.assertEqual(result.errors[0].message, IDENTITY + check)
+                    classification = classify_ingest(result)
+                    assert classification is not None
+                    self.assertIs(classification.reason, UnmintableReason.FORMAT_REJECTED)
+
+    def test_k3_identity_refusals_stay_content(self) -> None:
+        for metadata, check in self.SHAPES:
+            with self.subTest(check=check):
+                document = k3([dict(LODASH)], [vuln()])
+                document["metadata"].update(metadata)
+                output = run(document)
+                self.assertEqual(level_codes(output, "error"), ["identity_input_invalid"])
+                self.assertEqual(output.observations, ())
+
+
+class AnyAlgorithmDigestNameTests(unittest.TestCase):
+    """FX2 CX-1, FX3 XV-1: a name wholly <alg>:<hex> of a named algorithm keeps itself."""
+
+    NAMES = (
+        "md5:" + "0f" * 16,
+        "sha1:" + "f0" * 20,
+        "sha224:" + "0a" * 28,
+        "sha256:" + "ef" * 32,
+        "sha384:" + "ab" * 48,
+        "sha512:" + "01" * 64,
+        "blake3:" + "cd" * 32,
+    )
+
+    def test_any_algorithm_digest_name_is_its_own_lineage(self) -> None:
+        for name in self.NAMES:
+            with self.subTest(name=name):
+                self.assertEqual(subject_lineage("image", name), name)
+
+    def test_two_algorithms_keep_apart(self) -> None:
+        lineages = {subject_lineage("image", name) for name in self.NAMES}
+        self.assertEqual(len(lineages), len(self.NAMES))
+
+    # The main loop's narrowing: a tag-only name keeps the Y1 lineage, never itself.
+    def test_a_tag_only_name_strips_as_a_tag(self) -> None:
+        for name, lineage in (
+            ("redis:7", "redis"),
+            ("app:20261001", "app"),
+            ("localhost:5000", "localhost"),
+            ("md5:" + "0" * 31, "md5"),
+            ("9abc:" + "0" * 64, "9abc"),
+            ("blake3:" + "0" * 31, "blake3"),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(subject_lineage("image", name), lineage)
+
+    def test_the_five_ruled_names(self) -> None:
+        for name in ("sha384:" + "ab" * 48, "blake3:" + "cd" * 32):
+            with self.subTest(name=name):
+                self.assertEqual(subject_lineage("image", name), name)
+        for name, lineage in (("redis:7", "redis"), ("app:20261001", "app")):
+            with self.subTest(name=name):
+                self.assertEqual(subject_lineage("image", name), lineage)
+        self.assertEqual(subject_lineage("image", "localhost:5000"), "localhost")
+
+    def test_a_tag_that_is_not_lowercase_hex_still_strips(self) -> None:
+        self.assertEqual(subject_lineage("image", "sha384:ABC"), "sha384")
+        self.assertEqual(subject_lineage("image", "web:1.4"), "web")
+        self.assertEqual(subject_lineage("image", "reg.test/web:cafe"), "reg.test/web")
+
+    def test_rule_3_stays_sha256_and_sha512(self) -> None:
+        self.assertFalse(digest_shaped("sha384:abc"))
+        subject = {"type": "container", "name": "web", "version": "sha384:abc"}
+        self.assertEqual(scope_of(subject)[:2], ("image", "web:sha384:abc"))
+
+
+class HexTagLineageTests(unittest.TestCase):
+    """FX3 XV-1: a hex tag such as a git sha strips as a tag; only named algorithms keep."""
+
+    GIT_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+    def test_a_git_sha_tag_strips_to_the_repository(self) -> None:
+        # The audit's reproduction: app:<40 hex> kept itself, so every rebuild re-minted.
+        self.assertEqual(subject_lineage("image", "app:" + self.GIT_SHA), "app")
+        self.assertEqual(subject_lineage("image", "reg.test/app:" + "f" * 64), "reg.test/app")
+
+    def test_two_builds_tagged_by_git_sha_share_package_resources(self) -> None:
+        ids = set()
+        for tag in (self.GIT_SHA, self.GIT_SHA[::-1]):
+            document = k3([dict(LODASH)], [vuln()])
+            document["metadata"]["component"] = {**SUBJECT, "name": "app:" + tag}
+            output = run(document)
+            self.assertEqual(scope(output).resource.resource_id, "app:" + tag)
+            ids.add(resource(finding(output)))
+        self.assertEqual(ids, {("package", "image:app|pkg:npm/lodash")})
+
+    def test_each_named_algorithm_keeps_the_whole_name(self) -> None:
+        for alg, digits in (
+            ("md5", 32),
+            ("sha1", 40),
+            ("sha224", 56),
+            ("sha256", 64),
+            ("sha384", 96),
+            ("sha512", 128),
+            ("blake3", 64),
+        ):
+            name = f"{alg}:" + "a" * digits
+            with self.subTest(alg=alg):
+                self.assertEqual(subject_lineage("image", name), name)
+                # One digit short or long is not that digest, so it strips as a tag (XV-9).
+                for wrong in (digits - 1, digits + 1):
+                    self.assertEqual(subject_lineage("image", f"{alg}:" + "a" * wrong), alg)
+
+    def test_a_repository_named_for_an_algorithm_keeps_git_sha_builds_together(self) -> None:
+        # The delta audit's reproduction: sha256:<40 hex> kept itself, so every rebuild re-minted.
+        ids = set()
+        for tag in (self.GIT_SHA, self.GIT_SHA[::-1]):
+            document = k3([dict(LODASH)], [vuln()])
+            document["metadata"]["component"] = {**SUBJECT, "name": "sha256:" + tag}
+            ids.add(resource(finding(run(document))))
+        self.assertEqual(ids, {("package", "image:sha256|pkg:npm/lodash")})
+
+    def test_two_sha224_names_keep_apart(self) -> None:
+        # The delta audit's reproduction: both stripped to sha224, one package row (XV-8).
+        ids = set()
+        for digit in "ab":
+            document = k3([dict(LODASH)], [vuln()])
+            document["metadata"]["component"] = {**SUBJECT, "name": "sha224:" + digit * 56}
+            ids.add(resource(finding(run(document))))
+        self.assertEqual(len(ids), 2)
+
+    # Recorded in ADR 0016 open risks: an unlisted algorithm strips as a tag, a merge.
+    def test_an_unlisted_algorithm_strips_as_a_tag(self) -> None:
+        for name, lineage in (("sha3:" + "f" * 64, "sha3"), ("xxh3:" + "0" * 32, "xxh3")):
+            with self.subTest(name=name):
+                self.assertEqual(subject_lineage("image", name), lineage)
+
+    def test_tag_and_port_names_are_unchanged(self) -> None:
+        for name, lineage in (
+            ("redis:7", "redis"),
+            ("localhost:5000/app:1", "localhost:5000/app"),
+            ("localhost:5000/app", "localhost:5000/app"),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(subject_lineage("image", name), lineage)
+
+
+class DetailScopeTests(unittest.TestCase):
+    """FX3 XV-4: a detail with no unjudged state is a judgment, as a justification is."""
+
+    def test_a_detail_without_a_state_is_not_reviewed(self) -> None:
+        # The audit's reproduction: an analysis holding only a supplier's detail verified.
+        for analysis in (
+            {"detail": "manual supplier assessment"},
+            {"detail": "no state", "response": ["update"]},
+            {"detail": None},
+            {"detail": ""},
+        ):
+            with self.subTest(analysis=analysis):
+                output = run(k3([dict(LODASH)], [vuln(analysis=analysis)]))
+                self.assertIs(finding(output).disposition, ObservationDisposition.OPEN)
+                self.assertIs(scope(output).disposition, ObservationDisposition.NOT_REVIEWED)
+                self.assertIn("match_unverified", level_codes(output, "warning"))
+                self.assertEqual(scope(output).description, UNMATCHED_DESCRIPTION)
+
+    def test_a_match_state_with_a_detail_passes(self) -> None:
+        for analysis in (
+            {"state": "in_triage", "detail": "under review"},
+            {"state": "exploitable", "detail": "reachable from the entry point"},
+        ):
+            with self.subTest(analysis=analysis):
+                output = run(k3([dict(LODASH)], [vuln(analysis=analysis)]))
+                self.assertIs(scope(output).disposition, ObservationDisposition.PASS)
+                self.assertEqual(scope(output).description, MATCHED_DESCRIPTION)
+
+    def test_the_detail_is_still_recorded(self) -> None:
+        output = run(k3([dict(LODASH)], [vuln(analysis={"detail": "manual"})]))
+        self.assertEqual(json.loads(md(finding(output))["analysis_details"]), ["manual"])
+
+
+class CarrierCleanOnceTests(unittest.TestCase):
+    """FX3 XV-2: a carrier's texts are cleaned once per parse, never once per fold."""
+
+    PURL = "pkg:npm/lodash@4.17.20?download_url=" + "x" * 1_000_000
+
+    def big_cleans(self, count: int) -> int:
+        """Parse count distinct vulnerabilities on one 1 MB purl; count sanitize calls on it."""
+        component = {**LODASH, "purl": self.PURL}
+        records = [vuln(f"CVE-2026-{index:04d}") for index in range(count)]
+        with mock.patch.object(common, "sanitize", wraps=common.sanitize) as spy:
+            output = run(k3([component], records))
+        self.assertEqual(len(output.observations), count + 1)
+        self.assertIn("evidence_truncated", level_codes(output, "warning"))
+        return sum(1 for call in spy.call_args_list if len(call.args[0]) >= len(self.PURL))
+
+    def test_the_purl_is_cleaned_once_whatever_the_vulnerability_count(self) -> None:
+        # The audit's reproduction at N=400: before the fix the purl was sanitized twice per
+        # fold, 800 times; it is now cleaned once for the carrier, whatever N is.
+        self.assertEqual(self.big_cleans(400), 1)
+        self.assertEqual(self.big_cleans(1), 1)
+
+    def test_every_fold_still_reports_the_cut_purl(self) -> None:
+        component = {**LODASH, "purl": self.PURL}
+        output = run(k3([component], [vuln("CVE-2026-0001"), vuln("CVE-2026-0002")]))
+        for record_id in ("CVE-2026-0001", "CVE-2026-0002"):
+            with self.subTest(record_id=record_id):
+                metadata = md(finding(output, record_id))
+                (purl,) = json.loads(metadata["purls"])
+                self.assertLessEqual(len(purl), MAX_LIST_ITEM_CHARS)
+                self.assertIn("purls", json.loads(metadata["truncated"]))
+                (instance,) = json.loads(metadata["instances"])
+                self.assertEqual(instance["purl"], purl)
+        (diagnostic,) = [item for item in output.diagnostics if item.code == "evidence_truncated"]
+        self.assertIn("vulnerabilities[0].affects[0]", diagnostic.message)
+        self.assertIn("vulnerabilities[1].affects[0]", diagnostic.message)
+
+    def test_sanitized_and_cut_texts_report_in_raw_text_order(self) -> None:
+        # Two installs of one package: one purl only cut, one only sanitized. Cleaning the
+        # sorted raw texts reported the sanitized one first, because BEL sorts before "a",
+        # while its cleaned text "...=z" sorts after; the joined report must keep raw order.
+        long = "pkg:npm/lodash@4.17.20?download_url=" + "a" * 400
+        control = "pkg:npm/lodash@4.17.20?download_url=\u0007z"
+        for first, second in ((long, control), (control, long)):
+            components = [
+                {**LODASH, "purl": first, "bom-ref": "one"},
+                {**LODASH, "version": "4.17.21", "purl": second, "bom-ref": "two"},
+            ]
+            output = run(k3(components, [vuln(refs=("one", "two"))]))
+            order = [
+                item.code
+                for item in output.diagnostics
+                if item.code in ("evidence_sanitized", "evidence_truncated")
+            ]
+            with self.subTest(first=first[:40]):
+                self.assertEqual(order, ["evidence_sanitized", "evidence_truncated"])

@@ -60,7 +60,11 @@ refusal, and `jsonschema` stays the only runtime dependency.
 A structural error in a document that carries no vulnerability record (a K1, a K2, or a
 non-array `vulnerabilities`) is refused as a format, `AdapterParseError`, fatal under every flag
 and never recorded as a detection failure: such a document makes no detection claim, so it is
-an unreadable inventory, the rule for a malformed CKL. Only on K3 do structural errors in
+an unreadable inventory, the rule for a malformed CKL. An identity refusal on K1 or K2 (a tool
+name with a control character, or a tool or scope id over 512 characters) is a format refusal
+too, "CycloneDX inventory identity cannot be used as written", never ERROR
+`identity_input_invalid`, so `--record-failed-imports` records no VDR-CSO-FAV for an inventory
+(re-audit CL-5); on K3 the same refusals stay CONTENT. Only on K3 do structural errors in
 `metadata`, the tools, or `components` stay ERROR `invalid_bom` (CONTENT), mintable as
 VDR-CSO-FAV under `--record-failed-imports`. The K4 test leaves the subject out: a document whose
 only component is `metadata.component` is a VEX document even when every `affects` ref names
@@ -94,19 +98,22 @@ one weak key, never the document. Decoding before splitting would merge `a%2Fb` 
 
 The version is removed and never decoded. Qualifiers are applied in a fixed order: an empty
 qualifier string and empty pairs are ignored; keys are lowercased and must satisfy clause 5.6.6;
-empty values are dropped; a duplicate key means the purl does not parse; a value equal to its
-type's `default_value` (maven `type=jar`, gem `platform=ruby`) is dropped; the strip set removes
-`epoch`, `distro`, `upstream`, `file_path`, `file_name`, `download_url`, `vcs_url`,
-`repository_url`, `checksum`, and `package-id`; for `oci`, `tag` is stripped and `repository_url`
-is kept. Every other key stays, including `arch`, maven `classifier`, and any unknown key,
-because keeping an unknown key can split one package in two while dropping it could merge two.
-`upstream` joined the set during the build: syft and grype write `upstream=<source>@<source
-version>` on deb and the source RPM file name, version included, on rpm, so keeping it put a
-version into the key, and Trivy writes none, so it also split one package across producers. The
-kept pairs are sorted as built `key=value` strings, as the purl "how to build" procedure says
-("Sort this list of qualifier strings lexicographically"); this differs from sorting keys alone
-only when one key is a prefix of another followed by a character below `=`. Every stripped or
-dropped pair stays verbatim in metadata `purls`.
+empty values are dropped; a duplicate key means the purl does not parse; a value equal to its type's
+`default_value` (maven `type=jar`, gem `platform=ruby`) is dropped; the strip set removes `epoch`,
+`distro`, `upstream`, `file_path`, `file_name`, `download_url`, `vcs_url`, `repository_url`,
+`checksum`, and `package-id`; for `oci`, `tag` is stripped and `repository_url` is kept; for
+`docker`, `repository_url` is kept and `tag` stays. Every other key stays, including `arch`, maven
+`classifier`, and any unknown key, because keeping an unknown key can split one package in two while
+dropping it could merge two. `upstream` joined the set during the build: syft and grype write
+`upstream=<source>@<source version>` on deb and the source RPM file name, version included, on rpm,
+so keeping it put a version into the key, and Trivy writes none, so it also split one package across
+producers. `repository_url` left the docker set in the audit fix (2026-10-19): stripped, it merged
+same-named docker images from two registries into one key, while keeping it costs only churn when
+one export omits it, the trade-off `oci` already accepts. Docker does not take oci's `tag` strip.
+The kept pairs are sorted as built `key=value` strings, as the purl "how to build" procedure says
+("Sort this list of qualifier strings lexicographically"); this differs from sorting keys alone only
+when one key is a prefix of another followed by a character below `=`. Every stripped or dropped
+pair stays verbatim in metadata `purls`.
 
 Case follows a frozen per-type table settled from the 24 published type definitions: a segment
 is folded exactly when its definition marks it `case_sensitive: false`, and a `true` flag or no
@@ -145,15 +152,24 @@ inventory entry names. Before the join, `%` and `/` in `version` are encoded. Ev
 subject has type `scan` and the id `<group>/<name>` with `%` and `/` encoded in each part, so
 the raw `/` is the only separator. No usable subject gives `scan:<tool>` with WARNING
 `subject_identity_fallback`. The composed id passes `identity_problem` at 512 characters or is
-ERROR `identity_input_invalid`, the check the inventory applies to `resourceId`, so every scope
-id the adapter emits is registrable.
+ERROR `identity_input_invalid` on K3 and a format refusal on K1 and K2 (Decision 2), the check the
+inventory applies to `resourceId`, so every scope id the adapter emits is registrable.
 
-The lineage, used only inside package resource ids, is the subject without its tag or digest:
-for an image, a trailing digest is removed from the subject `name`, then a trailing `:<tag>` when
-the last `:` follows the last `/`, so a registry port survives. It is derived from the name,
-never from the composed id. When the strip leaves nothing (a name such as `:1.4`), the lineage is
-the name as written, so subjects with such names do not share one empty lineage. For `scan` the
-lineage is the scope id. The tag and digest are kept as metadata (`subject_ref`,
+The lineage, used only inside package resource ids, is the subject without its tag or digest: for an
+image, a trailing digest is removed from the subject `name`, then a trailing `:<tag>` when the last
+`:` follows the last `/`, so a registry port survives. It is derived from the name, never from the
+composed id. When the strip leaves nothing (a name such as `:1.4`), the lineage is the name as
+written, so subjects with such names do not share one empty lineage. A name that is wholly
+`<alg>:<hex>`, where the algorithm is one of `md5`, `sha1`, `sha224`, `sha256`, `sha384`, `sha512`
+and `blake3` and the hex is exactly that digest's length in lowercase hex (32, 40, 56, 64, 96, 128
+and 64), is likewise its own lineage as written, never the bare algorithm, so two digest-named
+subjects never share a lineage (re-audit CX-1); the scope id is unchanged, and its composition
+rule still reads only `sha256:` and `sha512:` as a digest. The algorithms are named, not matched
+by shape, because a hex tag such as `app:<git sha>` is a tag: it strips to `app`, so a rebuild
+keeps its package rows (cross-vendor re-audit XV-1). The exact length does the same for a
+repository named for an algorithm, so `sha256:<git sha>` strips to `sha256` (XV-9), and keeps a
+tag-only name such as `redis:7` or `localhost:5000` stripping as a tag too. For
+`scan` the lineage is the scope id. The tag and digest are kept as metadata (`subject_ref`,
 `subject_version`).
 
 Paths and registry references are not canonicalized: a directory subject is the path as typed,
@@ -214,15 +230,34 @@ deadline lands sooner, which is wrong only in the conservative direction.
 
 Every well-formed document yields exactly one scope observation of its subject: record id
 `cyclonedx.bom`, the scope resource, the tool as context key and source tool, severity UNKNOWN,
-fixed descriptions with no producer text. K1 is NOT_REVIEWED ("it is not a detection and verifies
-no coverage clock"). K2 is NOT_REVIEWED with `match_unverified`. K3 is PASS when at least one
-`affects` ref resolves through the index, because a resolved affects record is positive evidence
-that a match ran against this inventory; a K3 whose refs all fall back, or whose vulnerabilities
-carry no `affects`, is NOT_REVIEWED with `match_unverified`, and its detections still mint. The
-PASS text says the tool matched the components the document lists, which is not evidence that
-the subject is free of vulnerabilities or that the list is complete. A vulnerability whose id is
-spelled `cyclonedx.bom` and resolves to the scope resource takes the observation, and the scope
-candidate yields with INFO `scope_superseded`.
+fixed descriptions with no producer text. K1 is NOT_REVIEWED ("it is not a detection and verifies no
+coverage clock"). K2 is NOT_REVIEWED with `match_unverified`. K3 is PASS when at least one `affects`
+ref resolves through the index, directly or by a same-document BOM-Link, to a listed component other
+than `metadata.component`, on a vulnerability whose `analysis` has the state `exploitable` or
+`in_triage`, or none of a `state`, a `justification`, and a `detail`, in an `affects` entry that
+does not mark the installed version `unaffected`. Such a record is positive evidence that a match
+ran against this inventory. A ref to the subject never counts: it lands its observation on the scope
+resource, and a document whose refs all name the subject has the K4 VEX shape. A supplier judgment
+never counts either: `not_affected`, `false_positive`, `resolved`, and `resolved_with_pedigree`
+describe a product, not a match, and an unknown, non-string, or `null` state fails closed the same
+way. A `justification` with no `state`, whatever its value, is a judgment too, and so is a `detail`,
+the supplier's own account (re-audit CL-2, cross-vendor re-audit XV-4), while a `response` alone is
+not. An `affects` entry whose `versions` lists a component's own `version` with the status
+`unaffected`, the comparison `affects_version_unaffected` makes, contradicts its own match and never
+counts, while the detection still mints (re-audit CL-1). A K3
+with no counting record, whether its refs all fall back, name only the subject, or sit on judged
+records, or its vulnerabilities carry no `affects`, is NOT_REVIEWED with `match_unverified` ("no
+unjudged vulnerability record resolves to a component this document lists besides its subject"), and
+its detections still mint OPEN with their warnings. The PASS text says the tool matched the
+components the document lists, which is not evidence that the subject is free of vulnerabilities or
+that the list is complete. A vulnerability whose id is spelled `cyclonedx.bom` and resolves to the
+scope resource takes the observation, and the scope candidate yields with INFO `scope_superseded`;
+that record is OPEN, so it examines the subject and never verifies it (Decision 13).
+
+The residual risk is named: a supplier that lists affected statements with no `analysis` against
+components of its own document reads as a match and verifies the subject's clocks, because nothing
+in such a record tells it from a matcher's output. Supplier judgments were excluded in the audit fix
+(2026-10-19), after an embedded `not_affected` on a listed component was shown to verify coverage.
 
 A K3 scope observation beside findings is a named departure from SARIF, where a run with results
 yields no scope observation: a CycloneDX finding sits on a `package` resource that never matches
@@ -256,11 +291,13 @@ Why: a constant tool would merge every tool-less producer's CVE into one case.
 
 An embedded `analysis` is recorded under the `analysis_*` metadata keys and the disposition stays
 OPEN. Each kind of claim draws its own coalesced WARNING so an evaluator can find what needs a
-`cases evaluate` record: `analysis_not_affected`, `analysis_false_positive`,
-`analysis_resolved`, `analysis_in_triage`, `response_will_not_fix`, `analysis_conflict`,
-`analysis_state_invalid`, and `affects_version_unaffected` for an installed version the document
-itself marks `unaffected`. A supplier's `not_affected` describes the supplier's product, not the
-provider's deployment, and the precedents are ADR 0011 Decision 6 and ADR 0013 Decision 5.
+`cases evaluate` record: `analysis_not_affected`, `analysis_false_positive`, `analysis_resolved`,
+`analysis_in_triage`, `response_will_not_fix`, `analysis_conflict`, `analysis_state_invalid`, and
+`affects_version_unaffected` for an installed version the document itself marks `unaffected`. A
+supplier's `not_affected` describes the supplier's product, not the provider's deployment, and the
+precedents are ADR 0011 Decision 6 and ADR 0013 Decision 5. A judgment does keep its own record from
+counting toward the PASS of the scope observation (Decision 9), which moves no finding's
+disposition.
 
 A standalone VEX document (K4) is refused as a format: "a standalone CycloneDX VEX document
 cannot be resolved without the BOM it describes; ComplyRoll does not join artifacts; record its
@@ -282,11 +319,26 @@ fires only when the identifier list is cut. `purls` items are cut to 256 charact
 deduplication, so purls that differ only past the cut collapse, and `truncated` names `purls`.
 
 Two count bounds are checked before any fold work: `len(vulnerabilities)` against
-`max_results_per_run` and `MAX_AFFECTS_PER_VULNERABILITY` (1,024), both `InputLimitError`, so a
-huge document fails early as a parse failure. Every other bound is the shared one, including the
-512 KiB ceiling on one observation's canonical JSON. A fold saturated with four-byte characters
-can exceed that ceiling where the same fold in ASCII fits, and the artifact then fails closed,
-the behavior ADR 0011 already accepts for SARIF and HDF.
+`max_results_per_run` and `MAX_AFFECTS_PER_VULNERABILITY` (1,024), both `InputLimitError`, so a huge
+document fails early as a parse failure. `max_observations_per_artifact` counts the scope
+observation for K1, K2, and K3: the fold step stops fold work at the cap, and once the folds are
+built the reading is refused when they and the scope exceed it. A scope that yields to a producer
+record named `cyclonedx.bom` is not counted. A candidate's fold order is built from one token per
+carrier, the carrier's `repr` cut to 256 characters, then `#` and the SHA-256 of the whole `repr`,
+so memory never grows with purl length times `affects` count and the order stays a pure function of
+content; a 1 MiB purl named by 512 `affects` fell from 545.1 MiB to 33.7 MiB peak RSS. Each distinct
+ref's carrier facts (its carriers, their sorted tokens as one JSON string, and their versions) are
+built once and shared by every candidate that names it, so memory never grows with components
+sharing one bom-ref times the `affects` entries naming it either; 20,000 such components named by
+256 entries fell from about 1 GiB to about 70 MiB peak RSS, with fold output byte-identical
+(re-audit CL-4). The same facts hold each distinct install's texts sanitized and capped once per
+document, and a fold joins those results in the order of the raw texts, read from a rank computed
+once, so it never rescans a purl: CPU no longer grows with purl length times the vulnerabilities
+naming it. A 1 MB non-ASCII purl named by 200 vulnerabilities took 34.5 s and now 0.12 s, with
+fold output byte-identical (cross-vendor re-audit XV-2). Every other
+bound is the shared one, including the 512 KiB ceiling on one observation's canonical JSON. A fold
+saturated with four-byte characters can exceed that ceiling where the same fold in ASCII fits, and
+the artifact then fails closed, the behavior ADR 0011 already accepts for SARIF and HDF.
 
 The scope observation carries `component_set_sha256`, a digest over the document's components
 one per line. Before the join, a version encodes `%`, tab, LF, and CR, so a version holding a
@@ -307,6 +359,18 @@ an alias, with fixed text: "resourceType package is not an information resource;
 image or host that carries it". Neither edit moves a pre-existing golden. The literal is defined
 in the adapter, the coverage reader, and the inventory reader, pinned equal by a test, so
 `reports/` imports no adapter.
+
+Coverage reads a `cyclonedx` source only through its `cyclonedx.bom` record, and that record
+verifies only when it is PASS. A vulnerability observation, on a package or on the scope resource,
+never examines or verifies an entry and is never listed as later or untimed evidence; it still
+counts toward an unregistered resource's observation count, which is why the spec-corners `scan`
+subject reads unregistered with three observations. A producer record that took the scope's id is
+OPEN and examines the entry without verifying it, the one place OPEN does not verify. The source
+type and record id literals live in the coverage reader beside `package`, pinned equal to the
+adapter's by a test.
+Why: a finding is a package fact, not evidence that the image was examined. Before the
+audit fix, a finding with no `affects`, a ref to the subject, or a producer record named
+`cyclonedx.bom` read an image `current` beside a NOT_REVIEWED scope.
 
 ## Worked examples
 
@@ -334,6 +398,8 @@ ref `current`.
   follow-up, since versions in a shared report fall under VER-RPT-NID.
 - One case per CVE per tool spans every image, with one IRV, LEV, and PAIN (Decision 7).
 - A clean scan never verifies a coverage clock in this parser version (Decision 9).
+- A supplier SBOM whose every record carries a judgment, or names only its subject, verifies no
+  clock (Decision 9).
 - One VEX file, one malformed inventory, or one malformed empty BOM stops an `ingest` or
   `report` glob.
 - Ingesting two export formats of one tool's scan of one target counts every CVE twice.
@@ -351,6 +417,51 @@ ref `current`.
 Follow-ups, none built here: the operator-assertion flag for a clean match; versions and digests
 in reports; VEX as evaluation material; SPDX 2.3 as inventory-only scope observations under the
 same key rule; and a frozen Unicode category table shared by every adapter's identity check.
+
+## Open risks
+
+Recorded in the audit fix (2026-10-19), with no code change:
+
+- The subject's own purl is not read, so an `oci` subject with one name and version pulled from two
+  registries gives one scope id and one lineage: the reference as typed, Decision 4.
+- The `ref:` fallback keys the raw document-local bom-ref, so a reused token such as `component-1`
+  merges unrelated packages across documents of one lineage. Decision 6 stands, because every
+  alternative re-mints the key per export.
+- A standalone VEX document with a structural error in `metadata`, the tools, or `components` is
+  ERROR `invalid_bom`, mintable as VDR-CSO-FAV, while a well-formed one is refused as a format,
+  because those checks run before the K4 test (Decision 2).
+- pypi names do not fold `.` as PEP 503 normalization does, so two spellings of one package give two
+  keys: churn, never a merge.
+- A name made only of a host and port, such as `localhost:5000`, loses its port in the lineage. It
+  is not a realistic image reference.
+- An unversioned scoped npm purl with a raw `@` falls to a `component:` key, which churns only when
+  a producer omits the version.
+- A supplier that lists affected statements with no `analysis` verifies the subject's clocks
+  (Decision 9).
+
+Recorded in the re-audit (2026-10-19), with no code change:
+
+- A component that copies the subject (same container name and version, another bom-ref) evades the
+  subject-ref rule, beside the supplier-listing residual risk above (CL-3).
+- Subjectless documents of one tool merge under `scan:<tool>`; it is the SARIF `scan:<driver>`
+  fallback behavior, warned (CX-2).
+- Namespace-less apk purls from two distros merge; it needs non-conformant purls (CX-4).
+- docker keeps a `tag` qualifier, so a docker key churns on a retag, beside the `repository_url`
+  trade-off of Decision 3 (CX-6).
+
+Recorded in the cross-vendor re-audit (2026-10-19), with no code change:
+
+- An `affects` version `range` marked `unaffected` is kept verbatim in `affects_ranges` but never
+  evaluated, so a range that covers the installed version does not stop PASS; only a listed
+  `version` equal to an install's does (Decision 9). Treating every `unaffected` range as a
+  judgment was rejected: grype writes an `unaffected` fix range on every match, so every grype scan
+  would read NOT_REVIEWED. Evaluating ranges needs a per-type `vers` comparison (XV-3).
+- A subject name that is wholly a digest of an algorithm other than the seven Decision 4 names,
+  such as `sha3:<hex>`, strips as a tag to the bare algorithm, so such subjects share one lineage
+  and their packages merge. Matching any algorithm by shape kept every hex tag such as
+  `app:<git sha>` in the lineage and re-minted every package row per rebuild (XV-1, XV-8).
+- A repository named for an algorithm whose tag is hex of exactly that digest's length, such as
+  `sha256:<64 hex>`, keeps its tag in the lineage, so its rebuilds do not share package rows (XV-9).
 
 ## Rejected alternatives
 

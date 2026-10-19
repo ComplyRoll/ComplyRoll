@@ -247,14 +247,16 @@ only lists the window. `VDR-TFR-MVF` and Class D stay out of scope.
 
 ## SBOM evidence
 
-A CycloneDX document is read by what it shows (ADR 0016). An SBOM that lists components and
-carries no `vulnerabilities` member is an inventory, not a detection: its one observation of the
-subject is NOT_REVIEWED and examines the image without verifying it. An empty `vulnerabilities`
-list is read the same way whatever tool is named, because Trivy writes it with vulnerability
-scanning turned off, so an image whose only evidence is a clean Grype or Trivy run reads
-`undetermined`, never `current`. A document whose vulnerability records resolve to components it
-lists verifies the image's `VDR-TFR-MVX` and drift clocks at its `metadata.timestamp`, and its
-findings are OPEN observations on `package` resources, never on the image.
+A CycloneDX document is read by what it shows (ADR 0016). An SBOM that lists components and carries
+no `vulnerabilities` member is an inventory, not a detection: its one observation of the subject is
+NOT_REVIEWED and examines the image without verifying it. An empty `vulnerabilities` list is read
+the same way whatever tool is named, because Trivy writes it with vulnerability scanning turned off,
+so an image whose only evidence is a clean Grype or Trivy run reads `undetermined`, never `current`.
+A document with at least one vulnerability record that resolves to a component it lists other than
+the subject, that carries no supplier judgment, and whose `affects` entry does not mark the
+installed version `unaffected`, verifies the image's `VDR-TFR-MVX` and drift clocks at its
+`metadata.timestamp`. Its findings are OPEN observations on `package` resources, never
+on the image, and never verify a clock themselves.
 
 Ingest one export format per tool per target. A case is one CVE from one tool, so a Grype SARIF
 log and a Grype CycloneDX document of one image are two source types and every CVE in them counts
@@ -268,9 +270,14 @@ match finished, so a re-match of an old SBOM carries the re-match time and start
 not at the old SBOM's creation. A supplier document that was created before it was matched starts
 the clocks earlier than the match, which is early, never late.
 
-An embedded VEX analysis never sets a disposition, and a standalone VEX document is refused. The
-table below is guidance for the evaluator who records the outcome with `--evaluations` or
-`cases evaluate`; none of it is stated by the dataset, and ComplyRoll applies none of it.
+An embedded VEX analysis never sets a disposition, and a standalone VEX document is refused. A
+judged statement never verifies coverage either: a record whose `analysis.state` is `not_affected`,
+`false_positive`, `resolved`, or `resolved_with_pedigree`, or a state outside that enum, does not
+count toward the PASS of the observation of the subject, while `exploitable`, `in_triage`, and no
+state do. A `justification` or a `detail` with no state is a judgment too, while a `response` alone
+is not, and an `affects` entry that marks the installed version `unaffected` never counts. The table
+below is guidance for the evaluator who records the outcome with `--evaluations` or `cases
+evaluate`; none of it is stated by the dataset, and ComplyRoll applies none of it.
 
 | Supplier statement | What an evaluator might record | Condition |
 |---|---|---|

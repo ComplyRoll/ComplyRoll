@@ -112,60 +112,60 @@ IDENTITY_MESSAGE = "an identity input cannot be used as written"
 # Observation ids of every SARIF fixture, in emitted order. Derived by running the adapter;
 # the step 3 goldens will carry the same ids as a byte contract.
 TRIVY_IDS = (
-    "obs-d45792aec4765dc6ba636cfdad05efb765b64ea6a165967597bbeec48515645b",
-    "obs-25961fc0953d10e352b0ec08de870bbee884908cd0bab7caf25dfe5d25419da5",
-    "obs-5ea3291a292bb631cab60a71b119462521b8c0f7d3f3b24768d5118e80da6a26",
+    "obs-332bed1a07ff200779b02085e7293e6a5907d1ad5bdd953ffbb55cad87f38037",
+    "obs-7f44594825d875616e4d99e73ad97905324212a706139bb36d7dc2d4f768adc7",
+    "obs-17a6f60c6eca605a8b959469b9166ce415f52bdc21de05ae25078b79d608c21a",
 )
 GRYPE_IDS = (
-    "obs-bb3eeec613ffd640a8264b741eb5ee2c3c60d0deadc218451983a07af20e49cc",
-    "obs-8c6fa53fe2ee41b2ebdb8255ad26fa85cc6acc0eacdea7f4a52d71a2775e3603",
+    "obs-6403cb377a871e48e6b2dae75029ac29f1128c0591d75eb3b579946716788ce7",
+    "obs-c23b4c457c3343882b9522f4b359ae7e392258f3afbca56c3947819ba1f72848",
 )
 SEMGREP_IDS = (
-    "obs-4d2cecbc01f1d26987474dcc62dfd9181ae535a3801d4497da5df0aa7b750ebf",
-    "obs-1c709c8cf32997e15f0d08ebae8d1234f40af69b2b30fdcc139ee27093b2d4d1",
+    "obs-45e05f930d5f91b636e6d26625044d9b4dd104ec40db9cdb3971697ed4711a66",
+    "obs-b6143153ace3697d49767f66473c0fa68ceab73dec61df50b03c6c3e77376dfc",
 )
 CODEQL_IDS = (
-    "obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e",
-    "obs-3f57637539e35a21cf20f32a100e3bf7d3816cc6db02582af96ab0fbf3e3ace6",
-    "obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b",
+    "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f",
+    "obs-d67755baa8836946d4d35b9f20a18349c5af77e1b9458d305f7b81c0d5db58bc",
+    "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
 )
 CHECKOV_IDS = (
-    "obs-852a8beb46d5267ed7f90eae54319b562cc66bab1ad9a6cdaee6cd5d56fd1d85",
-    "obs-6d8750349283709d33e633d4ac848ee406762006d25ca2d4b243611203648720",
-    "obs-5a2ea2b0d3fc739c8bd0750f583bfb1216043536890af21c02a2dfd1f32a55d4",
+    "obs-431b1af974c0ff043486119a3047b4a1cc2d52b1f2872a8c0700b2c7bc8176e2",
+    "obs-9363f57095b56badeac95a5ef14bd9a6d913baaf9cf7bd929f2a0f16c928e383",
+    "obs-77309274818a2c23134f1be0ff8dfc39448c2167e7def6103c1f6eb132be99ee",
 )
 CORNER_IDS = (
-    "obs-a34932ef4bdb905d6b13608091ad450a14aa7c7cc191e837f19e6b5a20e760a2",
-    "obs-6d8bd5f79803a5cbfc0e656144910cfddee70bec3eea1ff09bd23f1b191d39c3",
-    "obs-e93fbe574cad3173e756890483edf6790bb797e27f8b2bab44590a01585148a0",
-    "obs-1c891aa1f3d1147430cb497a8aa1ac2e47f8d4767d7eaf36dd7ceb3b9be01461",
-    "obs-e455659d3146b8b4752d173d95c812449a334a2978f416df1f10d3bc8472f746",
-    "obs-a714ad58dec97a19f51c29dce42a5f1704bc724375ba0b29d424f25d86372126",
-    "obs-8facced57f4d715810877fad0f9a4265f29a9910542a5dff6877a4b9c4fc7070",
-    "obs-86afbf55709a64cf4e2e5b701c06ba8035f9e584b174d75500f2ab9e5a3525b6",
-    "obs-640dbebcb2ca24f97fa9f04c049524d24866df928304dba0e0b7d03814ef18f2",
-    "obs-ba8cbbba40541c4b1501b95d4f6ac60fe864935a0a97fbb760e6688f61dbbfa8",
-    "obs-18d9be5089ca3e5f5dbde2e8cc583dccff334dfa5d49c774f4c7dd36807b9238",
-    "obs-594e523756f6c3976fdd531a7712e7020730ca8008b7203943806aa007c627aa",
-    "obs-5c067b31830c74b6f88451f75e727abd15aef972baf9a30e8cb239a2184e4002",
-    "obs-da0ccef6f7e6433cd68952e852a64c5c83728f104d7f75c773b582f2c3cae071",
-    "obs-f467be4d70a6c31cf4cb2df111ff363a25d740d4c2f4cd2b6bfda43017248790",
-    "obs-172f3e4e19501eaa962b22110c26f24db0a4c6ea6f0bdba5290289a50fb37db8",
-    "obs-b5050ed4a4f37a50d5fced655798219c63f4bbe5bebcae253a17827770fd0708",
-    "obs-a0daf8a745d8b55010b88fdb6a850046b25263f908e93f4e8ef2aab3c58965bf",
-    "obs-bc0b3c0f9f0d4d7f53b683b747f2b7a78386e9de8583a346a0884e75bcaa779d",
-    "obs-b85ba312c1f1bb4bb54877ecc4796f3abb81b11db32b8fbe92222e21a236bdb5",
-    "obs-e9162ca7f3e7b77b0e4042acfa34ee185e5cd9be4d2246263b51d4c420ebfd65",
-    "obs-1271df35988a640b03fce8269f7480c14d8faab2d340d591f38019acf3923d0b",
-    "obs-d46a23bdd503c76b473365e554d3931f5d868028728e59d881cccfea12ced71f",
-    "obs-4ff89f015d95ca3b8e5362fa68cc08cf1f05636f36e4a53a8f7682fb8a75a3f5",
-    "obs-af22e0d468242a477c07514422ec58bfc2d2dada4edb6f208e8b1c295d30d038",
-    "obs-0e3238db7d8b3c0eae5acfb0bd4e7305c520cb425886e503a194e9a9fd62616a",
-    "obs-84c9cae899f1ba809f93072b2f3e4406445c02a406c8643dae9ecff850e7ea5f",
-    "obs-0e0538dc84c3dd92eea296334eb83de10f3c11942e2eee8a1900807e4f929115",
+    "obs-95a22ea3f2c8fd972fb16c09be57ce7ed5f50ce237d96b71a2ee529a1ce11a3d",
+    "obs-0c05dd5b27612217c964889135153dafeb860bf14e34b799b954d5a68bbe83c1",
+    "obs-d5e952ece84e891d7da207e9296679128202bfb7eb81a3e20d89b92d8ee66747",
+    "obs-8037de8972af9db56df0443d3318bd3b4728f6515447bab486498ca7eb6f3ba3",
+    "obs-a5847b1c77309d062aee0f4cad7754217f605fbd59ca8c6577137d0505ff72ea",
+    "obs-2f0fda20fc65932a09171a4cd5cefcbe05d4d43f684be367392f4188c72e6747",
+    "obs-1248e21a44389e8d817a93e13f9a29d971b5d6d99725970750598abc6fb14235",
+    "obs-82f8dda6c8588c1625461ffb9c6eb234f04b07993296c7ba70c03ee664702352",
+    "obs-fadcb2d01211b6b68871d87e949cae85e8e6e4ede086bfbc5b44648a243debd7",
+    "obs-7ec695434cf7dde77233ea65bc461fcc4a5d41248a57fc18d613885893647ec5",
+    "obs-bc84fef3cd686dc7787c9820cd8403429bf8289f500d3f2ebe11a57be9cd8279",
+    "obs-f6e2c19a747ddf43e1277322c47cce370177f6e09c8707c175de17dfb00abc23",
+    "obs-557d36c97044b56dfdfd2250a40a00edbee27815be7fe3d917a6ecaef3d4e87c",
+    "obs-114c240a3b7d3e899651696f514d83e11d6733605744d198d2b29ebeedb75e44",
+    "obs-4d37bf057e683cc29df427977fefdfcf4d9fa9ade845b0c94785dad6e700b656",
+    "obs-805bbc33d82896b8cd12ba16a49bc22a9ab32a663cc0fa9ea809d4da36ca236d",
+    "obs-6bc3514ec55cffef1435cd1aa7857885714c4f469736b1c78063ee2073f19125",
+    "obs-a833edfc3e1cf8f1d6109e029f3ecbdb9120291126202b4236ffad29a4336072",
+    "obs-3675452a3ef6edf7d97e1411359a5ba3a38e5012b61163fac147afbf1a49c139",
+    "obs-096858552c49849e1b0512b2dec3c91e744371dd8995cd60278bd8775e23f51a",
+    "obs-9ae226f204133f6835b559dba2f6c72d77705b8b5dffd08bd5e37c86235b4a01",
+    "obs-fec331c1d3018aa160018823978ccd50a7c064fa85f08bcac1f14ee57afb53ab",
+    "obs-5cbcc98720e4f1ced7935abe491795dda44c2be95524f8cc6a865fa8083e1c7d",
+    "obs-392b384161009ecf243976d0e176f63e2749d11c9e5aff24059306d5ea3d9555",
+    "obs-a4b8c4e44852e22bf11fc641733a1e934eccdb896e4bafbf7952ce1b97fcdf88",
+    "obs-1f2e8705af23412d4fddee2d5582faa31d4b1f8f910ed103059ef471a4ad0711",
+    "obs-cc23039de1f0080a371f085a6849966318e48f437257c198c2c9b34b0c0f566c",
+    "obs-d9fc1f43b12ed8c84c77073948af9cacbd5b5e8271e5891e833ebb8458dc0f83",
 )
 # The clean run's one observation: the artifact fingerprint over the run's scope (ADR 0015).
-CLEAN_RUN_IDS = ("obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2",)
+CLEAN_RUN_IDS = ("obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",)
 FIXTURE_IDS = {
     "trivy-image.sarif": TRIVY_IDS,
     "grype-image.sarif": GRYPE_IDS,
@@ -212,7 +212,7 @@ CLOCKLESS_TRACKING_IDS = (
     "case-889c19760e425785",
 )
 CLOCKED_TRACKING_IDS = ("case-04716522daa6f550", "case-d2b9f5abf1fe44ac")
-CORNER_NOLOC_ID = "obs-e9162ca7f3e7b77b0e4042acfa34ee185e5cd9be4d2246263b51d4c420ebfd65"
+CORNER_NOLOC_ID = "obs-9ae226f204133f6835b559dba2f6c72d77705b8b5dffd08bd5e37c86235b4a01"
 # Results a rewording may change without moving a fold's primary: the later member of each
 # Trivy and Semgrep fold. CodeQL folds nothing, so only its order moves.
 REWORDED_RESULTS: dict[str, tuple[int, ...]] = {
@@ -1532,8 +1532,8 @@ class SarifSpecCornerTests(unittest.TestCase):
         fallback = only_diagnostic(self.result, "resource_identity_fallback")
         self.assertEqual(
             fallback.message,
-            "result has no usable location; the driver name is the scan resource "
-            "(2 occurrences: runs[0].results[15], runs[0].results[17])",
+            "result has no usable location or analysis target; the scope the run names is its "
+            "resource (2 occurrences: runs[0].results[15], runs[0].results[17])",
         )
 
     def test_third_run_with_only_an_end_time_supplies_that_clock(self) -> None:
@@ -3275,6 +3275,122 @@ def own_list_members(items: Sequence[str]) -> dict[str, Any]:
         "suppression_kinds": [f"k{item}" for item in items],
         "suppression_statuses": [f"s{item}" for item in items],
     }
+
+
+def resource_of(observation: Observation) -> tuple[str, str]:
+    """Return an observation's resource as a (type, id) pair."""
+    return observation.resource.resource_type, observation.resource.resource_id
+
+
+class SarifLocationlessResourceTests(unittest.TestCase):
+    """A result without a usable location keeps its own resource (parser version 2)."""
+
+    def test_locationless_results_of_two_images_stay_two_observations(self) -> None:
+        # Parser version 1 folded both into scan:<driver>, keeping app-a's evidence alone.
+        runs = [
+            make_run([make_result(uri=None)], properties={"imageName": image})
+            for image in ("registry.example.test/app-a:1.0", "registry.example.test/app-b:2.0")
+        ]
+        output = ingest_document(make_log(*runs))
+        self.assertEqual(
+            sorted(resource_of(item) for item in output.observations),
+            [
+                ("image", "registry.example.test/app-a:1.0"),
+                ("image", "registry.example.test/app-b:2.0"),
+            ],
+        )
+        self.assertNotIn("results_collapsed", diagnostic_codes(output))
+        self.assertEqual(
+            only_diagnostic(output, "resource_identity_fallback").message,
+            "result has no usable location or analysis target; the scope the run names is its "
+            "resource (2 occurrences: runs[0].results[0], runs[1].results[0])",
+        )
+
+    def test_locationless_results_of_two_repositories_stay_two_observations(self) -> None:
+        runs = [
+            make_run(
+                [make_result(uri=None)],
+                versionControlProvenance=[{"repositoryUri": f"https://git.example.test/{name}"}],
+            )
+            for name in ("svc-a", "svc-b")
+        ]
+        output = ingest_document(make_log(*runs))
+        self.assertEqual(
+            sorted(item.resource.resource_id for item in output.observations),
+            ["https://git.example.test/svc-a", "https://git.example.test/svc-b"],
+        )
+        self.assertEqual({item.resource.resource_type for item in output.observations}, {"scan"})
+
+    def test_an_analysis_target_names_the_resource_before_the_scope(self) -> None:
+        artifacts = [{"location": {"uri": "bin/beta.dll"}}]
+        results = [
+            make_result(uri=None, analysisTarget={"uri": "bin/alpha.dll"}),
+            make_result(uri=None, analysisTarget={"index": 0}),
+        ]
+        output = ingest_document(make_log(make_run(results, artifacts=artifacts)))
+        self.assertEqual(
+            sorted(resource_of(item) for item in output.observations),
+            [("file", "bin/alpha.dll"), ("file", "bin/beta.dll")],
+        )
+        self.assertEqual(
+            {metadata(item)["location_uri"] for item in output.observations},
+            {"bin/alpha.dll", "bin/beta.dll"},
+        )
+        self.assertIs(
+            only_diagnostic(output, "analysis_target_resource").level, DiagnosticLevel.INFO
+        )
+        self.assertNotIn("resource_identity_fallback", diagnostic_codes(output))
+
+    def test_an_analysis_target_is_scoped_like_a_location(self) -> None:
+        run = make_run(
+            [make_result(uri=None, analysisTarget={"uri": "lib/x.so"})],
+            properties={"imageName": "registry.example.test/app:1.0"},
+        )
+        item = only_observation(ingest_document(make_log(run)))
+        self.assertEqual(
+            (item.resource.resource_type, item.resource.resource_id),
+            ("image", "registry.example.test/app:1.0/lib/x.so"),
+        )
+
+    def test_a_location_outranks_the_analysis_target(self) -> None:
+        result = make_result(uri="src/a.py", analysisTarget={"uri": "src/other.py"})
+        output = ingest_document(make_log(make_run([result])))
+        self.assertEqual(only_observation(output).resource.resource_id, "src/a.py")
+        self.assertNotIn("analysis_target_resource", diagnostic_codes(output))
+
+    def test_a_logical_location_index_resolves_against_the_run(self) -> None:
+        # SARIF 3.33.3: the indexed entry supplies the name the inline object leaves out.
+        logical = [
+            {"fullyQualifiedName": "ns::Alpha::run", "name": "run"},
+            {"fullyQualifiedName": "ns::Beta::run", "name": "run"},
+        ]
+        results = [
+            make_result(uri=None, locations=[{"logicalLocations": [{"index": position}]}])
+            for position in (0, 1)
+        ]
+        output = ingest_document(make_log(make_run(results, logicalLocations=logical)))
+        self.assertEqual(
+            sorted(resource_of(item) for item in output.observations),
+            [("logical", "ns::Alpha::run"), ("logical", "ns::Beta::run")],
+        )
+        self.assertNotIn("resource_identity_fallback", diagnostic_codes(output))
+
+    def test_an_indexed_fully_qualified_name_outranks_an_inline_short_name(self) -> None:
+        logical = [{"fullyQualifiedName": "ns::Alpha::run"}]
+        location = {"logicalLocations": [{"index": 0, "name": "run"}]}
+        run = make_run([make_result(uri=None, locations=[location])], logicalLocations=logical)
+        item = only_observation(ingest_document(make_log(run)))
+        self.assertEqual(item.resource.resource_id, "ns::Alpha::run")
+
+    def test_a_logical_index_past_the_run_names_nothing(self) -> None:
+        for logical in (None, [], ["not an object"]):
+            with self.subTest(logical=logical):
+                extra = {} if logical is None else {"logicalLocations": logical}
+                location = {"logicalLocations": [{"index": 0}]}
+                run = make_run([make_result(uri=None, locations=[location])], **extra)
+                output = ingest_document(make_log(run))
+                self.assertEqual(only_observation(output).resource.resource_id, "Synth")
+                self.assertIn("resource_identity_fallback", diagnostic_codes(output))
 
 
 class SarifFoldTests(unittest.TestCase):

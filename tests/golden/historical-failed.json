@@ -457,7 +457,7 @@
         "detectedAtSource": "artifact",
         "evaluator": null,
         "observationIds": [
-          "obs-d103230fb829a973e19c4b09c0bb304e076598a9f594adc069021836e9b5cced"
+          "obs-90f27f0613d5f7bec819e4a98a857e1ba2b6b4138079c9c5ab2efa3d44220b84"
         ],
         "rationale": null,
         "remediated": false,
@@ -574,7 +574,7 @@
         "name": "failed-invocation.sarif",
         "observationCount": 1,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9",
         "sizeBytes": 1756
       },
@@ -630,7 +630,7 @@
         "name": "failed-invocation.sarif",
         "observedAt": "2026-08-04T10:00:00Z",
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9",
         "sizeBytes": 1756,
         "trackingId": "case-f03af85468885cad"
@@ -644,7 +644,7 @@
         "name": "failed-truncated.sarif",
         "observedAt": "2026-08-21T12:00:00Z",
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8",
         "sizeBytes": 486,
         "trackingId": "case-d3bb8e4fb3b61a5f"
@@ -746,7 +746,7 @@
       "complyroll.ckl": "1",
       "complyroll.cklb": "1",
       "complyroll.detection-failures": "1",
-      "complyroll.sarif": "1",
+      "complyroll.sarif": "2",
       "complyroll.xccdf": "1"
     },
     "rulesSource": {

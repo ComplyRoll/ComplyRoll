@@ -35,8 +35,8 @@
         "detectedAtSource": "attestation",
         "evaluator": null,
         "observationIds": [
-          "obs-d45792aec4765dc6ba636cfdad05efb765b64ea6a165967597bbeec48515645b",
-          "obs-25961fc0953d10e352b0ec08de870bbee884908cd0bab7caf25dfe5d25419da5"
+          "obs-332bed1a07ff200779b02085e7293e6a5907d1ad5bdd953ffbb55cad87f38037",
+          "obs-7f44594825d875616e4d99e73ad97905324212a706139bb36d7dc2d4f768adc7"
         ],
         "rationale": null,
         "remediated": false,
@@ -54,8 +54,8 @@
           "CVE-2024-0001"
         ],
         "untimestampedObservationIds": [
-          "obs-d45792aec4765dc6ba636cfdad05efb765b64ea6a165967597bbeec48515645b",
-          "obs-25961fc0953d10e352b0ec08de870bbee884908cd0bab7caf25dfe5d25419da5"
+          "obs-332bed1a07ff200779b02085e7293e6a5907d1ad5bdd953ffbb55cad87f38037",
+          "obs-7f44594825d875616e4d99e73ad97905324212a706139bb36d7dc2d4f768adc7"
         ]
       }
     },
@@ -89,7 +89,7 @@
         "detectedAtSource": "attestation",
         "evaluator": null,
         "observationIds": [
-          "obs-5ea3291a292bb631cab60a71b119462521b8c0f7d3f3b24768d5118e80da6a26"
+          "obs-17a6f60c6eca605a8b959469b9166ce415f52bdc21de05ae25078b79d608c21a"
         ],
         "rationale": null,
         "remediated": false,
@@ -103,7 +103,7 @@
           "CVE-2024-0002"
         ],
         "untimestampedObservationIds": [
-          "obs-5ea3291a292bb631cab60a71b119462521b8c0f7d3f3b24768d5118e80da6a26"
+          "obs-17a6f60c6eca605a8b959469b9166ce415f52bdc21de05ae25078b79d608c21a"
         ]
       }
     },
@@ -137,7 +137,7 @@
         "detectedAtSource": "artifact",
         "evaluator": null,
         "observationIds": [
-          "obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e"
+          "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f"
         ],
         "rationale": null,
         "remediated": false,
@@ -181,7 +181,7 @@
         "detectedAtSource": "artifact",
         "evaluator": null,
         "observationIds": [
-          "obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b"
+          "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df"
         ],
         "rationale": null,
         "remediated": false,
@@ -228,7 +228,7 @@
         "detectedAtSource": "attestation",
         "evaluator": null,
         "observationIds": [
-          "obs-4d2cecbc01f1d26987474dcc62dfd9181ae535a3801d4497da5df0aa7b750ebf"
+          "obs-45e05f930d5f91b636e6d26625044d9b4dd104ec40db9cdb3971697ed4711a66"
         ],
         "rationale": null,
         "remediated": false,
@@ -242,7 +242,7 @@
           "CWE-95"
         ],
         "untimestampedObservationIds": [
-          "obs-4d2cecbc01f1d26987474dcc62dfd9181ae535a3801d4497da5df0aa7b750ebf"
+          "obs-45e05f930d5f91b636e6d26625044d9b4dd104ec40db9cdb3971697ed4711a66"
         ]
       }
     },
@@ -276,7 +276,7 @@
         "detectedAtSource": "attestation",
         "evaluator": null,
         "observationIds": [
-          "obs-1c709c8cf32997e15f0d08ebae8d1234f40af69b2b30fdcc139ee27093b2d4d1"
+          "obs-b6143153ace3697d49767f66473c0fa68ceab73dec61df50b03c6c3e77376dfc"
         ],
         "rationale": null,
         "remediated": false,
@@ -290,7 +290,7 @@
           "CWE-78"
         ],
         "untimestampedObservationIds": [
-          "obs-1c709c8cf32997e15f0d08ebae8d1234f40af69b2b30fdcc139ee27093b2d4d1"
+          "obs-b6143153ace3697d49767f66473c0fa68ceab73dec61df50b03c6c3e77376dfc"
         ]
       }
     }
@@ -301,7 +301,7 @@
         "name": "codeql-repo.sarif",
         "observationCount": 3,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "bf5a9a4d1bbb530ac3a7c1759cd40a77c8d8c1a1cda0ab2634b4f46deb8a5bb9",
         "sizeBytes": 9419
       },
@@ -309,7 +309,7 @@
         "name": "semgrep-code.sarif",
         "observationCount": 2,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "1a19d26f79756130d65ce7993f83cc98677249f55e15687865949bb90a95c549",
         "sizeBytes": 7311
       },
@@ -317,7 +317,7 @@
         "name": "trivy-image.sarif",
         "observationCount": 3,
         "parser": "complyroll.sarif",
-        "parserVersion": "1",
+        "parserVersion": "2",
         "sha256": "5ec28341654c3465d9e1da00330b9b1fa7a14b20cb10f4b0f2fd0da590ea3647",
         "sizeBytes": 8036
       }
@@ -386,7 +386,7 @@
       "version": "0.3.0a0"
     },
     "parserVersions": {
-      "complyroll.sarif": "1"
+      "complyroll.sarif": "2"
     },
     "rulesSource": {
       "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",

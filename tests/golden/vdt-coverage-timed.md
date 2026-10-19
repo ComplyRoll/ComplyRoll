@@ -44,7 +44,7 @@
 - **Description:** js/unused-local-variable: Unused variable, import, function or class
 - **Detection source:** CodeQL
 - **Detected at:** 2026-09-01T02:00:00.123456Z (source: artifact)
-- **Observations:** obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e
+- **Observations:** obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f
 - **Affected resources:** file https://github.com/example/webapp/src/ui/helpers.js
 - **Source identifiers:** n/a
 - **Evaluation:** not yet completed
@@ -60,7 +60,7 @@
 - **Description:** js/xss-through-dom: DOM text reinterpreted as HTML
 - **Detection source:** CodeQL
 - **Detected at:** 2026-09-01T02:00:00.123456Z (source: artifact)
-- **Observations:** obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b
+- **Observations:** obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df
 - **Affected resources:** file https://github.com/example/webapp/src/ui/render.js
 - **Source identifiers:** CWE-116, CWE-79
 - **Evaluation:** not yet completed
@@ -79,8 +79,8 @@ Every reported vulnerability carried a detection time from its source artifact. 
 
 | Artifact | SHA-256 | Parser | Observations |
 |---|---|---|---:|
-| clean-run.sarif | ee91754fbc49 | complyroll.sarif 1 | 1 |
-| codeql-repo.sarif | bf5a9a4d1bbb | complyroll.sarif 1 | 3 |
+| clean-run.sarif | ee91754fbc49 | complyroll.sarif 2 | 1 |
+| codeql-repo.sarif | bf5a9a4d1bbb | complyroll.sarif 2 | 3 |
 
 ## Coverage
 
@@ -112,26 +112,26 @@ VDR-TFR-MVX is read from detection results until Phase 3 validation runs exist. 
 
 | Resource | Rule | Force | Status | Anchor | Anchored at | Due at | Evidence | Stand-in |
 |---|---|---|---|---|---|---|---|---|
-| file:https://github.com/example/webapp/src/ui/helpers.js | VDR-TFR-MVX | MUST | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-04T02:00:00.123456Z | observation obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e (open) on file:https://github.com/example/webapp/src/ui/helpers.js at 2026-09-01T02:00:00.123456Z | n/a |
-| file:https://github.com/example/webapp/src/ui/helpers.js | VDR-TFR-PCD | SHOULD | current | verification | 2026-09-01T02:00:00.123456Z | 2026-10-01T02:00:00.123456Z | observation obs-f83132c858c2cb4e2aa6164ab5a1450d14e4591906686d08a0d7886d71d8647e (open) on file:https://github.com/example/webapp/src/ui/helpers.js at 2026-09-01T02:00:00.123456Z | n/a |
+| file:https://github.com/example/webapp/src/ui/helpers.js | VDR-TFR-MVX | MUST | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-04T02:00:00.123456Z | observation obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f (open) on file:https://github.com/example/webapp/src/ui/helpers.js at 2026-09-01T02:00:00.123456Z | n/a |
+| file:https://github.com/example/webapp/src/ui/helpers.js | VDR-TFR-PCD | SHOULD | current | verification | 2026-09-01T02:00:00.123456Z | 2026-10-01T02:00:00.123456Z | observation obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f (open) on file:https://github.com/example/webapp/src/ui/helpers.js at 2026-09-01T02:00:00.123456Z | n/a |
 | file:https://github.com/example/webapp/src/ui/index.js | VDR-TFR-MVX | MUST | missing | declared | 2026-09-01T00:00:00Z | 2026-09-04T00:00:00Z | n/a | n/a |
 | file:https://github.com/example/webapp/src/ui/index.js | VDR-TFR-PDD | SHOULD | missing | declared | 2026-09-01T00:00:00Z | 2026-09-15T00:00:00Z | n/a | n/a |
-| file:https://github.com/example/webapp/src/ui/index.js | VDR-TFR-PSD | SHOULD | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-04T02:00:00.123456Z | observation obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b (open) on file:https://github.com/example/webapp/src/ui/render.js at 2026-09-01T02:00:00.123456Z | file:src/ui/render.js |
+| file:https://github.com/example/webapp/src/ui/index.js | VDR-TFR-PSD | SHOULD | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-04T02:00:00.123456Z | observation obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df (open) on file:https://github.com/example/webapp/src/ui/render.js at 2026-09-01T02:00:00.123456Z | file:src/ui/render.js |
 | file:https://github.com/example/webapp/src/ui/legacy.js | VDR-TFR-MVX | MUST | undetermined | declared | 2026-09-01T00:00:00Z | 2026-09-04T00:00:00Z | n/a | n/a |
 | file:https://github.com/example/webapp/src/ui/legacy.js | VDR-TFR-PDD | SHOULD | undetermined | declared | 2026-09-01T00:00:00Z | 2026-09-15T00:00:00Z | n/a | n/a |
-| file:src/ui/render.js | VDR-TFR-MVX | MUST | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-04T02:00:00.123456Z | observation obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b (open) on file:https://github.com/example/webapp/src/ui/render.js at 2026-09-01T02:00:00.123456Z | n/a |
-| file:src/ui/render.js | VDR-TFR-PDD | SHOULD | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-15T02:00:00.123456Z | observation obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b (open) on file:https://github.com/example/webapp/src/ui/render.js at 2026-09-01T02:00:00.123456Z | n/a |
-| file:src/ui/render.js | VDR-TFR-PSD | SHOULD | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-04T02:00:00.123456Z | observation obs-bfb476cb4c0fc63036f9e0d60a997a1a8431e9ec89db45314e546ac48aee360b (open) on file:https://github.com/example/webapp/src/ui/render.js at 2026-09-01T02:00:00.123456Z | file:src/ui/render.js |
-| image:registry.example.test/synthetic/example-service:1.4.0 | VDR-TFR-MVX | MUST | stale | verification | 2026-08-05T10:00:00Z | 2026-08-08T10:00:00Z | observation obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2 (pass) on image:registry.example.test/synthetic/example-service:1.4.0 at 2026-08-05T10:00:00Z | n/a |
-| image:registry.example.test/synthetic/example-service:1.4.0 | VDR-TFR-PDD | SHOULD | stale | verification | 2026-08-05T10:00:00Z | 2026-08-19T10:00:00Z | observation obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2 (pass) on image:registry.example.test/synthetic/example-service:1.4.0 at 2026-08-05T10:00:00Z | n/a |
+| file:src/ui/render.js | VDR-TFR-MVX | MUST | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-04T02:00:00.123456Z | observation obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df (open) on file:https://github.com/example/webapp/src/ui/render.js at 2026-09-01T02:00:00.123456Z | n/a |
+| file:src/ui/render.js | VDR-TFR-PDD | SHOULD | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-15T02:00:00.123456Z | observation obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df (open) on file:https://github.com/example/webapp/src/ui/render.js at 2026-09-01T02:00:00.123456Z | n/a |
+| file:src/ui/render.js | VDR-TFR-PSD | SHOULD | current | verification | 2026-09-01T02:00:00.123456Z | 2026-09-04T02:00:00.123456Z | observation obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df (open) on file:https://github.com/example/webapp/src/ui/render.js at 2026-09-01T02:00:00.123456Z | file:src/ui/render.js |
+| image:registry.example.test/synthetic/example-service:1.4.0 | VDR-TFR-MVX | MUST | stale | verification | 2026-08-05T10:00:00Z | 2026-08-08T10:00:00Z | observation obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178 (pass) on image:registry.example.test/synthetic/example-service:1.4.0 at 2026-08-05T10:00:00Z | n/a |
+| image:registry.example.test/synthetic/example-service:1.4.0 | VDR-TFR-PDD | SHOULD | stale | verification | 2026-08-05T10:00:00Z | 2026-08-19T10:00:00Z | observation obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178 (pass) on image:registry.example.test/synthetic/example-service:1.4.0 at 2026-08-05T10:00:00Z | n/a |
 
 ### Windows
 
 | Rule | Context | Force | Anchor | Anchored at | Closed at | Resumed at | Evidence | Stand-in |
 |---|---|---|---|---|---|---|---|---|
 | VDR-TFR-MVX | image:registry.example.test/synthetic/example-service:1.4.0 | MUST | declared | 2026-08-01T00:00:00Z | 2026-08-04T00:00:00Z | 2026-08-05T10:00:00Z | n/a | n/a |
-| VDR-TFR-MVX | image:registry.example.test/synthetic/example-service:1.4.0 | MUST | verification | 2026-08-05T10:00:00Z | 2026-08-08T10:00:00Z | n/a | observation obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2 (pass) on image:registry.example.test/synthetic/example-service:1.4.0 at 2026-08-05T10:00:00Z | n/a |
-| VDR-TFR-PDD | image:registry.example.test/synthetic/example-service:1.4.0 | SHOULD | verification | 2026-08-05T10:00:00Z | 2026-08-19T10:00:00Z | n/a | observation obs-2a8625bcb0baf4b8d2e06265328fe7f09c8c830cb152675369d0683b290b57f2 (pass) on image:registry.example.test/synthetic/example-service:1.4.0 at 2026-08-05T10:00:00Z | n/a |
+| VDR-TFR-MVX | image:registry.example.test/synthetic/example-service:1.4.0 | MUST | verification | 2026-08-05T10:00:00Z | 2026-08-08T10:00:00Z | n/a | observation obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178 (pass) on image:registry.example.test/synthetic/example-service:1.4.0 at 2026-08-05T10:00:00Z | n/a |
+| VDR-TFR-PDD | image:registry.example.test/synthetic/example-service:1.4.0 | SHOULD | verification | 2026-08-05T10:00:00Z | 2026-08-19T10:00:00Z | n/a | observation obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178 (pass) on image:registry.example.test/synthetic/example-service:1.4.0 at 2026-08-05T10:00:00Z | n/a |
 
 ### Unregistered resources
 

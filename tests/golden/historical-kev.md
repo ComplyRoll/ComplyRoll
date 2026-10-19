@@ -53,7 +53,7 @@
 - **Description:** CVE-2099-0001: libexample-net: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-d381463fef2c952a7a7e2274a607d9f27ea6142e1f76397eb310d6ed560d2795
+- **Observations:** obs-70f5bbcefde3c0717c3c6b987d5292dda9800960b8a3717b1fc7bc26b4907fd9
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/usr/lib/libexample-net.so.4
 - **Source identifiers:** CVE-2099-0001
 - **Known exploited:** CVE-2099-0001 (added 2026-08-27, due 2026-09-10, ransomware use Known, forensic triage No); the clock follows CVE-2099-0001, due date 2026-09-10 ended 2026-09-11T00:00:00Z; past due
@@ -78,7 +78,7 @@
 - **Description:** CVE-2099-0001: libexample-net: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-dbac8172b00830769d652188353b4d62851eae1beef77781a8c5f4ef4131d05d
+- **Observations:** obs-c47a43253274987bb15af19e1b6613f7004242ac7279676fecb107e7d999db9a
 - **Affected resources:** image registry.example.test/kev/worker:2.3.1/usr/lib/libexample-net.so.4
 - **Source identifiers:** CVE-2099-0001
 - **Known exploited:** CVE-2099-0001 (added 2026-08-27, due 2026-09-10, ransomware use Known, forensic triage No); the clock follows CVE-2099-0001, due date 2026-09-10 ended 2026-09-11T00:00:00Z; past due
@@ -103,7 +103,7 @@
 - **Description:** CVE-2099-0002: example-parser: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-ee33af54dd59c492a6b6f0f1f9bb7395c76dd3ed52b6987b77bea9f4c03fb18d
+- **Observations:** obs-368234084916415d3f3ca10504c6bfa5467e6862c2441ecced6904530af38569
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/app/package-lock.json
 - **Source identifiers:** CVE-2099-0002, CVE-2099-0003
 - **Known exploited:** CVE-2099-0002 (added 2026-09-08, due 2026-09-22, ransomware use Unknown, forensic triage No), CVE-2099-0003 (added 2026-09-10, due 2026-09-24, ransomware use Unknown, forensic triage Yes); the clock follows CVE-2099-0002, due date 2026-09-22 ends 2026-09-23T00:00:00Z; open
@@ -121,7 +121,7 @@
 - **Description:** CVE-2099-0004: example-tls: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-c15514491b1444bedf9a7e1e12767e6d31c03f2e22c1671af6229d5b92bea720
+- **Observations:** obs-1f1833ac4c20387535636df8ba36be6ecf6eea80cc88ee4ebe51bd3146f45192
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/lib/apk/db/installed
 - **Source identifiers:** CVE-2099-0004
 - **Known exploited:** CVE-2099-0004 (added 2026-08-20, due 2026-09-03, ransomware use Unknown, forensic triage No); the clock follows CVE-2099-0004, due date 2026-09-03 ended 2026-09-04T00:00:00Z; past due
@@ -147,7 +147,7 @@
 - **Description:** CVE-2099-0005: example-image: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-3abb7ded51f9d8d11b04165c1c5b5b1e6968556f27b12736724444bcccb36e85
+- **Observations:** obs-2e6b882bd6827969fc74657d6af81a9784d0e64c38e7c3e142f408309bea419f
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/usr/share/example-image/VERSION
 - **Source identifiers:** CVE-2099-0005
 - **Known exploited:** CVE-2099-0005 (added 2026-08-25, due 2026-09-08, ransomware use Known, forensic triage No); the clock follows CVE-2099-0005, due date 2026-09-08 ended 2026-09-09T00:00:00Z; stopped by remediation
@@ -172,7 +172,7 @@
 - **Description:** CVE-2099-0007: example-xml: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-a5d523acf3e4626fef3983e454167d98fdcbb4436d18dd4ee0522c571a02f45a
+- **Observations:** obs-4643e554521c669726dd5e0fb71afe25240be3b49cc0a3d19f439e28850299bb
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/app/requirements.txt
 - **Source identifiers:** CVE-2099-0007
 - **Known exploited:** CVE-2099-0007 (added 2026-09-01, due 2026-09-04, ransomware use Unknown, forensic triage No); the clock follows CVE-2099-0007, due date 2026-09-04 ended 2026-09-05T00:00:00Z; stopped as a false positive
@@ -197,7 +197,7 @@
 - **Description:** CVE-2099-0008: example-auth: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-7f828b983a0eed4906b1876300403c47211a7b61496ac33c5741b4323db4bc33
+- **Observations:** obs-d6750e0bad0027389729da2ffa9f1a88884325092234439485cee32fb37328df
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/app/Gemfile.lock
 - **Source identifiers:** CVE-2099-0008
 - **Known exploited:** no entry in the supplied CISA KEV catalog dated on or before 2026-09-15
@@ -221,7 +221,7 @@
 - **Description:** CVE-2099-0009: example-zip: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-241dad5b2367d88038b33ebd5c92d7a2c869cac56960ce108bb0196e295f9741
+- **Observations:** obs-dcbf31d3115f8fb450ccad9ce4a1fee35589c930cc41afc2e812ea1b58535626
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/usr/bin/example-zip
 - **Source identifiers:** CVE-2099-0009
 - **Known exploited:** CVE-2099-0009 (added 2026-06-01, due 2026-06-15, ransomware use Unknown, forensic triage No); the clock follows CVE-2099-0009, due date 2026-06-15 ended 2026-06-16T00:00:00Z; past due
@@ -246,7 +246,7 @@
 - **Description:** CVE-2099-0011: example-http: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-3e1b5b69bf4262f5bbd4dbef6d9e3ab920b07ddd8ef7d316a04f632a94696b5f
+- **Observations:** obs-cd6cf79195e199e35c66af32a5a8c4798a596b54abbd8f463ac135e8327c0922
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/app/pom.xml
 - **Source identifiers:** CVE-2099-0011
 - **Known exploited:** CVE-2099-0011 (added 2026-08-24, due 2026-09-07, ransomware use Unknown, forensic triage No); the clock follows CVE-2099-0011, due date 2026-09-07 ended 2026-09-08T00:00:00Z; past due
@@ -264,7 +264,7 @@
 - **Description:** CVE-2099-0100: example-log: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-0df6ddaafb71230d0fe551d27ae4afb0048cb701206cc1ae5ec82c8d21c8be10
+- **Observations:** obs-ba33df3f7ef20a6811a2dea572cf6eb86d71aba285d0dad6dd12734e6455f57e
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/app/go.sum
 - **Source identifiers:** CVE-2099-0100
 - **Known exploited:** no entry in the supplied CISA KEV catalog dated on or before 2026-09-15
@@ -296,7 +296,7 @@
 - **Description:** CVE-2099-0006: example-cron: synthetic flaw for KEV tests
 - **Detection source:** Trivy
 - **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
-- **Observations:** obs-e6be6b137e1d8f189549f2d89528da85f1f58cb8d26a3f3de67515e6df2ad660
+- **Observations:** obs-236ab0190434375c821e5838513cf614bb0cbb2fa093d6a0bb7828e76f059aee
 - **Affected resources:** image registry.example.test/kev/web:2.3.1/etc/example-cron/release
 - **Source identifiers:** CVE-2099-0006
 - **Known exploited:** CVE-2099-0006 (added 2026-08-10, due 2026-08-31, ransomware use Unknown, forensic triage No); the clock follows CVE-2099-0006, due date 2026-08-31 ended 2026-09-01T00:00:00Z; accepted, past due
@@ -325,8 +325,8 @@ Every reported vulnerability carried a detection time from its source artifact. 
 
 | Artifact | SHA-256 | Parser | Observations |
 |---|---|---|---:|
-| kev-image-web.sarif | 37776a3ba338 | complyroll.sarif 1 | 10 |
-| kev-image-worker.sarif | facea1dd3b8d | complyroll.sarif 1 | 1 |
+| kev-image-web.sarif | 37776a3ba338 | complyroll.sarif 2 | 10 |
+| kev-image-worker.sarif | facea1dd3b8d | complyroll.sarif 2 | 1 |
 
 ## Diagnostics
 

@@ -186,7 +186,7 @@
 - **Description:** EXS-0001: Synthetic finding: the example service accepts TLS 1.0
 - **Detection source:** ExampleScan
 - **Detected at:** 2026-08-03T10:00:00Z (source: artifact)
-- **Observations:** obs-d103230fb829a973e19c4b09c0bb304e076598a9f594adc069021836e9b5cced
+- **Observations:** obs-90f27f0613d5f7bec819e4a98a857e1ba2b6b4138079c9c5ab2efa3d44220b84
 - **Affected resources:** file config/example-service.yaml
 - **Source identifiers:** n/a
 - **Evaluation:** not yet completed
@@ -237,7 +237,7 @@ The operator attested a detection time of 2026-08-01T00:00:00Z for 6 vulnerabili
 
 | Artifact | SHA-256 | Parser | Observations |
 |---|---|---|---:|
-| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 1 | 1 |
+| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 2 | 1 |
 | openscap-results.xml | 3f5deac4a3d9 | complyroll.xccdf 1 | 3 |
 | ubuntu-host.cklb | 97d123900424 | complyroll.cklb 1 | 6 |
 | windows-host.ckl | e5dfc628039c | complyroll.ckl 1 | 2 |
@@ -247,8 +247,8 @@ The operator attested a detection time of 2026-08-01T00:00:00Z for 6 vulnerabili
 | Artifact | SHA-256 | Parser | Class | Observed at | Clock | Tracking ID |
 |---|---|---|---|---|---|---|
 | failed-invalid-rules.cklb | f51e7b762495 | complyroll.cklb 1 | content | 2026-08-21T12:00:00Z | as-of | case-088261de64a0133c |
-| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 1 | execution | 2026-08-04T10:00:00Z | invocation | case-f03af85468885cad |
-| failed-truncated.sarif | a8aca932d8fc | complyroll.sarif 1 | parse | 2026-08-21T12:00:00Z | as-of | case-d3bb8e4fb3b61a5f |
+| failed-invocation.sarif | 59e5a0bee037 | complyroll.sarif 2 | execution | 2026-08-04T10:00:00Z | invocation | case-f03af85468885cad |
+| failed-truncated.sarif | a8aca932d8fc | complyroll.sarif 2 | parse | 2026-08-21T12:00:00Z | as-of | case-d3bb8e4fb3b61a5f |
 
 ## Diagnostics
 

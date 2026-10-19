@@ -9,14 +9,32 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import random
+import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
-from complyroll.adapters.common import MAX_IDENTITY_CHARS
+from complyroll.adapters import (
+    FailureClass,
+    IngestResult,
+    UnmintableReason,
+    classify_ingest,
+    ingest_stig_artifact,
+)
+from complyroll.adapters.base import ArtifactProvenance, ParsedDocument
+from complyroll.adapters.common import MAX_IDENTITY_CHARS, MAX_OBSERVATION_JSON_BYTES
 from complyroll.adapters.cyclonedx import (
+    CYCLONEDX_MEDIA_TYPE,
+    CYCLONEDX_METADATA_KEYS,
+    CYCLONEDX_PARSER_VERSION,
+    CYCLONEDX_SOURCE_TYPE,
     PURL_CASE_FOLDS,
     PURL_DASHED_NAME_TYPES,
+    CycloneDxAdapter,
     ascii_fold,
     digest_shaped,
     package_key,
@@ -26,6 +44,7 @@ from complyroll.adapters.cyclonedx import (
     split_package_resource_id,
     subject_lineage,
 )
+from complyroll.models import Observation
 
 # *--- Configuration ---*
 
@@ -635,3 +654,619 @@ class PackageResourceIdTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# *--- Adapter Helpers ---*
+
+FIXTURES = Path(__file__).parent / "fixtures"
+SYFT_FIXTURE = FIXTURES / "syft-image.cdx.json"
+TRIVY_FIXTURE = FIXTURES / "trivy-clean.cdx.json"
+NOW = datetime(2026, 10, 2, tzinfo=UTC)
+HEX64 = "0123456789abcdef" * 4
+HEX128 = HEX64 * 2
+INVENTORY = "CycloneDX inventory document cannot be read: "
+# A K3 shape: one component besides the subject and one vulnerability record.
+MATCHED = {
+    "components": [{"type": "library", "name": "a", "purl": "pkg:npm/a@1"}],
+    "vulnerabilities": [{"id": "CVE-2026-0001", "published": "2026-01-01T00:00:00Z"}],
+}
+
+
+def bom(**members: Any) -> dict[str, Any]:
+    """Build a CycloneDX 1.6 document with the given members."""
+    return {"bomFormat": "CycloneDX", "specVersion": "1.6", **members}
+
+
+def ingest(document: Any, name: str = "synthetic.cdx.json") -> IngestResult:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / name
+        path.write_bytes(json.dumps(document).encode("utf-8"))
+        return ingest_stig_artifact(path, ingested_at=NOW)
+
+
+def codes(result: IngestResult, level: str) -> list[str]:
+    return [item.code for item in result.diagnostics if item.level.value == level]
+
+
+def only(result: IngestResult) -> Any:
+    assert len(result.observations) == 1, result.diagnostics
+    return result.observations[0]
+
+
+def scope_of(subject: dict[str, Any], **metadata: Any) -> tuple[str, str, str]:
+    """Return the scope resource type, id and lineage a K1 document with this subject gets."""
+    result = ingest(bom(metadata={"tools": [{"name": "syft"}], "component": subject, **metadata}))
+    observation = only(result)
+    lineage = dict(observation.source_metadata)["subject_lineage"]
+    return observation.resource.resource_type, observation.resource.resource_id, lineage
+
+
+# *--- Adapter Tests ---*
+
+
+class DocumentKindTests(unittest.TestCase):
+    """K1 and K2 are each one NOT_REVIEWED scope observation, told apart by warning (A1)."""
+
+    def test_the_syft_inventory_is_not_reviewed_with_vulnerabilities_absent(self) -> None:
+        result = ingest_stig_artifact(SYFT_FIXTURE, ingested_at=NOW)
+        observation = only(result)
+        self.assertEqual(observation.disposition.value, "not_reviewed")
+        self.assertEqual(codes(result, "warning"), ["vulnerabilities_absent"])
+        self.assertEqual(observation.source_record_id, "cyclonedx.bom")
+        self.assertEqual((observation.source_type, observation.source_tool), ("cyclonedx", "syft"))
+        self.assertEqual(observation.context_key, "syft")
+        self.assertEqual(observation.source_severity.value, "unknown")
+        self.assertEqual(observation.source_identifiers, ())
+        self.assertEqual(
+            observation.title, "syft listed 6 components of image:registry.example.test/web:1.4"
+        )
+        self.assertEqual(dict(observation.source_metadata)["bom_kind"], "inventory")
+        self.assertFalse(result.withheld)
+
+    def test_the_trivy_empty_document_is_not_reviewed_with_match_unverified(self) -> None:
+        result = ingest_stig_artifact(TRIVY_FIXTURE, ingested_at=NOW)
+        observation = only(result)
+        self.assertEqual(observation.disposition.value, "not_reviewed")
+        self.assertEqual(codes(result, "warning"), ["match_unverified"])
+        self.assertEqual(dict(observation.source_metadata)["bom_kind"], "empty")
+        self.assertEqual(
+            observation.title,
+            "trivy reported no vulnerability records for image:registry.example.test/web:1.4",
+        )
+
+    def test_both_fixtures_name_one_scope(self) -> None:
+        syft = only(ingest_stig_artifact(SYFT_FIXTURE, ingested_at=NOW))
+        trivy = only(ingest_stig_artifact(TRIVY_FIXTURE, ingested_at=NOW))
+        self.assertEqual(
+            (syft.resource.resource_type, syft.resource.resource_id),
+            ("image", "registry.example.test/web:1.4"),
+        )
+        self.assertEqual(syft.resource, trivy.resource)
+
+    def test_a_named_scanner_on_an_empty_document_never_passes(self) -> None:
+        for tool in ("grype", "trivy", "alpha"):
+            for components in ([], [{"type": "library", "name": "a"}]):
+                with self.subTest(tool=tool, components=len(components)):
+                    result = ingest(
+                        bom(
+                            metadata={"tools": [{"name": tool}]},
+                            components=components,
+                            vulnerabilities=[],
+                        )
+                    )
+                    self.assertEqual(only(result).disposition.value, "not_reviewed")
+                    self.assertIn("match_unverified", codes(result, "warning"))
+
+    def test_the_clock_is_the_document_timestamp_only(self) -> None:
+        syft = only(ingest_stig_artifact(SYFT_FIXTURE, ingested_at=NOW))
+        self.assertEqual(
+            syft.observed_at, datetime(2026, 10, 1, 5, tzinfo=timezone(timedelta(hours=-7)))
+        )
+        # A vulnerability's published date is never the document clock (Decision Q).
+        result = ingest(bom(metadata={"tools": [{"name": "grype"}]}, **MATCHED))
+        scope = [item for item in result.observations if item.source_record_id == "cyclonedx.bom"]
+        self.assertEqual([item.observed_at for item in scope], [None])
+        self.assertIn("source_timestamp_missing", codes(result, "warning"))
+
+    def test_an_unparseable_timestamp_is_absent(self) -> None:
+        result = ingest(bom(metadata={"timestamp": "yesterday"}))
+        self.assertIsNone(only(result).observed_at)
+        self.assertIn("source_timestamp_invalid", codes(result, "warning"))
+
+
+class ComponentWalkTests(unittest.TestCase):
+    """Every depth is counted and indexed, the subject is left out (D1)."""
+
+    def test_the_syft_fixture_counts(self) -> None:
+        metadata = dict(only(ingest_stig_artifact(SYFT_FIXTURE, ingested_at=NOW)).source_metadata)
+        lines = sorted(
+            {
+                "pkg:apk/alpine/musl?arch=x86_64\t1.2.5-r0",
+                "pkg:apk/alpine/busybox?arch=x86_64\t1.36.1-r29",
+                "component:file//%2Flib%2Fapk%2Fdb%2Finstalled\t",
+                "pkg:npm/left-pad\t1.3.0",
+                "pkg:npm/inner\t2.0.0",
+            }
+        )
+        digest = hashlib.sha256("".join(f"{line}\n" for line in lines).encode()).hexdigest()
+        self.assertEqual(metadata["component_count"], "6")
+        self.assertEqual(metadata["package_count"], "5")
+        self.assertEqual(metadata["weak_identity_count"], "1")
+        self.assertEqual(metadata["vulnerability_count"], "0")
+        self.assertEqual(metadata["component_set_sha256"], digest)
+
+    def test_the_component_set_digest_ignores_order_serial_and_subject(self) -> None:
+        components = [
+            {"type": "library", "name": "a", "version": "1", "purl": "pkg:npm/a@1"},
+            {"type": "library", "name": "b", "version": "2", "purl": "pkg:npm/b@2"},
+        ]
+        first = bom(serialNumber="urn:uuid:1", components=components)
+        second = bom(
+            serialNumber="urn:uuid:2",
+            metadata={"component": {"type": "application", "name": "x", "purl": "pkg:npm/x@9"}},
+            components=list(reversed(components)),
+        )
+        digests = [
+            dict(only(ingest(document)).source_metadata)["component_set_sha256"]
+            for document in (first, second)
+        ]
+        self.assertEqual(digests[0], digests[1])
+
+
+class SpecVersionTests(unittest.TestCase):
+    def test_each_supported_version_is_read(self) -> None:
+        for version in ("1.4", "1.5", "1.6", "1.7"):
+            with self.subTest(version=version):
+                self.assertTrue(ingest(bom(specVersion=version)).successful)
+
+    def test_an_unsupported_version_is_refused_quoted_sanitized_and_cut(self) -> None:
+        cases = {
+            "1.3": "'1.3'",
+            "1.6\x07": "'1.6\\x07'",
+        }
+        for value, rendered in cases.items():
+            with self.subTest(value=value):
+                result = ingest(bom(specVersion=value))
+                self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+                self.assertEqual(
+                    result.errors[0].message,
+                    f"CycloneDX specVersion {rendered} is not supported; this build reads 1.4 "
+                    "to 1.7",
+                )
+                self.assertTrue(result.format_rejected)
+        long = ingest(bom(specVersion="9" * 600)).errors[0].message
+        quoted_part = long.removeprefix("CycloneDX specVersion ").split(" is not supported")[0]
+        self.assertEqual(len(quoted_part), 512)
+        self.assertNotIn("\x07", ingest(bom(specVersion="\x07")).errors[0].message)
+        self.assertTrue(ingest(bom(specVersion=1.6)).format_rejected)
+
+
+class MalformedInventoryTests(unittest.TestCase):
+    """A K1 or K2 document with a structural error is a format refusal, never mintable (A12)."""
+
+    SHAPES = (
+        ({"metadata": "x"}, "metadata is not an object"),
+        ({"components": {}}, "components is not an array"),
+        ({"components": [{"type": "library"}]}, "a component name is missing or not a string"),
+        (
+            {"components": [{"name": "a", "hashes": [1]}]},
+            "a component hash is not an object",
+        ),
+    )
+
+    def assert_rejected(self, result: IngestResult, message: str) -> None:
+        self.assertEqual([item.code for item in result.errors], ["artifact_parse_failed"])
+        self.assertEqual(result.errors[0].message, message)
+        classification = classify_ingest(result)
+        assert classification is not None
+        self.assertIs(classification.reason, UnmintableReason.FORMAT_REJECTED)
+
+    def test_each_shape_is_refused_with_and_without_an_empty_vulnerabilities(self) -> None:
+        for members, check in self.SHAPES:
+            for extra in ({}, {"vulnerabilities": []}):
+                with self.subTest(check=check, k2=bool(extra)):
+                    self.assert_rejected(ingest(bom(**members, **extra)), INVENTORY + check)
+
+    def test_a_non_list_vulnerabilities_is_refused(self) -> None:
+        for value in (None, {}, "none"):
+            with self.subTest(value=value):
+                self.assert_rejected(
+                    ingest(bom(vulnerabilities=value)), "CycloneDX vulnerabilities is not an array"
+                )
+
+
+class StructuralErrorTests(unittest.TestCase):
+    """On a K3 document a structural error is CONTENT ERROR invalid_bom (A10)."""
+
+    def test_each_shape_is_invalid_bom_with_no_observation(self) -> None:
+        shapes = {
+            "string tool item": {"tools": ["trivy"]},
+            "non-list tools.components": {"tools": {"components": {}}},
+            "numeric tool name": {"tools": [{"name": 7}]},
+            "list subject": {"tools": [{"name": "grype"}], "component": []},
+        }
+        for label, metadata in shapes.items():
+            with self.subTest(shape=label):
+                result = ingest(bom(metadata=metadata, **MATCHED))
+                self.assertEqual(result.observations, ())
+                self.assertEqual([item.code for item in result.errors], ["invalid_bom"])
+                classification = classify_ingest(result)
+                assert classification is not None
+                self.assertIs(classification.failure_class, FailureClass.CONTENT)
+                self.assertFalse(result.withheld)
+
+    def test_a_tool_less_matched_document_is_invalid_bom(self) -> None:
+        result = ingest(bom(**MATCHED))
+        self.assertEqual(result.observations, ())
+        self.assertEqual([item.code for item in result.errors], ["invalid_bom"])
+        self.assertIn("no tool named", result.errors[0].message)
+        self.assertNotIn("tool_identity_fallback", codes(result, "warning"))
+
+    def test_a_bad_nested_component_is_invalid_component(self) -> None:
+        components = [{"type": "library", "name": "a", "components": [{"type": "library"}]}]
+        result = ingest(
+            bom(
+                metadata={"tools": [{"name": "grype"}]},
+                components=components,
+                **{"vulnerabilities": MATCHED["vulnerabilities"]},
+            )
+        )
+        self.assertEqual([item.code for item in result.errors], ["invalid_component"])
+        self.assertIn("components[0].components[0].name", result.errors[0].message)
+
+
+class ToolTests(unittest.TestCase):
+    def tool_of(self, tools: Any) -> tuple[str, list[str]]:
+        result = ingest(bom(metadata={"tools": tools}))
+        return only(result).source_tool, codes(result, "warning")
+
+    def test_the_join_is_injective(self) -> None:
+        self.assertEqual(self.tool_of([{"name": "beta"}, {"name": "alpha"}])[0], "alpha+beta")
+        self.assertEqual(self.tool_of([{"name": "alpha+beta"}])[0], "alpha%2Bbeta")
+        self.assertEqual(self.tool_of([{"name": "a%2Bb"}])[0], "a%252Bb")
+
+    def test_several_tools_warn_and_duplicates_collapse(self) -> None:
+        tool, warnings = self.tool_of([{"name": "b"}, {"name": "a"}, {"name": "a"}])
+        self.assertEqual(tool, "a+b")
+        self.assertIn("tool_identity_ambiguous", warnings)
+        self.assertNotIn("tool_identity_ambiguous", self.tool_of([{"name": "a"}] * 2)[1])
+
+    def test_only_application_tools_are_candidates_when_any_is_named(self) -> None:
+        tools = {
+            "components": [
+                {"type": "library", "name": "cyclonedx-python-lib"},
+                {"type": "application", "name": "cyclonedx-py"},
+            ],
+            "services": [{"name": "svc"}],
+        }
+        self.assertEqual(self.tool_of(tools)[0], "cyclonedx-py")
+        self.assertEqual(self.tool_of({"services": [{"name": "svc"}]})[0], "svc")
+
+    def test_no_tool_on_an_inventory_is_the_fallback(self) -> None:
+        for tools in ([], {}, [{"version": "1"}], [{"name": "  "}]):
+            with self.subTest(tools=tools):
+                tool, warnings = self.tool_of(tools)
+                self.assertEqual(tool, "cyclonedx")
+                self.assertIn("tool_identity_fallback", warnings)
+
+    def test_an_over_long_tool_is_identity_input_invalid(self) -> None:
+        result = ingest(bom(metadata={"tools": [{"name": "t" * 513}]}))
+        self.assertEqual([item.code for item in result.errors], ["identity_input_invalid"])
+
+    def test_tool_metadata_has_one_schema(self) -> None:
+        trivy = dict(only(ingest_stig_artifact(TRIVY_FIXTURE, ingested_at=NOW)).source_metadata)
+        self.assertEqual(
+            json.loads(json.loads(trivy["tools"])[0]),
+            {
+                "name": "trivy",
+                "version": "0.58.0",
+                "group": "aquasecurity",
+                "vendor": "Aqua Security Software Ltd.",
+            },
+        )
+        tools = {"components": [{"type": "application", "name": "syft", "author": "anchore"}]}
+        result = dict(only(ingest(bom(metadata={"tools": tools}))).source_metadata)
+        self.assertEqual(
+            json.loads(json.loads(result["tools"])[0]), {"name": "syft", "author": "anchore"}
+        )
+        legacy = dict(only(ingest_stig_artifact(SYFT_FIXTURE, ingested_at=NOW)).source_metadata)
+        self.assertEqual(
+            json.loads(json.loads(legacy["tools"])[0]),
+            {"name": "syft", "vendor": "anchore", "version": "1.18.1"},
+        )
+
+
+class ScopeIdTests(unittest.TestCase):
+    """The scope resource of section 6: A4, S2, S4 and Y1."""
+
+    def test_group_and_name_are_encoded_before_the_join(self) -> None:
+        self.assertEqual(
+            scope_of({"type": "application", "group": "org", "name": "app"})[:2],
+            ("scan", "org/app"),
+        )
+        self.assertEqual(
+            scope_of({"type": "application", "name": "org/app"})[:2], ("scan", "org%2Fapp")
+        )
+        self.assertEqual(scope_of({"type": "library", "name": "a%b"})[:2], ("scan", "a%25b"))
+
+    def test_a_container_group_goes_to_metadata_only(self) -> None:
+        result = ingest(
+            bom(metadata={"component": {"type": "container", "group": "g", "name": "web"}})
+        )
+        observation = only(result)
+        self.assertEqual(observation.resource.resource_id, "web")
+        self.assertEqual(dict(observation.source_metadata)["subject_group"], "g")
+
+    def test_an_over_long_composed_id_is_identity_input_invalid(self) -> None:
+        subject = {"type": "container", "name": "w" * 500, "version": "v" * 20}
+        result = ingest(bom(metadata={"component": subject}))
+        self.assertEqual(result.observations, ())
+        self.assertEqual([item.code for item in result.errors], ["identity_input_invalid"])
+
+    def test_an_oci_purl_makes_an_image_whatever_the_type(self) -> None:
+        oci = {"type": "application", "name": "org/app", "purl": "pkg:oci/app@sha256%3A" + HEX64}
+        plain = {"type": "application", "group": "org", "name": "app"}
+        self.assertEqual(scope_of(oci)[:2], ("image", "org/app"))
+        self.assertEqual(scope_of(plain)[:2], ("scan", "org/app"))
+
+    def test_the_lineage_comes_from_the_name(self) -> None:
+        self.assertEqual(
+            scope_of({"type": "container", "name": "web", "version": "1.4:x"}),
+            ("image", "web:1.4:x", "web"),
+        )
+
+    def test_rule_1_a_tagged_or_digested_name_is_used_alone(self) -> None:
+        for name in ("registry.example.test/web:1.4", f"registry.example.test/web@sha256:{HEX64}"):
+            with self.subTest(name=name):
+                result = ingest(
+                    bom(
+                        metadata={
+                            "component": {"type": "container", "name": name, "version": "1.4"}
+                        }
+                    )
+                )
+                observation = only(result)
+                self.assertEqual(observation.resource.resource_id, name)
+                self.assertEqual(dict(observation.source_metadata)["subject_version"], "1.4")
+
+    def test_rule_2_the_version_is_joined_as_a_tag(self) -> None:
+        for name, expected in (
+            ("registry.example.test/web", "registry.example.test/web:1.4"),
+            ("registry.example.test:5000/web", "registry.example.test:5000/web:1.4"),
+        ):
+            with self.subTest(name=name):
+                subject = {"type": "container", "name": name, "version": "1.4"}
+                self.assertEqual(scope_of(subject)[1], expected)
+
+    def test_rule_3_a_digest_version_is_joined_with_at(self) -> None:
+        for digest in (f"sha256:{HEX64}", f"sha512:{HEX128}"):
+            with self.subTest(digest=digest[:6]):
+                subject = {"type": "container", "name": "user-input", "version": digest}
+                self.assertEqual(scope_of(subject)[1:], (f"user-input@{digest}", "user-input"))
+
+    def test_rule_4_no_usable_version_is_the_name_alone(self) -> None:
+        for version in (None, "", "  ", 4):
+            with self.subTest(version=version):
+                subject: dict[str, Any] = {"type": "container", "name": "web"}
+                if version is not None:
+                    subject["version"] = version
+                self.assertEqual(scope_of(subject)[1], "web")
+
+    def test_a_version_slash_or_percent_is_encoded(self) -> None:
+        subject = {"type": "container", "name": "web", "version": "a/b%c"}
+        self.assertEqual(scope_of(subject)[1], "web:a%2Fb%25c")
+
+    def test_grype_and_trivy_shapes_merge(self) -> None:
+        pairs = (
+            (
+                {"name": "registry.example.test/web", "version": "1.4"},
+                {"name": "registry.example.test/web:1.4"},
+                "registry.example.test/web:1.4",
+                "registry.example.test/web",
+            ),
+            (
+                {"name": "registry.example.test/team/web", "version": "1.4"},
+                {"name": "registry.example.test/team/web:1.4"},
+                "registry.example.test/team/web:1.4",
+                "registry.example.test/team/web",
+            ),
+            (
+                {"name": "registry.example.test/team/web", "version": f"sha256:{HEX64}"},
+                {"name": f"registry.example.test/team/web@sha256:{HEX64}"},
+                f"registry.example.test/team/web@sha256:{HEX64}",
+                "registry.example.test/team/web",
+            ),
+        )
+        for grype, trivy, expected, lineage in pairs:
+            with self.subTest(expected=expected):
+                first = scope_of({"type": "container", **grype})
+                second = scope_of({"type": "container", **trivy})
+                self.assertEqual(first, ("image", expected, lineage))
+                self.assertEqual(second, first)
+                key = purl_key("pkg:apk/alpine/musl@1.2.5-r0")
+                assert key is not None
+                self.assertEqual(
+                    package_resource_id(first[0], first[2], key),
+                    package_resource_id(second[0], second[2], key),
+                )
+
+    def test_no_usable_subject_is_the_tool_fallback(self) -> None:
+        for metadata in ({}, {"component": {"type": "container", "name": " "}}):
+            with self.subTest(metadata=metadata):
+                result = ingest(bom(metadata={"tools": [{"name": "syft"}], **metadata}))
+                self.assertEqual(
+                    (only(result).resource.resource_type, only(result).resource.resource_id),
+                    ("scan", "syft"),
+                )
+                self.assertIn("subject_identity_fallback", codes(result, "warning"))
+
+
+# *--- Fixture Invariants ---*
+
+CYCLONEDX_ATTRIBUTION = ("complyroll.cyclonedx", CYCLONEDX_PARSER_VERSION, CYCLONEDX_MEDIA_TYPE)
+# The observation ids each step 2 fixture yields, in output order (R1 5.3).
+FIXTURE_IDS = {
+    "syft-image.cdx.json": (
+        "obs-cbbda5309765ec026db399858b2279a830ea4890336651360d2882a02b2afcdf",
+    ),
+    "trivy-clean.cdx.json": (
+        "obs-1b9c4765ce29ba0e290a73498d80d22aff2748e120f0127cc80d456e65525f1e",
+    ),
+}
+
+
+class CycloneDxFixtureInvariantTests(unittest.TestCase):
+    """Properties every CycloneDX fixture holds regardless of its producer (R1 5.3)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.results = {
+            name: ingest_stig_artifact(FIXTURES / name, ingested_at=NOW) for name in FIXTURE_IDS
+        }
+
+    def test_every_fixture_is_attributed_to_the_cyclonedx_adapter(self) -> None:
+        for name, result in self.results.items():
+            with self.subTest(fixture=name):
+                artifact = result.artifact
+                assert artifact is not None
+                self.assertEqual(
+                    (artifact.parser_name, artifact.parser_version, artifact.media_type),
+                    CYCLONEDX_ATTRIBUTION,
+                )
+                self.assertTrue(result.successful)
+                self.assertEqual(result.errors, ())
+
+    def test_every_fixture_yields_its_pinned_observation_ids_in_order(self) -> None:
+        for name, expected in FIXTURE_IDS.items():
+            with self.subTest(fixture=name):
+                observed = tuple(item.observation_id for item in self.results[name].observations)
+                self.assertEqual(observed, expected)
+
+    def test_no_fixture_produces_a_duplicate_observation_identity(self) -> None:
+        for name, result in self.results.items():
+            with self.subTest(fixture=name):
+                self.assertNotIn(
+                    "duplicate_observation_identity", [item.code for item in result.diagnostics]
+                )
+                ids = [item.observation_id for item in result.observations]
+                self.assertEqual(len(ids), len(set(ids)))
+
+    def test_every_observation_id_is_derived_from_its_fingerprint(self) -> None:
+        for name, result in self.results.items():
+            for observation in result.observations:
+                with self.subTest(fixture=name, observation=observation.observation_id):
+                    self.assertEqual(observation.observation_id, observation.derived_observation_id)
+                    self.assertEqual(observation.source_type, CYCLONEDX_SOURCE_TYPE)
+                    self.assertEqual(observation.parser_name, "complyroll.cyclonedx")
+                    self.assertEqual(observation.parser_version, CYCLONEDX_PARSER_VERSION)
+
+    def test_every_metadata_key_belongs_to_the_fixed_vocabulary(self) -> None:
+        for name, result in self.results.items():
+            for observation in result.observations:
+                with self.subTest(fixture=name, observation=observation.observation_id):
+                    keys = [key for key, _value in observation.source_metadata]
+                    self.assertEqual(keys, sorted(keys))
+                    self.assertTrue(
+                        set(keys) <= CYCLONEDX_METADATA_KEYS, set(keys) - CYCLONEDX_METADATA_KEYS
+                    )
+
+    def test_every_observation_round_trips_through_canonical_json_under_the_cap(self) -> None:
+        for name, result in self.results.items():
+            for observation in result.observations:
+                with self.subTest(fixture=name, observation=observation.observation_id):
+                    encoded = observation.to_canonical_json()
+                    self.assertLessEqual(len(encoded.encode("utf-8")), MAX_OBSERVATION_JSON_BYTES)
+                    self.assertEqual(
+                        Observation.from_canonical_dict(json.loads(encoded)), observation
+                    )
+
+    def test_every_diagnostic_is_located_at_the_artifact_name(self) -> None:
+        for name, result in self.results.items():
+            for diagnostic in result.diagnostics:
+                with self.subTest(fixture=name, code=diagnostic.code):
+                    self.assertEqual(diagnostic.location, name)
+
+
+# *--- Determinism ---*
+
+
+def permutation_document(
+    components: list[dict[str, Any]], tools: Any, nested_under: int | None
+) -> dict[str, Any]:
+    """Build an inventory, optionally moving the last component under the one at an index."""
+    items = [dict(item) for item in components]
+    if nested_under is not None:
+        moved = items.pop()
+        items[nested_under]["components"] = [moved]
+    subject = {"type": "container", "name": "registry.example.test/web", "version": "1.4"}
+    return bom(
+        metadata={"timestamp": "2026-10-01T12:00:00Z", "tools": tools, "component": subject},
+        components=items,
+    )
+
+
+class PermutationTests(unittest.TestCase):
+    """Component order, nesting, tool order and qualifier order never change output (sec. 20)."""
+
+    COMPONENTS = (
+        {"type": "library", "name": "musl", "version": "1", "purl": "pkg:apk/alpine/musl@1"},
+        {"type": "library", "name": "a", "version": "2", "purl": "pkg:npm/a@2"},
+        {"type": "file", "name": "/etc/os-release"},
+        {"type": "library", "name": "a", "version": "2", "purl": "pkg:npm/a@2"},
+        {"type": "library", "name": "z", "version": "3", "purl": "pkg:npm/z@3"},
+    )
+    LEGACY_TOOLS = ({"name": "beta", "version": "2"}, {"vendor": "v", "name": "alpha"})
+    OBJECT_TOOLS = (
+        {"type": "application", "name": "beta", "version": "2"},
+        {"type": "application", "name": "alpha", "author": "a"},
+        {"type": "library", "name": "lib"},
+    )
+
+    # One artifact for every arrangement: its digest is fixed, so only the parse can differ.
+    ARTIFACT = ArtifactProvenance.from_bytes(
+        path=Path("synthetic.cdx.json"),
+        content=b"{}",
+        media_type=CYCLONEDX_MEDIA_TYPE,
+        parser_name="complyroll.cyclonedx",
+        parser_version=CYCLONEDX_PARSER_VERSION,
+        ingested_at=NOW,
+    )
+
+    def canonical(self, document: dict[str, Any]) -> tuple[str, list[str]]:
+        output = CycloneDxAdapter().parse(
+            ParsedDocument("json", document), self.ARTIFACT, ingested_at=NOW
+        )
+        self.assertEqual(len(output.observations), 1, output.diagnostics)
+        return (
+            output.observations[0].to_canonical_json(),
+            [item.code for item in output.diagnostics],
+        )
+
+    def assert_order_free(self, tools_of: Any, tool_items: tuple[dict[str, Any], ...]) -> None:
+        base = list(self.COMPONENTS)
+        expected = self.canonical(permutation_document(base, tools_of(list(tool_items)), None))
+        chooser = random.Random(20)
+        for trial in range(12):
+            components = chooser.sample(base, len(base))
+            tools = chooser.sample(list(tool_items), len(tool_items))
+            nested = chooser.choice([None, 0, 1])
+            with self.subTest(trial=trial):
+                document = permutation_document(components, tools_of(tools), nested)
+                self.assertEqual(self.canonical(document), expected)
+
+    def test_legacy_tool_documents_are_order_free(self) -> None:
+        self.assert_order_free(lambda tools: tools, self.LEGACY_TOOLS)
+
+    def test_object_tool_documents_are_order_free(self) -> None:
+        self.assert_order_free(
+            lambda tools: {"components": tools, "services": [{"name": "svc"}]}, self.OBJECT_TOOLS
+        )
+
+    def test_qualifier_order_does_not_change_the_scope_observation(self) -> None:
+        first = {"type": "library", "name": "m", "purl": "pkg:apk/alpine/m@1?arch=x86_64&os=a"}
+        second = {**first, "purl": "pkg:apk/alpine/m@1?os=a&arch=x86_64"}
+        tools = [{"name": "syft"}]
+        self.assertEqual(
+            self.canonical(permutation_document([first], tools, None)),
+            self.canonical(permutation_document([second], tools, None)),
+        )

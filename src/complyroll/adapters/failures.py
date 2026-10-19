@@ -68,6 +68,8 @@ CONTENT_CODES = frozenset(
         "invalid_control",
         "no_observations",
         "clean_run_unverified",
+        "invalid_bom",
+        "invalid_component",
     }
 )
 CLASS_CODES = PARSE_CODES | CONTENT_CODES

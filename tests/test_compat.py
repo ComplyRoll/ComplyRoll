@@ -104,6 +104,21 @@ class StigrollCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(stdout, f"{expected}\n")
 
+    def test_a_cyclonedx_bom_is_skipped_with_a_warning(self) -> None:
+        # A bare bom.json reaches the CycloneDX adapter by the sniff, where it used to be told
+        # it has no 'stigs' key (ADR 0016).
+        for name in ("syft-image.cdx.json", "bom.json"):
+            with self.subTest(name=name):
+                result, stdout, stderr = self.run_cli([str(FIXTURES / name)])
+                self.assertEqual(result, 1)
+                self.assertEqual(stdout, "")
+                self.assertEqual(
+                    stderr,
+                    f"warning: {name} is a CycloneDX BOM; stigroll rolls up STIG checklists "
+                    "only, skipping\n"
+                    "error: no findings parsed from any input\n",
+                )
+
     def test_a_lone_hdf_document_yields_no_findings_and_exit_code_one(self) -> None:
         for name in ("saf-trivy-image.hdf.json", "inspec-overlay.json"):
             with self.subTest(name=name):

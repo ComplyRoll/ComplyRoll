@@ -6365,7 +6365,8 @@ class HelpTextTests(unittest.TestCase):
                 self.assertIn("ARF", text)
                 self.assertIn("SARIF", text)
                 self.assertIn("HDF", text)
-                self.assertIn("CKLB, CKL, XCCDF, ARF, SARIF, or HDF file", text)
+                self.assertIn("CycloneDX", text)
+                self.assertIn("CKLB, CKL, XCCDF, ARF, SARIF, HDF, or CycloneDX file", text)
 
     def test_the_report_listing_names_every_command_with_its_rule(self) -> None:
         text = unwrapped_help_text(["report"])

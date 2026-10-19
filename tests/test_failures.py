@@ -13,6 +13,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,7 @@ from complyroll.adapters import (
     DEFAULT_LIMITS,
     DETECTION_FAILURE_SOURCE_TYPE,
     FAILURE_DIAGNOSTIC_CAP,
+    CycloneDxAdapter,
     FailureClass,
     FailureClassification,
     IngestLimits,
@@ -127,7 +129,7 @@ PROHIBITED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 PASS_THROUGH_LEVELS = frozenset({("common.py", "emit"), ("failures.py", "failure_diagnostics")})
 
 # The source types every shipped adapter mints today; the walk may find more, never fewer.
-SHIPPED_SOURCE_TYPES = frozenset({"cklb", "ckl", "xccdf", "hdf", "sarif"})
+SHIPPED_SOURCE_TYPES = frozenset({"cklb", "ckl", "xccdf", "hdf", "sarif", "cyclonedx"})
 
 # *--- Helpers ---*
 
@@ -505,6 +507,46 @@ class ParseErrorCase(NamedTuple):
     content: bytes = b""
 
 
+CDX_INVENTORY = "CycloneDX inventory document cannot be read: "
+# The members of an object-form metadata.tools, each checked to be an array (section 4.1).
+TOOL_CONTAINERS = ("components", "services")
+CDX_MALFORMED_INVENTORIES: tuple[tuple[dict[str, Any], str], ...] = (
+    ({"metadata": "x"}, "metadata is not an object"),
+    ({"metadata": {"tools": "trivy"}}, "metadata.tools is neither an array nor an object"),
+    ({"metadata": {"tools": {"components": {}}}}, "metadata.tools.components is not an array"),
+    ({"metadata": {"tools": {"services": "x"}}}, "metadata.tools.services is not an array"),
+    ({"metadata": {"tools": ["trivy"]}}, "a tool is not an object"),
+    ({"metadata": {"tools": [{"name": 7}]}}, "a tool name is not a string"),
+    ({"metadata": {"component": []}}, "metadata.component is not an object"),
+    (
+        {"metadata": {"component": {"type": "container"}}},
+        "a component name is missing or not a string",
+    ),
+    ({"components": {}}, "components is not an array"),
+    ({"components": ["x"]}, "a component is not an object"),
+    ({"components": [{"type": "library"}]}, "a component name is missing or not a string"),
+    ({"components": [{"name": "a", "type": 1}]}, "a component type is not a string"),
+    ({"components": [{"name": "a", "hashes": {}}]}, "a component hashes member is not an array"),
+    ({"components": [{"name": "a", "hashes": ["x"]}]}, "a component hash is not an object"),
+    (
+        {"components": [{"name": "a", "components": {}}]},
+        "a component components member is not an array",
+    ),
+)
+
+
+def _cdx_case(message: str, **members: Any) -> ParseErrorCase:
+    """Build a CycloneDX 1.6 refusal case reachable under a .cdx.json name."""
+    document = {"bomFormat": "CycloneDX", "specVersion": "1.6", **members}
+    return ParseErrorCase(
+        CycloneDxAdapter,
+        ParsedDocument("json", document),
+        message,
+        "synthetic.cdx.json",
+        json.dumps(document).encode("utf-8"),
+    )
+
+
 PARSE_ERROR_CASES = (
     ParseErrorCase(
         CklbAdapter,
@@ -606,6 +648,43 @@ PARSE_ERROR_CASES = (
         "SARIF runs must be an array",
         "synthetic.sarif",
         b'{"version": "2.1.0", "runs": {}}',
+    ),
+    ParseErrorCase(
+        CycloneDxAdapter,
+        ParsedDocument("json", []),
+        "CycloneDX root must be a JSON object",
+        "synthetic.cdx.json",
+        b"[]",
+    ),
+    ParseErrorCase(
+        CycloneDxAdapter,
+        ParsedDocument("json", {"stigs": []}),
+        "CycloneDX document carries a 'stigs' member; a STIG Viewer checklist is read under its "
+        "own name",
+        "synthetic.cdx.json",
+        b'{"stigs": []}',
+    ),
+    ParseErrorCase(
+        CycloneDxAdapter,
+        ParsedDocument("json", {}),
+        "JSON has no 'bomFormat' of 'CycloneDX'",
+        "synthetic.cdx.json",
+        b"{}",
+    ),
+    _cdx_case(
+        "CycloneDX specVersion '1.3' is not supported; this build reads 1.4 to 1.7",
+        specVersion="1.3",
+    ),
+    *(
+        _cdx_case("CycloneDX vulnerabilities is not an array", vulnerabilities=value)
+        for value in (None, {}, "none")
+    ),
+    # Every structural check of a document with no vulnerability record, once as K1 and once
+    # as K2 (A12).
+    *(
+        _cdx_case(CDX_INVENTORY + check, **members, **extra)
+        for members, check in CDX_MALFORMED_INVENTORIES
+        for extra in ({}, {"vulnerabilities": []})
     ),
 )
 
@@ -1077,6 +1156,23 @@ class DispatcherClassificationTests(unittest.TestCase):
             FailureClassification(None, UnmintableReason.PARTIAL_READING, ("invalid_control",)),
         )
 
+    def test_a_tool_less_matched_bom_is_the_content_class(self) -> None:
+        # A vulnerability statement without a producer is not a detection (Decision I), and
+        # the scope candidate is outside the folds, so nothing is withheld (A13).
+        result = ingest_json(
+            "synthetic.cdx.json",
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "components": [{"type": "library", "name": "a"}],
+                "vulnerabilities": [{"id": "CVE-2026-0001"}],
+            },
+        )
+        self.assertFalse(result.withheld)
+        self.assertEqual(
+            self.classify(result), FailureClassification(CONTENT, None, ("invalid_bom",))
+        )
+
     def test_a_reading_with_nothing_to_withhold_is_not_withheld(self) -> None:
         unusable = hdf_document()
         unusable["profiles"][0]["controls"] = [7]
@@ -1239,6 +1335,72 @@ class StructuredFieldTests(unittest.TestCase):
                     self.fail("no AdapterParseError was raised")
         self.assertEqual(raised, parse_error_sites())
 
+    # The two CycloneDX helpers are one raise site each, so the site gate above cannot see a
+    # dropped check; this one counts the checks themselves, once as K1 and once as K2 (A12).
+    def test_every_cyclonedx_inventory_check_is_a_case_as_k1_and_k2(self) -> None:
+        tree = ast.parse((ADAPTERS / "cyclonedx.py").read_text(encoding="utf-8"))
+        texts: set[str] = set()
+        patterns: set[str] = set()
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"_bom_error", "_component_error"}
+            ):
+                continue
+            check = node.args[0]
+            if isinstance(check, ast.Constant) and isinstance(check.value, str):
+                texts.add(check.value)
+            else:
+                assert isinstance(check, ast.JoinedStr)
+                patterns.add(
+                    "".join(
+                        re.escape(part.value) if isinstance(part, ast.Constant) else "[a-z.]+"
+                        for part in check.values
+                    )
+                )
+        cases: dict[str, set[str]] = {"K1": set(), "K2": set()}
+        for case in PARSE_ERROR_CASES:
+            value = case.document.value
+            if case.adapter is not CycloneDxAdapter or not case.message.startswith(CDX_INVENTORY):
+                continue
+            kind = "K2" if isinstance(value, dict) and "vulnerabilities" in value else "K1"
+            cases[kind].add(case.message.removeprefix(CDX_INVENTORY))
+        self.assertEqual(cases["K1"], cases["K2"])
+        expanded: set[str] = set()
+        for pattern in patterns:
+            with self.subTest(pattern=pattern):
+                matched = {text for text in cases["K1"] - texts if re.fullmatch(pattern, text)}
+                # The f-string is the tool container check, met once per container member.
+                self.assertEqual(
+                    matched,
+                    {f"metadata.tools.{member} is not an array" for member in TOOL_CONTAINERS},
+                )
+                expanded |= matched
+        self.assertEqual(cases["K1"], texts | expanded)
+
+    # One check text is met on two roads into the walk, so the text gate cannot see either
+    # road dropped: the subject and the component list are each a case (D1).
+    def test_the_subject_and_the_component_list_each_reach_the_walk_as_a_case(self) -> None:
+        roads: set[tuple[str, bool]] = set()
+        for case in PARSE_ERROR_CASES:
+            value = case.document.value
+            if case.message != CDX_INVENTORY + "a component name is missing or not a string":
+                continue
+            road = "subject" if "component" in value.get("metadata", {}) else "components"
+            roads.add((road, "vulnerabilities" in value))
+        self.assertEqual(
+            roads, {(road, k2) for road in ("subject", "components") for k2 in (False, True)}
+        )
+
+    def test_every_non_list_vulnerabilities_shape_is_a_case(self) -> None:
+        shapes = {
+            type(case.document.value["vulnerabilities"]).__name__
+            for case in PARSE_ERROR_CASES
+            if case.message == "CycloneDX vulnerabilities is not an array"
+        }
+        self.assertEqual(shapes, {"NoneType", "dict", "str"})
+
     def test_each_reachable_parse_error_is_a_format_rejection(self) -> None:
         for case in PARSE_ERROR_CASES:
             if case.file_name is None:
@@ -1271,6 +1433,7 @@ class StructuredFieldTests(unittest.TestCase):
             (XccdfAdapter, "synthetic.xml", b"<Benchmark/>"),
             (SarifAdapter, "synthetic.sarif", b"{}"),
             (HdfAdapter, "synthetic.hdf.json", b"{}"),
+            (CycloneDxAdapter, "synthetic.cdx.json", b"{}"),
         )
         raised: tuple[tuple[Exception, bool], ...] = (
             (AdapterParseError("synthetic refusal"), True),

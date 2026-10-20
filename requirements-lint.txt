@@ -1,0 +1,5 @@
+# Lint and type-check tools for the CI lint job and for local runs:
+#   python3 -m pip install -r requirements-lint.txt
+# Exact pins, so a new tool release cannot turn CI red without a change to this file.
+ruff==0.16.6
+mypy==2.3.1

@@ -27,7 +27,7 @@ Run the suite only through `unittest discover -s tests`: `tests/` is not a packa
 modules import shared helpers from one another by plain module name. The lint and type gates are
 `ruff check src tests stigroll.py` and `mypy` from the repository root; both read their
 configuration from `pyproject.toml`, and CI's `lint` job runs both on Python 3.11. Install the
-versions CI pins with `python3 -m pip install -r requirements-lint.txt`.
+package and the versions CI pins with `python3 -m pip install -e . -r requirements-lint.txt`.
 
 Please include:
 

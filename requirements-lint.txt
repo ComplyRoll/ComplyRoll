@@ -1,5 +1,6 @@
 # Lint and type-check tools for the CI lint job and for local runs:
-#   python3 -m pip install -r requirements-lint.txt
-# Exact pins, so a new tool release cannot turn CI red without a change to this file.
+#   python3 -m pip install -e . -r requirements-lint.txt
+# The package goes in too: mypy checks imports of its dependencies, such as `referencing`.
+# Exact pins for the two tools only; their own dependencies, and the package's, are not pinned.
 ruff==0.16.6
 mypy==2.3.1

@@ -1,7 +1,7 @@
 # ADR 0017: CI exit criteria and a reference workflow
 
 - Status: Accepted
-- Date: 2026-10-19
+- Date: 2026-10-20
 
 ## Context
 
@@ -25,7 +25,7 @@ past a KEV due date. Every ERROR diagnostic the compiler builds stops the run as
 `ReportCompileError`, exit 1 with nothing written, so no written report carries one; but that is
 observed, not enforced where reports are written. And without `--record-failed-imports` a failed
 scanner invocation is an execution-class failure that stays WARNING `execution_unsuccessful` and
-exits 0 (ADR 0014 Decision 3), so a CI job that omits the flag passes a broken scanner.
+exits 0 (ADR 0014 Decision 3), so a CI job that omits the flag lets a broken scanner through.
 
 The original intent for the reference was an example that ingests, compiles all three reports,
 validates them, and fails the job on ERROR diagnostics.
@@ -73,7 +73,8 @@ Five invariants hold:
   severity, and no exit decision uses it.
 
 The test that asserts a fresh-store `ingest` exiting 3 prints no ERROR is one `ingest` pin, not a
-general proof of I1. The general proof is the property test of Decision 10.
+general proof of I1. I1 rests on the guard of Decision 2; the broader check is the sweep of
+Decision 10 over every golden run, which is example-based, not a proof.
 Why: a CI job needs a contract it can read command by command, and the existing one is complete
 for refusals and for system-generated records. Writing it down changes no caller.
 
@@ -102,8 +103,8 @@ Why:
   the same rule. A gap code would reverse that reason.
 - A gap code would still not reach `report --db` (I4) or a `cases coverage` rerun, which exits 0,
   so a persisted CI job would gain nothing.
-- The need behind it, failing on a broken scanner while tolerating a lapsed schedule, is met by the
-  reference gate's `warn-gaps` policy (Decision 6) without a code change.
+- The need behind it, failing on a recorded detection process failure while tolerating a lapsed
+  schedule, is met by the reference gate's `warn-gaps` policy (Decision 6) without a code change.
 
 The counterpoint is recorded: no release has carried exit 3, so a gap code would break no released
 caller. It is rejected on the reasons above, not on compatibility.
@@ -147,7 +148,7 @@ passes `--inventory` with `--record-coverage-gaps` when the operator names an in
 | Signal | Gate exit |
 |---|---|
 | a gate input is wrong: a bad policy value, a missing required input, no artifact, an artifact argument starting with `-`, or an output directory that exists and is not empty (Decision 9) | 1, before any ComplyRoll command |
-| any `report` or `validate` exit other than 0 or 3, or ComplyRoll missing | 1 |
+| a `report` exit other than 0 or 3, a `validate` exit other than 0, or ComplyRoll missing | 1 |
 | a report exit 3 with no inventory given | 3, a detection process failure |
 | a report exit 3, an inventory given, the probe exits 3 | 3, a detection process failure, with gaps possibly also recorded |
 | a report exit 3, an inventory given, the probe exits 0, policy `fail` | 3, a coverage gap |
@@ -184,11 +185,17 @@ summary carries only the gate's own text: the verdict, one exit line per command
 disclaimer. It never carries a report or its Markdown twin. It ends with one fixed sentence:
 "This gate reads ComplyRoll exit codes only. Its result is not a FedRAMP determination and not
 evidence that any KSI is met; open, overdue and KEV past-due records are not gated (ADR 0017)."
-No gate-emitted line uses the words pass, passed, passes, passing, compliant, compliance,
-approved, approval, certified or authorized, and a test enforces it.
+No gate-emitted line uses the words pass, passed, passes, passing, compliant or compliance, or a
+word that starts with approv, authoriz or certif, and a test enforces it.
+
+`warn-gaps` never turns a recorded detection process failure into a warning. A scanner that
+writes no output at all records no failure: the resources it should have verified show only as
+coverage gaps, so under `warn-gaps` such a run exits 0 with a warning. The reference README tells
+`warn-gaps` operators to name each expected artifact path explicitly rather than by a glob, so a
+missing output refuses with `artifact_read_failed`, exit 1.
 Why: the exit codes Decision 1 freezes are the only stable interface, so a copied script that
 reads only them stays correct. The probe keeps the policy in exit codes while letting an operator
-tolerate a lapsed schedule without passing a broken scanner.
+tolerate a lapsed schedule without letting a recorded failure through.
 
 ## Decision 7: overdue records and KEV clocks are not a CI failure condition yet
 
@@ -235,7 +242,11 @@ The reference workflow `examples/ci/complyroll-reports.yml`:
   `persist-credentials: false`;
 - pins every action to a full commit SHA equal to this repository's own pin for that action;
 - puts no `${{` expression in a `run:` line, so inputs reach the gate only through `env:`;
-- uploads the reports with `if: always()`, `if-no-files-found: warn` and `retention-days: 30`;
+- uploads the reports whenever the gate got as far as starting its compiles, whatever its exit,
+  with `if-no-files-found: warn` and `retention-days: 30`: the gate writes `started=true` to its
+  step output after its input checks, and the upload step's condition reads it, so a run the gate
+  refused before any compile uploads nothing;
+- cancels an in-progress run for a newer commit on a pull request only, never on `main`;
 - needs no network after install, because the rules and schemas are bundled and verified by
   SHA-256, and the KEV catalog and inventory are local files;
 - installs ComplyRoll from a pinned git commit on `main` that carries the exit behavior the gate
@@ -248,9 +259,10 @@ work, and runs under dash and bash. The workflow runs it from `examples/ci/`, th
 tells adopters to copy it to, so a test runs exactly what the workflow runs. The script:
 - refuses, before any ComplyRoll command, an artifact argument that starts with `-`, which would
   parse as an option, and says to prefix the path with `./`;
-- deletes nothing, and refuses an output directory that exists and is not empty, so a refused run
-  never uploads an earlier run's reports as its own and the CLI's refusal of a symbolic-link
-  output still applies;
+- deletes nothing, and refuses an output directory that exists and is not empty, so a run never
+  mixes an earlier run's reports with its own, and the CLI's refusal of a symbolic-link output
+  still applies; with the upload condition above, a run refused at those input checks uploads
+  nothing, while a run refused later by a command or by validation uploads what it wrote;
 - writes the job summary only when `GITHUB_STEP_SUMMARY` is set and non-empty, so a local run
   under `set -u` still reaches its verdict;
 - puts no report text in the job summary. Each Markdown twin carries scanner-supplied text whose
@@ -268,9 +280,9 @@ byte for byte: `vdt-fixtures`, `avi-fixtures`, `historical-fixtures`, `vdt-cover
 `historical-kev`. It asserts that no ComplyRoll invocation exits 2, pins the probe property, pins
 the workflow and the script as text (permissions, SHA pins equal to the repository's own, no `${{`
 in a run line, no `rm`, POSIX constructs only), asserts that the job summary holds gate text and
-no line of any twin, that every call shares one as-of, and that a stale evaluation, a used output
-directory and an argument starting with `-` each exit 1, runs the wording test, and kills a named
-list of mutants.
+no line of any twin, that every call shares one as-of, that a stale evaluation exits 1, and that a
+used output directory and an argument starting with `-` each exit 1 before any compile and upload
+nothing, runs the wording test, and kills a named list of mutants.
 `tests/test_exit_contract.py` pins Decision 2 with a stub report, scans every golden for an ERROR
 diagnostic, checks that every golden run exiting 0 or 3 prints no `error:` line, and pins each row
 of the Decision 1 table not pinned elsewhere.
@@ -329,16 +341,19 @@ vulnerability.
 **Gaps under `warn-gaps`.** The same inputs with `examples/evaluations-coverage.json`, which
 evaluates a gap record, still make each report exit 3. The probe exits 0, because the failure-only
 compile carries no evaluations, and the gate exits 0 with one warning annotation. With the failed
-fixtures added under `warn-gaps`, the probe exits 3 and the gate exits 3: `warn-gaps` never passes
-a broken scanner.
+fixtures added under `warn-gaps`, the probe exits 3 and the gate exits 3: `warn-gaps` never turns
+a recorded failure into a warning.
 
 ## Consequences
 
 - A pipeline author reads one exit table, and no existing caller changes.
 - A report carrying an ERROR can never be written, though no input produces one today. A future
   feature that wants such a report must amend Decision 2.
-- A CI job that omits `--record-failed-imports` still passes a failed scanner invocation; the
-  reference and the docs are what prevent it.
+- A CI job that omits `--record-failed-imports` still lets a failed scanner invocation through;
+  the reference and the docs are what prevent it.
+- Under `warn-gaps`, a scanner that writes no output records no failure. When the artifacts are
+  named by a glob, its resources show only as coverage gaps and the gate exits 0 with a warning;
+  naming each expected artifact explicitly turns the missing file into a refusal.
 - The CI policy lives in a copied shell script. A correct copy stays correct, because it reads only
   the frozen exit codes; an operator's modified copy is the operator's.
 - The `warn-gaps` policy depends on failures coming from the artifacts alone. A compiler change
@@ -403,7 +418,7 @@ a broken scanner.
 - An environment variable that sets either flag: the first environment read in the package, so a
   leaked runner environment could change exit codes.
 - Flipping either record flag's default: changes existing callers (Decision 4).
-- A `warn` policy value that warns on every system record: passes a broken scanner.
+- A `warn` policy value that warns on every system record: lets a recorded failure through.
 - An `evidence` policy value that passes `--inventory` without the gap flag: gap cases are never
   recorded, and an evaluations file that evaluates a gap record refuses.
 - Reading `detectionFailures` from the JSON in the gate script: couples a copied script to the

@@ -746,15 +746,15 @@ golden of this record moved; `vdt-cyclonedx-coverage` is new.
 Why: a package is never an information resource, so it can neither be inventoried nor reported
 as one the inventory omits.
 
-## Amendment (2026-10-19, second): no separate gap exit code, and the formatter count (ADR 0017)
+## Amendment (2026-10-20): no separate gap exit code, and the formatter count (ADR 0017)
 
 Decision 30 deferred a separate exit code for gaps, open decision 3 option b, to the CI exit
 criteria deliverable. ADR 0017 Decision 3 decides it: the code is not built, and exit 3 keeps
 meaning that the output holds a system-generated `VDR-CSO-FAV` record, a detection process
-failure or a coverage gap. Decision 30 stands as written. A CI job that must tell a broken
-scanner from a lapsed schedule uses the reference gate's `warn-gaps` policy, which separates the
-two by exit codes alone (ADR 0017 Decision 6). A gap remains an absence of verification inside a
-window, not a finding that the resource has a vulnerability.
+failure or a coverage gap. Decision 30 stands as written. A CI job that must tell a recorded
+detection process failure from a lapsed schedule uses the reference gate's `warn-gaps` policy,
+which separates the two by exit codes alone (ADR 0017 Decision 6). A gap remains an absence of
+verification inside a window, not a finding that the resource has a vulnerability.
 
 "Left for later" counts seventeen legacy files that are not `ruff format` clean. Under ruff
 0.16.6 the count is thirty, the same at each of the four earlier merges checked back to the

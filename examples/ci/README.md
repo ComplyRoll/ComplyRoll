@@ -41,7 +41,9 @@ the gate step with your own artifacts and set the inputs in the job's `env:` blo
 
 Artifacts are the script's arguments, so paths with spaces and shell globs both work:
 `sh examples/ci/complyroll-gate.sh scans/*.cklb "scans/host one.ckl"`. An argument that starts
-with `-` would read as an option, so the gate refuses it; prefix such a path with `./`.
+with `-` would read as an option, so the gate refuses it; prefix such a path with `./`. A glob
+matches only the files that exist, so a scanner that wrote nothing drops out of the run without
+a word. Naming each expected path refuses that run instead, as the policy section explains.
 
 Every other input is an environment variable:
 
@@ -59,9 +61,14 @@ Every other input is an environment variable:
 | `CR_INVENTORY` | no | Unset. An inventory file; turns on coverage gap records. |
 | `CR_SYSTEM_RECORDS` | no | `fail` (the default) or `warn-gaps`. |
 
-The gate deletes nothing. It refuses an output directory that already holds files, so a refused
-run never uploads an earlier run's reports as its own. A GitHub-hosted runner starts each job in
-a fresh workspace, so the default directory is empty there; a local rerun needs a new `CR_OUT`.
+The gate deletes nothing. It refuses an output directory that already holds files, dotfiles
+included, before any command runs. Only after its input checks hold and `CR_OUT` exists does it
+write `started=true` to the step's outputs, and the upload step runs only when that output is set.
+A run refused at those input checks therefore uploads nothing, so it never ships an earlier run's
+reports as its own. A run refused later, by a command or by validation, uploads what it wrote,
+`diagnostics.log` included. A GitHub-hosted runner starts each job in a fresh workspace, so the
+default directory is empty there; a local rerun needs a new `CR_OUT`. Keep `id: gate` on the gate
+step and the upload step's `if:` together when you copy the workflow.
 
 When `CR_AS_OF` is unset, the gate resolves one UTC instant, to the second, before the first
 command and hands it to all of them. The three reports of one run therefore agree on their
@@ -94,7 +101,9 @@ set them in a step before the gate, for example the previous calendar month:
 ```
 
 The run line holds no `${{` expression, which keeps the workflow's rule that inputs reach a
-shell only through the environment.
+shell only through the environment. Place this step after `actions/setup-python`, which
+provides `python`. Do not set `CR_FROM` or `CR_TO` in the gate step's own `env:`: a step-level
+value overrides `$GITHUB_ENV`, so the derived period would never reach the gate.
 
 ## Why `--record-failed-imports` is always set
 
@@ -118,8 +127,15 @@ main exit 3 was gaps alone.
 
 `CR_SYSTEM_RECORDS` decides what a gap does. Under `fail`, the default, any system-generated
 record fails the job. Under `warn-gaps`, a run whose only records are coverage gaps exits 0 with
-one warning annotation, and a detection process failure still exits 3: `warn-gaps` never lets a
-broken scanner through.
+one warning annotation, and a recorded detection process failure still exits 3: `warn-gaps`
+never turns a recorded failure into a warning. If the probe itself refuses, the gate exits 1.
+
+A failure is recorded only from an artifact the gate is given: one that says its run failed,
+cannot be parsed, or holds nothing usable. A scanner that writes no output at all leaves nothing
+to read, so its resources' windows close unverified and the run sees only a coverage gap, which
+`warn-gaps` turns into a warning. Under `warn-gaps`, name each expected artifact path explicitly
+rather than by glob. A named file that does not exist refuses with `artifact_read_failed`, and
+the gate exits 1.
 
 A system-generated record still fails the job under `fail` after an evaluation accepts or closes
 it, for as long as the artifact or window that produced it is in the inputs. The remedies are
@@ -186,6 +202,12 @@ requests, recomputing no clock.
   Markdown link and image syntax is not neutralized ([`docs/SECURITY.md`](../../docs/SECURITY.md)),
   and GitHub renders the summary as Markdown, so they go only into the uploaded artifact.
 - Gate messages are fixed text and never echo an input value, a path or report content.
+- The uploaded artifact holds every finding in the reports, and anyone who can read the
+  repository can download it. When the scans are not already public, keep the gate in a private
+  repository.
+- `cancel-in-progress` is true for pull requests only, so a newer push never cancels a run already
+  in progress on `main`. GitHub keeps at most one run waiting per concurrency group, so a run still
+  queued there can be replaced by a newer push and never start.
 
 ## The install pin
 

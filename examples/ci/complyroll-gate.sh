@@ -9,6 +9,7 @@
 # Exit 0: no system-generated record, or coverage gaps only under warn-gaps. Exit 1: a command
 # refused its input, a report failed schema validation, or a gate input is wrong. Exit 3: a
 # system-generated VDR-CSO-FAV record the policy fails on. The gate reads exit codes only.
+# Once its input checks hold and CR_OUT exists, it appends started=true to the step's outputs.
 
 # *--- Configuration ---*
 
@@ -26,6 +27,9 @@ where="$where x-complyroll.detectionFailures and x-complyroll.coverage.windows, 
 where="$where detected after the period end that vdt.json leaves out."
 gap="A window closed with no verification. A coverage gap records an absence of"
 gap="$gap verification, not a vulnerability in the resource."
+# A reviewer sees the annotation, not the log, so both gap annotations end with this.
+gap_tail="a coverage gap was recorded, an absence of verification, not a vulnerability;"
+gap_tail="$gap_tail see historical.json in the uploaded artifact."
 
 # *--- Input Checks ---*
 
@@ -65,6 +69,11 @@ else
 fi
 mkdir -p "$out" || exit 1
 : > "$log" || exit 1
+# The upload step runs only on started=true, so a run refused above uploads nothing.
+output="${GITHUB_OUTPUT:-}"
+if [ -n "$output" ]; then
+  echo "started=true" >>"$output" || exit 1
+fi
 
 # *--- Commands ---*
 
@@ -177,15 +186,13 @@ elif [ "$found" = gap ] && [ "$policy" = fail ]; then
   status=3
   verdict="Gate exit 3: a coverage gap was recorded (ADR 0015). $gap"
   detail=$where
-  annotation="::error::ComplyRoll gate exit 3: a coverage gap was recorded;"
-  annotation="$annotation see historical.json in the uploaded artifact."
+  annotation="::error::ComplyRoll gate exit 3: $gap_tail"
 elif [ "$found" = gap ]; then
   status=0
   verdict="Gate exit 0: a coverage gap was recorded (ADR 0015), and warn-gaps makes it a"
   verdict="$verdict warning. $gap"
   detail=$where
-  annotation="::warning::ComplyRoll gate: a coverage gap was recorded and warn-gaps makes it"
-  annotation="$annotation a warning; see historical.json in the uploaded artifact."
+  annotation="::warning::ComplyRoll gate: warn-gaps makes this a warning; $gap_tail"
 else
   status=0
   verdict="Gate exit 0: each report compiled and validated against its pinned official"

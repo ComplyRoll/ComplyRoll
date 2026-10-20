@@ -1079,7 +1079,7 @@ without it. ADR 0013's amendment of 2026-10-19 resolves the failed case: a profi
 `failed` and no controls raises `execution_unsuccessful` and is this record's execution class. A
 skipped profile stays a WARNING.
 
-## Amendment 2026-10-19: the default stays opt-in (ADR 0017)
+## Amendment 2026-10-20: the default stays opt-in (ADR 0017)
 
 The rejected alternative "Default-on" said the default of `--record-failed-imports` can flip with
 the CI exit criteria deliverable. ADR 0017 decides it: the flag stays opt-in, on `ingest` and on

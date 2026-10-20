@@ -21,7 +21,7 @@ import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import chdir
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -102,16 +102,44 @@ DISCLAIMER = (
     "(ADR 0017)."
 )
 VERDICTS = (CLEAN, WARNED_GAP, REFUSED, PROBE_REFUSED, FAILURE_ONLY, FAILURE, GAP)
+#: The verdicts that name where the records are, on stdout and in the summary.
+RECORD_VERDICTS = (WARNED_GAP, FAILURE_ONLY, FAILURE, GAP)
+#: The see-also tail every gap annotation ends with (Forge F-14).
+GAP_TAIL = (
+    "a coverage gap was recorded, an absence of verification, not a vulnerability; see "
+    "historical.json in the uploaded artifact."
+)
+FAILURE_ANNOTATION = (
+    "::error::ComplyRoll gate exit 3: a detection process failure was recorded; see "
+    "historical.json in the uploaded artifact."
+)
+#: The one annotation line each verdict prints; the clean verdict prints none.
+ANNOTATIONS = {
+    CLEAN: None,
+    WARNED_GAP: f"::warning::ComplyRoll gate: warn-gaps makes this a warning; {GAP_TAIL}",
+    REFUSED: (
+        "::error::ComplyRoll gate exit 1: a command refused its input or a report failed "
+        "schema validation; see diagnostics.log in the uploaded artifact."
+    ),
+    PROBE_REFUSED: (
+        "::error::ComplyRoll gate exit 1: the failure-only compile refused its input; see "
+        "diagnostics.log in the uploaded artifact."
+    ),
+    FAILURE_ONLY: FAILURE_ANNOTATION,
+    FAILURE: FAILURE_ANNOTATION,
+    GAP: f"::error::ComplyRoll gate exit 3: {GAP_TAIL}",
+}
 #: Every line the job summary may hold besides the exit lines and blanks.
 SUMMARY_TEXT = frozenset({"## ComplyRoll gate", "```text", "```", WHERE, DISCLAIMER, *VERDICTS})
 EXIT_LINE = re.compile(r"(?:(?:report|validate) (?:vdt|avi|historical)|failure probe): exit \d+")
-ANNOTATION = re.compile(r"::(?:warning|error)::ComplyRoll gate[ :].*")
 INSTANT = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"
 AS_OF_LINE = re.compile(rf"as-of: (?:CR_AS_OF|{INSTANT}, resolved once at start)")
-#: Approval language no gate-emitted line may carry (Design 3.3).
+#: What the gate appends to `GITHUB_OUTPUT` once its inputs pass and `CR_OUT` exists.
+STARTED = "started=true\n"
+#: Approval language no gate-emitted line may carry (Design 3.3, Forge F-09): the listed
+#: words, and any word starting `approv`, `authoriz` or `certif`.
 BANNED = re.compile(
-    r"\b(?:pass|passed|passes|passing|compliant|compliance|approved|approval|certified|"
-    r"authorized)\b",
+    r"\b(?:pass|passed|passes|passing|compliant|compliance)\b|\b(?:approv|authoriz|certif)\w*",
     re.IGNORECASE,
 )
 
@@ -150,12 +178,19 @@ PROBE_EXCLUDED = ("--evaluations", "--kev", "--inventory", GAP_FLAG, "--from", "
 #: A stand-in for an installed `complyroll`: runs the checked-out source and logs each call
 #: as its exit code and arguments, tab separated. `SHIM_FAIL_VALIDATE=KIND` makes the
 #: validation of that kind's report exit 1, as a schema-invalid report would.
+#: `SHIM_FAIL_PROBE=1` makes a `report historical` call with no `-o`, the probe, exit 1.
 SHIM = """#!/bin/sh
 rc=
 if [ "${1:-}" = validate ] && [ -n "${SHIM_FAIL_VALIDATE:-}" ]; then
   case ${2:-} in
     */"$SHIM_FAIL_VALIDATE".json) rc=1 ;;
   esac
+fi
+if [ "${1:-}" = report ] && [ "${2:-}" = historical ] && [ -n "${SHIM_FAIL_PROBE:-}" ]; then
+  rc=1
+  for arg in "$@"; do
+    [ "$arg" != -o ] || rc=
+  done
 fi
 if [ -z "$rc" ]; then
   PYTHONPATH=@SRC@ PYTHONDONTWRITEBYTECODE=1 @PYTHON@ -m complyroll "$@"
@@ -245,6 +280,10 @@ class Workflow:
         (step,) = [step for step in self.steps() if any(f"uses: {action}@" in s for s in step)]
         return step
 
+    def gate_step(self) -> list[str]:
+        (step,) = [step for step in self.steps() if any(f"run: sh {GATE} " in s for s in step)]
+        return step
+
 
 def repository_pins() -> dict[str, set[tuple[str, str | None]]]:
     pins: dict[str, set[tuple[str, str | None]]] = {}
@@ -316,8 +355,8 @@ class Scenario:
     probe: int | None = None
     verdict: str | None = CLEAN
     shell: Sequence[str] = ("sh",)
-    #: Whether `GITHUB_STEP_SUMMARY` names a summary file.
-    summary: bool = True
+    #: Whether `GITHUB_STEP_SUMMARY` and `GITHUB_OUTPUT` name files, as on a runner.
+    runner_files: bool = True
     #: Builds files in the run's directory and returns the artifacts to name.
     prepare: Callable[[Path, Path, Sequence[str]], Sequence[str]] | None = None
 
@@ -343,6 +382,8 @@ class GateRun:
     calls: tuple[ShimCall, ...]
     #: The summary file's text, or None when no summary file exists.
     summary: str | None
+    #: The step output file's text, or None when no output file exists.
+    output: str | None
     directory: Path
     out: Path
 
@@ -409,6 +450,37 @@ def leave_previous_report(directory: Path, out: Path, artifacts: Sequence[str]) 
     return artifacts
 
 
+def leave_dotfile(directory: Path, out: Path, artifacts: Sequence[str]) -> Sequence[str]:
+    out.mkdir()
+    (out / ".previous.json").write_text(PREVIOUS_REPORT, encoding="utf-8")
+    return artifacts
+
+
+#: The inputs the gate refuses to run without, each tested unset on its own (Forge F-08).
+REQUIRED_INPUTS = ("CR_CLASS", "CR_PACKAGE_URI", "CR_FROM", "CR_TO")
+#: The scenarios repeated under the second dialect (Forge F-13).
+DIALECT_SCENARIOS = ("gaps-evaluated-warn", "both-kinds-warn")
+
+
+def missing_scenario(variable: str) -> str:
+    return f"missing-{variable.lower().replace('_', '-')}"
+
+
+def dialects() -> list[tuple[str, tuple[str, ...]]]:
+    """Each of dash and `bash --posix` that is found and is not the `sh` on PATH."""
+
+    found: list[tuple[str, tuple[str, ...]]] = []
+    for name, dialect in (("dash", ("dash",)), ("bash-posix", ("bash", "--posix"))):
+        path = shutil.which(dialect[0])
+        if path and not (SH and os.path.realpath(path) == os.path.realpath(SH)):
+            found.append((name, (path, *dialect[1:])))
+    return found
+
+
+#: The first of dash and `bash --posix` that `sh` is not: bash on ubuntu, dash on macOS.
+SECOND_DIALECT = next(iter(dialects()), None)
+
+
 def build_scenarios(workflow: Workflow) -> list[Scenario]:
     """Every Design 4.5 scenario; the workflow's own inputs are the defaults."""
 
@@ -416,6 +488,11 @@ def build_scenarios(workflow: Workflow) -> list[Scenario]:
     defaults = {key: value for key, value in workflow.env().items() if key != "CR_OUT"}
     shell, artifacts = (command[0],), command[2:]
     gaps = {**BASE_INPUTS, "CR_INVENTORY": str(EXAMPLE_INVENTORY)}
+    warned_gaps = {
+        **gaps,
+        "CR_EVALUATIONS": str(COVERAGE_EVALUATIONS),
+        "CR_SYSTEM_RECORDS": "warn-gaps",
+    }
     # The failed fixtures follow the base three, as `with_failed_artifacts` orders them.
     failed = [*BASE_ARTIFACTS, *FAILED_ARTIFACTS]
     scenarios = [
@@ -440,15 +517,21 @@ def build_scenarios(workflow: Workflow) -> list[Scenario]:
         ),
         Scenario(
             "gaps-evaluated-warn",
-            {
-                **gaps,
-                "CR_EVALUATIONS": str(COVERAGE_EVALUATIONS),
-                "CR_SYSTEM_RECORDS": "warn-gaps",
-            },
+            warned_gaps,
             BASE_ARTIFACTS,
             reports=(3, 3, 3),
             probe=0,
             verdict=WARNED_GAP,
+        ),
+        # Forge F-03: a probe that refuses is exit 1 under warn-gaps, never a warning.
+        Scenario(
+            "probe-refused",
+            {**warned_gaps, "SHIM_FAIL_PROBE": "1"},
+            BASE_ARTIFACTS,
+            exit=1,
+            reports=(3, 3, 3),
+            probe=1,
+            verdict=PROBE_REFUSED,
         ),
         Scenario(
             "failed",
@@ -491,13 +574,17 @@ def build_scenarios(workflow: Workflow) -> list[Scenario]:
             verdict=REFUSED,
             prepare=add_unsupported_file,
         ),
-        Scenario(
-            "invalid-output",
-            {**defaults, "SHIM_FAIL_VALIDATE": "avi"},
-            artifacts,
-            exit=1,
-            validates=(0, 1, 0),
-            verdict=REFUSED,
+        # Forge F-04: a schema-invalid report of each kind, one scenario per kind.
+        *(
+            Scenario(
+                f"invalid-output-{kind}",
+                {**defaults, "SHIM_FAIL_VALIDATE": kind},
+                artifacts,
+                exit=1,
+                validates=(int(kind == "vdt"), int(kind == "avi"), int(kind == "historical")),
+                verdict=REFUSED,
+            )
+            for kind in REPORT_KINDS
         ),
         Scenario(
             "bad-policy",
@@ -507,13 +594,16 @@ def build_scenarios(workflow: Workflow) -> list[Scenario]:
             reports=None,
             verdict=None,
         ),
-        Scenario(
-            "missing-input",
-            {**defaults, "CR_CLASS": None},
-            artifacts,
-            exit=1,
-            reports=None,
-            verdict=None,
+        *(
+            Scenario(
+                missing_scenario(variable),
+                {**defaults, variable: None},
+                artifacts,
+                exit=1,
+                reports=None,
+                verdict=None,
+            )
+            for variable in REQUIRED_INPUTS
         ),
         Scenario("no-artifacts", defaults, (), exit=1, reports=None, verdict=None),
         Scenario("unset-as-of", {**defaults, "CR_AS_OF": None}, artifacts),
@@ -534,6 +624,16 @@ def build_scenarios(workflow: Workflow) -> list[Scenario]:
             verdict=None,
             prepare=leave_previous_report,
         ),
+        # `ls -A`, not `ls`: a directory holding only a dotfile is not empty.
+        Scenario(
+            "stale-output-dotfile",
+            defaults,
+            artifacts,
+            exit=1,
+            reports=None,
+            verdict=None,
+            prepare=leave_dotfile,
+        ),
         Scenario(
             "leading-dash",
             defaults,
@@ -551,15 +651,17 @@ def build_scenarios(workflow: Workflow) -> list[Scenario]:
             reports=None,
             verdict=None,
         ),
-        Scenario("no-summary-env", defaults, artifacts, summary=False),
+        Scenario("no-summary-env", defaults, artifacts, runner_files=False),
     ]
     # `yaml-defaults` again under each dialect found that `sh` is not already.
-    for name, dialect in (("dash", ("dash",)), ("bash-posix", ("bash", "--posix"))):
-        found = shutil.which(dialect[0])
-        if found and not (SH and os.path.realpath(found) == os.path.realpath(SH)):
-            scenarios.append(
-                Scenario(f"yaml-defaults-{name}", defaults, artifacts, shell=(found, *dialect[1:]))
-            )
+    for name, dialect in dialects():
+        scenarios.append(Scenario(f"yaml-defaults-{name}", defaults, artifacts, shell=dialect))
+    # The gap, failure and probe branches again under the second dialect only.
+    if SECOND_DIALECT is not None:
+        name, dialect = SECOND_DIALECT
+        by_name = {scenario.name: scenario for scenario in scenarios}
+        for base in DIALECT_SCENARIOS:
+            scenarios.append(replace(by_name[base], name=f"{base}-{name}", shell=dialect))
     return scenarios
 
 
@@ -616,11 +718,14 @@ class Gate:
         log = directory / "shim.log"
         log.write_text("", encoding="utf-8")
         summary = directory / "summary.md"
+        output = directory / "output.txt"
         path = os.environ.get("PATH", os.defpath)
         env = {"PATH": f"{self.bin}{os.pathsep}{path}", "SHIM_LOG": str(log), "CR_OUT": str(out)}
-        if scenario.summary:
+        if scenario.runner_files:
             summary.write_text("", encoding="utf-8")
+            output.write_text("", encoding="utf-8")
             env["GITHUB_STEP_SUMMARY"] = str(summary)
+            env["GITHUB_OUTPUT"] = str(output)
         for key, value in scenario.inputs.items():
             if value is None:
                 env.pop(key, None)
@@ -652,6 +757,7 @@ class Gate:
             stderr=completed.stderr,
             calls=calls,
             summary=summary.read_text(encoding="utf-8") if summary.exists() else None,
+            output=output.read_text(encoding="utf-8") if output.exists() else None,
             directory=directory,
             out=out,
         )
@@ -685,22 +791,26 @@ class GateScenarioTests(unittest.TestCase):
         return [
             result
             for result in self.gate.results()
-            if result.scenario.reaches_verdict and result.scenario.summary
+            if result.scenario.reaches_verdict and result.scenario.runner_files
         ]
 
     def each(self) -> list[GateRun]:
         return self.gate.results()
 
     def assert_gate(self, result: GateRun) -> None:
-        """The scenario's exit and verdict, with the records line on each system verdict."""
+        """The scenario's exit, verdict and annotation, with the records line where it belongs."""
 
         scenario = result.scenario
         self.assertEqual(result.code, scenario.exit, msg=result.explain())
         self.assertEqual(result.stderr, "", msg=result.explain())
         verdicts = [line for line in result.lines if line in VERDICTS]
         self.assertEqual(verdicts, [scenario.verdict])
-        records_line = scenario.verdict in (WARNED_GAP, FAILURE_ONLY, FAILURE, GAP)
+        records_line = scenario.verdict in RECORD_VERDICTS
         self.assertEqual(result.lines.count(WHERE), int(records_line))
+        annotation = ANNOTATIONS[scenario.verdict] if scenario.verdict else None
+        expected = [] if annotation is None else [annotation]
+        self.assertEqual(self.warnings(result) + self.errors(result), expected)
+        self.assertEqual(result.output, STARTED if scenario.runner_files else None)
 
     def assert_golden(self, result: GateRun, kind: str, golden: str) -> None:
         for suffix in ("json", "md"):
@@ -728,13 +838,14 @@ class GateScenarioTests(unittest.TestCase):
                     )
 
     def assert_stopped(self, result: GateRun, message: str) -> None:
-        """A refused input: exit 1, one message, no call, no stdout and no summary."""
+        """A refused input: exit 1, one message, no call, no stdout, summary or step output."""
 
         self.assertEqual(result.code, 1, msg=result.explain())
         self.assertEqual(result.stderr, f"{message}\n")
         self.assertEqual(result.stdout, "")
         self.assertEqual(result.calls, ())
         self.assertEqual(result.summary, "")
+        self.assertEqual(result.output, "")
 
     def warnings(self, result: GateRun) -> list[str]:
         return [line for line in result.lines if line.startswith("::warning::")]
@@ -779,7 +890,9 @@ class GateScenarioTests(unittest.TestCase):
 
         self.assert_gate(result)
         self.assertEqual(self.warnings(result), [])
-        self.assertEqual(len(self.errors(result)), 1)
+        # Forge F-14: the annotation a reviewer sees says what a gap is not.
+        self.assertEqual(self.errors(result), [ANNOTATIONS[GAP]])
+        self.assertTrue(self.errors(result)[0].endswith(GAP_TAIL))
         self.assert_golden(result, "vdt", "vdt-coverage-gaps")
 
     def test_gaps_accepted_record(self) -> None:
@@ -794,13 +907,24 @@ class GateScenarioTests(unittest.TestCase):
         result = self.result("gaps-evaluated-warn")
 
         self.assert_gate(result)
-        self.assertEqual(len(self.warnings(result)), 1)
+        self.assertEqual(self.warnings(result), [ANNOTATIONS[WARNED_GAP]])
+        self.assertTrue(self.warnings(result)[0].endswith(GAP_TAIL))
         self.assertEqual(self.errors(result), [])
+
+    def test_probe_refused(self) -> None:
+        # Forge F-03: under warn-gaps a refused probe must not read as gaps alone.
+        result = self.result("probe-refused")
+
+        self.assert_gate(result)
+        self.assertEqual(self.warnings(result), [])
+        self.assertEqual(len(self.errors(result)), 1)
+        self.assertEqual([call.code for call in result.probe_calls()], [1])
 
     def test_failed(self) -> None:
         result = self.result("failed")
 
         self.assert_gate(result)
+        self.assertEqual(len(self.errors(result)), 1)
         self.assertEqual(result.probe_calls(), [])
         self.assert_golden(result, "vdt", "vdt-failed")
         self.assert_golden(result, "historical", "historical-failed")
@@ -810,11 +934,12 @@ class GateScenarioTests(unittest.TestCase):
         result = self.result("execution-only")
 
         self.assert_gate(result)
+        self.assertEqual(len(self.errors(result)), 1)
         failures = result.document("historical")["x-complyroll"]["detectionFailures"]
         self.assertEqual([item["name"] for item in failures], [INVOCATION_FIXTURE.name])
 
     def test_both_kinds_warn(self) -> None:
-        # warn-gaps never turns a broken scanner into a warning.
+        # warn-gaps never turns a recorded detection process failure into a warning.
         result = self.result("both-kinds-warn")
 
         self.assert_gate(result)
@@ -849,11 +974,22 @@ class GateScenarioTests(unittest.TestCase):
         self.assertIn("unsupported_artifact", result.diagnostics())
         self.assertEqual(sorted(path.name for path in result.out.iterdir()), ["diagnostics.log"])
 
-    def test_invalid_output(self) -> None:
-        result = self.result("invalid-output")
+    def assert_invalid_output(self, kind: str) -> None:
+        result = self.result(f"invalid-output-{kind}")
 
         self.assert_gate(result)
         self.assertEqual(len(self.errors(result)), 1)
+        failed = [call.argv[1] for call in result.validate_calls() if call.code != 0]
+        self.assertEqual(failed, [str(result.out / f"{kind}.json")])
+
+    def test_invalid_output_vdt(self) -> None:
+        self.assert_invalid_output("vdt")
+
+    def test_invalid_output_avi(self) -> None:
+        self.assert_invalid_output("avi")
+
+    def test_invalid_output_historical(self) -> None:
+        self.assert_invalid_output("historical")
 
     def test_stale_evaluation(self) -> None:
         result = self.result("stale-evaluation")
@@ -872,10 +1008,13 @@ class GateScenarioTests(unittest.TestCase):
         self.assertFalse(result.out.exists())
 
     def test_missing_input(self) -> None:
-        result = self.result("missing-input")
+        # Forge F-08: each required input on its own, so no check can go missing unseen.
+        for variable in REQUIRED_INPUTS:
+            with self.subTest(variable=variable):
+                result = self.result(missing_scenario(variable))
 
-        self.assert_stopped(result, "error: set CR_CLASS")
-        self.assertFalse(result.out.exists())
+                self.assert_stopped(result, f"error: set {variable}")
+                self.assertFalse(result.out.exists())
 
     def test_no_artifacts(self) -> None:
         result = self.result("no-artifacts")
@@ -890,6 +1029,15 @@ class GateScenarioTests(unittest.TestCase):
         self.assertEqual([path.name for path in result.out.iterdir()], ["previous.json"])
         self.assertEqual(
             (result.out / "previous.json").read_text(encoding="utf-8"), PREVIOUS_REPORT
+        )
+
+    def test_stale_output_dotfile(self) -> None:
+        result = self.result("stale-output-dotfile")
+
+        self.assert_stopped(result, "error: CR_OUT exists and is not empty; name a fresh directory")
+        self.assertEqual([path.name for path in result.out.iterdir()], [".previous.json"])
+        self.assertEqual(
+            (result.out / ".previous.json").read_text(encoding="utf-8"), PREVIOUS_REPORT
         )
 
     def test_leading_dash(self) -> None:
@@ -928,21 +1076,25 @@ class GateScenarioTests(unittest.TestCase):
         self.assert_gate(result)
         self.assertIn(DISCLAIMER, result.lines)
         self.assertIsNone(result.summary)
+        self.assertIsNone(result.output)
         self.assertEqual(
             sorted(path.name for path in result.directory.iterdir()), ["out", "shim.log"]
         )
 
     # *--- Dialects ---*
 
-    def assert_same_run(self, name: str) -> None:
+    def assert_same_run(self, name: str, reference_name: str = "yaml-defaults") -> None:
         if not self.gate.has(name):
-            self.skipTest(f"{name}: the shell is absent, or it is the sh yaml-defaults ran under")
-        result, reference = self.result(name), self.result("yaml-defaults")
+            self.skipTest(
+                f"{name}: the shell is absent, or it is the sh {reference_name} ran under"
+            )
+        result, reference = self.result(name), self.result(reference_name)
 
         self.assertEqual(result.code, reference.code, msg=result.explain())
         self.assertEqual(result.stdout, reference.stdout)
         self.assertEqual(result.stderr, reference.stderr)
         self.assertEqual(result.summary, reference.summary)
+        self.assertEqual(result.output, reference.output)
         self.assertEqual(result.logged(), reference.logged())
         for kind in REPORT_KINDS:
             for suffix in ("json", "md"):
@@ -952,11 +1104,23 @@ class GateScenarioTests(unittest.TestCase):
                         (reference.out / f"{kind}.{suffix}").read_bytes(),
                     )
 
+    def assert_same_run_under_the_second_dialect(self, base: str) -> None:
+        if SECOND_DIALECT is None:
+            self.skipTest("neither dash nor bash is found apart from sh")
+        self.assert_same_run(f"{base}-{SECOND_DIALECT[0]}", base)
+
     def test_yaml_defaults_under_dash(self) -> None:
         self.assert_same_run("yaml-defaults-dash")
 
     def test_yaml_defaults_under_bash_posix(self) -> None:
         self.assert_same_run("yaml-defaults-bash-posix")
+
+    def test_gaps_evaluated_warn_under_the_second_dialect(self) -> None:
+        # Forge F-13: the gap and probe branches under the shell sh is not.
+        self.assert_same_run_under_the_second_dialect("gaps-evaluated-warn")
+
+    def test_both_kinds_warn_under_the_second_dialect(self) -> None:
+        self.assert_same_run_under_the_second_dialect("both-kinds-warn")
 
     # *--- Every Scenario ---*
 
@@ -1042,10 +1206,23 @@ class GateScenarioTests(unittest.TestCase):
                         line in SUMMARY_TEXT
                         or EXIT_LINE.fullmatch(line)
                         or AS_OF_LINE.fullmatch(line)
-                        or ANNOTATION.fullmatch(line),
+                        or line in ANNOTATIONS.values(),
                         line,
                     )
                 self.assertEqual(result.lines.count(DISCLAIMER), 1)
+
+    # *--- Step Output (Forge F-01) ---*
+
+    def test_started_is_written_only_once_the_gate_starts(self) -> None:
+        # The upload step reads it: a run refused before the compile uploads nothing.
+        for result in self.each():
+            with self.subTest(scenario=result.scenario.name):
+                if not result.scenario.runner_files:
+                    self.assertIsNone(result.output)
+                elif result.scenario.reaches_verdict:
+                    self.assertEqual(result.output, STARTED)
+                else:
+                    self.assertEqual(result.output, "")
 
     # *--- Summary (Forge F8) ---*
 
@@ -1054,7 +1231,7 @@ class GateScenarioTests(unittest.TestCase):
             with self.subTest(scenario=result.scenario.name):
                 if not result.scenario.reaches_verdict:
                     self.assertEqual(result.summary, "")
-                elif not result.scenario.summary:
+                elif not result.scenario.runner_files:
                     self.assertIsNone(result.summary)
 
     def test_summary_holds_fixed_gate_text_only(self) -> None:
@@ -1068,6 +1245,26 @@ class GateScenarioTests(unittest.TestCase):
                     self.assertTrue(
                         not line or line in SUMMARY_TEXT or EXIT_LINE.fullmatch(line), repr(line)
                     )
+
+    def test_summary_exit_lines_equal_the_stdout_exit_lines(self) -> None:
+        # Forge F-07: the summary keeps every per-command exit line, in order.
+        for result in self.summarized():
+            with self.subTest(scenario=result.scenario.name):
+                assert result.summary is not None
+                summary = [
+                    line for line in result.summary.splitlines() if EXIT_LINE.fullmatch(line)
+                ]
+                stdout = [line for line in result.lines if EXIT_LINE.fullmatch(line)]
+                self.assertTrue(stdout)
+                self.assertEqual(summary, stdout)
+
+    def test_summary_names_where_the_records_are(self) -> None:
+        # Forge F-07: every exit-3 verdict and the warned gap point at historical.json.
+        for result in self.summarized():
+            with self.subTest(scenario=result.scenario.name):
+                assert result.summary is not None
+                expected = int(result.scenario.verdict in RECORD_VERDICTS)
+                self.assertEqual(result.summary.splitlines().count(WHERE), expected)
 
     def test_summary_holds_no_twin_line(self) -> None:
         # Forge F4: the twins carry scanner text whose link and image syntax is live Markdown.
@@ -1131,13 +1328,30 @@ class WorkflowTextTests(unittest.TestCase):
         for needle in ("pull_request_target", "secrets.", "id-token"):
             self.assertNotIn(needle, text)
 
-    def test_expressions_appear_only_in_the_concurrency_group(self) -> None:
+    def test_expressions_appear_only_in_the_concurrency_block(self) -> None:
         index = self.lines.index("concurrency:")
         found = [i for i, line in enumerate(self.lines) if "${{" in line]
-        self.assertEqual(found, [index + 1], [self.workflow.where(i + 1) for i in found])
+        self.assertEqual(found, [index + 1, index + 2], [self.workflow.where(i + 1) for i in found])
         self.assertTrue(self.lines[index + 1].startswith("  group: "))
+        # Forge F-16: a newer push cancels a pull request run, never a main-branch run.
+        self.assertEqual(
+            self.lines[index + 2],
+            "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        )
         for number, value in self.workflow.runs():
             self.assertNotIn("${{", value, self.workflow.where(number))
+
+    def test_no_step_turns_the_gate_non_blocking(self) -> None:
+        # Forge F-06: continue-on-error is an opt-in edit (README), never in the reference.
+        for number, line in enumerate(self.lines, 1):
+            self.assertNotIn("continue-on-error", line, self.workflow.where(number))
+
+    def test_the_gate_runs_from_the_checkout_root(self) -> None:
+        # Forge F-06: the run line's relative paths hold only at the workspace root.
+        checkout = [line.strip() for line in self.workflow.step_using("actions/checkout")]
+        self.assertEqual([line for line in checkout if line.startswith("path:")], [])
+        for number, line in enumerate(self.lines, 1):
+            self.assertNotIn("working-directory", line, self.workflow.where(number))
 
     def test_the_job_has_a_timeout(self) -> None:
         self.assertTrue(any(re.fullmatch(r"\s+timeout-minutes: \d+", line) for line in self.lines))
@@ -1199,9 +1413,15 @@ class WorkflowTextTests(unittest.TestCase):
                     ".github/workflows/ci.yml or release.yml",
                 )
 
-    def test_the_upload_step_keeps_reports_on_failure(self) -> None:
+    def test_the_upload_step_runs_only_once_the_gate_started(self) -> None:
+        # Forge F-01: on failure too, but never for a run the gate refused before CR_OUT.
+        gate = [line.strip() for line in self.workflow.gate_step()]
+        self.assertEqual([line for line in gate if line.startswith("id:")], ["id: gate"])
         step = [line.strip() for line in self.workflow.step_using("actions/upload-artifact")]
-        self.assertIn("if: always()", step)
+        self.assertEqual(
+            [line for line in step if line.startswith("if:")],
+            ["if: always() && steps.gate.outputs.started == 'true'"],
+        )
         self.assertIn("if-no-files-found: warn", step)
         self.assertIn("retention-days: 30", step)
         (path,) = [line for line in step if line.startswith("path: ")]
@@ -1238,10 +1458,24 @@ class ScriptTextTests(unittest.TestCase):
             for word in ("eval", "curl", "wget", "pip", "git", "https?", "rm"):
                 self.assertIsNone(re.search(rf"\b{word}\b", line), f"{GATE}:{number}: {line}")
 
-    def test_the_summary_variable_is_read_only_with_a_default(self) -> None:
+    def test_the_runner_variables_are_read_only_with_a_default(self) -> None:
         code = "\n".join(line for _, line in script_code())
-        self.assertGreater(code.count("GITHUB_STEP_SUMMARY"), 0)
-        self.assertEqual(code.count("GITHUB_STEP_SUMMARY"), code.count("${GITHUB_STEP_SUMMARY:-}"))
+        for variable in ("GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT"):
+            with self.subTest(variable=variable):
+                self.assertGreater(code.count(variable), 0)
+                self.assertEqual(code.count(variable), code.count(f"${{{variable}:-}}"))
+
+    def test_started_follows_the_output_checks(self) -> None:
+        # Forge F-01: started=true only after the CR_OUT refusal, mkdir and the log.
+        code = [line for _, line in script_code()]
+        (started,) = [i for i, line in enumerate(code) if "started=true" in line]
+        for needle in ("CR_OUT exists and is not empty", 'mkdir -p "$out"', ': > "$log"'):
+            with self.subTest(before=needle):
+                (index,) = [i for i, line in enumerate(code) if needle in line]
+                self.assertLess(index, started)
+        # Forge delta M-01: and before the first compile, so a gate that dies mid-run uploads.
+        first_compile = min(i for i, line in enumerate(code) if 'compile "$kind" "$@"' in line)
+        self.assertLess(started, first_compile)
 
     def test_no_bashism(self) -> None:
         patterns = {

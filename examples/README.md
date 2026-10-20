@@ -1203,3 +1203,8 @@ print(result.provenance.schema_version, result.provenance.schema_sha256)
 
 The golden detail report is valid, so the loop prints nothing and the last line names the schema
 version and its SHA-256.
+
+## In CI
+
+[`ci/README.md`](ci/README.md) describes a reference GitHub Actions workflow and a gate script
+that compile the three reports, validate them, and turn the exit codes into one verdict.

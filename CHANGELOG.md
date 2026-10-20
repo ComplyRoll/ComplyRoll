@@ -689,6 +689,11 @@ All notable project changes will be documented here.
   described in the direction it checks, and the `CompiledVulnerability` docstring cites README
   non-negotiable rule 6, the same-records rule, instead of rule 5. README links are absolute,
   because the README is also the PyPI project description, which changes only with the next release.
+- CI enforces the lint and type gates `CONTRIBUTING.md` names: a new `lint` job on Python 3.11
+  runs `ruff check src tests stigroll.py` and `mypy`, with both tools pinned in a new root
+  `requirements-lint.txt`. `ruff format --check` is not part of it, because 30 files are not
+  `ruff format` clean and reformatting them is its own change. Both jobs now check out with
+  `persist-credentials: false`.
 
 ## 0.3.0a0 - 2026-08-23
 

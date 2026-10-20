@@ -471,6 +471,13 @@ All notable project changes will be documented here.
   the store's history, and by a test that recompiles the sixteen report goldens of runs without a
   failure with the flag on, byte for byte; none of the 22 existing goldens moved.
 
+- A reference CI workflow and gate (`examples/ci/complyroll-reports.yml`,
+  `examples/ci/complyroll-gate.sh`, and `examples/ci/README.md`) compile the three VER reports on
+  the stateless path with `--record-failed-imports`, validate each against its pinned schema, and
+  turn the exit codes into one verdict under a `fail` or `warn-gaps` policy. The gate reads exit
+  codes only, and its verdict is not a FedRAMP determination. `docs/CLI.md` gains an Exit status
+  section with the exit table for every command (ADR 0017).
+
 ### Changed
 
 - The detail report's "Accepted, reported under VER-RPT-AVI" row counts only the accepted
@@ -689,11 +696,15 @@ All notable project changes will be documented here.
   described in the direction it checks, and the `CompiledVulnerability` docstring cites README
   non-negotiable rule 6, the same-records rule, instead of rule 5. README links are absolute,
   because the README is also the PyPI project description, which changes only with the next release.
-- CI runs the lint and type gates `CONTRIBUTING.md` names: a new `lint` job on Python 3.11 runs
-  `ruff check src tests stigroll.py` and `mypy`, with both tools pinned in a new root
-  `requirements-lint.txt`. `ruff format --check` is not part of it, because 30 files are not
-  `ruff format` clean and reformatting them is its own change. Both `ci.yml` jobs now check out
-  with `persist-credentials: false`.
+- CI enforces the lint and type gates `CONTRIBUTING.md` names: a new `lint` job, a required check
+  on `main`, runs `ruff check src tests stigroll.py` and `mypy` on Python 3.11, with both tools
+  pinned in a new root `requirements-lint.txt`. `ruff format --check` is not part of it, because
+  30 files are not `ruff format` clean and reformatting them is its own change. Both `ci.yml` jobs
+  now check out with `persist-credentials: false`.
+- A `report` command refuses to write a compiled report that carries an ERROR diagnostic: it
+  exits 1 with `error_diagnostic_unpublished` and writes nothing. No current input reaches the
+  refusal, because every ERROR already stops the compile, so no observable behavior changes (ADR
+  0017 Decision 2).
 
 ## 0.3.0a0 - 2026-08-23
 

@@ -124,7 +124,8 @@ advisory work on an offering bars assessing that offering for two years.
 ## Documentation
 
 - [`examples/README.md`][examples]: worked runs on the synthetic fixtures, Python API included
-- [`docs/CLI.md`][cli]: every command and flag
+- [`docs/CLI.md`][cli]: every command and flag, and the exit status of each
+- [`examples/ci/`][examples-ci]: a reference GitHub Actions workflow and gate
 - [`docs/BUILD_PLAN.md`][build-plan]: phased implementation plan and exit criteria
 - [`docs/ARCHITECTURE.md`][architecture]: system boundaries and component design
 - [`docs/DATA_MODEL.md`][data-model]: observation, case, evaluation, and evidence model
@@ -186,6 +187,7 @@ Program Management Office.
 [data-readme]: https://github.com/ComplyRoll/ComplyRoll/blob/main/src/complyroll/data/README.md
 [decisions]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/decisions/README.md
 [examples]: https://github.com/ComplyRoll/ComplyRoll/blob/main/examples/README.md
+[examples-ci]: https://github.com/ComplyRoll/ComplyRoll/blob/main/examples/ci/README.md
 [license]: https://github.com/ComplyRoll/ComplyRoll/blob/main/LICENSE
 [mapping]: https://github.com/ComplyRoll/ComplyRoll/blob/main/docs/FEDRAMP_2026_MAPPING.md
 [notice]: https://github.com/ComplyRoll/ComplyRoll/blob/main/NOTICE

@@ -24,6 +24,48 @@ The rows show `--class C`; every report command also takes `--class B`. `complyr
 and `complyroll plan` take no options: one prints the version, the other the implementation
 phases.
 
+## Exit status
+
+`ingest`, every `cases` subcommand and `store verify` require `--db`, so only `report` has a
+stateless and a persisted path. Code 2 is an argparse usage error on every command, including a
+`report` whose artifacts are split around options, because the artifacts are one run of
+positional arguments.
+
+| Command | Path | 0 | 1 | 3 |
+|---|---|---|---|---|
+| `version`, `plan` | none | always | an uncaught exception only | never |
+| `ingest` | store | stored, or nothing new; also an execution-class failure without `--record-failed-imports`, which stays WARNING `execution_unsuccessful` (ADR 0014 Decision 3) | a refusal; a fatal-class failure without the flag; with the flag, a failure ADR 0014 Decision 2 keeps fatal, and the one rerun that meets a superseded holder (ADR 0014 Decisions 11 and 13); a mapped domain exception | with the flag, a failure recorded or found already recorded, reruns included |
+| `cases correlate`, `attest-detection`, `evaluate`, `list`, `history` | store | success; `attest-detection` and `evaluate` may print `warning:` lines | a refusal, a missing store, a mapped domain exception | never |
+| `cases coverage` | store | this run recorded no gap, including a rerun that finds every gap already recorded | a missing or second inventory, a missing store, a parse failure | this run recorded at least one gap |
+| `report vdt\|avi\|historical` | stateless | published with no flagged record; `--inventory` alone; an execution-class failure without the flag (WARNING) | a pre-flight refusal; a `ReportCompileError`, which carries every ERROR; a publish failure; `error_diagnostic_unpublished` | published, and `--record-failed-imports` with a failure or `--record-coverage-gaps` with a gap, once with both; a record outside the report period still counts (ADR 0015 Decision 31) |
+| `report ... --db` | store | published, even when the store holds failures and gaps | the same refusals, and either record flag beside `--db` | never |
+| `store verify` | store | `ok: N event(s) verified`, failures and gaps included | an integrity or domain fault, a missing store | never |
+| `validate` | file | `valid: ID VERSION SHA256` | unreadable, too large, malformed, or schema-invalid; schema issue lines carry no `error:` prefix; `x-complyroll` is never read | never |
+| `stigroll` | files | any input yielded findings, even when others failed to parse | no findings, a bad CCI list, an `-o` failure as a traceback | never |
+
+Outside the table: exit 1 with a traceback for an uncaught `ValueError` or `TypeError`, 120 when
+stdout is closed at interpreter flush, 130 on SIGINT, and a `BrokenPipeError` raised inside an
+action, which reads as `store_unavailable`.
+
+Four rules hold across the table:
+
+- No written report, and no exit 0 or 3, carries an ERROR diagnostic. Every ERROR the compiler
+  builds raises `ReportCompileError`, a recorded failure carries its ERRORs demoted to WARNING,
+  replay refuses a stored ERROR, and a compiled report that carries one is refused with
+  `error_diagnostic_unpublished` and never written; no current input reaches that refusal. So a
+  job that fails on exit 1 fails on ERROR diagnostics. Exit 1 is not ERROR alone: it also covers
+  refusals, publish failures and schema-invalid output.
+- Exit 3 comes from three places only: a stateless `report` with its flag, `ingest
+  --record-failed-imports`, and `cases coverage`.
+- Overdue state, KEV clocks, WARNING and INFO diagnostics, and `--inventory` alone never change an
+  exit code. A report with overdue records exits 0.
+- `report --db` answers 0 or 1 only. No exit code depends on scanner severity or CVSS.
+
+A failed scanner invocation that is not flagged exits 0 with WARNING `execution_unsuccessful`, so
+a CI job must pass `--record-failed-imports` for the failure to reach exit 3 (ADR 0017 Decision
+5). [`examples/ci/`](../examples/ci/README.md) holds a reference GitHub Actions workflow and a gate
+script that read these exit codes. A green job is not a FedRAMP determination.
+
 ## CycloneDX documents
 
 A file named `*.cdx.json`, or a bare `.json` file whose `bomFormat` is `CycloneDX`, is read as a
@@ -103,7 +145,7 @@ The command contract is 0 for success, 1 for failure, 3 when the output holds a 
 `VDR-CSO-FAV` record, and 2 only for an argparse usage error. Each flag answers for its own kind:
 a run exits 3 when `--record-failed-imports` recorded a failure or `--record-coverage-gaps`
 recorded a coverage gap, and once with both. The output is written first, and a publish that
-fails still exits 1.
+fails still exits 1. Every command's codes are under [Exit status](#exit-status).
 
 An entry whose `driftLikely` is `"unknown"` carries `VDR-TFR-PDD`, the shorter drift window, and
 raises WARNING `drift_likelihood_unknown` once per entry. The warning goes to standard error and

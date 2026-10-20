@@ -171,7 +171,8 @@ Target: 3–4 weeks
 - Expected-resource versus observed-resource coverage checks.
 - Scanner and validation freshness checks.
 - Change-triggered detection jobs.
-- CI-friendly exit criteria and a reference GitHub Actions workflow.
+- CI-friendly exit criteria and a reference GitHub Actions workflow. **Complete, 2026-10-20**
+  (ADR 0017). Overdue and KEV clocks do not fail a job yet.
 - Response-process and attestation failures: a broken remediation or response workflow, and a
   vulnerability whose detection time is never attested, each recorded as a reviewable case. Added
   2026-09-30 as a scope change from the deliverable below, because neither is an import failure

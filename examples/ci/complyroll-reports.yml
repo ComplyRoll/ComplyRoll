@@ -1,0 +1,52 @@
+# ComplyRoll reference workflow (ADR 0017). Copy this file to .github/workflows/ and
+# complyroll-gate.sh to examples/ci/complyroll-gate.sh in your repository, the path the gate
+# step runs, then point the inputs at your own artifacts.
+# Every action is pinned to a full commit SHA; inputs reach the gate only through env.
+name: ComplyRoll reports
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: complyroll-reports-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  reports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The fixed values below exist for the synthetic fixtures. In a recurring job, derive
+      # CR_FROM and CR_TO per run and drop CR_DETECTED_AT for timed sources (README).
+      CR_OUT: complyroll-reports
+      CR_CLASS: C
+      CR_PACKAGE_URI: https://example.test/cpo
+      CR_FROM: "2026-08-01T00:00:00Z"
+      CR_TO: "2026-08-31T23:59:59Z"
+      CR_AS_OF: "2026-08-21T12:00:00Z"       # unset: the gate takes one UTC now for every call
+      CR_DETECTED_AT: "2026-08-01T00:00:00Z" # an attestation true for this run only
+      CR_EVALUATIONS: examples/evaluations-accepted.json
+      CR_SYSTEM_RECORDS: fail                # or warn-gaps
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install ComplyRoll
+        run: python -m pip install "complyroll @ git+https://github.com/ComplyRoll/ComplyRoll@d2c41e38a65d33794fe739138568c670d30f6e4b"
+      - name: Compile, validate and gate
+        id: gate
+        run: sh examples/ci/complyroll-gate.sh tests/fixtures/ubuntu-host.cklb tests/fixtures/windows-host.ckl tests/fixtures/openscap-results.xml
+      - name: Upload reports
+        # On failure too, once the gate started; a run refused at its input checks uploads nothing.
+        if: always() && steps.gate.outputs.started == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: complyroll-reports
+          path: complyroll-reports/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1078,3 +1078,17 @@ Decision 17 handed `profile_not_loaded` to the coverage and freshness slice, whi
 without it. ADR 0013's amendment of 2026-10-19 resolves the failed case: a profile with `status`
 `failed` and no controls raises `execution_unsuccessful` and is this record's execution class. A
 skipped profile stays a WARNING.
+
+## Amendment 2026-10-20: the default stays opt-in (ADR 0017)
+
+The rejected alternative "Default-on" said the default of `--record-failed-imports` can flip with
+the CI exit criteria deliverable. ADR 0017 decides it: the flag stays opt-in, on `ingest` and on
+every stateless `report`, and no CI profile flag or environment variable sets it (ADR 0017
+Decision 4). A CI job passes the flag instead, and the reference workflow under `examples/ci/`
+always does (ADR 0017 Decision 5). Decision 3 is unchanged, so without the flag a fatal class
+still exits 1 with nothing written and an execution failure still stays WARNING
+`execution_unsuccessful` with exit 0. Decision 11 is unchanged, and ADR 0017 Decision 1 writes
+its exit statuses into one table.
+Why: flipping the default would change existing callers three ways, from exit 1 to a written
+report with exit 3, from 0 to 3, and on `ingest` from 0 to 1 for a failure a superseded stream
+holds, and would need a negation flag.

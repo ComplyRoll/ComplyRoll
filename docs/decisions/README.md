@@ -63,3 +63,7 @@ read a record's amendments before relying on it.
   on a `package` resource keyed by the subject's lineage and a version-free package key, a case
   is one CVE from one tool, an inventory or an empty list never verifies coverage, and a
   standalone VEX document is refused.
+- [ADR 0017: CI exit criteria and a reference workflow](0017-ci-exit-criteria.md): the exit
+  contract is one table and unchanged, a compiled report carrying an ERROR is never written, gaps
+  keep exit 3, both record flags stay opt-in, and a reference gate under `examples/ci/` reads exit
+  codes only.

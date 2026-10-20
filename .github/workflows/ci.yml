@@ -55,4 +55,6 @@ jobs:
       - name: Ruff
         run: ruff check src tests stigroll.py
       - name: Mypy
+        # Runs after a failed Ruff step too, so one run reports both gates.
+        if: ${{ !cancelled() }}
         run: mypy

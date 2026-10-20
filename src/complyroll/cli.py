@@ -1273,6 +1273,16 @@ def _publish(
 
     _write_diagnostics(stderr, report.diagnostics)
 
+    # A written report never carries an ERROR (ADR 0017 Decision 2). Every ERROR the
+    # compiler builds raises `ReportCompileError` first, so no current input gets here.
+    errors = sum(1 for item in report.diagnostics if item.level is DiagnosticLevel.ERROR)
+    if errors:
+        return _fail(
+            stderr,
+            "error_diagnostic_unpublished",
+            f"the compiled report carries {errors} ERROR diagnostic(s) and was not written",
+        )
+
     # Render everything before writing anything, so a failed second write cannot
     # leave a half-published pair of reports behind (ADR 0007 amendment).
     json_text = report.to_json()

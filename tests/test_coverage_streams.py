@@ -1093,6 +1093,10 @@ class CoverageAuditTests(StoreCase):
 
                 # The fingerprint covers no metadata, so the stream id still names the record.
                 self.assert_faults([(sequences[1], "coverage_identity_breach")], message)
+                # Every reader refuses what the audit names.
+                with self.assertRaises(HistoryError) as caught:
+                    rehydrate_observations(self.repository)
+                self.assertIn(message, str(caught.exception))
 
     def test_every_gap_the_builder_writes_passes_the_metadata_check(self) -> None:
         # Job-keyed, resource-keyed and sample-group windows, under MUST and SHOULD rules,
@@ -1297,6 +1301,54 @@ class CoverageStoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn(f"error: sequence {sequence}: {code}:", err)
         self.assertIn(message, err)
         self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_gap_metadata_its_writer_never_records_is_refused_by_verify_and_the_report(
+        self,
+    ) -> None:
+        # The head is the record's own, so only the record's metadata is wrong. On ecc382d
+        # the audit held force, job and basis to presence alone and never compared the
+        # anchor with the close, so each of these verified clean.
+        populated = self.database
+        source = self.observation[1]["source_metadata"]
+        shapes = {
+            "an anchor after the close": (
+                {"coverage.anchorAt": "2026-07-09T00:00:00Z"},
+                "which does not precede its window close",
+            ),
+            "a force that is none": ({"coverage.force": "MAYBE"}, "not a rule force"),
+            "another job": ({"coverage.job": "weekly-scan"}, "coverage.job is 'weekly-scan'"),
+            "another basis": ({"coverage.basis": "x"}, "not a basis its writer records"),
+        }
+        for index, (label, (edits, message)) in enumerate(shapes.items()):
+            with self.subTest(label):
+                self.copy_store(populated, f"gap-metadata-{index}.db")
+                observation = {**self.observation[1], "source_metadata": {**source, **edits}}
+                sequences = self.smuggle(
+                    self.stream_id, [self.head, ("observation.recorded", observation)]
+                )
+
+                self.assert_one_fault(sequences[1], "coverage_identity_breach", message)
+                code, out, err = run(
+                    [
+                        "report",
+                        "vdt",
+                        "--db",
+                        str(self.database),
+                        "--class",
+                        "C",
+                        "--package-uri",
+                        "https://example.test/cpo",
+                        "--from",
+                        "2026-08-01T00:00:00Z",
+                        "--to",
+                        "2026-08-31T23:59:59Z",
+                        "--as-of",
+                        "2026-08-21T12:00:00Z",
+                    ]
+                )
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("error: history_invalid: ", err)
+                self.assertIn(message, err)
 
     def test_a_whole_coverage_stream_verifies_and_its_gap_reaches_the_report(self) -> None:
         # Moved on purpose in PR 3 step 5: the fold reads the stream, so the report gains the

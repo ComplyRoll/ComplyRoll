@@ -2946,6 +2946,11 @@ class StoreHeaderTests(unittest.TestCase):
                 )
                 self.assertFalse(store._connection.in_transaction)
                 self.assertEqual(self.state(path), before)
+                # What the writer refuses, `store verify` names.
+                self.assertIn(
+                    ("migration_unexpected", str(caught.exception)),
+                    [(fault.code, fault.message) for fault in self.verify(path).faults],
+                )
 
     def test_an_append_that_needs_no_marking_is_not_refused_for_a_record_above(self) -> None:
         # The refusal guards the insert that would collide; an append the marker already

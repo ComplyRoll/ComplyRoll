@@ -338,6 +338,15 @@ def _attestation(cases: Sequence[CaseState]) -> DetectionAttestation:
     )
 
 
+def disposition_without_evaluation_message(tracking_id: str, status: str) -> str:
+    """Word a case that records a disposition and no evaluation, for the report and the audit."""
+
+    return (
+        f"{tracking_id} records disposition {status!r} with no evaluation, so the "
+        "disposition cannot be reported"
+    )
+
+
 def _evaluations(cases: Sequence[CaseState]) -> dict[str, EvaluationInput]:
     """Rebuild the compiler's evaluation input from each case's folded state.
 
@@ -364,10 +373,8 @@ def _evaluations(cases: Sequence[CaseState]) -> dict[str, EvaluationInput]:
                     ReportDiagnostic(
                         level=DiagnosticLevel.ERROR,
                         code="disposition_without_evaluation",
-                        message=(
-                            f"{case.tracking_id} records disposition "
-                            f"{case.disposition.status.value!r} with no evaluation, so the "
-                            "disposition cannot be reported"
+                        message=disposition_without_evaluation_message(
+                            case.tracking_id, case.disposition.status.value
                         ),
                         location=case.stream_id,
                     )
@@ -409,4 +416,5 @@ __all__ = [
     "compile_historical_report_from_history",
     "compile_record_set_from_history",
     "compile_vdt_report_from_history",
+    "disposition_without_evaluation_message",
 ]

@@ -1610,6 +1610,8 @@ COVERED_AUDIT_CODES = {
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    # Its library tests live in `tests/test_replay.py`, beside the report's refusal.
+    "disposition_without_evaluation",
     # The five coverage codes' `store verify` command tests live in
     # `tests/test_coverage_streams.py`.
     "coverage_identity_breach",
@@ -5919,6 +5921,59 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch:", err)
         self.assertIn(OTHER_UNKNOWN_CASE, err)
         self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_a_disposition_with_no_evaluation_is_named_and_exits_one(self) -> None:
+        # No case writer records one, but nothing refused it on the way in: `store verify`
+        # passed it, `cases correlate` extended it, and only a report refused it.
+        self.ingest_fixtures()
+        self.correlate()
+        self.attest_missing()
+        stream_id = f"case/{WINDOWS_CASE}"
+        with SQLiteEventStore(self.database) as store:
+            version = len(store.read_stream(stream_id))
+        sequence = self.smuggle(
+            "case.disposition_recorded",
+            {
+                "status": "fully_mitigated",
+                "closedDisposition": None,
+                "acceptanceRationale": None,
+                "recordedAt": INGESTED_AT,
+            },
+            stream_id=stream_id,
+            expected_version=version,
+        )
+        message = (
+            f"{WINDOWS_CASE} records disposition 'fully_mitigated' with no evaluation, so the "
+            "disposition cannot be reported"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(
+            f"error: sequence {sequence}: disposition_without_evaluation: {message}\n", err
+        )
+        self.assertIn("faults: 1 domain fault(s) in", err)
+        code, out, err = run(
+            [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(f"disposition_without_evaluation: {message}", err)
 
     def test_an_event_on_the_wrong_kind_of_stream_is_named_and_exits_one(self) -> None:
         # A `detection.attested` on an artifact stream is read by nobody: the fold reads

@@ -53,6 +53,7 @@ from complyroll.events import (
 )
 from complyroll.models import CaseStatus, Observation, PainRating
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction
+from complyroll.reports.replay import disposition_without_evaluation_message
 from complyroll.store import EventRecord
 
 ARTIFACT_INGESTED = "artifact.ingested"
@@ -79,6 +80,7 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "coverage_overfull",
     "coverage_schema_unmarked",
     "coverage_stream_mismatch",
+    "disposition_without_evaluation",
     "evaluation_before_detection",
     "event_metadata_invalid",
     "event_stream_mismatch",
@@ -616,6 +618,14 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     - `coverage_schema_unmarked`: a coverage stream in a store below schema 4, which a
       build that predates coverage streams would open and misread.
 
+    One fault names a case a report cannot carry:
+
+    - `disposition_without_evaluation`: a case stream recording a disposition and no
+      evaluation, at its last disposition, with the report's message. The disposition rides
+      on the evaluation, so the report refuses the store rather than drop the disposition;
+      no case writer records one, and the audit used to pass it (ADR 0008 amendment
+      2026-10-21).
+
     One fault orders the log's cases against the report rather than describing damage:
 
     - `evaluation_before_detection`: a case's current evaluation completed before the
@@ -655,6 +665,9 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     coverage_pairs: dict[str, dict[str, EventRecord]] = {}
     # Every case stream seen so far, so one whose id names no tracking id is named once.
     case_streams: set[str] = set()
+    # Per case stream: whether it records an evaluation, and its last readable disposition.
+    evaluated: set[str] = set()
+    dispositions: dict[str, EventRecord] = {}
     for record in repository.read_all():
         contract_faults = _contract_faults(repository, record)
         faults.extend(contract_faults)
@@ -680,6 +693,11 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
                 if not contract_faults and not identity_faults:
                     pair = failure_pairs.setdefault(record.stream_id, {})
                     pair.setdefault(record.event_type, record)
+        if is_case_stream(record.stream_id):
+            if record.event_type == CASE_EVALUATED:
+                evaluated.add(record.stream_id)
+            elif record.event_type == CASE_DISPOSITION_RECORDED and not contract_faults:
+                dispositions[record.stream_id] = record
         if is_coverage_stream(record.stream_id):
             shape = coverage_shapes.setdefault(record.stream_id, [record.sequence, 0, 0])
             if record.event_type == COVERAGE_RECORDED:
@@ -734,6 +752,7 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
             )
         )
     faults.extend(_coverage_schema_faults(repository, coverage_shapes))
+    faults.extend(_disposition_faults(dispositions, evaluated))
     for stream_id, (sequence, count) in declared.items():
         found = observed.get(stream_id, 0)
         if found == count:
@@ -1976,6 +1995,36 @@ def _contract_faults(
             ),
         )
     return ()
+
+
+def _disposition_faults(
+    dispositions: Mapping[str, EventRecord],
+    evaluated: Collection[str],
+) -> tuple[HistoryFault, ...]:
+    """Report each case stream that records a disposition and no evaluation.
+
+    The fault sits at the last disposition, the one a report names, in the report's words.
+    A stream whose id names no tracking id is `case_tracking_id_mismatch`'s business.
+    """
+
+    faults: list[HistoryFault] = []
+    for stream_id, record in dispositions.items():
+        if stream_id in evaluated:
+            continue
+        try:
+            tracking_id = tracking_id_from_stream(stream_id)
+        except ValueError:
+            continue
+        faults.append(
+            HistoryFault(
+                sequence=record.sequence,
+                code="disposition_without_evaluation",
+                message=disposition_without_evaluation_message(
+                    tracking_id, str(record.payload.get("status"))
+                ),
+            )
+        )
+    return tuple(faults)
 
 
 def _untracked_stream_message(stream_id: str, exc: ValueError) -> str:

@@ -29,6 +29,7 @@ from test_events import observation as artifact_observation
 from complyroll.correlation import group_open_observations
 from complyroll.events import (
     COVERAGE_ANCHOR_VALUES,
+    COVERAGE_BASIS_TEXTS,
     COVERAGE_METADATA_KEYS,
     COVERAGE_PARSER_NAME,
     COVERAGE_PARSER_VERSION,
@@ -71,7 +72,7 @@ from complyroll.history import (
 )
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, Observation
 from complyroll.policy import COVERAGE_RULE_IDS
-from complyroll.reports.coverage import MVX_RULE, PSD_RULE, AnchorKind
+from complyroll.reports.coverage import COVERAGE_BASIS, MVX_RULE, PSD_RULE, AnchorKind
 from complyroll.reports.gaps import (
     COVERAGE_GAP_METADATA_KEYS,
     COVERAGE_GAP_PARSER_NAME,
@@ -265,6 +266,9 @@ class CoverageIdentityConstantTests(unittest.TestCase):
         )
         self.assertTrue(COVERAGE_SOURCE_TYPE.startswith(RESERVED_SOURCE_TYPE_PREFIX))
         self.assertEqual(COVERAGE_METADATA_KEYS, COVERAGE_GAP_METADATA_KEYS)
+        # A reworded basis is added to the texts the audit accepts, never put in place of
+        # one: every gap a store already holds keeps the text it was recorded with.
+        self.assertIn(COVERAGE_BASIS, COVERAGE_BASIS_TEXTS)
         for record in coverage_gap_observations(fleet_result(), ingested_at=NOW):
             with self.subTest(context=record.context_key):
                 self.assertEqual(
@@ -1037,7 +1041,48 @@ class CoverageAuditTests(StoreCase):
                 {**source, "coverage.rule": "VDR-TFR-PDD"},
                 "coverage.rule is 'VDR-TFR-PDD'",
             ),
+            # The window runs from its anchor to its close, and a rule's timeframe is never
+            # empty, so the writer's anchor always precedes the close.
+            "an anchor at the close": (
+                {**source, "coverage.anchorAt": "2026-07-08T00:00:00Z"},
+                "coverage.anchorAt is '2026-07-08T00:00:00Z', which does not precede its "
+                "window close '2026-07-08T00:00:00Z'",
+            ),
+            "an anchor after the close": (
+                {**source, "coverage.anchorAt": "2026-07-09T00:00:00Z"},
+                "which does not precede its window close",
+            ),
+            "an anchor spelled with an offset": (
+                {**source, "coverage.anchorAt": "2026-07-01T00:00:00+00:00"},
+                "coverage.anchorAt is '2026-07-01T00:00:00+00:00', not an instant as its "
+                "writer spells one",
+            ),
+            "an anchor that is no instant": (
+                {**source, "coverage.anchorAt": "last week"},
+                "coverage.anchorAt is 'last week', not an instant as its writer spells one",
+            ),
+            "a force that is none": (
+                {**source, "coverage.force": "MAYBE"},
+                "coverage.force is 'MAYBE', not a rule force",
+            ),
+            "another job": (
+                {**source, "coverage.job": "weekly-scan"},
+                "coverage.job is 'weekly-scan', and its context key "
+                "'VDR-TFR-MVX:job:nightly-openscap' is not 'VDR-TFR-MVX:job:weekly-scan'",
+            ),
+            "no job": (
+                {**source, "coverage.job": ""},
+                "coverage.job is '', and its context key 'VDR-TFR-MVX:job:nightly-openscap' is "
+                "not 'VDR-TFR-MVX:resource:host:lab-01'",
+            ),
+            "another basis": (
+                {**source, "coverage.basis": "Coverage looked fine."},
+                "coverage.basis is 'Coverage looked fine.', not a basis its writer records",
+            ),
         }
+        self.assertEqual(
+            (source["coverage.job"], canonical["context_key"]), ("nightly-openscap", JOB_KEY)
+        )
         for label, (source_metadata, message) in shapes.items():
             with self.subTest(label):
                 self.setUp()
@@ -1048,6 +1093,24 @@ class CoverageAuditTests(StoreCase):
 
                 # The fingerprint covers no metadata, so the stream id still names the record.
                 self.assert_faults([(sequences[1], "coverage_identity_breach")], message)
+
+    def test_every_gap_the_builder_writes_passes_the_metadata_check(self) -> None:
+        # Job-keyed, resource-keyed and sample-group windows, under MUST and SHOULD rules,
+        # each anchored before its close: what the writer records is never a breach.
+        records = coverage_gap_observations(fleet_result(), ingested_at=NOW)
+        self.assertEqual(
+            {dict(record.source_metadata)["coverage.force"] for record in records},
+            {"MUST", "SHOULD"},
+        )
+        for record in records:
+            with self.subTest(context=record.context_key):
+                self.assertIsNone(
+                    coverage_record_problem(
+                        coverage_stream_id_of(record),
+                        "observation.recorded",
+                        record.to_canonical_dict(),
+                    )
+                )
 
     def test_a_gap_record_carrying_what_its_builder_never_writes_is_an_identity_breach(
         self,

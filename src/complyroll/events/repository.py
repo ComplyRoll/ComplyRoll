@@ -23,9 +23,14 @@ from jsonschema import Draft202012Validator
 from complyroll import __version__
 from complyroll.adapters.common import encode_list
 from complyroll.adapters.failures import (
+    DETECTION_FAILURE_PARSER_NAME,
+    DETECTION_FAILURE_PARSER_VERSION,
+    DETECTION_FAILURE_RECORD_ID,
     DETECTION_FAILURE_RULE,
+    DETECTION_FAILURE_SOURCE_TOOL,
     DETECTION_FAILURE_SOURCE_TYPE,
     FailureClass,
+    failure_class_for_codes,
 )
 from complyroll.models import (
     Observation,
@@ -33,6 +38,7 @@ from complyroll.models import (
     ObservationOrigin,
     SourceSeverity,
 )
+from complyroll.policy import RuleForce
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 
 from .contracts import (
@@ -138,6 +144,22 @@ COVERAGE_METADATA_KEYS: Final[tuple[str, ...]] = (
     "coverage.rule",
     "coverage.windowClosedAt",
 )
+
+#: Every `coverage.basis` text a gap record's writer has recorded, `reports.coverage`'s
+#: `COVERAGE_BASIS`. A reworded basis is added here, never put in place of one, so a gap
+#: recorded before the change still verifies.
+COVERAGE_BASIS_TEXTS: Final[tuple[str, ...]] = (
+    "VDR-TFR-MVX is read from detection results until Phase 3 validation runs exist. "
+    "Coverage is measured against the provider-supplied inventory named by its SHA-256 "
+    "digest, so an observed resource the inventory omits is listed as unregistered and is "
+    "never expected. Evidence that determined no status (NOT_REVIEWED, ERROR or UNKNOWN) "
+    "examines a resource without verifying it, untimed evidence never anchors a clock, and a "
+    "non-machine resource is verified only by an operator attestation. A current status is "
+    "not a compliance finding.",
+)
+
+#: The forces a coverage rule's clock can carry, the policy's own vocabulary.
+_RULE_FORCE_VALUES: Final = frozenset(member.value for member in RuleForce)
 
 #: How a coverage head names what its gap record names. The context key is the record's
 #: own field; the rest are its metadata.
@@ -755,16 +777,20 @@ def failure_identity_breach(
     A failure stream id names the digest of the bytes and the parser whose reading failed
     (ADR 0014). Its head names the same three things, so the two have to agree, exactly as
     an artifact stream's do. Its one observation is the system record that failure mints:
-    origin `system`, source type `complyroll.detection-process`, context key and resource
-    id `sha256:<digest>`, and named by its derived id. The reader accepts a system
-    observation under any identifier, so the derived id is checked here rather than
-    assumed; a payload whose fingerprint is not its own is the reader's refusal to make.
+    origin `system`, source type `complyroll.detection-process`, the builder's record id,
+    tool, and parser, context key and resource id `sha256:<digest>`, and named by its
+    derived id. The reader accepts a system observation under any identifier, so the
+    derived id is checked here rather than assumed; a payload whose fingerprint is not its
+    own is the reader's refusal to make. The fields the builder fixes and the fingerprint
+    does not cover are checked as a gap record's are: disposition `open`, severity
+    `unknown`, no source identifier or artifact, and the one evidence id `sha256:<digest>`.
 
     The record's metadata is checked too, because the fingerprint covers none of it and
     replay renders `detectionFailures` from it: exactly `FAILURE_METADATA_KEYS`, the digest,
-    parser, and version the stream id names, a size spelled as a count, and a failure
-    class, code list, clock, and rule from their vocabularies. Whether it agrees with the
-    head takes both events, which is `failure_record_disagreement`'s business.
+    parser, and version the stream id names, a size spelled as a count, a failure class,
+    code list, clock, and rule from their vocabularies, and the class its codes name.
+    Whether it agrees with the head takes both events, which is
+    `failure_record_disagreement`'s business.
 
     A hold's head is held to its stream id exactly as a recorded head is (ADR 0014,
     amendment 2026-10-13): the fold reads the parser and version of either from its head,
@@ -937,10 +963,19 @@ def _failure_metadata_problem(
         return f"its metadata artifact.sizeBytes is {_shown(size)}, not a count"
     if raw["failure.class"] not in _FAILURE_CLASS_VALUES:
         return f"its metadata failure.class is {_shown(raw['failure.class'])}, not a failure class"
-    if decode_failure_codes(raw["failure.codes"]) is None:
+    codes = decode_failure_codes(raw["failure.codes"])
+    if codes is None:
         return (
             f"its metadata failure.codes is {_shown(raw['failure.codes'])}, not the compact JSON "
             "array of sorted, distinct failure codes its writer stores"
+        )
+    # The classifier derives the class from the codes, so a class they do not name is one no
+    # reading was minted under, and the class decides which reading supersedes which.
+    named = failure_class_for_codes(codes).value
+    if raw["failure.class"] != named:
+        return (
+            f"its metadata failure.class is {_shown(raw['failure.class'])}, and its "
+            f"failure.codes {_shown(raw['failure.codes'])} are those of class {named!r}"
         )
     if raw["failure.clock"] not in FAILURE_CLOCK_VALUES:
         return f"its metadata failure.clock is {_shown(raw['failure.clock'])}, not a failure clock"
@@ -963,6 +998,13 @@ def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | Non
         return f"its origin is {_shown(payload.get('origin'))}"
     if payload.get("source_type") != DETECTION_FAILURE_SOURCE_TYPE:
         return f"its source type is {_shown(payload.get('source_type'))}"
+    if payload.get("source_record_id") != DETECTION_FAILURE_RECORD_ID:
+        return f"its source record id is {_shown(payload.get('source_record_id'))}"
+    if payload.get("source_tool") != DETECTION_FAILURE_SOURCE_TOOL:
+        return f"its source tool is {_shown(payload.get('source_tool'))}"
+    parser = (payload.get("parser_name"), payload.get("parser_version"))
+    if parser != (DETECTION_FAILURE_PARSER_NAME, DETECTION_FAILURE_PARSER_VERSION):
+        return f"its parser is {_shown(parser[0])} version {_shown(parser[1])}"
     if payload.get("context_key") != reference:
         return f"its context key is {_shown(payload.get('context_key'))}"
     if resource_id != reference:
@@ -972,6 +1014,22 @@ def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | Non
             f"its id is {_shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
             f"{_shown(derived)}"
         )
+    # The builder fixes these, as it fixes a gap record's, and a report reads each of them
+    # back from the record: a record edited to `pass` drops out of `detectionFailures`.
+    if payload.get("disposition") != ObservationDisposition.OPEN.value:
+        return f"its disposition is {_shown(payload.get('disposition'))}"
+    if payload.get("source_severity") != SourceSeverity.UNKNOWN.value:
+        return f"its source severity is {_shown(payload.get('source_severity'))}"
+    if payload.get("source_identifiers") != []:
+        return f"its source identifiers are {_shown(payload.get('source_identifiers'))}"
+    # NOTE: The observation contract refuses either artifact field on a system record first,
+    # so on a store path these two answer only a direct call.
+    if payload.get("source_artifact_digest") != "":
+        return f"its source artifact digest is {_shown(payload.get('source_artifact_digest'))}"
+    if payload.get("source_artifact_name") != "":
+        return f"its source artifact name is {_shown(payload.get('source_artifact_name'))}"
+    if payload.get("evidence_ids") != [reference]:
+        return f"its evidence ids are {_shown(payload.get('evidence_ids'))}"
     return None
 
 
@@ -1164,8 +1222,11 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
 
     Exactly the eight keys, and the two that restate the record's identity agree with it:
     the window close is the instant the record is observed at, and the rule leads its
-    context key. The record's one evidence id names the inventory digest. The rest are what
-    the head names, which `coverage_record_disagreement` holds them to.
+    context key. The record's one evidence id names the inventory digest. The anchor is an
+    instant spelled as the writer spells it and precedes the close, the force is a rule
+    force, the job is the one the context key names (empty when the key names the record's
+    resource), and the basis is a text the writer records. The head names the anchor too,
+    which `coverage_record_disagreement` holds it to.
     """
 
     raw = payload.get("source_metadata")
@@ -1197,7 +1258,52 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
             f"its evidence ids are {_shown(payload.get('evidence_ids'))}, where its metadata "
             f"coverage.inventorySha256 names {_shown(evidence)}"
         )
+    # The window runs from its anchor to its close, and no rule's timeframe is empty.
+    anchor_at = _canonical_instant(raw["coverage.anchorAt"])
+    if anchor_at is None:
+        return (
+            f"its metadata coverage.anchorAt is {_shown(raw['coverage.anchorAt'])}, not an "
+            "instant as its writer spells one"
+        )
+    if observed_text is None or anchor_at >= parse_utc(observed_text):
+        return (
+            f"its metadata coverage.anchorAt is {_shown(raw['coverage.anchorAt'])}, which does "
+            f"not precede its window close {_shown(observed_text)}"
+        )
+    if raw["coverage.force"] not in _RULE_FORCE_VALUES:
+        return f"its metadata coverage.force is {_shown(raw['coverage.force'])}, not a rule force"
+    # A job names the case its context key keys the gap to; with none, the resource does.
+    job = raw["coverage.job"]
+    resource = payload.get("resource")
+    subject = (
+        (resource.get("resource_type"), resource.get("resource_id"))
+        if isinstance(resource, Mapping)
+        else (None, None)
+    )
+    keyed = f"{rule}:job:{job}" if job else f"{rule}:resource:{subject[0]}:{subject[1]}"
+    if context_key != keyed:
+        return (
+            f"its metadata coverage.job is {_shown(job)}, and its context key "
+            f"{_shown(context_key)} is not {_shown(keyed)}"
+        )
+    if raw["coverage.basis"] not in COVERAGE_BASIS_TEXTS:
+        return (
+            f"its metadata coverage.basis is {_shown(raw['coverage.basis'])}, not a basis its "
+            "writer records"
+        )
     return None
+
+
+def _canonical_instant(value: Any) -> datetime | None:
+    """Return an instant spelled exactly as `iso_utc` spells it, or None for any other text."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = parse_utc(value)
+    except ValueError:
+        return None
+    return parsed if iso_utc(parsed) == value else None
 
 
 def duplicate_observation_message(stream_id: str, observation_id: str) -> str:
@@ -1359,6 +1465,7 @@ def _json_pointer(parts: Any) -> str:
 
 __all__ = [
     "ARTIFACT_IDENTITY_KEYS",
+    "COVERAGE_BASIS_TEXTS",
     "COVERAGE_METADATA_KEYS",
     "COVERAGE_PARSER_NAME",
     "COVERAGE_PARSER_VERSION",

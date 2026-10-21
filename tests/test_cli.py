@@ -5781,19 +5781,36 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
         self.assertEqual((head["failureClass"], head["clock"]), ("parse", "as-of"))
         metadata = observation["source_metadata"]
-        for index, (label, key, value, head_key) in enumerate(
+        for index, (label, edits, key, head_key) in enumerate(
             (
-                ("another class", "failure.class", "content", "failureClass"),
-                ("other codes", "failure.codes", '["no_observations"]', "failureCodes"),
-                ("another clock", "failure.clock", "invocation", "clock"),
-                ("another name", "artifact.name", "other.sarif", "name"),
-                ("another size", "artifact.sizeBytes", "1", "sizeBytes"),
-                ("another media type", "artifact.mediaType", "text/plain", "mediaType"),
+                # Each record keeps a class its own codes name, so only the head disagrees.
+                (
+                    "another class",
+                    {"failure.class": "content", "failure.codes": '["no_observations"]'},
+                    "failure.class",
+                    "failureClass",
+                ),
+                (
+                    "other codes",
+                    {"failure.codes": '["artifact_parse_failed","no_observations"]'},
+                    "failure.codes",
+                    "failureCodes",
+                ),
+                ("another clock", {"failure.clock": "invocation"}, "failure.clock", "clock"),
+                ("another name", {"artifact.name": "other.sarif"}, "artifact.name", "name"),
+                ("another size", {"artifact.sizeBytes": "1"}, "artifact.sizeBytes", "sizeBytes"),
+                (
+                    "another media type",
+                    {"artifact.mediaType": "text/plain"},
+                    "artifact.mediaType",
+                    "mediaType",
+                ),
             )
         ):
             with self.subTest(shape=label):
                 self.copy_store(populated, f"pair-{index}.db")
-                damaged = {**observation, "source_metadata": {**metadata, key: value}}
+                value = edits[key]
+                damaged = {**observation, "source_metadata": {**metadata, **edits}}
                 sequences = self.smuggle_failure(
                     stream_id,
                     [("failure.recorded", head), ("observation.recorded", damaged)],
@@ -5804,6 +5821,67 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                     f"failure stream {stream_id!r} records {head_key} {head[head_key]!r} in its "
                     f"failure.recorded and {key} {value!r} in its system record",
                 )
+
+    def test_a_system_record_carrying_what_its_builder_never_writes_is_named_and_exits_one(
+        self,
+    ) -> None:
+        # The derived id is read from the stored fingerprint, so each copy below keeps it.
+        # A record edited to `pass` used to verify clean and then drop out of
+        # `detectionFailures`, the report printing one vulnerability fewer.
+        self.populate()
+        populated = self.database
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        evidence = f"sha256:{head['sha256']}"
+        self.assertEqual(observation["evidence_ids"], [evidence])
+        other = f"sha256:{'d' * 64}"
+        for index, (field, value, expected) in enumerate(
+            (
+                ("disposition", "pass", "its disposition is 'pass'"),
+                ("source_severity", "high", "its source severity is 'high'"),
+                (
+                    "source_identifiers",
+                    ["CVE-2099-0001"],
+                    "its source identifiers are ['CVE-2099-0001']",
+                ),
+                ("evidence_ids", [other], f"its evidence ids are [{other!r}]"),
+                ("evidence_ids", [evidence, other], "its evidence ids are"),
+            )
+        ):
+            with self.subTest(field=field, value=value):
+                self.copy_store(populated, f"fixed-{index}.db")
+                sequences = self.smuggle_failure(
+                    stream_id,
+                    [
+                        ("failure.recorded", head),
+                        ("observation.recorded", {**observation, field: value}),
+                    ],
+                )
+
+                self.assert_one_failure_mismatch(sequences[1], expected)
+
+    def test_a_failure_class_its_codes_do_not_name_is_named_and_exits_one(self) -> None:
+        # The head and the record agree, so the disagreement check passes them, and the
+        # class decides which reading supersedes which.
+        self.populate()
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        self.assertEqual(
+            (head["failureClass"], head["failureCodes"]), ("parse", ["artifact_parse_failed"])
+        )
+        forged = {**head, "failureClass": "content"}
+        metadata = {**observation["source_metadata"], "failure.class": "content"}
+        sequences = self.smuggle_failure(
+            stream_id,
+            [
+                ("failure.recorded", forged),
+                ("observation.recorded", {**observation, "source_metadata": metadata}),
+            ],
+        )
+
+        self.assert_one_failure_mismatch(
+            sequences[1],
+            "its metadata failure.class is 'content', and its failure.codes "
+            "'[\"artifact_parse_failed\"]' are those of class 'parse'",
+        )
 
     def test_a_failure_stream_opened_by_its_observation_is_named_and_exits_one(self) -> None:
         # Both events are exactly what the writer records, in the wrong order: the writer

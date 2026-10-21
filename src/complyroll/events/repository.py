@@ -29,6 +29,7 @@ from complyroll.adapters.failures import (
     DETECTION_FAILURE_RULE,
     DETECTION_FAILURE_SOURCE_TOOL,
     DETECTION_FAILURE_SOURCE_TYPE,
+    DETECTION_FAILURE_TITLE,
     FailureClass,
     failure_class_for_codes,
 )
@@ -143,6 +144,18 @@ COVERAGE_METADATA_KEYS: Final[tuple[str, ...]] = (
     "coverage.job",
     "coverage.rule",
     "coverage.windowClosedAt",
+)
+
+#: A gap record's title and description, `reports.gaps`' `COVERAGE_GAP_TITLE` and
+#: `COVERAGE_GAP_DESCRIPTION`, unchanged since the first build that could store a gap record.
+#: The report prints the title, built from the rule, the resource and the window close.
+COVERAGE_TITLE: Final = (
+    "{rule} window for {resource_type}:{resource_id} closed {closed_at} "
+    f"with no verification recorded ({DETECTION_FAILURE_RULE})"
+)
+COVERAGE_DESCRIPTION: Final = (
+    "ComplyRoll recorded no verification for this resource inside the window; this records "
+    "the absence of a verification, not a vulnerability."
 )
 
 #: Every `coverage.basis` text a gap record's writer has recorded, `reports.coverage`'s
@@ -783,7 +796,8 @@ def failure_identity_breach(
     derived id is checked here rather than assumed; a payload whose fingerprint is not its
     own is the reader's refusal to make. The fields the builder fixes and the fingerprint
     does not cover are checked as a gap record's are: disposition `open`, severity
-    `unknown`, no source identifier or artifact, and the one evidence id `sha256:<digest>`.
+    `unknown`, no source identifier or artifact, the title built from the digest, an empty
+    description, and the one evidence id `sha256:<digest>`.
 
     The record's metadata is checked too, because the fingerprint covers none of it and
     replay renders `detectionFailures` from it: exactly `FAILURE_METADATA_KEYS`, the digest,
@@ -1022,6 +1036,11 @@ def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | Non
         return f"its source severity is {_shown(payload.get('source_severity'))}"
     if payload.get("source_identifiers") != []:
         return f"its source identifiers are {_shown(payload.get('source_identifiers'))}"
+    # The report prints the title as the vulnerability description.
+    if payload.get("title") != DETECTION_FAILURE_TITLE.format(digest=digest):
+        return f"its title is {_shown(payload.get('title'))}"
+    if payload.get("description") != "":
+        return f"its description is {_shown(payload.get('description'))}"
     # NOTE: The observation contract refuses either artifact field on a system record first,
     # so on a store path these two answer only a direct call.
     if payload.get("source_artifact_digest") != "":
@@ -1097,11 +1116,12 @@ def coverage_record_problem(
     A coverage stream id is its gap record's fingerprint (ADR 0015), so either event on a
     stream whose id names none is a `coverage_stream_mismatch`. The record must be the gap
     record a closed window mints: origin `system`, the coverage source type, tool, parser,
-    and record id, its derived id, disposition `open`, severity `unknown`, and no source
-    identifier or artifact, else a `coverage_identity_breach`; the gap record whose
-    fingerprint the stream names, else a `coverage_stream_mismatch`; and exactly
-    `COVERAGE_METADATA_KEYS`, with the window close and rule its own identity names and the
-    one evidence id its inventory digest names, else a `coverage_identity_breach`. The
+    and record id, its derived id, disposition `open`, severity `unknown`, the builder's
+    description, and no source identifier or artifact, else a `coverage_identity_breach`;
+    the gap record whose fingerprint the stream names, else a `coverage_stream_mismatch`; and
+    exactly `COVERAGE_METADATA_KEYS`, with the window close and rule its own identity names,
+    the one evidence id its inventory digest names, and the values `_gap_metadata_problem`
+    holds, the title included, else a `coverage_identity_breach`. The
     fingerprint covers none of the fixed fields, so they are checked here. The repository
     refuses each at append with the message, and the audit reports each under its code.
     Whether the head agrees with the record takes both events, which is
@@ -1208,6 +1228,8 @@ def _gap_record_problem(payload: Mapping[str, Any]) -> str | None:
         return f"its source severity is {_shown(payload.get('source_severity'))}"
     if payload.get("source_identifiers") != []:
         return f"its source identifiers are {_shown(payload.get('source_identifiers'))}"
+    if payload.get("description") != COVERAGE_DESCRIPTION:
+        return f"its description is {_shown(payload.get('description'))}"
     # NOTE: The observation contract refuses either artifact field on a system record first,
     # so on a store path these two answer only a direct call.
     if payload.get("source_artifact_digest") != "":
@@ -1225,7 +1247,8 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
     context key. The record's one evidence id names the inventory digest. The anchor is an
     instant spelled as the writer spells it and precedes the close, the force is a rule
     force, the job is the one the context key names (empty when the key names the record's
-    resource), and the basis is a text the writer records. The head names the anchor too,
+    resource), the title is the one the rule, the resource and the close build, and the
+    basis is a text the writer records. The head names the anchor too,
     which `coverage_record_disagreement` holds it to.
     """
 
@@ -1286,6 +1309,15 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
             f"its metadata coverage.job is {_shown(job)}, and its context key "
             f"{_shown(context_key)} is not {_shown(keyed)}"
         )
+    # The title restates the rule, the resource and the close, so it is checked once they are.
+    title = COVERAGE_TITLE.format(
+        rule=rule,
+        resource_type=subject[0],
+        resource_id=subject[1],
+        closed_at=raw["coverage.windowClosedAt"],
+    )
+    if payload.get("title") != title:
+        return f"its title is {_shown(payload.get('title'))}"
     if raw["coverage.basis"] not in COVERAGE_BASIS_TEXTS:
         return (
             f"its metadata coverage.basis is {_shown(raw['coverage.basis'])}, not a basis its "
@@ -1466,12 +1498,14 @@ def _json_pointer(parts: Any) -> str:
 __all__ = [
     "ARTIFACT_IDENTITY_KEYS",
     "COVERAGE_BASIS_TEXTS",
+    "COVERAGE_DESCRIPTION",
     "COVERAGE_METADATA_KEYS",
     "COVERAGE_PARSER_NAME",
     "COVERAGE_PARSER_VERSION",
     "COVERAGE_RECORD_ID",
     "COVERAGE_SOURCE_TOOL",
     "COVERAGE_SOURCE_TYPE",
+    "COVERAGE_TITLE",
     "FAILURE_HEAD_TYPES",
     "MAX_BATCH_EVENTS",
     "METADATA_KEYS",

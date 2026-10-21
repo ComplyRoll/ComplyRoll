@@ -302,8 +302,10 @@ rules bind from this date.
   fraction digits, and a `Z`. Reads and `store verify` refuse any other text, another offset
   or a missing fraction included, with the reason and never the value: `store_integrity` on
   read, the new fault `event_timestamp_invalid` in `store verify`. A text that does not parse,
-  has no offset, or is not stored as text is refused the same way, where it used to be refused
-  on read with no sequence and passed by `store verify`. Reads refuse as well as verify because
+  has no offset, or is not stored as text is refused the same way; it used to be refused on read
+  with no sequence and to end `store verify` in that same bare `store_integrity` refusal, with no
+  fault code or sequence. Only another spelling of a parsed instant, such as a `+14:00` offset,
+  read and verified clean. Reads refuse as well as verify because
   every other append rule is applied on both paths and the format admits no row `append` wrote.
   This supersedes the 2026-10-03 sentence that both columns are parsed, not checked. A timestamp
   rewritten to another instant in the same form still reads, as "What the payload digest does

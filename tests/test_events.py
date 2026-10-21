@@ -2425,6 +2425,8 @@ class FailureStreamIdentityTests(unittest.TestCase):
             ),
             ("another evidence id", "/evidence_ids", [other], f"its evidence ids are [{other!r}]"),
             ("no evidence id", "/evidence_ids", [], "its evidence ids are []"),
+            ("another title", "/title", "FORGED", "its title is 'FORGED'"),
+            ("a description", "/description", "x", "its description is 'x'"),
             (
                 "a second evidence id",
                 "/evidence_ids",

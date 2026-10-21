@@ -5847,6 +5847,9 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                 ),
                 ("evidence_ids", [other], f"its evidence ids are [{other!r}]"),
                 ("evidence_ids", [evidence, other], "its evidence ids are"),
+                # The report prints the title as the vulnerability description.
+                ("title", "FORGED FAILURE TITLE", "its title is 'FORGED FAILURE TITLE'"),
+                ("description", "x", "its description is 'x'"),
             )
         ):
             with self.subTest(field=field, value=value):
@@ -6045,8 +6048,9 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
     def test_a_case_stream_naming_no_tracking_id_is_refused_by_every_reader(self) -> None:
         # Its id is `case/` and then no tracking id. No event on it is `case.created`, so
-        # the placement check had nothing to say, and verify, `cases list`, a report and
-        # `cases evaluate` each ended in a ValueError traceback when they folded it.
+        # the placement check had nothing to say, and verify, `cases list`, a report,
+        # `cases evaluate` and `cases attest-detection` each ended in a ValueError traceback
+        # when they folded it.
         self.populate()
         stream_id = "case/not-a-valid-id"
         sequence = self.smuggle(
@@ -6090,6 +6094,17 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                 str(self.database),
                 "--evaluations",
                 str(EXAMPLES / "evaluations.json"),
+            ],
+            "cases attest-detection": [
+                "cases",
+                "attest-detection",
+                "--db",
+                str(self.database),
+                "--all-missing",
+                "--detected-at",
+                ATTESTED_AT,
+                "--rationale",
+                RATIONALE,
             ],
             "report vdt": [
                 "report",

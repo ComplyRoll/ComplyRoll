@@ -30,6 +30,7 @@ from complyroll.correlation import group_open_observations
 from complyroll.events import (
     COVERAGE_ANCHOR_VALUES,
     COVERAGE_BASIS_TEXTS,
+    COVERAGE_DESCRIPTION,
     COVERAGE_METADATA_KEYS,
     COVERAGE_PARSER_NAME,
     COVERAGE_PARSER_VERSION,
@@ -40,6 +41,7 @@ from complyroll.events import (
     COVERAGE_SOURCE_TYPE,
     COVERAGE_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_SCHEMA_VERSION,
+    COVERAGE_TITLE,
     FAILURE_HELD,
     HELD_FAILURE_SCHEMA_VERSION,
     EventContractError,
@@ -74,12 +76,14 @@ from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, Observation
 from complyroll.policy import COVERAGE_RULE_IDS
 from complyroll.reports.coverage import COVERAGE_BASIS, MVX_RULE, PSD_RULE, AnchorKind
 from complyroll.reports.gaps import (
+    COVERAGE_GAP_DESCRIPTION,
     COVERAGE_GAP_METADATA_KEYS,
     COVERAGE_GAP_PARSER_NAME,
     COVERAGE_GAP_PARSER_VERSION,
     COVERAGE_GAP_RECORD_ID,
     COVERAGE_GAP_SOURCE_TOOL,
     COVERAGE_GAP_SOURCE_TYPE,
+    COVERAGE_GAP_TITLE,
     coverage_gap_observations,
 )
 from complyroll.store import (
@@ -119,6 +123,9 @@ FIXED_FIELD_EDITS: dict[str, tuple[Any, str]] = {
     "source_severity": ("high", "its source severity is 'high'"),
     "source_identifiers": (["CVE-2099-0001"], "its source identifiers are ['CVE-2099-0001']"),
     "evidence_ids": ([f"sha256:{'d' * 64}"], f"its evidence ids are ['sha256:{'d' * 64}']"),
+    # The report prints both; the title is built from the rule, the resource and the close.
+    "title": ("Nothing to see here", "its title is 'Nothing to see here'"),
+    "description": ("x", "its description is 'x'"),
 }
 #: The two artifact fields a gap record leaves empty. The observation contract refuses either
 #: on any system record before the identity check reads the payload.
@@ -269,6 +276,10 @@ class CoverageIdentityConstantTests(unittest.TestCase):
         # A reworded basis is added to the texts the audit accepts, never put in place of
         # one: every gap a store already holds keeps the text it was recorded with.
         self.assertIn(COVERAGE_BASIS, COVERAGE_BASIS_TEXTS)
+        self.assertEqual(
+            (COVERAGE_TITLE, COVERAGE_DESCRIPTION),
+            (COVERAGE_GAP_TITLE, COVERAGE_GAP_DESCRIPTION),
+        )
         for record in coverage_gap_observations(fleet_result(), ingested_at=NOW):
             with self.subTest(context=record.context_key):
                 self.assertEqual(
@@ -1326,6 +1337,44 @@ class CoverageStoreVerifyCommandTests(PersistedStoreTestCase):
                 sequences = self.smuggle(
                     self.stream_id, [self.head, ("observation.recorded", observation)]
                 )
+
+                self.assert_one_fault(sequences[1], "coverage_identity_breach", message)
+                code, out, err = run(
+                    [
+                        "report",
+                        "vdt",
+                        "--db",
+                        str(self.database),
+                        "--class",
+                        "C",
+                        "--package-uri",
+                        "https://example.test/cpo",
+                        "--from",
+                        "2026-08-01T00:00:00Z",
+                        "--to",
+                        "2026-08-31T23:59:59Z",
+                        "--as-of",
+                        "2026-08-21T12:00:00Z",
+                    ]
+                )
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("error: history_invalid: ", err)
+                self.assertIn(message, err)
+
+    def test_a_gap_record_carrying_another_title_or_description_is_refused_everywhere(
+        self,
+    ) -> None:
+        # The fingerprint covers neither, and the report prints the title as the
+        # vulnerability description, so an edited one used to verify and reach the report.
+        populated = self.database
+        for index, field in enumerate(("title", "description")):
+            with self.subTest(field):
+                self.copy_store(populated, f"gap-text-{index}.db")
+                observation = {**self.observation[1], field: "FORGED"}
+                sequences = self.smuggle(
+                    self.stream_id, [self.head, ("observation.recorded", observation)]
+                )
+                message = f"its {field} is 'FORGED'"
 
                 self.assert_one_fault(sequences[1], "coverage_identity_breach", message)
                 code, out, err = run(

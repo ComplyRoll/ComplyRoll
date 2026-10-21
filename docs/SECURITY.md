@@ -258,8 +258,9 @@ those three match, and a test pins it.
   the record, rather than failing on SQLite's unique constraint.
 - `store verify` reports a case stream whose id names no tracking id
   (`case_tracking_id_mismatch`) and a case that records a disposition and no evaluation
-  (`disposition_without_evaluation`). Every report from the store, `cases list` and
-  `cases evaluate` refuse the first as `history_invalid`, and every report refuses the second.
+  (`disposition_without_evaluation`). Every report from the store, `cases list`,
+  `cases evaluate` and `cases attest-detection` refuse the first as `history_invalid`, and every
+  report refuses the second.
 - Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
 - A failure stream (ADR 0014) is appended in the same transaction that marks the store schema
   version 2, so the marker and the failure commit or roll back together. A hold, a failure stream
@@ -274,14 +275,13 @@ those three match, and a test pins it.
   `failure_overfull`), a head or observation that does not match its stream, an observation whose
   metadata is not what its writer stores (a failure class its codes do not name included), an
   observation carrying a field its writer fixes otherwise (disposition, severity, source
-  identifiers, or an evidence id other than the digest's own), a stream its observation opens, or a
-  head and observation
-  that describe two different failures (`failure_stream_mismatch`), a hold whose observation no
-  `failure.recorded` stream holds first (`failure_hold_orphaned`), and a stream that does not
-  open with `failure.held` holding a system observation another failure stream of the digest
-  already holds (`failure_duplicate_observation`). The head checks treat `failure.recorded` and
-  `failure.held` alike. Except for the unmarked store, `report --db` refuses each of these rather
-  than rendering it.
+  identifiers, title, description, or an evidence id other than the digest's own), a stream its
+  observation opens, or a head and observation that describe two different failures
+  (`failure_stream_mismatch`), a hold whose observation no `failure.recorded` stream holds first
+  (`failure_hold_orphaned`), and a stream that does not open with `failure.held` holding a system
+  observation another failure stream of the digest already holds (`failure_duplicate_observation`).
+  The head checks treat `failure.recorded` and `failure.held` alike. Except for the unmarked store,
+  `report --db` refuses each of these rather than rendering it.
 
 These controls protect against application mistakes and detectable corruption. They do not make a
 database file tamper-proof against a user with direct filesystem write access. File permissions,

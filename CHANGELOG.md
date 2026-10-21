@@ -7,13 +7,16 @@ All notable project changes will be documented here.
 ### Fixed
 
 - A case stream whose id names no tracking id, such as `case/foo`, no longer ends
-  `store verify`, `report ... --db`, `cases list` or `cases evaluate` in a `ValueError`
-  traceback. The readers refuse it as `history_invalid` and `store verify` reports it as
-  `case_tracking_id_mismatch`, once per stream (ADR 0008 amendment 2026-10-21).
+  `store verify`, `report ... --db`, `cases list`, `cases evaluate` or
+  `cases attest-detection` in a `ValueError` traceback. The readers refuse it as
+  `history_invalid` and `store verify` reports it as `case_tracking_id_mismatch`, once per
+  stream (ADR 0008 amendment 2026-10-21).
 - A detection failure's system record edited to disposition `pass`, to a severity, to a source
   identifier, or to an evidence id other than its digest's own no longer verifies clean and
-  drops out of `detectionFailures`. `store verify` reports each as `failure_stream_mismatch`
-  and every report from the store refuses it, as a gap record's fixed fields already were.
+  drops out of `detectionFailures`, and one edited to another title or a description no longer
+  verifies clean and prints the edited title in the report. `store verify` reports each as
+  `failure_stream_mismatch` and every report from the store refuses it, as a gap record's fixed
+  fields already were.
 - A store whose schema marker was lowered below a migration record no longer ends
   `ingest --record-failed-imports` in `store_unavailable` "UNIQUE constraint failed". The
   append that would mark the store refuses it, naming the record and the marker, and changes
@@ -507,8 +510,8 @@ All notable project changes will be documented here.
     (`failure_stream_mismatch`).
   - A coverage gap record whose `coverage.anchorAt` does not precede its window close, whose
     `coverage.force` is not a rule force, whose `coverage.job` is not the job its context key
-    names, or whose `coverage.basis` is not a text its writer records
-    (`coverage_identity_breach`).
+    names, whose `coverage.basis` is not a text its writer records, or whose title or
+    description is not the one its builder writes (`coverage_identity_breach`).
   - A case that records a disposition and no evaluation, which every report already refused
     (new audit fault `disposition_without_evaluation`).
 - The thirty files that were not `ruff format` clean are reformatted, once, with no other change:

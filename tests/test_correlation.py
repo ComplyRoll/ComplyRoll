@@ -137,9 +137,7 @@ class GroupingTests(unittest.TestCase):
             _observation(source_record_id="V-1", resource_id="host-a", title="Ignored"),
             title="",
         )
-        titled = _observation(
-            source_record_id="V-1", resource_id="host-b", title="The rule title"
-        )
+        titled = _observation(source_record_id="V-1", resource_id="host-b", title="The rule title")
 
         forward = group_open_observations((untitled, titled))
         backward = group_open_observations((titled, untitled))

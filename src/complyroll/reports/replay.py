@@ -391,9 +391,7 @@ def _evaluations(cases: Sequence[CaseState]) -> dict[str, EvaluationInput]:
             tracking_id=case.provider_tracking_id,
             is_false_positive=current.is_false_positive,
             disposition=None if disposition is None else disposition.status,
-            closed_disposition=(
-                None if disposition is None else disposition.closed_disposition
-            ),
+            closed_disposition=(None if disposition is None else disposition.closed_disposition),
             projected_next_reduction=current.projected_next_reduction,
             pain_reduction_events=tuple(item.event for item in case.pain_reductions),
             supplementary_risk_information=current.supplementary_risk_information,

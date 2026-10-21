@@ -186,9 +186,7 @@ def _snapshot_from_bytes(
     if not isinstance(info, dict):
         raise PolicySourceError("rule source is missing the info object")
     if info.get("version") != manifest.dataset_version:
-        raise PolicySourceIntegrityError(
-            "rule-source version does not match the pinned manifest"
-        )
+        raise PolicySourceIntegrityError("rule-source version does not match the pinned manifest")
     if info.get("last_updated") != manifest.dataset_last_updated:
         raise PolicySourceIntegrityError(
             "rule-source last_updated does not match the pinned manifest"

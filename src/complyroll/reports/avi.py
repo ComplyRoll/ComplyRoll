@@ -78,9 +78,7 @@ class CompiledAviReport:
     def to_json(self, indent: int = 2) -> str:
         """Return the official JSON document with a stable key order."""
 
-        return (
-            json.dumps(self.document, indent=indent, sort_keys=True, ensure_ascii=False) + "\n"
-        )
+        return json.dumps(self.document, indent=indent, sort_keys=True, ensure_ascii=False) + "\n"
 
     def to_markdown(self) -> str:
         """Return the human-readable twin, derived from the same records."""

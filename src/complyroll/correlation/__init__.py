@@ -64,9 +64,7 @@ class VulnerabilityGroup:
         cannot move that instant earlier with evidence (ADR 0007 amendment).
         """
 
-        return (
-            self.earliest_observed_at is not None and bool(self.untimestamped_observation_ids)
-        )
+        return self.earliest_observed_at is not None and bool(self.untimestamped_observation_ids)
 
     @property
     def detection_source(self) -> str:

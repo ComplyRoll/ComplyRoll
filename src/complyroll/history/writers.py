@@ -291,9 +291,7 @@ def record_ingest(
     if artifact is None or ingest_result.errors:
         raise HistoryError("only a successful ingest can be recorded as history")
     with _transaction_scope(repository):
-        return _record_ingest(
-            repository, ingest_result, metadata=metadata, ingested_at=ingested_at
-        )
+        return _record_ingest(repository, ingest_result, metadata=metadata, ingested_at=ingested_at)
 
 
 def _record_ingest(
@@ -1000,9 +998,7 @@ def _apply_evaluations(
         latest_disposition = _latest_payload(records, CASE_DISPOSITION_RECORDED)
         if disposition is None:
             if latest_disposition is not None:
-                warnings.append(
-                    _disposition_retained_warning(case, entry, latest_disposition)
-                )
+                warnings.append(_disposition_retained_warning(case, entry, latest_disposition))
         elif latest_disposition is not None and content_digest(
             CASE_DISPOSITION_RECORDED, latest_disposition
         ) == content_digest(CASE_DISPOSITION_RECORDED, disposition):
@@ -1070,8 +1066,7 @@ def _match_cases(
         previous = claimed.get(case.tracking_id)
         if previous is not None:
             problems.append(
-                f"{entry.location}: {case.tracking_id} is already evaluated by "
-                f"{previous.location}"
+                f"{entry.location}: {case.tracking_id} is already evaluated by {previous.location}"
             )
             continue
         claimed[case.tracking_id] = entry
@@ -1249,15 +1244,12 @@ def _stream_ingested_at(head: EventRecord) -> datetime:
 
     value = head.payload.get("ingestedAt")
     if not isinstance(value, str):
-        raise HistoryError(
-            f"artifact event at sequence {head.sequence} declares no ingestedAt"
-        )
+        raise HistoryError(f"artifact event at sequence {head.sequence} declares no ingestedAt")
     try:
         return parse_utc(value)
     except ValueError as exc:
         raise HistoryError(
-            f"artifact event at sequence {head.sequence} declares an unreadable "
-            f"ingestedAt: {exc}"
+            f"artifact event at sequence {head.sequence} declares an unreadable ingestedAt: {exc}"
         ) from exc
 
 
@@ -1283,9 +1275,7 @@ def _matches(entry: EvaluationInput, case: CaseState) -> bool:
         return False
     if entry.match.context_key is not None and entry.match.context_key != case.context_key:
         return False
-    return not (
-        entry.match.source_type is not None and entry.match.source_type != case.source_type
-    )
+    return not (entry.match.source_type is not None and entry.match.source_type != case.source_type)
 
 
 def _case_created_payload(group: VulnerabilityGroup, now: datetime) -> dict[str, Any]:

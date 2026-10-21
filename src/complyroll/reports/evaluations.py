@@ -337,9 +337,7 @@ def _parse_match(value: Any, prefix: str) -> EvaluationMatch:
         raise ReportInputError(f"{prefix}.match must be an object")
     _reject_unknown_keys(value, _MATCH_KEYS, f"{prefix}.match")
     return EvaluationMatch(
-        source_record_id=_parse_text(
-            value.get("sourceRecordId"), f"{prefix}.match.sourceRecordId"
-        ),
+        source_record_id=_parse_text(value.get("sourceRecordId"), f"{prefix}.match.sourceRecordId"),
         context_key=_parse_optional_text(value.get("contextKey"), f"{prefix}.match.contextKey"),
         source_type=_parse_optional_text(value.get("sourceType"), f"{prefix}.match.sourceType"),
     )
@@ -484,8 +482,7 @@ def _parse_json_bounded(content: bytes) -> Any:
         raise TypeError("content must be bytes")
     if len(content) > MAX_EVALUATIONS_BYTES:
         raise ReportInputError(
-            f"evaluations file is {len(content)} bytes; "
-            f"maximum is {MAX_EVALUATIONS_BYTES} bytes"
+            f"evaluations file is {len(content)} bytes; maximum is {MAX_EVALUATIONS_BYTES} bytes"
         )
 
     def reject_nonstandard_constant(value: str) -> None:

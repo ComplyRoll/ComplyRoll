@@ -157,9 +157,7 @@ class ObservationTests(unittest.TestCase):
     def test_artifact_fingerprint_recipe_is_frozen(self) -> None:
         observation = sample_observation()
         self.assertEqual(observation.fingerprint, SAMPLE_ARTIFACT_FINGERPRINT)
-        self.assertEqual(
-            observation.derived_observation_id, f"obs-{SAMPLE_ARTIFACT_FINGERPRINT}"
-        )
+        self.assertEqual(observation.derived_observation_id, f"obs-{SAMPLE_ARTIFACT_FINGERPRINT}")
 
     def test_default_origin_is_artifact(self) -> None:
         self.assertIs(sample_observation().origin, ObservationOrigin.ARTIFACT)

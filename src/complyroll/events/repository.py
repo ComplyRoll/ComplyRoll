@@ -498,9 +498,7 @@ class EventRepository:
             }
         for observation_id in incoming:
             if observation_id in seen:
-                raise EventContractError(
-                    duplicate_observation_message(stream_id, observation_id)
-                )
+                raise EventContractError(duplicate_observation_message(stream_id, observation_id))
             seen.add(observation_id)
         if not is_failure_stream(stream_id):
             return
@@ -558,9 +556,7 @@ class EventRepository:
         records: list[EventRecord] = []
         after = 0
         while True:
-            page = self._store.read_stream(
-                stream_id, after_version=after, limit=READ_PAGE_SIZE
-            )
+            page = self._store.read_stream(stream_id, after_version=after, limit=READ_PAGE_SIZE)
             if not page:
                 break
             records.extend(page)
@@ -600,9 +596,7 @@ class EventRepository:
             return validator
         schema = schema_for(event_type, event_version)
         if schema is None:
-            published = ", ".join(
-                f"{name} v{version}" for name, version in sorted(EVENT_CONTRACTS)
-            )
+            published = ", ".join(f"{name} v{version}" for name, version in sorted(EVENT_CONTRACTS))
             raise EventContractError(
                 f"no published contract for event {event_type!r} version {event_version}; "
                 f"published contracts are: {published}"
@@ -658,8 +652,7 @@ def metadata_breaches(metadata: Mapping[str, Any]) -> tuple[str, ...]:
         problems.append(f"method must be one of {', '.join(METHOD_VALUES)}")
     if "runId" in metadata and not _is_run_identifier(metadata["runId"]):
         problems.append(
-            f"runId must be {RUN_ID_PREFIX!r} followed by a canonical lowercase "
-            "version-4 UUID"
+            f"runId must be {RUN_ID_PREFIX!r} followed by a canonical lowercase version-4 UUID"
         )
     return tuple(problems)
 
@@ -943,20 +936,14 @@ def _failure_metadata_problem(
     if not isinstance(size, str) or _COUNT_TEXT.fullmatch(size) is None:
         return f"its metadata artifact.sizeBytes is {_shown(size)}, not a count"
     if raw["failure.class"] not in _FAILURE_CLASS_VALUES:
-        return (
-            f"its metadata failure.class is {_shown(raw['failure.class'])}, not a failure "
-            "class"
-        )
+        return f"its metadata failure.class is {_shown(raw['failure.class'])}, not a failure class"
     if decode_failure_codes(raw["failure.codes"]) is None:
         return (
             f"its metadata failure.codes is {_shown(raw['failure.codes'])}, not the compact JSON "
             "array of sorted, distinct failure codes its writer stores"
         )
     if raw["failure.clock"] not in FAILURE_CLOCK_VALUES:
-        return (
-            f"its metadata failure.clock is {_shown(raw['failure.clock'])}, not a failure "
-            "clock"
-        )
+        return f"its metadata failure.clock is {_shown(raw['failure.clock'])}, not a failure clock"
     if raw["failure.rule"] != DETECTION_FAILURE_RULE:
         return (
             f"its metadata failure.rule is {_shown(raw['failure.rule'])}, "

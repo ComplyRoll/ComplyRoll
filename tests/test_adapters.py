@@ -152,9 +152,7 @@ class StigAdapterTests(unittest.TestCase):
 
     def test_ckl_and_xccdf_statuses_are_normalized(self) -> None:
         ckl = ingest_stig_artifact(FIXTURES / "windows-host.ckl", ingested_at=FIRST_INGEST)
-        xccdf = ingest_stig_artifact(
-            FIXTURES / "openscap-results.xml", ingested_at=FIRST_INGEST
-        )
+        xccdf = ingest_stig_artifact(FIXTURES / "openscap-results.xml", ingested_at=FIRST_INGEST)
 
         self.assertTrue(ckl.successful)
         self.assertEqual(
@@ -195,9 +193,7 @@ class StigAdapterTests(unittest.TestCase):
         self.assertNotIn("source_timestamp_missing", {item.code for item in result.warnings})
 
     def test_cci_revision_selection_does_not_revive_retired_mapping(self) -> None:
-        mapping_result = load_cci_control_map(
-            FIXTURES / "cci-list.xml", ingested_at=FIRST_INGEST
-        )
+        mapping_result = load_cci_control_map(FIXTURES / "cci-list.xml", ingested_at=FIRST_INGEST)
         self.assertTrue(mapping_result.successful)
         assert mapping_result.mapping is not None
         self.assertEqual(mapping_result.mapping.controls_for("CCI-000366"), ("CM-6",))
@@ -205,9 +201,7 @@ class StigAdapterTests(unittest.TestCase):
         self.assertEqual(mapping_result.mapping.controls_for("CCI-003627"), ("AC-2",))
 
     def test_cci_mapping_projects_controls_without_changing_observation(self) -> None:
-        mapping_result = load_cci_control_map(
-            FIXTURES / "cci-list.xml", ingested_at=FIRST_INGEST
-        )
+        mapping_result = load_cci_control_map(FIXTURES / "cci-list.xml", ingested_at=FIRST_INGEST)
         assert mapping_result.mapping is not None
         result = ingest_stig_artifact(FIXTURES / "windows-host.ckl", ingested_at=FIRST_INGEST)
         self.assertEqual(result.observations[0].source_identifiers, ("CCI-000366",))
@@ -854,18 +848,14 @@ class ParserVersionIndependenceTests(unittest.TestCase):
     def test_artifact_provenance_uses_the_adapter_version(self) -> None:
         self.assertEqual(self._versions(FIXTURES / "ubuntu-host.cklb"), {CKLB_PARSER_VERSION})
         self.assertEqual(self._versions(FIXTURES / "windows-host.ckl"), {CKL_PARSER_VERSION})
-        self.assertEqual(
-            self._versions(FIXTURES / "openscap-results.xml"), {XCCDF_PARSER_VERSION}
-        )
+        self.assertEqual(self._versions(FIXTURES / "openscap-results.xml"), {XCCDF_PARSER_VERSION})
         self.assertEqual(self._versions(ARF_FIXTURE), {XCCDF_PARSER_VERSION})
         self.assertEqual(self._versions(SARIF_FIXTURE), {SARIF_PARSER_VERSION})
         self.assertEqual(self._versions(HDF_FIXTURE), {HDF_PARSER_VERSION})
         self.assertEqual(self._versions(HDF_OVERLAY_FIXTURE), {HDF_PARSER_VERSION})
 
     def test_bumping_one_adapter_leaves_the_others_untouched(self) -> None:
-        ckl_before = ingest_stig_artifact(
-            FIXTURES / "windows-host.ckl", ingested_at=FIRST_INGEST
-        )
+        ckl_before = ingest_stig_artifact(FIXTURES / "windows-host.ckl", ingested_at=FIRST_INGEST)
         xccdf_before = ingest_stig_artifact(
             FIXTURES / "openscap-results.xml", ingested_at=FIRST_INGEST
         )

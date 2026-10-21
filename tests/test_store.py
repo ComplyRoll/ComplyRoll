@@ -153,6 +153,7 @@ def move_event_to_another_stream(path: Path, sequence: int, stream_id: str) -> N
         )
         connection.execute(restore)
 
+
 def retype_sequence_as_text(path: Path) -> None:
     """Rebuild `events` with `sequence` declared TEXT, then store the text `'x'` in one row.
 
@@ -539,7 +540,7 @@ class SQLiteEventStoreTests(unittest.TestCase):
         with closing(raw_connection(self.database_path)) as connection:
             connection.execute("DROP TRIGGER events_reject_update")
             connection.execute(
-                "UPDATE events SET payload_json = '{\"case_id\":\"altered\"}' WHERE event_id = ?",
+                'UPDATE events SET payload_json = \'{"case_id":"altered"}\' WHERE event_id = ?',
                 ("evt-001",),
             )
             for statement in TRIGGER_STATEMENTS:
@@ -897,14 +898,10 @@ class StoreTransactionTests(unittest.TestCase):
             self.assertLess(elapsed, 2.0)
             self.assertEqual(contender.read_all(), ())
 
-        appended = contender.append(
-            "case/case-002", [sample_event("evt-2")], expected_version=0
-        )
+        appended = contender.append("case/case-002", [sample_event("evt-2")], expected_version=0)
 
         self.assertEqual(appended[0].sequence, 2)
-        self.assertEqual(
-            [record.event_id for record in contender.read_all()], ["evt-1", "evt-2"]
-        )
+        self.assertEqual([record.event_id for record in contender.read_all()], ["evt-1", "evt-2"])
 
     def test_a_second_transaction_cannot_start_while_one_is_open(self) -> None:
         holder = self.open_store()
@@ -1178,8 +1175,7 @@ class TamperEvidenceTests(unittest.TestCase):
         with closing(self._raw()) as raw:
             raw.execute("DROP TRIGGER events_reject_update")
             raw.execute(
-                "CREATE TRIGGER events_reject_update BEFORE UPDATE ON events BEGIN "
-                "SELECT 1; END"
+                "CREATE TRIGGER events_reject_update BEFORE UPDATE ON events BEGIN SELECT 1; END"
             )
         with self.assertRaisesRegex(UnsupportedSchemaError, "do not match"):
             SQLiteEventStore(self.database_path)
@@ -1493,8 +1489,7 @@ class VerifyHistoryTests(unittest.TestCase):
         with closing(raw_connection(path)) as connection:
             connection.execute("DROP TRIGGER events_reject_update")
             connection.execute(
-                "CREATE TRIGGER events_reject_update BEFORE UPDATE ON events "
-                "BEGIN SELECT 1; END"
+                "CREATE TRIGGER events_reject_update BEFORE UPDATE ON events BEGIN SELECT 1; END"
             )
 
     def alter_index(self, path: Path) -> None:
@@ -2027,7 +2022,6 @@ class VerifyHistoryTests(unittest.TestCase):
                     store.close()
 
                 self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before)
-
 
 
 class StoredValueRefusalTests(unittest.TestCase):

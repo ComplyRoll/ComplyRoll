@@ -103,8 +103,7 @@ def _require_enum(value: object, enum_type: type[EnumT], field_name: str) -> Enu
     if not isinstance(value, enum_type):
         article = "an" if enum_type.__name__[0] in "AEIOU" else "a"
         raise TypeError(
-            f"{field_name} must be {article} {enum_type.__name__}, "
-            f"got {type(value).__name__}"
+            f"{field_name} must be {article} {enum_type.__name__}, got {type(value).__name__}"
         )
     return value
 
@@ -242,8 +241,7 @@ def _canonical_timestamp(value: object, field_name: str) -> datetime:
         raise ValueError(f"{field_name} must include a UTC offset, got {text!r}")
     if offset % timedelta(minutes=1):
         raise ValueError(
-            f"{field_name} must use a UTC offset of a whole number of minutes, "
-            f"got {text!r}"
+            f"{field_name} must use a UTC offset of a whole number of minutes, got {text!r}"
         )
     canonical = parsed.isoformat()
     if canonical != text:
@@ -515,9 +513,7 @@ class Observation:
         """
 
         if not isinstance(value, Mapping):
-            raise TypeError(
-                f"canonical observation must be a mapping, got {type(value).__name__}"
-            )
+            raise TypeError(f"canonical observation must be a mapping, got {type(value).__name__}")
         _require_exact_keys(value, CANONICAL_OBSERVATION_KEYS, "canonical observation")
 
         resource = value["resource"]
@@ -535,9 +531,7 @@ class Observation:
             source_record_id=_canonical_text(value["source_record_id"], "source_record_id"),
             resource=ResourceRef(
                 resource_id=_canonical_text(resource["resource_id"], "resource.resource_id"),
-                resource_type=_canonical_text(
-                    resource["resource_type"], "resource.resource_type"
-                ),
+                resource_type=_canonical_text(resource["resource_type"], "resource.resource_type"),
             ),
             observed_at=(
                 None if observed_at is None else _canonical_timestamp(observed_at, "observed_at")
@@ -674,9 +668,7 @@ class VulnerabilityCase:
         if not isinstance(evaluation, Evaluation):
             raise TypeError(f"evaluation must be an Evaluation, got {type(evaluation).__name__}")
         if self.status in {CaseStatus.ACCEPTED, CaseStatus.CLOSED} and not reopen:
-            raise ValueError(
-                f"re-evaluating a {self.status.value} case requires reopen=True"
-            )
+            raise ValueError(f"re-evaluating a {self.status.value} case requires reopen=True")
         history = self.evaluation_history
         if self.current_evaluation is not None:
             history = (*history, self.current_evaluation)

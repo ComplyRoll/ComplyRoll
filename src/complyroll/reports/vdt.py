@@ -113,9 +113,7 @@ FINAL_DISPOSITIONS: dict[CaseStatus, str] = {
     CaseStatus.REMEDIATED: "Remediated",
     CaseStatus.FALSE_POSITIVE: "False Positive",
 }
-ACTIVE_STATUSES = frozenset(
-    {CaseStatus.NEW, CaseStatus.EVALUATING, CaseStatus.ACTIVE}
-)
+ACTIVE_STATUSES = frozenset({CaseStatus.NEW, CaseStatus.EVALUATING, CaseStatus.ACTIVE})
 
 _EVALUATION_RULE = "VER-TFR-EVU"
 _RESPONSE_RULE = "VDR-TFR-PVR"
@@ -464,9 +462,7 @@ class CompiledVulnerability:
                     "targetRating": int(evaluation.projected_next_reduction.target_rating),
                 }
             if evaluation.supplementary_risk_information is not None:
-                value["supplementaryRiskInformation"] = (
-                    evaluation.supplementary_risk_information
-                )
+                value["supplementaryRiskInformation"] = evaluation.supplementary_risk_information
             # Official since Common Definitions 0.3.0 (ADR 0009); the extension carried
             # this list while the report schemas had no slot for it.
             if evaluation.pain_reduction_events:
@@ -554,9 +550,7 @@ class CompiledVdtReport:
     def to_json(self, indent: int = 2) -> str:
         """Return the official JSON document with a stable key order."""
 
-        return (
-            json.dumps(self.document, indent=indent, sort_keys=True, ensure_ascii=False) + "\n"
-        )
+        return json.dumps(self.document, indent=indent, sort_keys=True, ensure_ascii=False) + "\n"
 
     def to_markdown(self) -> str:
         """Return the human-readable twin, derived from the same records."""
@@ -1562,9 +1556,7 @@ def _attested_instant(records: Sequence[CompiledVulnerability]) -> datetime | No
     """
 
     instants = {
-        record.detected_at
-        for record in records
-        if record.detected_at_source == "attestation"
+        record.detected_at for record in records if record.detected_at_source == "attestation"
     }
     if len(instants) != 1:
         return None
@@ -1586,8 +1578,7 @@ def _attestation_groups(
             continue
         grouped.setdefault(record.detected_at, []).append(record.tracking_id)
     return tuple(
-        (instant, tuple(sorted(tracking_ids)))
-        for instant, tracking_ids in sorted(grouped.items())
+        (instant, tuple(sorted(tracking_ids))) for instant, tracking_ids in sorted(grouped.items())
     )
 
 
@@ -2278,20 +2269,14 @@ def _period_exclusion_reason(
 
     period_from, period_to = period
     if record.detected_at > period_to:
-        return (
-            f"was detected {_iso(record.detected_at)}, after the period ended "
-            f"{_iso(period_to)}"
-        )
+        return f"was detected {_iso(record.detected_at)}, after the period ended {_iso(period_to)}"
     if not record.has_disposition:
         return None
     if any(period_from <= instant <= period_to for instant in record.activity_instants):
         return None
     if state is None:
         state = f"has disposition {record.final_disposition!r}"
-    return (
-        f"{state} and no recorded activity between "
-        f"{_iso(period_from)} and {_iso(period_to)}"
-    )
+    return f"{state} and no recorded activity between {_iso(period_from)} and {_iso(period_to)}"
 
 
 def _build_record(
@@ -2559,10 +2544,7 @@ def _optional_adoption_notice(snapshot: RuleSourceSnapshot, as_of: datetime) -> 
         rendered = " and ".join(
             f"{value} ({document})" for document, value in sorted(dates.items())
         )
-    return (
-        "The VDR and VER rulesets are in their optional-adoption period until "
-        f"{rendered}."
-    )
+    return f"The VDR and VER rulesets are in their optional-adoption period until {rendered}."
 
 
 def _obtain_dates(snapshot: RuleSourceSnapshot) -> dict[str, str]:
@@ -2888,11 +2870,7 @@ def _vulnerability_row(item: CompiledVulnerability) -> str:
                 _flag(evaluation.is_internet_reachable) if evaluation else "n/a",
                 _flag(evaluation.is_likely_exploitable) if evaluation else "n/a",
                 item.current_rating.name if item.current_rating else "n/a",
-                (
-                    f"{_iso(next_due.due_at)} ({_cell(next_due.rule_id)})"
-                    if next_due
-                    else "n/a"
-                ),
+                (f"{_iso(next_due.due_at)} ({_cell(next_due.rule_id)})" if next_due else "n/a"),
                 _flag(item.is_overdue),
                 _cell(_disposition_label(item)),
             )
@@ -3309,10 +3287,7 @@ def _write_detail(
     write("")
     write(f"- **Description:** {_cell(item.description)}")
     write(f"- **Detection source:** {_cell(item.detection_source)}")
-    write(
-        f"- **Detected at:** {_iso(item.detected_at)} "
-        f"(source: {_cell(item.detected_at_source)})"
-    )
+    write(f"- **Detected at:** {_iso(item.detected_at)} (source: {_cell(item.detected_at_source)})")
     _write_observation_ids(write, item)
     resources = ", ".join(
         f"{_cell(resource.resource_type)} {_cell(resource.resource_id)}"
@@ -3336,10 +3311,7 @@ def _write_detail(
             f"**likely exploitable:** {_flag(evaluation.is_likely_exploitable)}; "
             f"**PAIN:** {evaluation.pain.name}"
         )
-        write(
-            "- **Potential agency impact:** "
-            f"{_cell(evaluation.potential_agency_impact)}"
-        )
+        write(f"- **Potential agency impact:** {_cell(evaluation.potential_agency_impact)}")
         write(f"- **Rationale:** {_cell(evaluation.rationale)}")
         if evaluation.supplementary_risk_information is not None:
             write(
@@ -3491,9 +3463,7 @@ def _require_absolute_http_uri(value: object) -> None:
         raise ValueError("package_uri must be non-blank text")
     parts = urlsplit(value)
     if parts.scheme not in {"http", "https"} or not parts.netloc:
-        raise ValueError(
-            "package_uri must be an absolute http or https URI, got " f"{value!r}"
-        )
+        raise ValueError(f"package_uri must be an absolute http or https URI, got {value!r}")
 
 
 __all__ = [

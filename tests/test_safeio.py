@@ -184,9 +184,7 @@ class XmlDeclarationRejectionTests(unittest.TestCase):
 
     def test_external_doctype_is_rejected(self) -> None:
         self.assert_rejected(
-            b'<?xml version="1.0"?>'
-            b'<!DOCTYPE CHECKLIST SYSTEM "file:///etc/passwd">'
-            b"<CHECKLIST/>"
+            b'<?xml version="1.0"?><!DOCTYPE CHECKLIST SYSTEM "file:///etc/passwd"><CHECKLIST/>'
         )
 
     def test_entity_bomb_is_rejected_as_unsafe_xml(self) -> None:
@@ -550,13 +548,13 @@ class LoneSurrogateTests(unittest.TestCase):
     def test_a_valid_surrogate_pair_escape_still_parses(self) -> None:
         value = parse_json_bounded(b'{"a":"\\ud83d\\ude00"}')
 
-        self.assertEqual(value, {"a": "\U0001F600"})
+        self.assertEqual(value, {"a": "\U0001f600"})
         self.assertIsInstance(value["a"].encode("utf-8"), bytes)
 
     def test_a_literal_astral_plane_character_still_parses_in_keys_and_values(self) -> None:
-        payload = '{"key \U0001F600":"\U0001F600 value"}'.encode()
+        payload = '{"key \U0001f600":"\U0001f600 value"}'.encode()
 
-        self.assertEqual(parse_json_bounded(payload), {"key \U0001F600": "\U0001F600 value"})
+        self.assertEqual(parse_json_bounded(payload), {"key \U0001f600": "\U0001f600 value"})
 
     def test_a_lone_surrogate_checklist_is_a_failed_parse_not_a_later_crash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -582,7 +580,7 @@ class LoneSurrogateTests(unittest.TestCase):
 
         self.assertTrue(result.successful, result.errors)
         self.assertEqual(len(result.observations), 1)
-        self.assertEqual(result.observations[0].description, "broken \U0001F600 text")
+        self.assertEqual(result.observations[0].description, "broken \U0001f600 text")
         self.assertIsInstance(result.to_canonical_json().encode("utf-8"), bytes)
 
 

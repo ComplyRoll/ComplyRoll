@@ -37,7 +37,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ComplyRoll
-        run: python -m pip install "complyroll @ git+https://github.com/ComplyRoll/ComplyRoll@d2c41e38a65d33794fe739138568c670d30f6e4b"
+        run: python -m pip install "complyroll @ git+https://github.com/ComplyRoll/ComplyRoll@c763eff1cdac4f3f35ba754291c1c2eeb14c6bfd"
       - name: Compile, validate and gate
         id: gate
         run: sh examples/ci/complyroll-gate.sh tests/fixtures/ubuntu-host.cklb tests/fixtures/windows-host.ckl tests/fixtures/openscap-results.xml

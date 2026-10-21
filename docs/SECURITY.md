@@ -362,8 +362,10 @@ ADR 0006 documents the first runtime dependency: the active, MIT-licensed `jsons
 2020-12 implementation with its non-GPL format extra. The extra resolves to roughly nineteen
 distributions, of which only `rfc3339-validator` (date-time) and `rfc3986-validator` (uri) back
 the formats ComplyRoll requires; narrowing the dependency to those two packages, committing a
-hashed lock file, and generating an SBOM are open items tracked in `CHANGELOG.md`. The major
-version is bounded; release builds must lock, scan, and inventory the resolved dependency graph.
+hashed lock file, and generating an SBOM are still open. The major version is bounded; release
+builds must lock, scan, and inventory the resolved dependency graph. `referencing`, which
+`jsonschema` already requires and which the same maintainer publishes, is declared directly
+because the schema loader imports it; declaring it adds no distribution to the resolved graph.
 ComplyRoll owns the offline registry boundary so the validator never retrieves a schema referenced
 by untrusted or mutable content. If a GPL-licensed `rfc3987` package is installed alongside,
 `jsonschema` prefers it for the `uri` format; keep it out of deployment environments.

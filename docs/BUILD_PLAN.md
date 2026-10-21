@@ -36,11 +36,11 @@ ComplyRoll is not initially:
 - An automatic risk acceptance authority.
 - An AI system that independently assigns PAIN or declares KSI compliance.
 
-## Phase 0 — Harden the existing ingestion kernel
+## Phase 0: Harden the existing ingestion kernel
 
-Target: 1–2 weeks
+Target: 1 to 2 weeks
 
-**Status: Complete — 2026-08-18**
+**Status: Complete, 2026-08-18**
 
 ### Deliverables
 
@@ -78,11 +78,12 @@ Target: 1–2 weeks
 - Synthetic CKLB, CKL, XCCDF, and CCI fixtures plus predecessor-generated golden files verify
   compatibility without customer data.
 
-## Phase 1 — VDR case engine and official VER exports
+## Phase 1: VDR case engine and official VER exports
 
-Target: 3–4 weeks
+Target: 3 to 4 weeks
 
-**Status: Complete, 2026-09-05** (started 2026-08-20; closed by ADR 0010 with the accepted-vulnerability and historical-activity reports)
+**Status: Complete, 2026-09-05** (started 2026-08-20; closed by ADR 0010 with the
+accepted-vulnerability and historical-activity reports)
 
 ### Current progress
 
@@ -126,8 +127,9 @@ closed as done: information resource records and response action records (the
 the KEV clock, the reporting recurrence clocks (the compiler emits no clock for `VER-TFR-MHR` or
 `VER-TFR-MRH`; ADR 0007 Decision 6 and ADR 0010 Decision 5 record that the cadence is the
 operator's), and HTML output (each report ships a Markdown twin only). The KEV clock has since
-landed with Phase 2's CISA KEV enrichment (ADR 0012), so four of the five are still carried. Rating changes ship as the PAIN reduction events on each vulnerability
-detail rather than as a record of their own.
+landed with Phase 2's CISA KEV enrichment (ADR 0012), so four of the five are still carried.
+Rating changes ship as the PAIN reduction events on each vulnerability detail rather than as a
+record of their own.
 
 ### CLI
 
@@ -156,9 +158,9 @@ complyroll deadlines --db <store>
 - JSON and human-readable totals reconcile exactly. **Met** (both renderers read one record list;
   a reconciliation test asserts the totals).
 
-## Phase 2 — Automation, detection coverage, and change integration
+## Phase 2: Automation, detection coverage, and change integration
 
-Target: 3–4 weeks
+Target: 3 to 4 weeks
 
 ### Deliverables
 
@@ -168,8 +170,8 @@ Target: 3–4 weeks
 - HDF adapter (InSpec exec-json, native and `saf convert`). **Complete, 2026-09-29** (ADR 0013).
 - Initial cloud, container, or CSPM JSON adapter selected from design-partner demand.
 - Git/deployment change-event ingestion.
-- Expected-resource versus observed-resource coverage checks.
-- Scanner and validation freshness checks.
+- Expected-resource versus observed-resource coverage checks. **Complete, 2026-10-16** (ADR 0015).
+- Scanner and validation freshness checks. **Complete, 2026-10-16** (ADR 0015).
 - Change-triggered detection jobs.
 - CI-friendly exit criteria and a reference GitHub Actions workflow. **Complete, 2026-10-20**
   (ADR 0017). Overdue and KEV clocks do not fail a job yet.
@@ -178,12 +180,12 @@ Target: 3–4 weeks
   2026-09-30 as a scope change from the deliverable below, because neither is an import failure
   and each needs inputs of its own (ADR 0014 Decision 17).
 - System-generated observations for failed imports, stale coverage, missing resources, or broken
-  response workflows. **Partially complete, 2026-09-30** (ADR 0014): detection process failures
-  shipped, so with `--record-failed-imports` an artifact that cannot be parsed, holds no usable
-  content, or reports a failed scanner invocation becomes a system observation and a case on both
-  paths, and the run exits 3. Stale coverage and missing resources shipped with the coverage and
-  freshness checks above on 2026-10-16 (ADR 0015), and broken response workflows belong to the
-  deliverable above.
+  response workflows. **Complete, 2026-10-16** (ADR 0014, ADR 0015): detection process
+  failures shipped on 2026-09-30, so with `--record-failed-imports` an artifact that cannot be
+  parsed, holds no usable content, or reports a failed scanner invocation becomes a system
+  observation and a case on both paths, and the run exits 3. Stale coverage and missing
+  resources shipped with the coverage and freshness checks above on 2026-10-16 (ADR 0015), and
+  broken response workflows belong to the deliverable above.
 - Carried from Phase 1 as a scope change: information resource and response action records, the
   reporting recurrence clocks, and HTML report output. The KEV clock shipped with the KEV
   enrichment above.
@@ -204,9 +206,9 @@ Target: 3–4 weeks
 - New or significantly changed resources can trigger a scoped detection request.
 - A case can group equivalent observations while retaining every affected resource.
 
-## Phase 3 — KSI validation and Security Decision Record evidence
+## Phase 3: KSI validation and Security Decision Record evidence
 
-Target: 4–6 weeks
+Target: 4 to 6 weeks
 
 ### Deliverables
 
@@ -227,7 +229,7 @@ Target: 4–6 weeks
   response together.
 - Missing or stale validation is visible and eligible for VDR tracking.
 
-## Phase 4 — Trust-center and ongoing certification integration
+## Phase 4: Trust-center and ongoing certification integration
 
 Target: after the local engine is stable
 
@@ -262,12 +264,13 @@ Target: after the local engine is stable
 
 ## Immediate backlog
 
-1. Define the SQLite event and projection schema. **Complete — 2026-08-20.**
-2. Implement class-aware policy selection from the pinned rules source. **Complete — 2026-08-20.**
-3. Write golden tests for Class B and Class C evaluation and response clocks. **Complete — 2026-08-20.**
-4. Implement official common-definition and VER schema resolution. **Complete — 2026-08-20.**
-5. Produce the first end-to-end CKLB → case → VER JSON demonstration. **Complete (stateless
-   path) — 2026-08-21.** `complyroll report vdt` compiles the fixtures into a schema-valid
+1. Define the SQLite event and projection schema. **Complete, 2026-08-20.**
+2. Implement class-aware policy selection from the pinned rules source. **Complete, 2026-08-20.**
+3. Write golden tests for Class B and Class C evaluation and response clocks.
+   **Complete, 2026-08-20.**
+4. Implement official common-definition and VER schema resolution. **Complete, 2026-08-20.**
+5. Produce the first end-to-end CKLB to case to VER JSON demonstration. **Complete (stateless
+   path), 2026-08-21.** `complyroll report vdt` compiles the fixtures into a schema-valid
    Vulnerability Detail Report with a Markdown twin (ADR 0007); the event-sourced rebuild of the
    same report landed with item 6.
 6. Persist `observation.recorded`, `detection.attested`, and `case.*` events from the compiler's

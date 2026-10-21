@@ -720,7 +720,7 @@ def _refuse_failures_read_elsewhere(
                         f"history holds a reading of these bytes in {holder.stream_id} that "
                         f"outranks their failure under {artifact.parser_name} "
                         f"{artifact.parser_version}, so it is not a detection failure and "
-                        "nothing was recorded"
+                        "nothing was recorded by this run"
                     ),
                     location=reading.path.name,
                 ),

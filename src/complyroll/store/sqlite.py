@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -718,6 +718,7 @@ class SQLiteEventStore:
                     after_sequence = sequence
                     faults.extend(_column_faults(row, sequence))
                     faults.extend(_payload_faults(row, sequence))
+                    faults.extend(_timestamp_faults(row, sequence))
                     if sequence < 1:
                         # Counted, this row would misreport every gap after it, so it stays
                         # out of both the sequence and the stream-version walks.
@@ -847,26 +848,68 @@ class SQLiteEventStore:
         connection: sqlite3.Connection,
         present: frozenset[tuple[str, str]],
     ) -> tuple[IntegrityFault, ...]:
-        """Report a missing migration record, reading the table only when it can be read.
+        """Report the migration records that disagree with the marker, by record number.
+
+        A record the marker needs and the table lacks is `migration_missing`, and one whose
+        description is not the one `_mark_schema` writes for it is `migration_altered`. With
+        the marker in the supported range, a record it does not reach is
+        `migration_unexpected`, reported after the others: `_mark_schema` inserts each record
+        and moves the marker in one transaction, so a record above the marker means the
+        marker was lowered, and the next append that marks the store would meet it. A marker
+        outside the range is `_header_faults`' business, so nothing is held to it here.
 
         A database whose migration table is gone, or was rebuilt without its `version`
         column, already carries a schema fault for it, and querying the column would raise
-        instead of reporting.
+        instead of reporting. Only an integer version counts as a record, as in
+        `_missing_migrations`, and a table rebuilt without `description` has its
+        descriptions left unread.
         """
 
         if ("table", "complyroll_schema_migrations") not in present:
             return ()
-        if "version" not in _table_columns(connection, "complyroll_schema_migrations"):
+        columns = _table_columns(connection, "complyroll_schema_migrations")
+        if "version" not in columns:
             return ()
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        return tuple(
-            IntegrityFault(
-                sequence=None,
-                code="migration_missing",
-                message=f"database is missing migration record {missing}",
+        ranked: list[tuple[int, IntegrityFault]] = [
+            (
+                missing,
+                IntegrityFault(
+                    sequence=None,
+                    code="migration_missing",
+                    message=f"database is missing migration record {missing}",
+                ),
             )
             for missing in _missing_migrations(connection, version)
-        )
+        ]
+        stored = _stored_migrations(connection, with_description="description" in columns)
+        for record, description in stored.items():
+            expected = _MIGRATION_DESCRIPTIONS.get(record)
+            if expected is None or "description" not in columns or description == expected:
+                continue
+            ranked.append(
+                (
+                    record,
+                    IntegrityFault(
+                        sequence=None,
+                        code="migration_altered",
+                        message=f"migration record {record} does not carry its expected "
+                        "description",
+                    ),
+                )
+            )
+        faults = [fault for _, fault in sorted(ranked, key=lambda item: item[0])]
+        if SCHEMA_VERSION <= version <= SUPPORTED_SCHEMA_VERSION:
+            faults.extend(
+                IntegrityFault(
+                    sequence=None,
+                    code="migration_unexpected",
+                    message=_unexpected_migration_message(record, version),
+                )
+                for record in sorted(stored)
+                if not SCHEMA_VERSION <= record <= version
+            )
+        return tuple(faults)
 
     @staticmethod
     def _counter_faults(
@@ -1151,6 +1194,17 @@ class SQLiteEventStore:
             raise UnsupportedSchemaError("database schema is not marked as a ComplyRoll store")
         if current >= required:
             return
+        # A record above the marker means the marker was lowered after it was written, and
+        # inserting that record again would end the append in a UNIQUE constraint failure.
+        ahead = connection.execute(
+            """
+            SELECT MIN(version) FROM complyroll_schema_migrations
+            WHERE typeof(version) = 'integer' AND version > ?
+            """,
+            (current,),
+        ).fetchone()[0]
+        if ahead is not None:
+            raise UnsupportedSchemaError(_unexpected_migration_message(int(ahead), current))
         applied_at = _format_timestamp(self._clock(), "applied_at")
         for version in range(current + 1, required + 1):
             connection.execute(
@@ -1596,22 +1650,71 @@ def _stored_stream_version(connection: sqlite3.Connection, stream_id: object, va
     )
 
 
-def _append_json_problem(value: Mapping[str, Any], field_name: str) -> str | None:
+def _append_json_problem(value: Mapping[str, Any], text: str, field_name: str) -> str | None:
     """Name the first of append's JSON rules a decoded column breaks, or return None.
 
     `json.loads` accepts what `append` refuses: NaN and infinity, nesting past
     MAX_EVENT_JSON_DEPTH, more than MAX_EVENT_JSON_VALUES values, and a lone surrogate escape
     that only fails later, when the text is encoded for output. Re-running the canonicalizer
     applies the same rules on every interpreter, and no reason it gives quotes the value.
+
+    It also accepts any spelling of a value, and `append` writes exactly one: the text the
+    canonicalizer returns, which it has returned unchanged since the store's first commit.
+    Stored text that differs from the value encoded again, reindented, padded, reordered, or
+    holding a duplicate member the decoder dropped, is text no `append` wrote.
     """
 
     try:
-        _canonical_json_object(value, field_name)
+        encoded = _canonical_json_object(value, field_name)
     except UnicodeEncodeError:
         return f"{field_name} contains text that is not valid Unicode"
     except ValueError as exc:
         return str(exc)
+    if encoded != text:
+        return f"{field_name} is not the canonical JSON text append writes"
     return None
+
+
+def _timestamp_problem(value: object, field_name: str) -> str | None:
+    """Say why a stored timestamp is not the text `_format_timestamp` writes, or return None.
+
+    `append` writes both timestamp columns only through `_format_timestamp`, unchanged since
+    the store's first commit: UTC, six fraction digits, and a `Z`. Any other spelling, an
+    offset east or west of UTC included, is text no `append` wrote. The message never echoes
+    the value, so a long one cannot flood the output.
+    """
+
+    if not isinstance(value, str):
+        return f"{field_name} stored as {_storage_class(value)}, not text"
+    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return f"{field_name} is not an ISO 8601 timestamp"
+    offset = parsed.utcoffset()
+    if offset is None:
+        return f"{field_name} does not include a timezone"
+    # The offset is checked first: converting a year-1 instant east of UTC would overflow.
+    if offset != timedelta(0) or _format_timestamp(parsed, field_name) != value:
+        return f"{field_name} is not in the UTC form append writes"
+    return None
+
+
+def _timestamp_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ...]:
+    """Report what `_event_from_row` refuses a row's timestamps for, as one fault."""
+
+    problem = _timestamp_problem(row["occurred_at"], "occurred_at") or _timestamp_problem(
+        row["recorded_at"], "recorded_at"
+    )
+    if problem is None:
+        return ()
+    return (
+        IntegrityFault(
+            sequence=sequence,
+            code="event_timestamp_invalid",
+            message=f"event {_shown_name(row['event_id'])} {problem}",
+        ),
+    )
 
 
 def _event_from_row(row: sqlite3.Row) -> EventRecord:
@@ -1656,7 +1759,14 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
             f"event {row['event_id']!r} JSON must contain objects",
             sequence=sequence,
         )
-    problem = _append_json_problem(payload, "payload") or _append_json_problem(metadata, "metadata")
+    problem = _append_json_problem(payload, payload_json, "payload") or _append_json_problem(
+        metadata, metadata_json, "metadata"
+    )
+    if problem is not None:
+        raise EventIntegrityError(f"event {row['event_id']!r} {problem}", sequence=sequence)
+    problem = _timestamp_problem(row["occurred_at"], "occurred_at") or _timestamp_problem(
+        row["recorded_at"], "recorded_at"
+    )
     if problem is not None:
         raise EventIntegrityError(f"event {row['event_id']!r} {problem}", sequence=sequence)
 
@@ -1733,7 +1843,9 @@ def _payload_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ..
                 message=f"event {_shown_name(row['event_id'])} JSON must contain objects",
             ),
         )
-    problem = _append_json_problem(payload, "payload") or _append_json_problem(metadata, "metadata")
+    problem = _append_json_problem(payload, payload_json, "payload") or _append_json_problem(
+        metadata, metadata_json, "metadata"
+    )
     if problem is not None:
         return (
             IntegrityFault(
@@ -2049,6 +2161,34 @@ def _missing_migrations(connection: sqlite3.Connection, version: int) -> tuple[i
     return tuple(
         required for required in range(SCHEMA_VERSION, newest + 1) if required not in recorded
     )
+
+
+def _stored_migrations(
+    connection: sqlite3.Connection, *, with_description: bool
+) -> dict[int, object]:
+    """Map each migration record stored as an integer to its description, as stored.
+
+    The description is None when the table has no `description` column to read.
+    """
+
+    if with_description:
+        rows = connection.execute(
+            "SELECT version, description FROM complyroll_schema_migrations "
+            "WHERE typeof(version) = 'integer'"
+        ).fetchall()
+        return {int(row[0]): row[1] for row in rows}
+    rows = connection.execute(
+        "SELECT version FROM complyroll_schema_migrations WHERE typeof(version) = 'integer'"
+    ).fetchall()
+    return {int(row[0]): None for row in rows}
+
+
+def _unexpected_migration_message(record: int, marker: int) -> str:
+    """Word a migration record the schema marker does not account for."""
+
+    if record < SCHEMA_VERSION:
+        return f"database holds migration record {record}; migration records start at {SCHEMA_VERSION}"
+    return f"database holds migration record {record} above its schema marker {marker}"
 
 
 def _format_timestamp(value: datetime, field_name: str) -> str:

@@ -1769,12 +1769,22 @@ class VerifyHistoryTests(unittest.TestCase):
                 self.assertEqual(report.checked_events, self.EVENT_COUNT)
 
     def test_a_migration_column_renamed_only_in_case_is_still_read(self) -> None:
-        """SQLite matches `VERSION` to `version`, so record 1 still counts and 2 is missing."""
+        """SQLite matches `VERSION` to `version`, so record 1 still counts and 2 is missing.
+
+        Record 1 keeps the description `_mark_schema` writes, so the only record fault is the
+        missing one.
+        """
 
         replace_migration_table(
             self.database_path,
             "VERSION INTEGER, description TEXT, applied_at TEXT",
-            [(SCHEMA_VERSION, "first", "2026-08-20T12:00:00Z")],
+            [
+                (
+                    SCHEMA_VERSION,
+                    "append-only event history and projection checkpoints",
+                    "2026-08-20T12:00:00Z",
+                )
+            ],
             marker=2,
         )
 
@@ -2334,30 +2344,130 @@ class StoredValueRefusalTests(unittest.TestCase):
 
         multibyte = '{"s":"' + "\u00e9" * 1000 + '"}'
         cases = (
-            ("at the cap", " " * (MAX_EVENT_JSON_BYTES - 2) + "{}", True),
-            ("one past", " " * (MAX_EVENT_JSON_BYTES - 1) + "{}", False),
-            ("bytes past", multibyte + " " * (MAX_EVENT_JSON_BYTES - 2007), False),
+            ("at the cap", " " * (MAX_EVENT_JSON_BYTES - 2) + "{}", False),
+            ("one past", " " * (MAX_EVENT_JSON_BYTES - 1) + "{}", True),
+            ("bytes past", multibyte + " " * (MAX_EVENT_JSON_BYTES - 2007), True),
         )
         self.assertEqual(len(cases[2][1]), MAX_EVENT_JSON_BYTES - 999)
         self.assertEqual(len(cases[2][1].encode("utf-8")), MAX_EVENT_JSON_BYTES + 1)
         for column in ("payload", "metadata"):
-            for index, (label, text, reads) in enumerate(cases):
+            for index, (label, text, past) in enumerate(cases):
                 with self.subTest(column=column, case=label):
                     self.database_path = self.build(f"c-{column}-padded-{index}.db")
                     self.plant_json(column, text)
-                    if reads:
-                        with SQLiteEventStore(self.database_path) as store:
-                            self.assertEqual(len(store.read_all()), 3)
-                        with SQLiteEventStore.open_for_verification(self.database_path) as store:
-                            self.assertTrue(store.verify_history().ok)
-                        continue
+                    # At the cap the size check passes it, and the text check refuses the
+                    # padding, which `append` never writes.
                     expected = (
                         f"event 'evt-h-1' {column} exceeds the {MAX_EVENT_JSON_BYTES}-byte limit"
+                        if past
+                        else f"event 'evt-h-1' {column} is not the canonical JSON text append "
+                        "writes"
                     )
                     refused = self.refusal()
                     self.assertEqual(refused.sequence, 2)
                     self.assertEqual(str(refused), expected)
                     self.assertEqual(self.faults()["payload_not_json"], expected)
+
+    # K: append's canonical text. The decoder accepts any spelling of a value; `append`
+    # writes exactly one, so another spelling is text no append wrote (ADR 0004).
+
+    def test_k_json_in_a_spelling_append_never_writes_is_refused(self) -> None:
+        cases = (
+            ("a space after the colon", '{"a": 1}'),
+            ("a reindented object", '{\n "a":1\n}'),
+            ("padding", ' {"a":1}'),
+            ("members out of order", '{"b":1,"a":2}'),
+            ("a duplicate member", '{"a":1,"a":2}'),
+            ("an escaped non-ASCII character", '{"s":"\\u00e9"}'),
+            ("an exponent", '{"n":1e2}'),
+            ("a float without its fraction digit spelled", '{"n":1.50}'),
+        )
+        for column in ("payload", "metadata"):
+            for index, (label, text) in enumerate(cases):
+                with self.subTest(column=column, case=label):
+                    self.database_path = self.build(f"k-{column}-{index}.db")
+                    self.plant_json(column, text)
+                    expected = f"event 'evt-h-1' {column} is not the canonical JSON text append writes"
+
+                    refused = self.refusal()
+                    self.assertEqual(refused.sequence, 2)
+                    self.assertEqual(str(refused), expected)
+                    self.assertEqual(self.faults(), {"payload_not_json": expected})
+
+    def test_k_json_in_the_spelling_append_writes_still_reads(self) -> None:
+        for index, text in enumerate(
+            ('{"a":1,"b":[true,null,1.5,-0.0,"\u00e9 \\n \\" \\u001f"]}', "{}")
+        ):
+            with self.subTest(text=text):
+                self.database_path = self.build(f"k-canonical-{index}.db")
+                self.assertEqual(
+                    json.dumps(
+                        json.loads(text),
+                        allow_nan=False,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    text,
+                )
+                self.plant_json("payload", text)
+                self.plant_json("metadata", text)
+                with SQLiteEventStore(self.database_path) as store:
+                    self.assertEqual(len(store.read_all()), 3)
+                with SQLiteEventStore.open_for_verification(self.database_path) as store:
+                    self.assertTrue(store.verify_history().ok)
+
+    # T: the two timestamp columns, which `append` writes only through `_format_timestamp`:
+    # UTC, six fraction digits, and a `Z`.
+
+    def test_t_a_timestamp_in_another_spelling_is_refused(self) -> None:
+        cases = (
+            ("an offset east", "2026-08-21T06:31:00.000000+14:00", "is not in the UTC form"),
+            ("an offset west", "2026-08-20T02:31:00.000000-14:00", "is not in the UTC form"),
+            ("a zero offset", "2026-08-20T16:31:00.000000+00:00", "is not in the UTC form"),
+            ("no fraction", "2026-08-20T16:31:00Z", "is not in the UTC form"),
+            ("a short fraction", "2026-08-20T16:31:00.5Z", "is not in the UTC form"),
+            ("a space for the T", "2026-08-20 16:31:00.000000Z", "is not in the UTC form"),
+            ("year 1 east of UTC", "0001-01-01T00:00:00.000000+14:00", "is not in the UTC form"),
+            ("no offset", "2026-08-20T16:31:00.000000", "does not include a timezone"),
+            ("not a timestamp", "yesterday", "is not an ISO 8601 timestamp"),
+            ("a long text", "9" * self.LONG, "is not an ISO 8601 timestamp"),
+            # The column has TEXT affinity, so an integer is stored as its digits.
+            ("an integer", 1755707460, "is not an ISO 8601 timestamp"),
+            ("a blob", b"2026-08-20T16:31:00.000000Z", "stored as blob, not text"),
+        )
+        for column in ("occurred_at", "recorded_at"):
+            for index, (label, value, reason) in enumerate(cases):
+                with self.subTest(column=column, case=label):
+                    self.database_path = self.build(f"t-{column}-{index}.db")
+                    self.update(
+                        f"UPDATE events SET {column} = ? WHERE sequence = 2", (value,)
+                    )
+                    expected = f"event 'evt-h-1' {column} {reason}"
+                    if reason == "is not in the UTC form":
+                        expected += " append writes"
+
+                    refused = self.refusal()
+                    self.assertEqual(refused.sequence, 2)
+                    self.assertEqual(str(refused), expected)
+                    self.assertEqual(self.faults(), {"event_timestamp_invalid": expected})
+
+    def test_t_the_spelling_append_writes_still_reads_at_both_ends_of_the_calendar(
+        self,
+    ) -> None:
+        for index, value in enumerate(
+            ("0001-01-01T00:00:00.000000Z", "9999-12-31T23:59:59.999999Z", RECORDED_TEXT)
+        ):
+            with self.subTest(value=value):
+                self.database_path = self.build(f"t-canonical-{index}.db")
+                self.update(
+                    "UPDATE events SET occurred_at = ?, recorded_at = ? WHERE sequence = 2",
+                    (value, value),
+                )
+                with SQLiteEventStore(self.database_path) as store:
+                    self.assertEqual(len(store.read_all()), 3)
+                with SQLiteEventStore.open_for_verification(self.database_path) as store:
+                    self.assertTrue(store.verify_history().ok)
 
     def test_d_json_past_the_append_depth_is_refused_on_every_interpreter(self) -> None:
         for depth in (65, 5000):
@@ -2708,6 +2818,143 @@ class StoreHeaderTests(unittest.TestCase):
                         )
                     ],
                 )
+
+    def migrations(self, path: Path, statement: str, parameters: tuple[object, ...] = ()) -> None:
+        with closing(raw_connection(path)) as connection:
+            connection.execute(statement, parameters)
+
+    def test_verify_reports_a_migration_record_the_marker_does_not_reach(self) -> None:
+        # A marker lowered below its records, and a record added past the marker or below
+        # the first schema. `_mark_schema` writes neither: it inserts each record and moves
+        # the marker in one transaction, and numbers from 1.
+        cases = (
+            (1, (), [2, 3, 4]),
+            (3, (), [4]),
+            (4, (5,), [5]),
+            (4, (0,), [0]),
+        )
+        for marker, added, unexpected in cases:
+            with self.subTest(marker=marker, added=added):
+                path = self.build(
+                    f"ahead-{marker}-{len(added)}-{added[:1]}.db",
+                    requires_schema=SUPPORTED_SCHEMA_VERSION,
+                )
+                for version in added:
+                    self.migrations(
+                        path,
+                        "INSERT INTO complyroll_schema_migrations VALUES (?, 'x', 'x')",
+                        (version,),
+                    )
+                self.set_header(path, "user_version", marker)
+
+                report = self.verify(path)
+
+                self.assertEqual(report.checked_events, 3)
+                self.assertEqual(
+                    [(fault.sequence, fault.code, fault.message) for fault in report.faults],
+                    [
+                        (
+                            None,
+                            "migration_unexpected",
+                            f"database holds migration record {version} above its schema "
+                            f"marker {marker}"
+                            if version > marker
+                            else f"database holds migration record {version}; migration "
+                            f"records start at {SCHEMA_VERSION}",
+                        )
+                        for version in unexpected
+                    ],
+                )
+
+    def test_verify_reports_a_migration_record_whose_description_was_rewritten(self) -> None:
+        for version, description in (
+            (1, "x"),
+            (2, "FAILURE STREAMS, ADR 0014"),
+            (3, b"held failures, ADR 0014 amendment 2026-10-13"),
+            (4, 4),
+        ):
+            with self.subTest(version=version, description=description):
+                path = self.build(
+                    f"description-{version}.db", requires_schema=SUPPORTED_SCHEMA_VERSION
+                )
+                self.migrations(
+                    path,
+                    "UPDATE complyroll_schema_migrations SET description = ? WHERE version = ?",
+                    (description, version),
+                )
+
+                report = self.verify(path)
+
+                self.assertEqual(
+                    [(fault.sequence, fault.code, fault.message) for fault in report.faults],
+                    [
+                        (
+                            None,
+                            "migration_altered",
+                            f"migration record {version} does not carry its expected "
+                            "description",
+                        )
+                    ],
+                )
+
+    def test_verify_orders_migration_faults_by_record(self) -> None:
+        path = self.build("migration-order.db", requires_schema=SUPPORTED_SCHEMA_VERSION)
+        self.migrations(path, "DELETE FROM complyroll_schema_migrations WHERE version = 2")
+        self.migrations(
+            path,
+            "UPDATE complyroll_schema_migrations SET description = 'x' WHERE version IN (1, 3)",
+        )
+        self.set_header(path, "user_version", 3)
+
+        report = self.verify(path)
+
+        self.assertEqual(
+            [(fault.code, fault.message.split(" record ")[1][:1]) for fault in report.faults],
+            [
+                ("migration_altered", "1"),
+                ("migration_missing", "2"),
+                ("migration_altered", "3"),
+                ("migration_unexpected", "4"),
+            ],
+        )
+
+    def test_a_marking_append_refuses_a_record_above_the_marker(self) -> None:
+        """On ecc382d the insert of record 2 met the stored one: `UNIQUE constraint failed`."""
+
+        for marker, requires_schema, ahead in ((1, 2, 2), (1, 4, 2), (2, 4, 3), (3, 4, 4)):
+            with self.subTest(marker=marker, requires_schema=requires_schema):
+                path = self.build(
+                    f"marking-{marker}-{requires_schema}.db",
+                    requires_schema=SUPPORTED_SCHEMA_VERSION,
+                )
+                self.set_header(path, "user_version", marker)
+                store = SQLiteEventStore(path, clock=lambda: RECORDED_AT)
+                self.addCleanup(store.close)
+                before = self.state(path)
+
+                with self.assertRaises(UnsupportedSchemaError) as caught:
+                    store.append(
+                        "stream-h",
+                        [sample_event("evt-h-3")],
+                        expected_version=3,
+                        requires_schema=requires_schema,
+                    )
+
+                self.assertEqual(
+                    str(caught.exception),
+                    f"database holds migration record {ahead} above its schema marker {marker}",
+                )
+                self.assertFalse(store._connection.in_transaction)
+                self.assertEqual(self.state(path), before)
+
+    def test_an_append_that_needs_no_marking_is_not_refused_for_a_record_above(self) -> None:
+        # The refusal guards the insert that would collide; an append the marker already
+        # covers inserts no record, and `store verify` names the record.
+        path = self.build("unmarked.db", requires_schema=SUPPORTED_SCHEMA_VERSION)
+        self.set_header(path, "user_version", 1)
+        with SQLiteEventStore(path, clock=lambda: RECORDED_AT) as store:
+            store.append("stream-h", [sample_event("evt-h-3")], expected_version=3)
+        self.assertEqual(self.state(path), (1, (4, 4), [(1,), (2,), (3,), (4,)]))
 
     def test_verify_reports_a_foreign_application_id(self) -> None:
         for application_id in (0, 1, -1):

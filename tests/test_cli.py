@@ -14,7 +14,7 @@ import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager, redirect_stderr, redirect_stdout, suppress
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -6319,6 +6319,20 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
         self.assertEqual(self.case_reads(), self.twin_reads)
         self.assertEqual(self.appended(), self.twin_appended)
 
+    def mark_schema_by_hand(self, marker: int) -> None:
+        """Leave the store marked `marker`, with exactly the migration records it needs.
+
+        The records above it go too: a marker lowered below a stored record is a store fault
+        of its own (`migration_unexpected`), and these shapes are a stream the marker does
+        not account for, not a marker its own records contradict.
+        """
+
+        with closing(self.raw()) as connection:
+            connection.execute(
+                "DELETE FROM complyroll_schema_migrations WHERE version > ?", (marker,)
+            )
+            connection.execute(f"PRAGMA user_version = {int(marker)}")
+
     def record(self, event_type: str, stream_id: str | None = None) -> EventRecord:
         """Return the first event of a type in the log, on one stream if one is named."""
 
@@ -6427,8 +6441,7 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
         failure = self.record("failure.recorded")
 
         def plant() -> list[tuple[int, str]]:
-            with closing(self.raw()) as connection:
-                connection.execute("PRAGMA user_version = 1")
+            self.mark_schema_by_hand(1)
             return [(failure.sequence, "failure_schema_unmarked")]
 
         self.assert_content_neutral("schema", plant)
@@ -6455,8 +6468,7 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
                 ],
                 expected_version=len(store.read_stream(evaluated.stream_id)),
             )
-        with closing(self.raw()) as connection:
-            connection.execute("PRAGMA user_version = 1")
+        self.mark_schema_by_hand(1)
 
         self.assertEqual(
             self.verify_faults(),
@@ -6493,8 +6505,7 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
         self.twin_appended = self.appended()
 
         def plant() -> list[tuple[int, str]]:
-            with closing(self.raw()) as connection:
-                connection.execute("PRAGMA user_version = 3")
+            self.mark_schema_by_hand(3)
             return [(coverage.sequence, "coverage_schema_unmarked")]
 
         self.assert_content_neutral("coverage-schema", plant)
@@ -7226,6 +7237,82 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
             "characters outside the name grammar>",
             {"event_name_invalid", "stream_version_gap"},
             at_open=True,
+        )
+
+    # K: stored JSON in a spelling `append` never writes. The digest is recomputed, so only
+    # the text check stands between it and a read.
+
+    def test_k_a_payload_in_another_spelling_is_refused_by_every_command(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            (stored,) = connection.execute(
+                "SELECT payload_json FROM events WHERE sequence = 1"
+            ).fetchone()
+            text = json.dumps(json.loads(stored), indent=1, sort_keys=True)
+            connection.execute(
+                "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = 1",
+                (text, self.digest(text)),
+            )
+
+        self.update(work)
+        self.assert_refused(
+            "payload is not the canonical JSON text append writes", {"payload_not_json"}
+        )
+
+    # T: a stored timestamp in a spelling `append` never writes. On ecc382d an `occurred_at`
+    # moved to `+14:00` read everywhere and `cases history` printed the offset.
+
+    def test_t_a_timestamp_in_another_spelling_is_refused_by_every_command(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            (stored,) = connection.execute(
+                "SELECT occurred_at FROM events WHERE sequence = 1"
+            ).fetchone()
+            moved = datetime.fromisoformat(stored).astimezone(timezone(timedelta(hours=14)))
+            connection.execute(
+                "UPDATE events SET occurred_at = ? WHERE sequence = 1",
+                (moved.isoformat(timespec="microseconds"),),
+            )
+
+        self.update(work)
+        self.assert_refused(
+            "occurred_at is not in the UTC form append writes", {"event_timestamp_invalid"}
+        )
+
+    # M: migration records against the marker. On ecc382d a marker lowered below a record
+    # ended the next marking append in `store_unavailable` "UNIQUE constraint failed".
+
+    def test_m_a_record_above_a_lowered_marker_refuses_the_marking_ingest(self) -> None:
+        with closing(self.raw()) as connection:
+            connection.execute("PRAGMA user_version = 1")
+        before = self.header_state()
+        self.assertEqual(before[0], 1)
+        self.assertEqual(before[2], [1, 2])
+
+        code, out, err = run(
+            [
+                "ingest",
+                str(INVALID_RULES_FIXTURE),
+                "--record-failed-imports",
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+
+        self.assertEqual((code, out), (1, ""), err[:500])
+        self.assertIn(
+            "error: store_unavailable: database holds migration record 2 above its schema "
+            "marker 1\n",
+            err,
+        )
+        self.assertNotIn("UNIQUE", err)
+        self.assertEqual(self.header_state(), before)
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 1, err[:500])
+        self.assertIn(
+            "error: migration_unexpected: database holds migration record 2 above its schema "
+            "marker 1\n",
+            err,
         )
 
     # Q: the AUTOINCREMENT counter.

@@ -941,10 +941,7 @@ def summarize(event_type: str, payload: Mapping[str, Any]) -> str:
                 f"{_text(payload, 'completedAt')} by {_text(payload, 'evaluator')}"
             )
         if event_type == CASE_PAIN_REDUCED:
-            return (
-                f"reduced PAIN to {_count(payload, 'rating')} at "
-                f"{_text(payload, 'reducedAt')}"
-            )
+            return f"reduced PAIN to {_count(payload, 'rating')} at {_text(payload, 'reducedAt')}"
         if event_type == CASE_DISPOSITION_RECORDED:
             return f"recorded disposition {_text(payload, 'status')}"
         if event_type == CASE_IDENTIFIED:
@@ -1049,9 +1046,7 @@ def _read_artifact_streams(repository: EventRepository) -> tuple[_ArtifactStream
                 _overfull_message(stream_id, provenance.observation_count, len(found))
             )
         views.append(
-            _ArtifactStreamView(
-                stream_id=stream_id, record=provenance, observations=tuple(found)
-            )
+            _ArtifactStreamView(stream_id=stream_id, record=provenance, observations=tuple(found))
         )
     return tuple(views)
 
@@ -1226,9 +1221,7 @@ def _require_readable_artifact_event(
         )
     except EventContractError as exc:
         described = _ARTIFACT_EVENT_NAMES.get(record.event_type, record.event_type)
-        raise HistoryError(
-            f"event {record.sequence} is not a readable {described}: {exc}"
-        ) from exc
+        raise HistoryError(f"event {record.sequence} is not a readable {described}: {exc}") from exc
 
 
 def _require_unrepeated_observation(
@@ -1247,9 +1240,7 @@ def _require_unrepeated_observation(
 def _artifact_record(repository: EventRepository, event: EventRecord) -> ArtifactRecord:
     """Read one validated `artifact.ingested` event back as artifact provenance."""
 
-    repository.validate_payload(
-        event.event_type, event.payload, event_version=event.event_version
-    )
+    repository.validate_payload(event.event_type, event.payload, event_version=event.event_version)
     payload = event.payload
     return ArtifactRecord(
         name=_text(payload, "name"),

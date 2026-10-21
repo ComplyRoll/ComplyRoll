@@ -201,8 +201,7 @@ def load_bundled_schema_bundle() -> SchemaBundle:
     manifest = load_bundled_schema_manifest()
     data_directory = files("complyroll").joinpath("data")
     contents = (
-        (entry, data_directory.joinpath(entry.path).read_bytes())
-        for entry in manifest.schemas
+        (entry, data_directory.joinpath(entry.path).read_bytes()) for entry in manifest.schemas
     )
     return _load_schema_contents(manifest, contents)
 
@@ -242,8 +241,7 @@ def _load_schema_contents(
     )
     if missing_formats:
         raise SchemaDefinitionError(
-            "required JSON Schema format checkers are unavailable: "
-            + ", ".join(missing_formats)
+            "required JSON Schema format checkers are unavailable: " + ", ".join(missing_formats)
         )
 
     resources = []
@@ -255,9 +253,7 @@ def _load_schema_contents(
             raise SchemaDefinitionError(
                 f"schema {document.entry.name!r} is not valid Draft 2020-12: {exc.message}"
             ) from exc
-        resources.append(
-            (document.entry.schema_id, DRAFT202012.create_resource(schema))
-        )
+        resources.append((document.entry.schema_id, DRAFT202012.create_resource(schema)))
     registry = Registry().with_resources(resources)
     _verify_reference_graph(documents, registry)
     return SchemaBundle(manifest=manifest, documents=documents, _registry=registry)
@@ -269,9 +265,7 @@ def _load_document(
     manifest: SchemaBundleManifest,
 ) -> SchemaDocument:
     if len(content) > MAX_SCHEMA_BYTES:
-        raise SchemaSourceError(
-            f"schema {entry.name!r} exceeds the {MAX_SCHEMA_BYTES}-byte limit"
-        )
+        raise SchemaSourceError(f"schema {entry.name!r} exceeds the {MAX_SCHEMA_BYTES}-byte limit")
     digest = hashlib.sha256(content).hexdigest()
     if digest != entry.sha256:
         raise SchemaIntegrityError(

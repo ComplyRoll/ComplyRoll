@@ -164,6 +164,7 @@ TRUNCATED_CASE = "case-d3bb8e4fb3b61a5f"
 INVALID_RULES_CASE = "case-088261de64a0133c"
 INVOCATION_CASE = "case-f03af85468885cad"
 
+
 def relabelled(observation: Observation, source_record_id: str) -> Observation:
     """Return the same observation as a different finding on the same artifact.
 
@@ -318,13 +319,9 @@ class WriterFixture(unittest.TestCase):
         now: datetime = INGESTED_AT,
     ) -> EvaluationOutcome:
         source = (
-            load_evaluations(EXAMPLES / "evaluations.json")
-            if evaluations is None
-            else evaluations
+            load_evaluations(EXAMPLES / "evaluations.json") if evaluations is None else evaluations
         )
-        return apply_evaluations(
-            self.repository, source, metadata=self.metadata, now=now
-        )
+        return apply_evaluations(self.repository, source, metadata=self.metadata, now=now)
 
     def populate(self) -> None:
         """Run the three writers that precede evaluation, in documented order."""
@@ -1307,9 +1304,7 @@ class FoldRefusalTests(WriterFixture):
 
         payload = self.case_created_payload(SPARE_CASE)
         payload["trackingId"] = "case-ffffffffffffffff"
-        self.append_unchecked(
-            case_stream_id(SPARE_CASE), CASE_CREATED, payload, expected_version=0
-        )
+        self.append_unchecked(case_stream_id(SPARE_CASE), CASE_CREATED, payload, expected_version=0)
 
     def test_a_case_stream_whose_creation_names_another_tracking_id_is_refused(self) -> None:
         self.mismatched_creation()
@@ -1636,9 +1631,7 @@ class DispositionConsistencyTests(WriterFixture):
         self.append_unchecked(
             stream_id,
             CASE_DISPOSITION_RECORDED,
-            self.payload(
-                status="accepted", closedDisposition=None, acceptanceRationale="   "
-            ),
+            self.payload(status="accepted", closedDisposition=None, acceptanceRationale="   "),
             expected_version=1,
         )
 
@@ -2050,9 +2043,7 @@ class ConcurrentWriterTests(WriterFixture):
                     now=INGESTED_AT,
                 )
             with self.assertRaises(EventStoreBusyError):
-                record_ingest(
-                    other, result, metadata=self.metadata, ingested_at=INGESTED_AT
-                )
+                record_ingest(other, result, metadata=self.metadata, ingested_at=INGESTED_AT)
 
     def test_the_second_run_re_folds_and_refuses_the_collision_the_first_committed(
         self,
@@ -2273,9 +2264,7 @@ class AtomicIngestTests(WriterFixture):
 
         with mock.patch.object(history_writers, "MAX_BATCH_EVENTS", 2):
             with self.assertRaisesRegex(RuntimeError, "stopped between batches"):
-                record_ingest(
-                    failing, result, metadata=self.metadata, ingested_at=INGESTED_AT
-                )
+                record_ingest(failing, result, metadata=self.metadata, ingested_at=INGESTED_AT)
 
         self.assertGreater(failing.batches, 1)
         self.assertEqual(self.latest_sequence, 0)
@@ -2287,16 +2276,12 @@ class AtomicIngestTests(WriterFixture):
         failing = _FailingRepository(self.repository.store, fail_on_batch=2)
         with mock.patch.object(history_writers, "MAX_BATCH_EVENTS", 2):
             with self.assertRaises(RuntimeError):
-                record_ingest(
-                    failing, result, metadata=self.metadata, ingested_at=INGESTED_AT
-                )
+                record_ingest(failing, result, metadata=self.metadata, ingested_at=INGESTED_AT)
 
         outcome = self.ingest([ARTIFACTS[0]])[0]
 
         self.assertTrue(outcome.appended)
-        self.assertEqual(
-            len(self.repository.read_stream(stream_id)), len(result.observations) + 1
-        )
+        self.assertEqual(len(self.repository.read_stream(stream_id)), len(result.observations) + 1)
         self.assertEqual(rehydrate_observations(self.repository), result.observations)
 
     def test_a_recorded_artifact_is_committed_for_another_connection(self) -> None:
@@ -2320,9 +2305,7 @@ class AtomicIngestTests(WriterFixture):
             )
 
         self.assertTrue(outcome.appended)
-        self.assertEqual(
-            len(self.repository.read_stream(stream_id)), len(result.observations) + 1
-        )
+        self.assertEqual(len(self.repository.read_stream(stream_id)), len(result.observations) + 1)
 
 
 class IncompleteArtifactTests(WriterFixture):
@@ -2479,21 +2462,15 @@ class DuplicateObservationTests(WriterFixture):
             expected_version=0,
         )
         payload = self.observation.to_canonical_dict()
-        self.append_unchecked(
-            self.stream_id, OBSERVATION_RECORDED, payload, expected_version=1
-        )
-        self.append_unchecked(
-            self.stream_id, OBSERVATION_RECORDED, payload, expected_version=2
-        )
+        self.append_unchecked(self.stream_id, OBSERVATION_RECORDED, payload, expected_version=1)
+        self.append_unchecked(self.stream_id, OBSERVATION_RECORDED, payload, expected_version=2)
         self.duplicate_sequence = self.repository.store.latest_sequence
 
     def test_the_count_and_the_identity_checks_both_pass(self) -> None:
         # The point of the fixture: neither older check can see this, which is why the
         # stream needed a check of its own.
         records = self.repository.read_stream(self.stream_id)
-        observations = [
-            record for record in records if record.event_type == OBSERVATION_RECORDED
-        ]
+        observations = [record for record in records if record.event_type == OBSERVATION_RECORDED]
 
         self.assertEqual(records[0].payload["observationCount"], len(observations))
         self.assertEqual(
@@ -2717,9 +2694,11 @@ class AuditHistoryTests(WriterFixture):
         # The stored mirror of the append refusal: history that reached the log before the
         # check existed has to be described rather than silently rehydrated.
         foreign = artifact_stream_id("b" * 64, "complyroll.cklb", "1")
-        payload = ingest_stig_artifact(
-            ARTIFACTS[0], ingested_at=INGESTED_AT
-        ).observations[0].to_canonical_dict()
+        payload = (
+            ingest_stig_artifact(ARTIFACTS[0], ingested_at=INGESTED_AT)
+            .observations[0]
+            .to_canonical_dict()
+        )
         self.append_unchecked(foreign, OBSERVATION_RECORDED, payload, expected_version=0)
 
         faults = audit_history(self.repository)
@@ -2762,9 +2741,11 @@ class AuditHistoryTests(WriterFixture):
         # artifact it came from, so the audit reports the contract failure alone rather
         # than a second fault derived from fields it cannot trust.
         foreign = artifact_stream_id("b" * 64, "complyroll.cklb", "1")
-        payload = ingest_stig_artifact(
-            ARTIFACTS[0], ingested_at=INGESTED_AT
-        ).observations[0].to_canonical_dict()
+        payload = (
+            ingest_stig_artifact(ARTIFACTS[0], ingested_at=INGESTED_AT)
+            .observations[0]
+            .to_canonical_dict()
+        )
         payload["fingerprint"] = "c" * 64
         self.append_unchecked(foreign, OBSERVATION_RECORDED, payload, expected_version=0)
 
@@ -2907,8 +2888,7 @@ class ParserSupersessionTests(WriterFixture):
 
     def versioned(self, parser_version: str) -> tuple[Observation, ...]:
         return tuple(
-            self.restamped(observation, parser_version)
-            for observation in self.parsed.observations
+            self.restamped(observation, parser_version) for observation in self.parsed.observations
         )
 
     def fresh_repository(self) -> None:
@@ -3075,9 +3055,7 @@ class ParserSupersessionTests(WriterFixture):
         self.write_stream("2", self.versioned("2"))
 
         self.assertEqual(audit_history(self.repository), ())
-        self.assertEqual(
-            len(self.repository.read_stream(older)), len(self.parsed.observations) + 1
-        )
+        self.assertEqual(len(self.repository.read_stream(older)), len(self.parsed.observations) + 1)
 
 
 class NumericVersionPredicateTests(unittest.TestCase):
@@ -4233,6 +4211,7 @@ class FailureHistoryTests(WriterFixture):
                 self.assertIn(f"matches {count} cases", problem)
                 self.assertTrue(problem.endswith(f"); {remedy}"))
 
+
 class FailureSupersessionTests(WriterFixture):
     """One digest's artifact and failure streams, split by rules R1 to R5 (ADR 0014).
 
@@ -5179,7 +5158,6 @@ class HeldFailureTests(WriterFixture):
                 self.assertEqual(self.split()[2:], ([holder], [], [hold]))
 
 
-
 class StorableVersionDigitLimitTests(unittest.TestCase):
     """H3: no version component a store can hold reaches the interpreter's digit limit."""
 
@@ -5198,6 +5176,7 @@ class StorableVersionDigitLimitTests(unittest.TestCase):
             self.assertEqual(_numeric_version("9" * longest), (int("9" * longest),))
         finally:
             sys.set_int_max_str_digits(previous)
+
 
 if __name__ == "__main__":
     unittest.main()

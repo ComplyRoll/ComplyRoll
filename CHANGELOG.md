@@ -480,6 +480,10 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- The thirty files that were not `ruff format` clean are reformatted, once, with no other change:
+  every module's syntax tree is unchanged but for docstring whitespace, and every golden is
+  byte-identical. CI's `lint` job now also runs `ruff format --check src tests stigroll.py`
+  (ADR 0017 amendment 2026-10-21).
 - `ingest`'s `failure_read_elsewhere` refusal now ends "nothing was recorded by this run": an
   earlier run may have recorded the reading that outranks the failure.
 - `referencing`, which the schema loader imports, is declared as a dependency instead of

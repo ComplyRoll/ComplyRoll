@@ -252,7 +252,7 @@ class StigrollCompatibilityTests(unittest.TestCase):
     def test_csv_formula_injection_is_neutralized(self) -> None:
         finding = Finding(
             rule_id="V-1",
-            title="=HYPERLINK(\"https://invalid.example\")",
+            title='=HYPERLINK("https://invalid.example")',
             severity="high",
             status="open",
             host="@synthetic-host",

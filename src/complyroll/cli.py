@@ -823,9 +823,7 @@ def _reserve_store_path(database: Path) -> Path:
     nothing beyond the name.
     """
 
-    handle, name = tempfile.mkstemp(
-        dir=database.parent, prefix=f".{database.name}.", suffix=".tmp"
-    )
+    handle, name = tempfile.mkstemp(dir=database.parent, prefix=f".{database.name}.", suffix=".tmp")
     os.close(handle)
     return Path(name)
 
@@ -922,8 +920,7 @@ def _run_cases_attest(args: argparse.Namespace) -> int:
             # A sweep chooses its own cases, so the count it chose is the one fact the
             # operator cannot read off the command line.
             print(
-                f"selected {len(tracking_ids)} case(s) with no source timestamp on "
-                "any observation"
+                f"selected {len(tracking_ids)} case(s) with no source timestamp on any observation"
             )
         print(
             f"attested {len(outcome.attested)} case(s), "
@@ -1328,9 +1325,7 @@ def _run_validate(args: argparse.Namespace) -> int:
         return _fail(stderr, "report_malformed", str(exc), location=str(path))
 
     provenance = result.provenance
-    summary = (
-        f"{provenance.schema_id} {provenance.schema_version} {provenance.schema_sha256}"
-    )
+    summary = f"{provenance.schema_id} {provenance.schema_version} {provenance.schema_sha256}"
     if result.is_valid:
         print(f"valid: {summary}")
         return 0

@@ -558,9 +558,7 @@ def failure_batch(
     )
 
 
-def object_subschemas(
-    schema: dict[str, Any], pointer: str
-) -> list[tuple[str, dict[str, Any]]]:
+def object_subschemas(schema: dict[str, Any], pointer: str) -> list[tuple[str, dict[str, Any]]]:
     """Return every object subschema inside one contract, with a readable pointer."""
 
     found: list[tuple[str, dict[str, Any]]] = []
@@ -592,9 +590,7 @@ class ContractRegistryTests(unittest.TestCase):
             for pointer, subschema in object_subschemas(schema, event_type):
                 with self.subTest(pointer=pointer):
                     if pointer in OPEN_MAP_POINTERS:
-                        self.assertEqual(
-                            subschema["additionalProperties"], {"type": "string"}
-                        )
+                        self.assertEqual(subschema["additionalProperties"], {"type": "string"})
                         continue
                     self.assertIs(subschema["additionalProperties"], False)
                     self.assertLessEqual(
@@ -1125,9 +1121,7 @@ class TimestampSemanticsTests(unittest.TestCase):
         for event_type, pointers in EXPECTED_TIMESTAMP_POINTERS.items():
             for pointer in pointers:
                 with self.subTest(event_type=event_type, pointer=pointer):
-                    payload = with_value(
-                        GOOD_PAYLOADS[event_type], pointer, "2026-08-29T23:59:59Z"
-                    )
+                    payload = with_value(GOOD_PAYLOADS[event_type], pointer, "2026-08-29T23:59:59Z")
 
                     self.repository.validate_payload(event_type, payload)
 
@@ -1507,9 +1501,7 @@ class StreamCompatibilityTests(unittest.TestCase):
             (FAILURE_STREAM_EVENT_TYPES, COVERAGE_STREAM_EVENT_TYPES),
         ):
             self.assertEqual(first & second, {"observation.recorded"})
-        self.assertEqual(
-            ARTIFACT_STREAM_EVENT_TYPES, {"artifact.ingested", "observation.recorded"}
-        )
+        self.assertEqual(ARTIFACT_STREAM_EVENT_TYPES, {"artifact.ingested", "observation.recorded"})
         self.assertEqual(
             FAILURE_STREAM_EVENT_TYPES, {"failure.held", "failure.recorded", "observation.recorded"}
         )
@@ -1602,9 +1594,7 @@ class StreamCompatibilityTests(unittest.TestCase):
             self.repository.current_version(ARTIFACT_STREAM_ID),
             len(ARTIFACT_STREAM_EVENT_TYPES),
         )
-        self.assertEqual(
-            self.repository.current_version(STREAM_ID), len(CASE_STREAM_EVENT_TYPES)
-        )
+        self.assertEqual(self.repository.current_version(STREAM_ID), len(CASE_STREAM_EVENT_TYPES))
 
     def test_a_case_event_on_an_artifact_stream_is_refused(self) -> None:
         for event_type in sorted(CASE_STREAM_EVENT_TYPES):
@@ -2124,9 +2114,7 @@ class StreamIdentifierTests(unittest.TestCase):
 class TimestampTests(unittest.TestCase):
     def test_iso_utc_normalizes_an_offset_to_the_z_form(self) -> None:
         offset = timezone(timedelta(hours=-7))
-        self.assertEqual(
-            iso_utc(datetime(2026, 8, 3, 2, 0, tzinfo=offset)), "2026-08-03T09:00:00Z"
-        )
+        self.assertEqual(iso_utc(datetime(2026, 8, 3, 2, 0, tzinfo=offset)), "2026-08-03T09:00:00Z")
 
     def test_parse_utc_inverts_iso_utc(self) -> None:
         offset = timezone(timedelta(hours=5, minutes=30))
@@ -3391,7 +3379,6 @@ class FailureSchemaMarkingTests(unittest.TestCase):
         self.assertEqual(self.store.latest_sequence, 0)
 
 
-
 class StreamIdCapTests(unittest.TestCase):
     """H3 (a): a reading's stream id past the store's name cap is refused by its parser too."""
 
@@ -3411,6 +3398,7 @@ class StreamIdCapTests(unittest.TestCase):
                     parse(past)
                 self.assertIn(f"at most {_MAX_STREAM_ID_LENGTH} characters", str(caught.exception))
                 self.assertNotIn(past, str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

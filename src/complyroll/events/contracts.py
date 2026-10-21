@@ -34,9 +34,7 @@ from complyroll.policy import COVERAGE_RULE_IDS
 
 #: Statuses that record a disposition. `new`, `evaluating`, and `active` are not
 #: dispositions, so `case.disposition_recorded` refuses them (ADR 0008 Decision 2).
-UNDISPOSED_STATUSES: Final = frozenset(
-    {CaseStatus.NEW, CaseStatus.EVALUATING, CaseStatus.ACTIVE}
-)
+UNDISPOSED_STATUSES: Final = frozenset({CaseStatus.NEW, CaseStatus.EVALUATING, CaseStatus.ACTIVE})
 
 DISPOSITION_STATUS_VALUES: Final[tuple[str, ...]] = tuple(
     status.value for status in CaseStatus if status not in UNDISPOSED_STATUSES
@@ -78,9 +76,7 @@ _MAX_STREAM_ID_LENGTH: Final = 500
 _UTC_TIMESTAMP_REGEX: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$"
 #: RFC 3339 offsets are hours and minutes. Python parses an offset carrying seconds
 #: and re-serializes it unchanged, so nothing downstream would catch one that got in.
-_RFC3339_REGEX: Final = (
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$"
-)
+_RFC3339_REGEX: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$"
 #: Exactly what `datetime.isoformat()` writes for an aware datetime, which is exactly
 #: what `Observation.to_canonical_dict` stores and `from_canonical_dict` will read
 #: back: no `Z` suffix, a fraction of exactly six digits or none at all, and an offset
@@ -787,9 +783,7 @@ def require_tracking_id(value: str) -> str:
     """Validate a correlation v0 tracking identifier, `case-` plus sixteen hex digits."""
 
     if not isinstance(value, str) or TRACKING_ID_PATTERN.fullmatch(value) is None:
-        raise ValueError(
-            f"tracking_id must match 'case-<16 hex characters>', got {value!r}"
-        )
+        raise ValueError(f"tracking_id must match 'case-<16 hex characters>', got {value!r}")
     return value
 
 

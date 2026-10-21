@@ -249,7 +249,6 @@ PREVIOUS_REPORT = '{"note": "the report a previous run published"}\n'
 PREVIOUS_MARKDOWN = "# the report a previous run published\n"
 
 
-
 class ReplaceFailingOnCall:
     """An `os.replace` that fails on the numbered calls it is given, and works otherwise.
 
@@ -738,9 +737,7 @@ class ReportVdtCommandTests(unittest.TestCase):
             link = workspace / "report.md"
             link.symlink_to(workspace / "gone.md")
 
-            code, out, err = run(
-                [*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(link)]
-            )
+            code, out, err = run([*REPORT_ARGUMENTS, "-o", str(json_path), "--markdown", str(link)])
 
             self.assertEqual(code, 1)
             self.assertEqual(out, "")
@@ -1135,9 +1132,7 @@ class KevReportCommandTests(unittest.TestCase):
                 self.assertEqual(code, 0, msg=err)
                 self.assertEqual(out, "")
                 self.assertIn("info: kev_entries_after_as_of", err)
-                self.assertEqual(
-                    json_path.read_bytes(), (GOLDEN / f"{kind}-kev.json").read_bytes()
-                )
+                self.assertEqual(json_path.read_bytes(), (GOLDEN / f"{kind}-kev.json").read_bytes())
                 self.assertEqual(
                     markdown_path.read_bytes(), (GOLDEN / f"{kind}-kev.md").read_bytes()
                 )
@@ -1748,9 +1743,7 @@ class PersistedStoreTestCase(unittest.TestCase):
         )
 
     def correlate(self, *, actor: str = "golden") -> tuple[str, str]:
-        return self.succeeds(
-            ["cases", "correlate", "--db", str(self.database), "--actor", actor]
-        )
+        return self.succeeds(["cases", "correlate", "--db", str(self.database), "--actor", actor])
 
     def attest_missing(self, *, actor: str = "golden") -> tuple[str, str]:
         return self.succeeds(
@@ -1925,8 +1918,7 @@ class PersistedSequenceTests(PersistedStoreTestCase):
 
         self.assertEqual(
             out,
-            "created 6 case(s), linked 6 observation(s), "
-            "skipped 0 already-linked observation(s)\n",
+            "created 6 case(s), linked 6 observation(s), skipped 0 already-linked observation(s)\n",
         )
 
         out, _ = self.attest_missing()
@@ -2636,9 +2628,7 @@ class PersistedKevReportTests(PersistedStoreTestCase):
                 )
 
                 self.assertIn("info: kev_entries_after_as_of", err)
-                self.assertEqual(
-                    json_path.read_bytes(), (GOLDEN / f"{kind}-kev.json").read_bytes()
-                )
+                self.assertEqual(json_path.read_bytes(), (GOLDEN / f"{kind}-kev.json").read_bytes())
                 self.assertEqual(
                     markdown_path.read_bytes(), (GOLDEN / f"{kind}-kev.md").read_bytes()
                 )
@@ -5062,9 +5052,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         overfull stream and a stream holding one observation twice are different faults.
         """
 
-        moved = replace(
-            Observation.from_canonical_dict(payload), source_record_id=source_record_id
-        )
+        moved = replace(Observation.from_canonical_dict(payload), source_record_id=source_record_id)
         return replace(moved, observation_id=moved.derived_observation_id).to_canonical_dict()
 
     def artifact_stream(self) -> tuple[EventRecord, ...]:
@@ -5342,9 +5330,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         real ones without touching them.
         """
 
-        moved = replace(
-            Observation.from_canonical_dict(payload), source_artifact_digest=digest
-        )
+        moved = replace(Observation.from_canonical_dict(payload), source_artifact_digest=digest)
         return replace(moved, observation_id=moved.derived_observation_id).to_canonical_dict()
 
     def test_one_observation_recorded_twice_is_named_and_exits_one(self) -> None:
@@ -5543,9 +5529,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                     )
                     before = self.latest_sequence()
 
-                    with patch.object(
-                        cli_module, "ingest_stig_artifact", read_by_the_next_version
-                    ):
+                    with patch.object(cli_module, "ingest_stig_artifact", read_by_the_next_version):
                         code, out, err = run(
                             [
                                 "ingest",
@@ -6722,7 +6706,6 @@ class MissingStoreTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
 
-
 class StoredValueRefusalCommandTests(PersistedStoreTestCase):
     """H3: each command in `readers` refuses a planted stored value with one coded line.
 
@@ -7013,9 +6996,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                     )
                 else:
                     self.insert(metadata_json=text)
-                self.assert_refused(
-                    "contains JSON past the decoder's limits", {"payload_not_json"}
-                )
+                self.assert_refused("contains JSON past the decoder's limits", {"payload_not_json"})
 
     def test_j3_metadata_nested_past_the_recursion_limit_is_refused(self) -> None:
         self.insert(metadata_json='{"n":' + "[" * 200_000 + "]" * 200_000 + "}")
@@ -7049,18 +7030,14 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.plant_surrogate(
             "observation.recorded", lambda payload: payload.update(title="Ubuntu \ud800 notice")
         )
-        self.assert_refused(
-            "payload contains text that is not valid Unicode", {"payload_not_json"}
-        )
+        self.assert_refused("payload contains text that is not valid Unicode", {"payload_not_json"})
 
     def test_s5_a_lone_surrogate_in_a_failure_diagnostic_is_refused(self) -> None:
         def change(payload: dict[str, Any]) -> None:
             payload["diagnostics"][0]["message"] = "x\ud800"
 
         self.plant_surrogate("failure.recorded", change)
-        self.assert_refused(
-            "payload contains text that is not valid Unicode", {"payload_not_json"}
-        )
+        self.assert_refused("payload contains text that is not valid Unicode", {"payload_not_json"})
 
     def test_d_metadata_past_the_append_depth_is_refused(self) -> None:
         def work(connection: sqlite3.Connection) -> None:

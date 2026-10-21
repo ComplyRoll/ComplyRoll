@@ -452,9 +452,10 @@ class XccdfAdapter:
             if observed_at is None:
                 timestamp_missing = True
 
-            context_key = "|".join(
-                value for value in (benchmark_id, container.get("id", "")) if value
-            ) or "xccdf"
+            context_key = (
+                "|".join(value for value in (benchmark_id, container.get("id", "")) if value)
+                or "xccdf"
+            )
             for result_index, rule_result in enumerate(
                 element for element in container.iter() if localname(element.tag) == "rule-result"
             ):

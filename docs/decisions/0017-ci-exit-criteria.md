@@ -433,3 +433,13 @@ a recorded failure into a warning.
   can refuse it, and destroys reports a refused run would otherwise leave in place.
 - Letting each command take its own current instant when no as-of is given: the reports of one run
   disagree.
+
+## Amendment 2026-10-21: format checking joins `lint`
+
+The thirty files Decision 11 names were reformatted with `ruff format` (ruff 0.16.6) in one
+change of their own, as a one-time exception to the rule that a change does not normalize files
+it does not otherwise touch. Every reformatted module parses to the same syntax tree but for
+docstring whitespace, and every golden is byte-identical. With no file left to reformat, the
+`lint` job runs `ruff format --check src tests stigroll.py` beside `ruff check` and `mypy`, each
+step after a failed one too, so one run reports every gate. A later change keeps its files
+formatter-clean instead of earning another exception.

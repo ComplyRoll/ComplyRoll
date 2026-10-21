@@ -177,9 +177,7 @@ class IntegrityReport:
 
         if self.ok:
             return f"ok: {self.checked_events} event(s) verified"
-        return (
-            f"faults: {len(self.faults)} problem(s) in {self.checked_events} verified event(s)"
-        )
+        return f"faults: {len(self.faults)} problem(s) in {self.checked_events} verified event(s)"
 
 
 _SCHEMA_V1 = (
@@ -728,8 +726,7 @@ class SQLiteEventStore:
                                 sequence=sequence,
                                 code="sequence_gap",
                                 message=(
-                                    f"event history holds sequence {sequence}; sequences "
-                                    "start at 1"
+                                    f"event history holds sequence {sequence}; sequences start at 1"
                                 ),
                             )
                         )
@@ -892,9 +889,7 @@ class SQLiteEventStore:
         problem = _counter_problem(rows)
         if problem is not None:
             return (
-                IntegrityFault(
-                    sequence=latest, code="sequence_counter_mismatch", message=problem
-                ),
+                IntegrityFault(sequence=latest, code="sequence_counter_mismatch", message=problem),
             )
         if counter == latest:
             return ()
@@ -1054,8 +1049,7 @@ class SQLiteEventStore:
                 if version == 0:
                     if self._schema_objects(connection):
                         raise UnsupportedSchemaError(
-                            "database already contains objects and is not an empty "
-                            "ComplyRoll store"
+                            "database already contains objects and is not an empty ComplyRoll store"
                         )
                     for statement in _SCHEMA_V1:
                         connection.execute(statement)
@@ -1361,9 +1355,7 @@ class _write_transaction:
     def __enter__(self) -> None:
         if self.joined:
             if not self.connection.in_transaction:
-                raise EventStoreError(
-                    "expected an enclosing write transaction, but none is open"
-                )
+                raise EventStoreError("expected an enclosing write transaction, but none is open")
             return
         if self.connection.in_transaction:
             raise EventStoreError("connection is already inside a transaction")
@@ -1371,9 +1363,7 @@ class _write_transaction:
             self.connection.execute("BEGIN IMMEDIATE")
         except sqlite3.Error as exc:
             rollback_error = self._rollback()
-            raise self._failure(
-                "could not begin a write transaction", exc, rollback_error
-            ) from exc
+            raise self._failure("could not begin a write transaction", exc, rollback_error) from exc
 
     def __exit__(
         self,
@@ -1577,9 +1567,7 @@ def _counter_problem(rows: Sequence[Sequence[object]]) -> str | None:
     return f"the events sequence counter is stored as {_storage_class(value)}, not an integer"
 
 
-def _stored_stream_version(
-    connection: sqlite3.Connection, stream_id: object, value: object
-) -> int:
+def _stored_stream_version(connection: sqlite3.Connection, stream_id: object, value: object) -> int:
     """Return one aggregated stream_version, refusing a stream that stores anything else.
 
     The open-time and append-time contiguity checks aggregate `stream_version` with raw SQL
@@ -1632,9 +1620,7 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
     # only bounded once it is known to be one append could have written.
     problem = _name_problem(row) or _version_problem(row)
     if problem is not None:
-        raise EventIntegrityError(
-            f"event at sequence {sequence} has {problem}", sequence=sequence
-        )
+        raise EventIntegrityError(f"event at sequence {sequence} has {problem}", sequence=sequence)
     payload_json = str(row["payload_json"])
     expected_digest = str(row["payload_sha256"])
     actual_digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
@@ -1670,9 +1656,7 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
             f"event {row['event_id']!r} JSON must contain objects",
             sequence=sequence,
         )
-    problem = _append_json_problem(payload, "payload") or _append_json_problem(
-        metadata, "metadata"
-    )
+    problem = _append_json_problem(payload, "payload") or _append_json_problem(metadata, "metadata")
     if problem is not None:
         raise EventIntegrityError(f"event {row['event_id']!r} {problem}", sequence=sequence)
 
@@ -1737,8 +1721,7 @@ def _payload_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ..
                 sequence=sequence,
                 code="payload_not_json",
                 message=(
-                    f"event {_shown_name(row['event_id'])} contains JSON past the decoder's "
-                    "limits"
+                    f"event {_shown_name(row['event_id'])} contains JSON past the decoder's limits"
                 ),
             ),
         )
@@ -1750,9 +1733,7 @@ def _payload_faults(row: sqlite3.Row, sequence: int) -> tuple[IntegrityFault, ..
                 message=f"event {_shown_name(row['event_id'])} JSON must contain objects",
             ),
         )
-    problem = _append_json_problem(payload, "payload") or _append_json_problem(
-        metadata, "metadata"
-    )
+    problem = _append_json_problem(payload, "payload") or _append_json_problem(metadata, "metadata")
     if problem is not None:
         return (
             IntegrityFault(
@@ -1797,8 +1778,7 @@ def _sequence_gap_error(
             sequence=highest,
         )
     return EventIntegrityError(
-        f"event history is missing sequence {following - 1}; next stored sequence is "
-        f"{following}",
+        f"event history is missing sequence {following - 1}; next stored sequence is {following}",
         sequence=following,
     )
 

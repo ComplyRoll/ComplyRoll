@@ -196,13 +196,9 @@ def _parse_report_json(content: bytes) -> Any:
         current, depth = stack.pop()
         values_seen += 1
         if values_seen > MAX_REPORT_VALUES:
-            raise ReportDocumentError(
-                f"report contains more than {MAX_REPORT_VALUES} JSON values"
-            )
+            raise ReportDocumentError(f"report contains more than {MAX_REPORT_VALUES} JSON values")
         if depth > MAX_REPORT_DEPTH:
-            raise ReportDocumentError(
-                f"report exceeds {MAX_REPORT_DEPTH} levels of JSON nesting"
-            )
+            raise ReportDocumentError(f"report exceeds {MAX_REPORT_DEPTH} levels of JSON nesting")
         if isinstance(current, dict):
             stack.extend((item, depth + 1) for item in current.values())
         elif isinstance(current, list):

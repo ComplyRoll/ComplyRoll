@@ -694,12 +694,8 @@ class AcceptedProjectionReplayTests(StoreFixture):
     def assert_matches_golden(self, kind: ReportKind, name: str) -> None:
         report = self.replay(kind=kind)
 
-        self.assertEqual(
-            report.to_json(), (GOLDEN / f"{name}.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(
-            report.to_markdown(), (GOLDEN / f"{name}.md").read_text(encoding="utf-8")
-        )
+        self.assertEqual(report.to_json(), (GOLDEN / f"{name}.json").read_text(encoding="utf-8"))
+        self.assertEqual(report.to_markdown(), (GOLDEN / f"{name}.md").read_text(encoding="utf-8"))
 
     def test_the_replayed_avi_matches_the_stateless_golden_byte_for_byte(self) -> None:
         self.assert_matches_golden("avi", "avi-fixtures")
@@ -739,9 +735,7 @@ class AcceptedProjectionReplayTests(StoreFixture):
         self.assertNotIn("reportPeriod", report.document["x-complyroll"])
         self.assertEqual(len(active), 5)
         self.assertEqual(
-            find_vulnerability(report, "V-260470", key="activeVulnerabilities")[
-                "finalDisposition"
-            ],
+            find_vulnerability(report, "V-260470", key="activeVulnerabilities")["finalDisposition"],
             "Partially Mitigated",
         )
         self.assertEqual(
@@ -803,9 +797,7 @@ class AcceptedProjectionReplayTests(StoreFixture):
         september = compile_from_history(
             later,
             kind="avi",
-            options=options(
-                period_from=SEPTEMBER["period_from"], period_to=SEPTEMBER["period_to"]
-            ),
+            options=options(period_from=SEPTEMBER["period_from"], period_to=SEPTEMBER["period_to"]),
         )
         expected = self.replay(kind="avi", **SEPTEMBER)
 
@@ -835,9 +827,7 @@ class AcceptedProjectionReplayTests(StoreFixture):
                 )
 
     def test_an_acceptance_outside_the_period_is_excluded_on_both_paths(self) -> None:
-        report = self.assert_paths_agree(
-            ARTIFACTS, ACCEPTED_EVALUATIONS, kind="avi", **SEPTEMBER
-        )
+        report = self.assert_paths_agree(ARTIFACTS, ACCEPTED_EVALUATIONS, kind="avi", **SEPTEMBER)
         excluded = [item for item in report.diagnostics if item.code == "excluded_by_period"]
         markdown = report.to_markdown()
 
@@ -1012,9 +1002,7 @@ class StaleCaseTests(StoreFixture):
         self.assertIn(ORPHAN_CASE, stale[0].message)
         self.assertEqual(stale[0].location, f"case/{ORPHAN_CASE}")
         self.assertEqual(len(report.document["vulnerabilities"]), 1)
-        self.assertIn(
-            stale[0].to_dict(), report.document["x-complyroll"]["diagnostics"]
-        )
+        self.assertIn(stale[0].to_dict(), report.document["x-complyroll"]["diagnostics"])
 
     def test_a_store_whose_cases_all_match_raises_no_stale_diagnostic(self) -> None:
         self.ingest()
@@ -1114,9 +1102,7 @@ class OverriddenAttestationTests(StoreFixture):
 
         report = self.assert_paths_agree(ARTIFACTS, path)
         block = report.document["x-complyroll"]["detectionTimeAttestation"]
-        identifiers = [
-            item["providerTrackingId"] for item in report.document["vulnerabilities"]
-        ]
+        identifiers = [item["providerTrackingId"] for item in report.document["vulnerabilities"]]
 
         self.assertEqual(block["detectedAt"], "2026-08-01T00:00:00Z")
         self.assertIn("PROVIDER-1", block["appliedTo"])
@@ -1205,9 +1191,7 @@ class OverriddenAttestationTests(StoreFixture):
         self.evaluate(path)
 
         report = self.assert_paths_agree(ARTIFACTS, path)
-        identifiers = {
-            item["providerTrackingId"] for item in report.document["vulnerabilities"]
-        }
+        identifiers = {item["providerTrackingId"] for item in report.document["vulnerabilities"]}
         block = report.document["x-complyroll"]["detectionTimeAttestation"]
 
         self.assertIn("PROVIDER-1", identifiers)
@@ -1492,9 +1476,7 @@ class DispositionWithoutEvaluationTests(StoreFixture):
         self.assertIn(ORPHAN_CASE, diagnostic.message)
 
     def test_an_evaluated_case_with_a_disposition_still_compiles(self) -> None:
-        path = self.write_evaluations(
-            [windows_evaluation(disposition="partially_mitigated")]
-        )
+        path = self.write_evaluations([windows_evaluation(disposition="partially_mitigated")])
         self.ingest(WINDOWS_ONLY)
         self.correlate()
         self.attest()
@@ -1579,9 +1561,7 @@ class SupersededParserTests(StoreFixture):
             [],
         )
         self.assertEqual(len(report.document["x-complyroll"]["artifacts"]), 1)
-        self.assertEqual(
-            report.document["x-complyroll"]["artifacts"][0]["parserVersion"], "1"
-        )
+        self.assertEqual(report.document["x-complyroll"]["artifacts"][0]["parserVersion"], "1")
 
 
 class DamagedIngestHistoryTests(StoreFixture):
@@ -1855,9 +1835,7 @@ class KevReplayTests(StoreFixture):
         for kind in REPORT_KINDS:
             with self.subTest(report=kind):
                 bare = {**KEV_OVERRIDES}
-                report = self.assert_paths_agree(
-                    KEV_ARTIFACTS, KEV_EVALUATIONS, kind=kind, **bare
-                )
+                report = self.assert_paths_agree(KEV_ARTIFACTS, KEV_EVALUATIONS, kind=kind, **bare)
                 self.assertNotIn("kevSource", report.document["x-complyroll"])
                 self.assertNotIn("Known exploited", report.to_markdown())
 

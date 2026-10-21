@@ -102,9 +102,7 @@ PACKAGE_URI = "https://example.test/cpo"
 ACCEPTED_EVALUATIONS = EXAMPLES / "evaluations-accepted.json"
 #: The one accepted record `examples/evaluations-accepted.json` adds to the fixtures.
 BANNER_CASE = "case-04efea8c137ae82f"
-BANNER_RATIONALE = (
-    "Accepted under change record CR-102 pending the banner template refresh in Q4."
-)
+BANNER_RATIONALE = "Accepted under change record CR-102 pending the banner template refresh in Q4."
 #: Overrides that turn the default `evaluation_json` entry into an acceptance.
 ACCEPTANCE = {
     "disposition": "accepted",
@@ -681,9 +679,7 @@ def assert_markdown_carries_the_json(
                 row = rows.get(deadline["ruleId"])
                 test.assertIsNotNone(row, f"{heading} omits deadline {deadline['ruleId']}")
                 assert row is not None
-                test.assertEqual(
-                    row[5], deadline["dueAt"], f"{heading} {deadline['ruleId']} due"
-                )
+                test.assertEqual(row[5], deadline["dueAt"], f"{heading} {deadline['ruleId']} due")
                 test.assertEqual(
                     row[6],
                     "yes" if deadline["satisfied"] else "no",
@@ -857,9 +853,7 @@ class GoldenReportTests(unittest.TestCase):
         self.assertEqual(summary["Evaluated"], evaluated)
         self.assertEqual(summary["Not yet evaluated"], len(vulnerabilities) - evaluated)
         self.assertEqual(summary["Overdue"], overdue)
-        self.assertEqual(
-            summary["Accepted, reported under VER-RPT-AVI"], len(self.report.accepted)
-        )
+        self.assertEqual(summary["Accepted, reported under VER-RPT-AVI"], len(self.report.accepted))
         self.assertEqual(
             summary["Excluded by report period"],
             self.report.document["x-complyroll"]["excludedByPeriod"],
@@ -1227,9 +1221,7 @@ class IngestFailureTests(unittest.TestCase):
                 compile_fixtures(artifacts=(broken,))
 
         self.assertTrue(caught.exception.diagnostics)
-        self.assertTrue(
-            all(item.level.value == "error" for item in caught.exception.diagnostics)
-        )
+        self.assertTrue(all(item.level.value == "error" for item in caught.exception.diagnostics))
 
     def test_a_missing_artifact_stops_the_run(self) -> None:
         with self.assertRaises(ReportCompileError):
@@ -1252,9 +1244,7 @@ class IngestFailureTests(unittest.TestCase):
 
             report = compile_fixtures(artifacts=(path,))
 
-        unresolved = [
-            item for item in report.diagnostics if item.code == "unresolved_observation"
-        ]
+        unresolved = [item for item in report.diagnostics if item.code == "unresolved_observation"]
         self.assertEqual(len(unresolved), 1)
         self.assertIn("package_aide_installed", unresolved[0].message)
         self.assertIn("disposition error", unresolved[0].message)
@@ -1408,9 +1398,7 @@ class EvaluationInputValidationTests(unittest.TestCase):
     def test_projection_and_reduction_events_are_typed(self) -> None:
         projection = {"estimatedAt": "2026-08-24T16:00:00Z", "targetRating": 9}
         with self.assertRaisesRegex(ReportInputError, "targetRating"):
-            parse_evaluations(
-                evaluation_json(projectedNextReduction=projection).encode("utf-8")
-            )
+            parse_evaluations(evaluation_json(projectedNextReduction=projection).encode("utf-8"))
         with self.assertRaisesRegex(ReportInputError, r"painReductionEvents\[0\]\.reducedAt"):
             parse_evaluations(
                 evaluation_json(painReductionEvents=[{"reducedAt": "soon", "rating": 3}]).encode(
@@ -1447,9 +1435,7 @@ class DispositionMappingTests(unittest.TestCase):
         }
         for status, disposition in expected.items():
             with self.subTest(status=status.value):
-                report = compile_fixtures(
-                    evaluations=evaluations_from(disposition=status.value)
-                )
+                report = compile_fixtures(evaluations=evaluations_from(disposition=status.value))
                 vulnerability = find_vulnerability(report, "V-260470")
 
                 self.assertEqual(vulnerability.get("finalDisposition"), disposition)
@@ -1460,9 +1446,7 @@ class DispositionMappingTests(unittest.TestCase):
 
     def test_closed_uses_the_recorded_closing_disposition(self) -> None:
         report = compile_fixtures(
-            evaluations=evaluations_from(
-                disposition="closed", closedDisposition="false_positive"
-            )
+            evaluations=evaluations_from(disposition="closed", closedDisposition="false_positive")
         )
 
         self.assertEqual(
@@ -1484,9 +1468,7 @@ class DispositionMappingTests(unittest.TestCase):
         self.assertEqual(len(report.accepted), 1)
         self.assertEqual(report.accepted[0].vulnerability.source_record_id, "V-260470")
         self.assertIn("SDR-14", report.accepted[0].acceptance_rationale)
-        self.assertIn(
-            "accepted_excluded", [item.code for item in report.diagnostics]
-        )
+        self.assertIn("accepted_excluded", [item.code for item in report.diagnostics])
 
     def test_the_detail_report_sets_aside_only_what_the_avi_of_its_period_reports(self) -> None:
         # The banner record was accepted with an August evaluation. September's AVI leaves
@@ -1811,9 +1793,10 @@ class AviPeriodSelectionTests(unittest.TestCase):
         )
         self.assertEqual(extension["excludedByPeriod"], 0)
         self.assertEqual(extension["activeNotReported"], 5)
-        self.assertEqual(find_accepted(report, "V-260470")["acceptanceRationale"], str(
-            ACCEPTANCE["acceptanceRationale"]
-        ))
+        self.assertEqual(
+            find_accepted(report, "V-260470")["acceptanceRationale"],
+            str(ACCEPTANCE["acceptanceRationale"]),
+        )
 
     def test_an_accepted_record_with_no_activity_in_the_period_is_excluded(self) -> None:
         report = compile_fixtures(
@@ -2013,9 +1996,7 @@ class TrackingIdUniquenessTests(unittest.TestCase):
         evaluations = parse_evaluations(json.dumps(payload).encode("utf-8"))
 
         report = compile_fixtures(evaluations=evaluations)
-        identifiers = {
-            item["providerTrackingId"] for item in report.document["vulnerabilities"]
-        }
+        identifiers = {item["providerTrackingId"] for item in report.document["vulnerabilities"]}
 
         self.assertIn("PROVIDER-1", identifiers)
         self.assertIn("PROVIDER-2", identifiers)
@@ -2082,9 +2063,10 @@ class PartialTimestampTests(unittest.TestCase):
         ]
 
         self.assertEqual(len(untimestamped), 1)
-        self.assertIn(untimestamped[0], report.document["vulnerabilities"][0]["x-complyroll"][
-            "observationIds"
-        ])
+        self.assertIn(
+            untimestamped[0],
+            report.document["vulnerabilities"][0]["x-complyroll"]["observationIds"],
+        )
 
     def test_the_markdown_lists_every_observation_and_marks_the_untimestamped(self) -> None:
         # The JSON extension names both the whole group and the members that declared
@@ -2275,9 +2257,7 @@ class AcceptanceRationaleGuardTests(unittest.TestCase):
                 with self.assertRaises(ReportCompileError) as caught:
                     project(record_set)
 
-                self.assertEqual(
-                    [item.location for item in caught.exception.diagnostics], accepted
-                )
+                self.assertEqual([item.location for item in caught.exception.diagnostics], accepted)
 
     def test_the_detail_report_still_compiles_without_a_rationale(self) -> None:
         record_set = self.without_rationale(self.accepted_record_set(), None)
@@ -2742,9 +2722,7 @@ class ReportOptionsTests(unittest.TestCase):
     def test_calendar_timezone_reaches_the_extension(self) -> None:
         report = compile_fixtures(calendar_timezone="America/Phoenix")
 
-        self.assertEqual(
-            report.document["x-complyroll"]["calendarTimezone"], "America/Phoenix"
-        )
+        self.assertEqual(report.document["x-complyroll"]["calendarTimezone"], "America/Phoenix")
 
     def test_the_period_may_be_omitted_together(self) -> None:
         periodless = options(period_from=None, period_to=None)
@@ -3025,9 +3003,7 @@ class ArgumentOrderTests(unittest.TestCase):
     def test_the_markdown_inputs_table_follows_the_sorted_manifest(self) -> None:
         report = compile_fixtures(artifacts=tuple(reversed(ARTIFACTS)))
 
-        rows = markdown_table_rows(
-            markdown_section(report.to_markdown(), "Inputs"), 4, "Artifact"
-        )
+        rows = markdown_table_rows(markdown_section(report.to_markdown(), "Inputs"), 4, "Artifact")
         self.assertEqual(
             list(rows),
             ["openscap-results.xml", "ubuntu-host.cklb", "windows-host.ckl"],
@@ -3172,9 +3148,7 @@ class SharedGroupOrderTests(unittest.TestCase):
         for order in permutations(self.hosts):
             with self.subTest(order=list(order)):
                 report = self.compile_hosts(order)
-                spanning = next(
-                    item for item in report.vulnerabilities if len(item.resources) > 1
-                )
+                spanning = next(item for item in report.vulnerabilities if len(item.resources) > 1)
 
                 self.assertEqual(
                     [resource.resource_id for resource in spanning.resources],
@@ -3271,9 +3245,7 @@ class DuplicateBytesOrderTests(unittest.TestCase):
 
         report = self.compile_named(("zzz-copy.xml", "aaa-copy.xml"))
 
-        duplicates = [
-            item for item in report.diagnostics if item.code == "duplicate_artifact"
-        ]
+        duplicates = [item for item in report.diagnostics if item.code == "duplicate_artifact"]
         self.assertEqual(len(duplicates), 1)
         self.assertEqual(duplicates[0].location, "zzz-copy.xml")
         self.assertIn("reads them as aaa-copy.xml", duplicates[0].message)
@@ -3287,9 +3259,7 @@ class DuplicateBytesOrderTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in artifacts], ["a.xml"])
         self.assertEqual(
             sorted(
-                item.location
-                for item in forward.diagnostics
-                if item.code == "duplicate_artifact"
+                item.location for item in forward.diagnostics if item.code == "duplicate_artifact"
             ),
             ["b.xml", "c.xml"],
         )

@@ -608,6 +608,4 @@ def _resolve_calendar_zone(name: object) -> tzinfo:
     try:
         return ZoneInfo(name)
     except (KeyError, ValueError) as exc:
-        raise ValueError(
-            f"calendar_timezone must be an IANA time zone name, got {name!r}"
-        ) from exc
+        raise ValueError(f"calendar_timezone must be an IANA time zone name, got {name!r}") from exc

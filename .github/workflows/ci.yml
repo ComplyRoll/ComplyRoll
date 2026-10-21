@@ -54,7 +54,11 @@ jobs:
         run: python -m pip install . -r requirements-lint.txt
       - name: Ruff
         run: ruff check src tests stigroll.py
+      - name: Ruff format
+        # Formatter-clean since the one-time reformat (ADR 0017 amendment 2026-10-21).
+        if: ${{ !cancelled() }}
+        run: ruff format --check src tests stigroll.py
       - name: Mypy
-        # Runs after a failed Ruff step too, so one run reports both gates.
+        # Runs after a failed Ruff step too, so one run reports every gate.
         if: ${{ !cancelled() }}
         run: mypy

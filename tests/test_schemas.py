@@ -187,9 +187,7 @@ class ReportValidationTests(unittest.TestCase):
     def test_the_golden_exercises_the_common_definitions_0_3_0_additions(self) -> None:
         """The golden must keep covering `Remediated` and `painReductionEvents` (ADR 0009)."""
 
-        vulnerabilities = self.examples[ReportSchema.VULNERABILITY_DETAIL.value][
-            "vulnerabilities"
-        ]
+        vulnerabilities = self.examples[ReportSchema.VULNERABILITY_DETAIL.value]["vulnerabilities"]
 
         self.assertIn("Remediated", {item.get("finalDisposition") for item in vulnerabilities})
         self.assertTrue(any("painReductionEvents" in item for item in vulnerabilities))

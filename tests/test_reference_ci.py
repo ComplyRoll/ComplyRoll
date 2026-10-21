@@ -214,6 +214,9 @@ USES_LINE = re.compile(r"\s+(?:- )?uses: ([\w.-]+/[\w.-]+)@(\S+?)(?: # (\S+))?")
 PINNED_USES = re.compile(r"[0-9a-f]{40} # v\d+\.\d+\.\d+")
 GIT_PIN = re.compile(r"complyroll @ git\+https://github\.com/ComplyRoll/ComplyRoll@[0-9a-f]{40}")
 PYPI_PIN = re.compile(r"complyroll==\d+(?:\.\d+)*[0-9A-Za-z.+!-]*")
+#: The gate step's id and the upload step's condition, at a step key's indentation.
+STEP_ID = "        id: gate"
+UPLOAD_IF = "        if: always() && steps.gate.outputs.started == 'true'"
 
 
 @dataclass(frozen=True)
@@ -456,6 +459,11 @@ def leave_dotfile(directory: Path, out: Path, artifacts: Sequence[str]) -> Seque
     return artifacts
 
 
+def leave_empty_output(directory: Path, out: Path, artifacts: Sequence[str]) -> Sequence[str]:
+    out.mkdir()
+    return artifacts
+
+
 #: The inputs the gate refuses to run without, each tested unset on its own (Forge F-08).
 REQUIRED_INPUTS = ("CR_CLASS", "CR_PACKAGE_URI", "CR_FROM", "CR_TO")
 #: The scenarios repeated under the second dialect (Forge F-13).
@@ -633,6 +641,18 @@ def build_scenarios(workflow: Workflow) -> list[Scenario]:
             reports=None,
             verdict=None,
             prepare=leave_dotfile,
+        ),
+        # `ls -A`, not `ls -a`: an empty directory lists nothing, so it is not a used one.
+        Scenario("empty-output", defaults, artifacts, prepare=leave_empty_output),
+        # A step output no append can open, an existing directory, stops the gate before any
+        # call, since the upload step would otherwise skip without a word.
+        Scenario(
+            "unwritable-step-output",
+            {**defaults, "GITHUB_OUTPUT": "tests"},
+            artifacts,
+            exit=1,
+            reports=None,
+            verdict=None,
         ),
         Scenario(
             "leading-dash",
@@ -1040,6 +1060,23 @@ class GateScenarioTests(unittest.TestCase):
             (result.out / ".previous.json").read_text(encoding="utf-8"), PREVIOUS_REPORT
         )
 
+    def test_an_existing_empty_output_directory_runs_as_a_fresh_one(self) -> None:
+        # Forge delta M-03: `ls -a` would list `.` and `..` and refuse it as used.
+        self.assert_same_run("empty-output")
+
+    def test_a_step_output_it_cannot_append_to_stops_the_gate(self) -> None:
+        # Forge delta M-02: without `|| exit 1` the run went on and exited 0, and the upload
+        # step, which reads started=true, skipped without a word.
+        result = self.result("unwritable-step-output")
+
+        self.assertEqual(result.code, 1, msg=result.explain())
+        self.assertEqual(result.stdout, "as-of: CR_AS_OF\n")
+        self.assertNotEqual(result.stderr, "")
+        self.assertEqual(result.calls, ())
+        self.assertEqual(result.summary, "")
+        self.assertEqual(result.output, "")
+        self.assertEqual([path.name for path in result.out.iterdir()], ["diagnostics.log"])
+
     def test_leading_dash(self) -> None:
         result = self.result("leading-dash")
 
@@ -1108,6 +1145,14 @@ class GateScenarioTests(unittest.TestCase):
         if SECOND_DIALECT is None:
             self.skipTest("neither dash nor bash is found apart from sh")
         self.assert_same_run(f"{base}-{SECOND_DIALECT[0]}", base)
+
+    def test_the_second_dialect_is_not_sh(self) -> None:
+        # Forge delta M-04: on ubuntu sh is dash, so a second dialect that resolved to sh
+        # would compare each run with itself and could never fail.
+        if SECOND_DIALECT is None:
+            self.skipTest("neither dash nor bash is found apart from sh")
+        assert SH is not None
+        self.assertNotEqual(os.path.realpath(SECOND_DIALECT[1][0]), os.path.realpath(SH))
 
     def test_yaml_defaults_under_dash(self) -> None:
         self.assert_same_run("yaml-defaults-dash")
@@ -1332,7 +1377,9 @@ class WorkflowTextTests(unittest.TestCase):
         index = self.lines.index("concurrency:")
         found = [i for i, line in enumerate(self.lines) if "${{" in line]
         self.assertEqual(found, [index + 1, index + 2], [self.workflow.where(i + 1) for i in found])
-        self.assertTrue(self.lines[index + 1].startswith("  group: "))
+        # Forge delta M-06: a group keyed on anything coarser than the ref lets one pull
+        # request's push cancel another's run.
+        self.assertEqual(self.lines[index + 1], "  group: complyroll-reports-${{ github.ref }}")
         # Forge F-16: a newer push cancels a pull request run, never a main-branch run.
         self.assertEqual(
             self.lines[index + 2],
@@ -1415,13 +1462,12 @@ class WorkflowTextTests(unittest.TestCase):
 
     def test_the_upload_step_runs_only_once_the_gate_started(self) -> None:
         # Forge F-01: on failure too, but never for a run the gate refused before CR_OUT.
-        gate = [line.strip() for line in self.workflow.gate_step()]
-        self.assertEqual([line for line in gate if line.startswith("id:")], ["id: gate"])
-        step = [line.strip() for line in self.workflow.step_using("actions/upload-artifact")]
-        self.assertEqual(
-            [line for line in step if line.startswith("if:")],
-            ["if: always() && steps.gate.outputs.started == 'true'"],
-        )
+        # Forge delta N-05: the raw lines, since an over-indented key is no longer the step's.
+        gate = self.workflow.gate_step()
+        self.assertEqual([line for line in gate if line.strip().startswith("id:")], [STEP_ID])
+        raw = self.workflow.step_using("actions/upload-artifact")
+        self.assertEqual([line for line in raw if line.strip().startswith("if:")], [UPLOAD_IF])
+        step = [line.strip() for line in raw]
         self.assertIn("if-no-files-found: warn", step)
         self.assertIn("retention-days: 30", step)
         (path,) = [line for line in step if line.startswith("path: ")]

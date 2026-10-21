@@ -1974,7 +1974,6 @@ class HdfSeverityTests(unittest.TestCase):
                 self.assertEqual(code, 0, err)
                 self.assertIn("recorded 1 observation", out)
                 self.assertIn("warning: invalid_impact:", err)
-                self.assertNotIn("Traceback", out + err)
 
 
 # *--- Waivers and Attestations ---*

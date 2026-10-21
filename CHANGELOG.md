@@ -490,6 +490,8 @@ All notable project changes will be documented here.
   arriving only through `jsonschema`. The resolved dependency graph is unchanged.
 - The reference CI workflow installs ComplyRoll from `c763eff`, which carries ADR 0017 Decision
   2's guard, instead of `d2c41e3`.
+- The test suite's wall-clock bounds run only with `COMPLYROLL_TIMING_TESTS=1`, which CI's test
+  job sets, so a heavily loaded machine no longer fails them. The work they time still runs.
 - The detail report's "Accepted, reported under VER-RPT-AVI" row counts only the accepted
   records the AVI report of the same period carries, by ADR 0010 Decision 2's activity rule. An
   accepted record with no activity in the period is excluded by it in both reports, in the same

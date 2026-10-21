@@ -12,6 +12,8 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
+from wall_clock import TIMING_TESTS
+
 from complyroll.store import (
     MAX_EVENT_JSON_BYTES,
     EventConcurrencyError,
@@ -680,7 +682,8 @@ class SQLiteEventStoreTests(unittest.TestCase):
                 store.append("case/case-002", [sample_event("evt-002")], expected_version=0)
             elapsed = time.monotonic() - started
 
-            self.assertLess(elapsed, 2.0)
+            if TIMING_TESTS:
+                self.assertLess(elapsed, 2.0)
             self.assertFalse(store._connection.in_transaction)
             self.assertEqual([record.event_id for record in store.read_all()], ["evt-001"])
             self.assertEqual(store.current_stream_version("case/case-002"), 0)
@@ -895,7 +898,8 @@ class StoreTransactionTests(unittest.TestCase):
                 contender.append("case/case-002", [sample_event("evt-2")], expected_version=0)
             elapsed = time.monotonic() - started
 
-            self.assertLess(elapsed, 2.0)
+            if TIMING_TESTS:
+                self.assertLess(elapsed, 2.0)
             self.assertEqual(contender.read_all(), ())
 
         appended = contender.append("case/case-002", [sample_event("evt-2")], expected_version=0)

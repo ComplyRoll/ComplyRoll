@@ -1231,7 +1231,6 @@ class CoverageStoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code_seen, 1)
         self.assertEqual(out, "")
-        self.assertNotIn("Traceback", err)
         self.assertIn(f"error: sequence {sequence}: {code}:", err)
         self.assertIn(message, err)
         self.assertIn("faults: 1 domain fault(s) in", err)

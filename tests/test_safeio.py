@@ -8,6 +8,8 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
+from wall_clock import TIMING_TESTS
+
 from complyroll.adapters import IngestLimits, ingest_stig_artifact
 from complyroll.adapters.hdf import HDF_MEDIA_TYPE, HDF_PARSER_VERSION
 from complyroll.adapters.safeio import (
@@ -356,7 +358,8 @@ class ReadBoundedTests(unittest.TestCase):
 
             worker = threading.Thread(target=attempt, daemon=True)
             worker.start()
-            worker.join(timeout=5.0)
+            # Timed, the bound is 5 s; untimed, a minute, so a read that blocks still fails.
+            worker.join(timeout=5.0 if TIMING_TESTS else 60.0)
 
             self.assertFalse(worker.is_alive(), "read_bounded blocked on a FIFO")
             self.assertIsInstance(outcome[0], ValueError)

@@ -15,6 +15,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Turns on the suite's wall-clock bounds, which tests/wall_clock.py gates.
+      COMPLYROLL_TIMING_TESTS: "1"
     strategy:
       fail-fast: false
       matrix:

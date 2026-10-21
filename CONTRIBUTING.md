@@ -24,7 +24,8 @@ python3 -m unittest discover -s tests -v
 ```
 
 Run the suite only through `unittest discover -s tests`: `tests/` is not a package, and the test
-modules import shared helpers from one another by plain module name. The lint, format and
+modules import shared helpers from one another by plain module name. The few wall-clock bounds
+run only with `COMPLYROLL_TIMING_TESTS=1`, which CI sets. The lint, format and
 type gates are `ruff check src tests stigroll.py`, `ruff format --check src tests stigroll.py`
 and `mypy` from the repository root; all three read their configuration from `pyproject.toml`,
 and CI's `lint` job runs them on Python 3.11. Run `ruff format src tests stigroll.py` before

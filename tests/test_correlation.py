@@ -126,6 +126,33 @@ class GroupingTests(unittest.TestCase):
 
         self.assertEqual(groups[0].observation_ids, ("obs-alpha", "obs-zulu"))
 
+    def test_the_resource_outranks_the_artifact_name_in_member_order(self) -> None:
+        """The resource leads the member order, and the file it came from only breaks ties.
+
+        Here the file names sort against the hosts, so an order keyed on the artifact name
+        first would list host-b before host-a.
+        """
+
+        host_a = replace(
+            _observation(source_record_id="V-1", resource_id="host-a"),
+            source_artifact_name="zulu.cklb",
+            source_artifact_digest="b" * 64,
+        )
+        host_b = replace(
+            _observation(source_record_id="V-1", resource_id="host-b"),
+            source_artifact_name="alpha.cklb",
+        )
+
+        for order in permutations((host_a, host_b)):
+            with self.subTest(order=[item.source_artifact_name for item in order]):
+                (group,) = group_open_observations(order)
+
+                self.assertEqual(
+                    tuple(resource.resource_id for resource in group.resources),
+                    ("host-a", "host-b"),
+                )
+                self.assertEqual(group.observation_ids, ("obs-V-1-host-a", "obs-V-1-host-b"))
+
     def test_a_group_reports_one_title_whatever_order_it_is_built_in(self) -> None:
         """`title` takes the first non-empty member, so order chose the reported text.
 

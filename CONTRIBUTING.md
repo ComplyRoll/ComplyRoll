@@ -24,10 +24,12 @@ python3 -m unittest discover -s tests -v
 ```
 
 Run the suite only through `unittest discover -s tests`: `tests/` is not a package, and the test
-modules import shared helpers from one another by plain module name. The lint and type gates are
-`ruff check src tests stigroll.py` and `mypy` from the repository root; both read their
-configuration from `pyproject.toml`, and CI's `lint` job runs both on Python 3.11. Install the
-package and the versions CI pins with `python3 -m pip install -e . -r requirements-lint.txt`.
+modules import shared helpers from one another by plain module name. The lint, format and
+type gates are `ruff check src tests stigroll.py`, `ruff format --check src tests stigroll.py`
+and `mypy` from the repository root; all three read their configuration from `pyproject.toml`,
+and CI's `lint` job runs them on Python 3.11. Run `ruff format src tests stigroll.py` before
+committing. Install the package and the versions CI pins with
+`python3 -m pip install -e . -r requirements-lint.txt`.
 
 Please include:
 

@@ -5888,8 +5888,8 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn("faults: 1 domain fault(s) in", err)
 
     def test_a_metadata_fault_beside_a_case_stream_naming_no_tracking_id_is_named(self) -> None:
-        # A case stream whose id names no tracking id fails its fold with a plain
-        # ValueError, which no audit code names. The metadata fault is still reported.
+        # A case stream whose id names no tracking id is a fault of its own, at its first
+        # event, so the metadata fault is reported beside it rather than alone.
         self.populate()
         sequence = self.smuggle(
             "detection.attested",
@@ -5906,8 +5906,80 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch:", err)
         self.assertIn(f"error: sequence {sequence}: event_metadata_invalid:", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
+    def test_a_case_stream_naming_no_tracking_id_is_refused_by_every_reader(self) -> None:
+        # Its id is `case/` and then no tracking id. No event on it is `case.created`, so
+        # the placement check had nothing to say, and verify, `cases list`, a report and
+        # `cases evaluate` each ended in a ValueError traceback when they folded it.
+        self.populate()
+        stream_id = "case/not-a-valid-id"
+        sequence = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=stream_id,
+        )
+        second = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=stream_id,
+            expected_version=1,
+        )
+        named = (
+            f"stream {stream_id!r} names no tracking id: tracking_id must match "
+            "'case-<16 hex characters>', got 'not-a-valid-id'"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        # One fault for the stream, at its first event, not one per event.
+        self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch: {named}\n", err)
+        self.assertNotIn(f"sequence {second}:", err)
         self.assertIn("faults: 1 domain fault(s) in", err)
+        refused = f"error: history_invalid: {named}\n"
+        commands = {
+            "cases list": ["cases", "list", "--db", str(self.database)],
+            "cases evaluate": [
+                "cases",
+                "evaluate",
+                "--db",
+                str(self.database),
+                "--evaluations",
+                str(EXAMPLES / "evaluations.json"),
+            ],
+            "report vdt": [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                INGESTED_AT,
+            ],
+        }
+        before = self.latest_sequence()
+        for label, argv in commands.items():
+            with self.subTest(label):
+                self.assertEqual(run(argv), (1, "", refused))
+        self.assertEqual(self.latest_sequence(), before)
 
     def test_a_rewritten_payload_is_named_and_exits_one(self) -> None:
         self.populate()

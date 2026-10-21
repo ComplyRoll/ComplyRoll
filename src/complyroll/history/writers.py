@@ -50,7 +50,6 @@ from complyroll.events import (
     is_case_stream,
     iso_utc,
     parse_utc,
-    tracking_id_from_stream,
 )
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.policy import CertificationProfile
@@ -82,6 +81,7 @@ from .fold import (
     HistoryError,
     _coverage_stream_problem,
     _failure_stream_problem,
+    _stream_tracking_id,
     artifact_history,
     fold_case_records,
     rehydrate_observations,
@@ -1029,7 +1029,7 @@ def _case_streams(repository: EventRepository) -> dict[str, tuple[EventRecord, .
     for record in repository.read_all():
         if not is_case_stream(record.stream_id):
             continue
-        grouped.setdefault(tracking_id_from_stream(record.stream_id), []).append(record)
+        grouped.setdefault(_stream_tracking_id(record.stream_id), []).append(record)
     return {tracking_id: tuple(records) for tracking_id, records in grouped.items()}
 
 

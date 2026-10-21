@@ -2224,6 +2224,22 @@ class FailureDiagnosticsTests(unittest.TestCase):
                     [(WARNING, "invalid_rule"), (INFO, "invalid_rule")],
                 )
 
+    def test_a_missing_location_sorts_before_every_location_of_its_code(self) -> None:
+        # A missing location is keyed as the empty string. Keyed as a placeholder text, it
+        # would sort after this name, which starts with a digit, and not keyed at all, it
+        # could not be compared with a location.
+        tied = (
+            error("invalid_rule", "2026-08-host.cklb", "located"),
+            error("invalid_rule", None, "unlocated"),
+        )
+        for order in (tied, tied[::-1]):
+            with self.subTest([item.location for item in order]):
+                rendered = self.render(reading(*order))
+                self.assertEqual(
+                    [(item.location, item.message) for item in rendered[:2]],
+                    [(NAME, "unlocated"), ("2026-08-host.cklb", "located")],
+                )
+
     def test_every_error_is_demoted_to_a_warning_under_the_same_code(self) -> None:
         result = ingest_json(NAME, checklist(1, "rule", None))
         rendered = self.render(result)

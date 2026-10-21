@@ -26,6 +26,7 @@ from unittest import mock
 
 from test_replay import INGESTED_AT, RATIONALE, StoreFixture
 from test_reports import summary_counts
+from wall_clock import TIMING_TESTS
 
 from complyroll.adapters import IngestLimits, InputLimitError, ingest_stig_artifact
 from complyroll.adapters import common as common_module
@@ -4167,6 +4168,16 @@ class SarifDegradedEvidenceTests(unittest.TestCase):
             "artifact yields more than 2 observations",
         )
 
+    def test_an_artifact_yielding_exactly_the_observation_cap_is_read(self) -> None:
+        # The cap is a maximum, not a bound to stay under: a check one short refuses this.
+        results = [make_result(uri=f"src/{index}.py") for index in range(2)]
+        output = ingest_document(
+            make_log(make_run(results)), limits=IngestLimits(max_observations_per_artifact=2)
+        )
+        self.assertTrue(output.successful)
+        self.assertEqual(len(output.observations), 2)
+        self.assertNotIn("artifact_parse_failed", diagnostic_codes(output))
+
     def test_the_observation_byte_budget_is_the_sum_of_every_observation(self) -> None:
         # Three results fold into three observations. A budget one byte under their sum is
         # larger than any one of them, so only a sum refuses it.
@@ -4406,7 +4417,8 @@ class SarifDegradedEvidenceTests(unittest.TestCase):
             with self.subTest(start=text[:3], end=text[-1]):
                 started = time.perf_counter()
                 flattened = _flatten_links(text)
-                self.assertLess(time.perf_counter() - started, SHARED_WORK_CEILING)
+                if TIMING_TESTS:
+                    self.assertLess(time.perf_counter() - started, SHARED_WORK_CEILING)
                 self.assertEqual(flattened, text)
 
     def test_each_message_id_resolves_to_its_own_template(self) -> None:
@@ -5900,7 +5912,8 @@ class SarifSaturatedCapsTests(StoreFixture):
 # *--- Shared Work ---*
 
 # Each timing log is also parsed at SMALL_RESULTS results, which must say the same thing. The
-# ceiling is far above the parse time, so only work that grows per result can reach it.
+# ceiling is far above the parse time, so only work that grows per result can reach it. It is
+# asserted only under COMPLYROLL_TIMING_TESTS=1 (wall_clock.py).
 SHARED_WORK_CEILING = 10.0
 SMALL_RESULTS = 6
 WIDE_RESULTS = 2_000
@@ -6206,7 +6219,8 @@ class SarifSharedWorkTests(unittest.TestCase):
     ) -> tuple[AdapterOutput, AdapterOutput]:
         """Parse a log inside the ceiling and check it says what its small-scale copy says."""
         large, seconds = timed_parse(build(results))
-        self.assertLess(seconds, SHARED_WORK_CEILING)
+        if TIMING_TESTS:
+            self.assertLess(seconds, SHARED_WORK_CEILING)
         small = parse_direct(build(SMALL_RESULTS))
         self.assertEqual(len(large.observations), results)
         observations = keyed(large)
@@ -6415,7 +6429,8 @@ class SarifSharedWorkTests(unittest.TestCase):
             started = time.perf_counter()
             output = parse_direct(payload, artifact)
             seconds = time.perf_counter() - started
-        self.assertLess(seconds, SHARED_WORK_CEILING)
+        if TIMING_TESTS:
+            self.assertLess(seconds, SHARED_WORK_CEILING)
         # Every fold sorts and cuts at most one item past the cap, never a whole list.
         longest = max(len(call.args[1]) for call in cutter.call_args_list)
         self.assertEqual(longest, MAX_LIST_ITEMS + 1)

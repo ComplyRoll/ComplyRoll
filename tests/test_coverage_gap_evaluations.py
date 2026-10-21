@@ -18,7 +18,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
-from test_coverage import derive, host, inventory_of, policy
+from test_coverage import derive, host, inventory_of, observation, policy
 from test_evaluation_order import SYSTEM_REMEDY
 from test_reports import (
     ARTIFACTS,
@@ -543,6 +543,45 @@ class GapEvaluationOrderTests(unittest.TestCase):
         )
         # The window close is fixed on both paths, so no as-of remedy is offered.
         self.assertNotIn("as-of", caught.exception.diagnostics[0].message)
+
+    def test_a_refused_gap_record_no_window_derives_stops_the_compile(self) -> None:
+        # Coupling: the underived-gap notes read only gaps whose record compiled, so they rely
+        # on `compile_record_set` raising on any record error before they are built. Without
+        # that raise, this refused gap would leave neither its record nor its note.
+        (gap,) = gaps("lab-gap-01")
+        (tracking_id,) = tracking_ids(gap)
+        # A pass scan inside the window, so this run derives no gap and the recorded one is
+        # contradicted.
+        scan = observation("lab-gap-01", at=datetime(2026, 8, 2, tzinfo=UTC))
+        inventory = inventory_of(host("lab-gap-01", expectedSince=EXPECTED_SINCE))
+
+        def compile_gap_aware(evaluations: EvaluationSet) -> CompiledRecordSet:
+            observations = (gap, scan)
+            return compile_record_set(
+                artifacts=(),
+                observations=observations,
+                ingest_diagnostics=(),
+                evaluations_by_tracking_id=vdt_module._match_evaluations(
+                    group_open_observations(observations), evaluations
+                ),
+                attestation=DetectionAttestation(default=DETECTED_AT),
+                options=options(inventory=inventory),
+                gap_aware=True,
+            )
+
+        in_order = compile_gap_aware(evaluations_with(gap_match(gap)))
+        (note,) = [
+            item for item in in_order.diagnostics if item.code == "coverage_gap_contradicted"
+        ]
+        self.assertTrue(note.message.startswith(f"{tracking_id} "), note.message)
+
+        with self.assertRaises(ReportCompileError) as caught:
+            compile_gap_aware(evaluations_with(gap_match(gap), completedAt=GAP_EARLY_TEXT))
+
+        self.assertEqual(
+            [item.code for item in caught.exception.diagnostics], ["evaluation_before_detection"]
+        )
+        self.assertEqual(caught.exception.diagnostics[0].message, early_refusal(tracking_id))
 
     def test_the_system_remedy_branches_by_source_type(self) -> None:
         def remedy(detected_source: str, source_type: str | None) -> str:

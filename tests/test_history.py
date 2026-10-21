@@ -2580,19 +2580,10 @@ class AuditHistoryTests(WriterFixture):
 
         self.assertEqual(audit_history(self.repository), ())
 
-    def test_the_published_codes_are_the_ones_the_audit_can_report(self) -> None:
+    def test_the_published_codes_are_a_sorted_tuple(self) -> None:
+        # Which codes are published is pinned whole in test_cli, against the codes its
+        # `store verify` tests cover.
         self.assertEqual(AUDIT_FAULT_CODES, tuple(sorted(AUDIT_FAULT_CODES)))
-        for code in (
-            "artifact_incomplete",
-            "artifact_overfull",
-            "artifact_stream_mismatch",
-            "case_tracking_id_mismatch",
-            "event_metadata_invalid",
-            "event_stream_mismatch",
-            "payload_contract_invalid",
-        ):
-            with self.subTest(code=code):
-                self.assertIn(code, AUDIT_FAULT_CODES)
 
     def test_a_payload_that_broke_its_contract_is_reported(self) -> None:
         self.append_unchecked(

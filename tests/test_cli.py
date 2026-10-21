@@ -293,7 +293,11 @@ def unlink_failing_on(path: Path) -> Callable[..., None]:
 
 
 def run(argv: Sequence[str]) -> tuple[int, str, str]:
-    """Run one CLI invocation and capture its streams."""
+    """Run one CLI invocation and capture its streams.
+
+    `main` runs in this process, so an exception it does not handle raises out of the call
+    and fails the test; no traceback ever reaches the captured stderr.
+    """
 
     out = io.StringIO()
     err = io.StringIO()
@@ -5473,7 +5477,6 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn("faults: 1 domain fault(s) in", err)
         self.assertEqual(report_code, 1)
         self.assertEqual(report_out, "")
-        self.assertNotIn("Traceback", report_err)
         self.assertIn(
             f"error: history_invalid: event {sequences[0]} is not a readable failure record: ",
             report_err,
@@ -5494,7 +5497,6 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assertNotIn("Traceback", err)
         mismatches = [line for line in err.splitlines() if "failure_stream_mismatch" in line]
         self.assertEqual(
             [line.split(": failure_stream_mismatch:")[0] for line in mismatches],
@@ -5544,7 +5546,6 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
                     self.assertEqual(code, 1)
                     self.assertEqual(out, "")
-                    self.assertNotIn("Traceback", err)
                     self.assertIn("error: history_invalid:", err)
                     self.assertIn(f"stream {stream_id!r} names no failed reading", err)
                     self.assertEqual(self.latest_sequence(), before)
@@ -5671,7 +5672,6 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn("faults: 1 domain fault(s) in", err)
         self.assertEqual(report_code, 1)
         self.assertEqual(report_out, "")
-        self.assertNotIn("Traceback", report_err)
         self.assertIn(f"error: history_invalid: {orphaned}", report_err)
 
     def assert_one_failure_mismatch(self, sequence: int, expected: str) -> None:
@@ -5682,14 +5682,12 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assertNotIn("Traceback", err)
         self.assertIn(f"error: sequence {sequence}: failure_stream_mismatch:", err)
         self.assertIn(expected, err)
         self.assertIn("faults: 1 domain fault(s) in", err)
         # The reader refuses what the audit names, rather than rendering it or crashing.
         self.assertEqual(report_code, 1)
         self.assertEqual(report_out, "")
-        self.assertNotIn("Traceback", report_err)
         self.assertIn("history_invalid", report_err)
         self.assertIn(expected, report_err)
 
@@ -5908,7 +5906,6 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assertNotIn("Traceback", err)
         self.assertIn(f"error: sequence {sequence}: event_metadata_invalid:", err)
         self.assertIn("faults: 1 domain fault(s) in", err)
 
@@ -5947,7 +5944,6 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assertNotIn("Traceback", err)
         self.assertIn(
             "error: schema_object_altered: table events does not match its expected definition",
             err,
@@ -5968,7 +5964,6 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
-        self.assertNotIn("Traceback", err)
         self.assertIn(
             "error: schema_object_altered: table events does not match its expected definition",
             err,
@@ -6154,7 +6149,6 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
 
         code, out, err = run(["store", "verify", "--db", str(self.database)])
         self.assertEqual((code, out), (1, ""), msg=err)
-        self.assertNotIn("Traceback", err)
         faults: list[tuple[int, str]] = []
         for line in err.splitlines():
             if line.startswith("error: sequence "):
@@ -6906,14 +6900,12 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 ]
                 self.assertEqual(len(refusals), 1, err[:500])
                 self.assertIn(fragment, refusals[0])
-                self.assertNotIn("Traceback", out + err)
                 self.assert_bounded(out, err)
                 for kind in self.REPORTS:
                     self.assertEqual(self.output(kind).read_bytes(), self.SEED, kind)
         self.assertEqual(self.latest_sequence(), before)
         code, out, err = run(["store", "verify", "--db", str(self.database)])
         self.assertEqual(code, 1, err[:500])
-        self.assertNotIn("Traceback", out + err)
         self.assert_bounded(out, err)
         reported = {
             line.split(": ")[1]
@@ -6956,7 +6948,6 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         code, out, err = run(self.report_reader("vdt"))
         self.assertEqual(code, 0, err[:500])
         self.assertNotIn("store_integrity", err)
-        self.assertNotIn("Traceback", out + err)
         self.assertTrue(self.output("vdt").is_file())
         code, out, err = run(["store", "verify", "--db", str(self.database)])
         self.assertEqual(code, 0, out + err)

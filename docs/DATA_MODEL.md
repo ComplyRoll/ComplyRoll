@@ -566,7 +566,7 @@ digest.
 | `completed_at` | Starts evaluation-relative response clocks |
 | `is_internet_reachable` | IRV classification and rationale |
 | `is_likely_exploitable` | LEV classification and rationale |
-| `pain` | N1–N5 potential agency impact |
+| `pain` | N1 to N5 potential agency impact |
 | `potential_agency_impact` | Human explanation of customer effects |
 | `is_false_positive` | False-positive conclusion |
 | `rationale` | Explainable context and evidence references |

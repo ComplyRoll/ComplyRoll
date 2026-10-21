@@ -818,8 +818,8 @@ attested 3 case(s), skipped 0 unchanged case(s), 0 not applicable case(s)
 
 and the report is the same two golden files. The attestation step is not optional here. A
 store records attested detection times as events, so `report vdt` refuses `--detected-at` beside
-`--db` (`src/complyroll/cli.py:869`), and without the attestation the report exits 1, writes no
-file, and names the three converted records:
+`--db` (`_report_source_conflict` in `src/complyroll/cli.py`), and without the attestation the
+report exits 1, writes no file, and names the three converted records:
 
 ```text
 error: detection_time_missing: no source timestamp and no --detected-at attestation for: case-057bbe4ee9dde990, case-1706b7990cce1346, case-71446ac59461edb8

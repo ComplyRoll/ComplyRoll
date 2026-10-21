@@ -3046,7 +3046,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
         return (
             f"error: failure_read_elsewhere: history holds a reading of these bytes in {holder} "
             f"that outranks their failure under {under}, so it is not a detection failure and "
-            f"nothing was recorded [{name}]"
+            f"nothing was recorded by this run [{name}]"
         )
 
     def held_warning(

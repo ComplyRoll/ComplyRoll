@@ -80,7 +80,7 @@ This layer records contextual decisions rather than hiding them inside a numeric
 
 - Internet reachable or not
 - Likely exploitable or not
-- PAIN N1–N5
+- PAIN N1 to N5
 - False-positive analysis
 - Evaluation rationale
 - Mitigation/remediation plan and actions
@@ -158,8 +158,8 @@ Later projections:
 
 The initial Phase 1 validator bundles the official FedRAMP Common Definitions, Vulnerability
 Detail, Accepted Vulnerability, and Historical VER Activity schemas from one immutable
-`FedRAMP/schemas` commit. A manifest pins every `$id`, `$schemaVersion`, and SHA-256. Loading rejects
-digest or metadata drift before building a Draft 2020-12 registry.
+`FedRAMP/schemas` commit. A manifest pins every `$id`, `$schemaVersion`, and SHA-256. Loading
+rejects digest or metadata drift before building a Draft 2020-12 registry.
 
 Only verified bundled resources are registered. Every `$ref` is resolved during bundle loading,
 and the registry has no remote retrieval callback. Report validation therefore works offline and

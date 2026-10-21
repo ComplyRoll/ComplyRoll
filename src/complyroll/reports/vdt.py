@@ -2055,7 +2055,7 @@ def _gap_order(gap: Observation) -> tuple[str, str, str, str, str]:
 
 
 def coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
-    """Return one note per warning an inventory entry raised, in inventory order.
+    """Return one note per warning an inventory entry raised, in entry order (type, then id).
 
     Each is located at the inventory's name and the entry's pair, so the same entry in the
     same inventory raises the same note whichever path or file name supplied it.

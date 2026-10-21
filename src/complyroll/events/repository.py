@@ -262,7 +262,7 @@ class PendingEvent:
 
 
 class EventRepository:
-    """Contract-enforcing façade over the append-only store."""
+    """Contract-enforcing facade over the append-only store."""
 
     def __init__(self, store: SQLiteEventStore) -> None:
         if not isinstance(store, SQLiteEventStore):

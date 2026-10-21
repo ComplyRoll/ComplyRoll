@@ -480,6 +480,12 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- `ingest`'s `failure_read_elsewhere` refusal now ends "nothing was recorded by this run": an
+  earlier run may have recorded the reading that outranks the failure.
+- `referencing`, which the schema loader imports, is declared as a dependency instead of
+  arriving only through `jsonschema`. The resolved dependency graph is unchanged.
+- The reference CI workflow installs ComplyRoll from `c763eff`, which carries ADR 0017 Decision
+  2's guard, instead of `d2c41e3`.
 - The detail report's "Accepted, reported under VER-RPT-AVI" row counts only the accepted
   records the AVI report of the same period carries, by ADR 0010 Decision 2's activity rule. An
   accepted record with no activity in the period is excluded by it in both reports, in the same
@@ -559,7 +565,8 @@ All notable project changes will be documented here.
   which now carries a three-month `MUST` timeframe, so `SelectedRule.timeframe` and
   `deadline_for_rule` return it for both classes. No report deadline is computed from it: the
   rule is a recurrence clock per non-machine-based information resource, which ComplyRoll did
-  not record yet (the inventory input of ADR 0015, above, now reads it). Verified by loading and selecting both classes against the new bytes (36 rules
+  not record yet (the inventory input of ADR 0015, above, now reads it). Verified by loading and
+  selecting both classes against the new bytes (36 rules
   each, every other timeframe and PAIN matrix unchanged), by the policy golden, which gained the
   `VDR-TFR-NMV` entry under both classes, and by the six report goldens, which moved only in the
   rules provenance block and in the overdue explanations that cite the dataset commit.

@@ -2187,7 +2187,9 @@ def _unexpected_migration_message(record: int, marker: int) -> str:
     """Word a migration record the schema marker does not account for."""
 
     if record < SCHEMA_VERSION:
-        return f"database holds migration record {record}; migration records start at {SCHEMA_VERSION}"
+        return (
+            f"database holds migration record {record}; migration records start at {SCHEMA_VERSION}"
+        )
     return f"database holds migration record {record} above its schema marker {marker}"
 
 

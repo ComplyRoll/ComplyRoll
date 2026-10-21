@@ -280,3 +280,49 @@ through `append` is affected. Because every stream id a read accepts is at most 
 parser version component in one is at most 425 digits. That is below 640, the lowest limit
 `sys.set_int_max_str_digits` accepts other than 0 (unlimited), so version comparison cannot reach
 the interpreter's digit limit under any setting.
+
+## Amendment 2026-10-21: stored text, timestamps, and migration records
+
+The 2026-10-03 amendment applied the append rules to what a stored row decodes to. Two stored
+values stayed outside them, and the migration table was checked by record number alone. These
+rules bind from this date.
+
+- **Stored JSON is the text `append` writes.** `append` stores exactly what
+  `_canonical_json_object` returns: sorted keys, no whitespace, no escape for a character UTF-8
+  can carry. The encoder has not changed since the store's first commit (`4fd9978`), which the
+  released 0.3.0a0 contains, so every row a published build wrote is that text. After the
+  existing checks, reads and `store verify` encode the decoded value again and compare it with
+  the stored text, and refuse a mismatch as "is not the canonical JSON text append writes":
+  `store_integrity` on read, `payload_not_json` in `store verify`. Reindented, padded or
+  reordered JSON and a duplicate object member, which the decoder used to resolve to its last
+  value, are refused. This supersedes the 2026-10-03 sentence that stored JSON is checked as the
+  value it decodes to, whitespace and duplicate members included.
+- **Stored timestamps are the text `append` writes.** `append` writes `occurred_at` and
+  `recorded_at` only through `_format_timestamp`, unchanged since the same commit: UTC, six
+  fraction digits, and a `Z`. Reads and `store verify` refuse any other text, another offset
+  or a missing fraction included, with the reason and never the value: `store_integrity` on
+  read, the new fault `event_timestamp_invalid` in `store verify`. A text that does not parse,
+  has no offset, or is not stored as text is refused the same way, where it used to be refused
+  on read with no sequence and passed by `store verify`. Reads refuse as well as verify because
+  every other append rule is applied on both paths and the format admits no row `append` wrote.
+  This supersedes the 2026-10-03 sentence that both columns are parsed, not checked. A timestamp
+  rewritten to another instant in the same form still reads, as "What the payload digest does
+  and does not cover" says.
+- **Migration records agree with the marker.** `store verify` reports, after any
+  `migration_missing`, a record whose description is not the one `_mark_schema` writes for it
+  as `migration_altered`, in record order with the missing ones, and, when the marker is in the
+  supported range, each record outside 1 to the marker as `migration_unexpected`. The
+  descriptions have not changed since each record was introduced. `_mark_schema` inserts each
+  record and moves the marker in one transaction, so a record above the marker means the marker
+  was lowered afterwards. The normal open does not refuse either fault.
+- **A marking append refuses a record above the marker.** `_mark_schema` used to insert the
+  next record and fail on its unique key, which `ingest --record-failed-imports` reported as
+  `store_unavailable` "UNIQUE constraint failed". It now refuses first with
+  `UnsupportedSchemaError` naming the record and the marker, as it refuses a marker outside the
+  supported range, and the transaction leaves the store unchanged. An append whose schema the
+  marker already covers inserts no record and is not refused.
+
+The fault order of ADR 0008's first 2026-08-22 amendment holds, with the migration step now
+naming these three codes. None of the checks refuses a row or a record `append` and
+`_mark_schema` write, so every store a released build wrote opens, verifies and reports as
+before.

@@ -2387,7 +2387,9 @@ class StoredValueRefusalTests(unittest.TestCase):
                 with self.subTest(column=column, case=label):
                     self.database_path = self.build(f"k-{column}-{index}.db")
                     self.plant_json(column, text)
-                    expected = f"event 'evt-h-1' {column} is not the canonical JSON text append writes"
+                    expected = (
+                        f"event 'evt-h-1' {column} is not the canonical JSON text append writes"
+                    )
 
                     refused = self.refusal()
                     self.assertEqual(refused.sequence, 2)
@@ -2440,9 +2442,7 @@ class StoredValueRefusalTests(unittest.TestCase):
             for index, (label, value, reason) in enumerate(cases):
                 with self.subTest(column=column, case=label):
                     self.database_path = self.build(f"t-{column}-{index}.db")
-                    self.update(
-                        f"UPDATE events SET {column} = ? WHERE sequence = 2", (value,)
-                    )
+                    self.update(f"UPDATE events SET {column} = ? WHERE sequence = 2", (value,))
                     expected = f"event 'evt-h-1' {column} {reason}"
                     if reason == "is not in the UTC form":
                         expected += " append writes"
@@ -2891,8 +2891,7 @@ class StoreHeaderTests(unittest.TestCase):
                         (
                             None,
                             "migration_altered",
-                            f"migration record {version} does not carry its expected "
-                            "description",
+                            f"migration record {version} does not carry its expected description",
                         )
                     ],
                 )

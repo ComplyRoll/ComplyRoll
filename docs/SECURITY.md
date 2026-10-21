@@ -231,16 +231,17 @@ those three match, and a test pins it.
   from the allowed set. The stream version and event version must be stored as integers of at least
   1, and the sequence counter as one integer in one row. Stored JSON must pass the checks `append`
   runs on it (nesting, value count, size, no
-  NaN or infinity, valid Unicode), and JSON past the decoder's own limits is refused like JSON
-  that does not parse. A row edited in place to break any of these is refused with
+  NaN or infinity, valid Unicode) and be the exact canonical text `append` writes, so reindented,
+  padded or reordered JSON and a duplicate object member are refused, and JSON past the decoder's
+  own limits is refused like JSON that does not parse. Both timestamp columns must be the exact
+  UTC text `append` writes, with six fraction digits and a `Z`, so another offset or spelling of
+  an instant is refused. A row edited in place to break any of these is refused with
   `store_integrity` rather than a traceback, and `store verify` reports it (`event_name_invalid`,
-  `event_version_invalid`, `payload_not_json`, `sequence_counter_mismatch`). Stored timestamps
-  are parsed, not checked against the format `append` writes. A text column that is not valid
+  `event_version_invalid`, `payload_not_json`, `event_timestamp_invalid`,
+  `sequence_counter_mismatch`). A text column that is not valid
   UTF-8 is refused as `store_unavailable`, and that message can quote the stored text. A value
-  rewritten to another one `append` could have written is not detected, and stored JSON is checked
-  as the value it decodes to, apart from the size cap, which applies to the stored text too, so
-  whitespace under the cap and duplicate object members still read (the decoder keeps the last
-  one). Store integrity errors never quote a name outside the grammar: the refusal of the name gives
+  rewritten to another one `append` could have written is not detected. Store integrity errors
+  never quote a name outside the grammar: the refusal of the name gives
   the rule it breaks, and a message that identifies its event or stream for another fault, such as a
   version gap or a digest mismatch, gives its length or storage class. The artifact and failure
   identity checks cut a quoted payload value at 200 characters; other domain messages can still
@@ -249,6 +250,16 @@ those three match, and a test pins it.
   `metadata_breaches` message, the UTF-8 decode message above, and the actor `cases history` prints
   on stdout, even from a store that verifies clean. Treat any output read from an untrusted store as
   untrusted text.
+- `store verify` holds the migration records to the schema marker: a record the marker needs
+  and the table lacks (`migration_missing`), a record whose description is not the one its
+  migration writes (`migration_altered`), and, with the marker in the supported range, a record
+  it does not reach (`migration_unexpected`), the trace of a marker lowered after the record was
+  written. An append that would mark such a store refuses it as `store_unavailable` and names
+  the record, rather than failing on SQLite's unique constraint.
+- `store verify` reports a case stream whose id names no tracking id
+  (`case_tracking_id_mismatch`) and a case that records a disposition and no evaluation
+  (`disposition_without_evaluation`). Every report from the store, `cases list` and
+  `cases evaluate` refuse the first as `history_invalid`, and every report refuses the second.
 - Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
 - A failure stream (ADR 0014) is appended in the same transaction that marks the store schema
   version 2, so the marker and the failure commit or roll back together. A hold, a failure stream
@@ -261,7 +272,10 @@ those three match, and a test pins it.
   at version 1, or a hold in a store below version 3 (`failure_schema_unmarked`), a failure
   stream that is not exactly one head and one observation (`failure_incomplete`,
   `failure_overfull`), a head or observation that does not match its stream, an observation whose
-  metadata is not what its writer stores, a stream its observation opens, or a head and observation
+  metadata is not what its writer stores (a failure class its codes do not name included), an
+  observation carrying a field its writer fixes otherwise (disposition, severity, source
+  identifiers, or an evidence id other than the digest's own), a stream its observation opens, or a
+  head and observation
   that describe two different failures (`failure_stream_mismatch`), a hold whose observation no
   `failure.recorded` stream holds first (`failure_hold_orphaned`), and a stream that does not
   open with `failure.held` holding a system observation another failure stream of the digest

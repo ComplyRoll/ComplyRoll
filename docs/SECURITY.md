@@ -249,11 +249,12 @@ those three match, and a test pins it.
   length: a payload value, the value and unexpected key a contract issue quotes, its JSON pointer,
   the keys a `metadata_breaches` message lists, and a stream identifier a stream-id parse quotes.
   Other messages quote a stream identifier whole, which the name rule holds to 500 characters. A
-  contract error lists every issue, so its length still grows with the number of invalid values, up
-  to the store's value cap. Some output carries stored text unescaped, newlines and terminal escape
-  sequences included: a payload key in a contract issue's JSON pointer, a key in a
-  `metadata_breaches` message, and the actor `cases history` prints on stdout, even from a store
-  that verifies clean. Treat any output read from an untrusted store as untrusted text.
+  contract error renders its first 10 issues and counts the rest ("and K more"), so a stored list of
+  many invalid values no longer grows the message; the error object keeps every issue. Some output
+  carries stored text unescaped, newlines and terminal escape sequences included: a payload key in a
+  contract issue's JSON pointer, a key in a `metadata_breaches` message, and the actor
+  `cases history` prints on stdout, even from a store that verifies clean. Treat any output read
+  from an untrusted store as untrusted text.
 - A projection checkpoint must hold a non-negative integer count and a time with a timezone. The
   library's checkpoint reader and its compare-and-swap refuse any other row as
   `EventIntegrityError`, and `store verify` reports it as `projection_checkpoint_invalid`. No

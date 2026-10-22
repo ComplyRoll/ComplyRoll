@@ -16,6 +16,8 @@ All notable project changes will be documented here.
   unexpected key and JSON pointer, a `case.created` tracking id on the wrong stream, the keys of a
   `metadata_breaches` message, a repeated observation id, and a stream id a stream-id parse
   quotes. A 5155-character tracking id made `store verify` print 10,667 bytes; it now prints 795.
+  A contract error renders its first 10 issues and then "and K more", where it rendered every
+  one: 20,000 non-strings in one stored list made a 1,257,829-character message, now 677 bytes.
 - A sequence counter lowered below the last stored row, or deleted, no longer reads "event history
   was truncated", the words for a counter ahead of it. It reads "the sequence counter is behind
   the event history", at open, at append and in `store verify`, under the same

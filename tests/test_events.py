@@ -87,6 +87,7 @@ from complyroll.events.contracts import (
     _placement_problem,
     _timestamp_pointers,
 )
+from complyroll.events.repository import MAX_RENDERED_ISSUES
 from complyroll.models import (
     Observation,
     ObservationDisposition,
@@ -3551,6 +3552,55 @@ class StoredValueEchoTests(unittest.TestCase):
         message = self.contract_error({**GOOD_PAYLOADS["case.created"], "trackingId": "nope"})
 
         self.assertIn("/trackingId: pattern: 'nope' does not match", message)
+
+    def test_a_contract_error_renders_its_first_issues_and_counts_the_rest(self) -> None:
+        # On ed9fcf4, 20,000 non-strings in one list gave a 1,257,829-character message: every
+        # issue was rendered. The issues themselves stay on the error, all of them.
+        payload = observation().to_canonical_dict()
+        payload["source_identifiers"] = list(range(20_000))
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("observation.recorded", payload)
+
+        message = str(caught.exception)
+        self.assertEqual(len(caught.exception.issues), 20_000)
+        shown_issues = caught.exception.issues[:MAX_RENDERED_ISSUES]
+        self.assertEqual(
+            message,
+            "observation.recorded version 1 payload is invalid: "
+            + "; ".join(issue.render() for issue in shown_issues)
+            + f"; and {20_000 - MAX_RENDERED_ISSUES} more",
+        )
+        self.assertLessEqual(len(message.encode()), 1024)
+
+    def test_a_contract_error_at_the_issue_cap_renders_every_issue(self) -> None:
+        payload = observation().to_canonical_dict()
+        payload["source_identifiers"] = list(range(MAX_RENDERED_ISSUES))
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("observation.recorded", payload)
+
+        self.assertEqual(len(caught.exception.issues), MAX_RENDERED_ISSUES)
+        self.assertNotIn("more", str(caught.exception))
+        self.assertTrue(
+            str(caught.exception).endswith(caught.exception.issues[-1].render()),
+            str(caught.exception)[-120:],
+        )
+
+    def test_the_instant_check_joins_its_issues_at_the_same_point(self) -> None:
+        payload = {
+            **GOOD_PAYLOADS["detection.attested"],
+            "detectedAt": "2026-08-31T24:00:00Z",
+            "attestedAt": "2026-08-31T24:00:00Z",
+        }
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("detection.attested", payload)
+
+        issues = caught.exception.issues
+        self.assertEqual(len(issues), 2)
+        self.assertEqual(
+            str(caught.exception),
+            "detection.attested version 1 payload is invalid: "
+            + "; ".join(issue.render() for issue in issues),
+        )
 
     def test_metadata_breaches_list_long_keys_within_the_bound(self) -> None:
         stored = {**metadata().to_dict(), self.LONG: "x"}

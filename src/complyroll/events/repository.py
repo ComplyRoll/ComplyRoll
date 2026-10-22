@@ -228,6 +228,23 @@ class ContractIssue:
         return f"{bounded(self.instance_pointer) or '<root>'}: {self.validator}: {self.message}"
 
 
+#: How many issues a contract error's message renders; `issues` keeps every one.
+MAX_RENDERED_ISSUES: Final = 10
+
+
+def _rendered_issues(issues: Sequence[ContractIssue]) -> str:
+    """Join a contract error's first issues, in the order given, and count the rest.
+
+    Each issue is bounded, but a stored list of many invalid values yields one issue per value,
+    so a full join grew with the payload: 20,000 values gave 1,257,829 characters.
+    """
+
+    rendered = "; ".join(issue.render() for issue in issues[:MAX_RENDERED_ISSUES])
+    if len(issues) <= MAX_RENDERED_ISSUES:
+        return rendered
+    return f"{rendered}; and {len(issues) - MAX_RENDERED_ISSUES} more"
+
+
 class EventContractError(ValueError):
     """A payload does not satisfy its contract, or no such contract is published."""
 
@@ -350,9 +367,9 @@ class EventRepository:
             )
         )
         if issues:
-            rendered = "; ".join(issue.render() for issue in issues)
             raise EventContractError(
-                f"{event_type} version {event_version} payload is invalid: {rendered}",
+                f"{event_type} version {event_version} payload is invalid: "
+                f"{_rendered_issues(issues)}",
                 issues=issues,
             )
         _require_real_instants(event_type, event_version, payload)
@@ -1432,9 +1449,8 @@ def _require_real_instants(
                 ContractIssue(instance_pointer=pointer, validator="timestamp", message=problem)
             )
     if issues:
-        rendered = "; ".join(issue.render() for issue in issues)
         raise EventContractError(
-            f"{event_type} version {event_version} payload is invalid: {rendered}",
+            f"{event_type} version {event_version} payload is invalid: {_rendered_issues(issues)}",
             issues=tuple(issues),
         )
 

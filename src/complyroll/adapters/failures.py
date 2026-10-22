@@ -288,6 +288,14 @@ def failure_class_for_codes(codes: Iterable[str]) -> FailureClass:
     raise ValueError("the codes name no failure class")
 
 
+def failure_recorded_message(failure_class: FailureClass, digest: str) -> str:
+    """Word the detection_failure_recorded notice for one class and source digest."""
+    return (
+        f"recorded a detection process failure of class {failure_class.value} for source "
+        f"artifact sha256:{digest} ({DETECTION_FAILURE_RULE})"
+    )
+
+
 def failure_diagnostics(
     result: IngestResult, classification: FailureClassification, *, name: str
 ) -> tuple[IngestDiagnostic, ...]:
@@ -308,8 +316,7 @@ def failure_diagnostics(
     recorded = IngestDiagnostic(
         DiagnosticLevel.WARNING,
         DETECTION_FAILURE_RECORDED,
-        f"recorded a detection process failure of class {failure_class.value} for source "
-        f"artifact sha256:{artifact.digest_sha256} ({DETECTION_FAILURE_RULE})",
+        failure_recorded_message(failure_class, artifact.digest_sha256),
         location,
     )
     if classification.side_record:

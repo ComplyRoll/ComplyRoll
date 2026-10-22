@@ -3357,6 +3357,46 @@ class RecordFailureTests(WriterFixture):
             self.assertEqual(outcome.diagnostics, first.diagnostics)
         self.assertEqual(self.latest_sequence, sequence)
 
+    def test_a_rerun_names_the_class_history_holds_not_the_fresh_one(self) -> None:
+        # CL-45: a reading of the same bytes that this build classifies another way, such as a
+        # log an earlier build recorded as content, met its own stream on rerun, and the
+        # notice named the class this run would mint while history kept the first one.
+        result, classification = self.read(TRUNCATED)
+        artifact = result.artifact
+        assert artifact is not None
+        content, _content_classification = self.read(INVALID_RULES)
+        bumped = replace(result, artifact=replace(artifact, parser_version=SARIF_NEXT))
+        for label, reading in (("recorded", result), ("held", bumped)):
+            with self.subTest(label):
+                self.fresh_repository()
+                first = self.record(result, classification)
+                if label == "held":
+                    first = self.record(bumped, classification)
+                rerun = replace(reading, diagnostics=content.diagnostics)
+                rerun_classification = classify_ingest(rerun)
+                assert rerun_classification is not None
+                self.assertIs(rerun_classification.failure_class, FailureClass.CONTENT)
+                sequence = self.latest_sequence
+
+                again = self.record(rerun, rerun_classification)
+
+                self.assertTrue(again.already_recorded)
+                self.assertEqual(again.stream_id, first.stream_id)
+                self.assertIs(again.failure_class, FailureClass.PARSE)
+                notices = [
+                    item for item in again.diagnostics if item.code == "detection_failure_recorded"
+                ]
+                self.assertEqual(
+                    notices,
+                    [
+                        item
+                        for item in first.diagnostics
+                        if item.code == "detection_failure_recorded"
+                    ],
+                )
+                self.assertIn("of class parse ", notices[0].message)
+                self.assertEqual(self.latest_sequence, sequence)
+
     def test_a_half_written_stream_is_refused_rather_than_resumed(self) -> None:
         self.record(*self.read(TRUNCATED))
         stream_id = self.repository.read_all()[0].stream_id

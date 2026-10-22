@@ -228,7 +228,8 @@ class ContractIssue:
         return f"{bounded(self.instance_pointer) or '<root>'}: {self.validator}: {self.message}"
 
 
-#: How many issues a contract error's message renders; `issues` keeps every one.
+#: How many issues, or unexpected keys in one issue, a contract error's message renders; the
+#: error's `issues` keeps every issue.
 MAX_RENDERED_ISSUES: Final = 10
 
 
@@ -1493,17 +1494,43 @@ def _value_at(payload: Mapping[str, Any], pointer: str) -> Any:
 def _issue_message(error: ValidationError) -> str:
     """Return jsonschema's message with each long stored value it quotes cut by `shown`.
 
-    jsonschema quotes the failing instance, and an object's unexpected keys, in full.
+    jsonschema quotes the failing instance in full, and lists every unexpected key.
     """
 
     message = str(error.message)
     instance = error.instance
+    if error.validator == "additionalProperties" and isinstance(instance, Mapping):
+        return _unexpected_keys_message(message, instance, error.schema)
     quoted = [instance, *instance] if isinstance(instance, Mapping) else [instance]
     for value in quoted:
         text = repr(value)
         if len(text) > SHOWN_LIMIT:
             message = message.replace(text, shown(value))
     return message
+
+
+_UNEXPECTED_KEYS = "Additional properties are not allowed ({listed} {verb} unexpected)"
+
+
+def _unexpected_keys_message(message: str, instance: Mapping[str, Any], schema: Any) -> str:
+    """List the first unexpected keys, each through `shown`, and count the rest.
+
+    The keys are found as jsonschema finds them. A message in any other words, which this
+    jsonschema does not write, is cut whole rather than left unbounded.
+    """
+
+    known = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
+    pattern = "|".join(schema.get("patternProperties", {})) if isinstance(schema, Mapping) else ""
+    extras = [
+        key for key in instance if key not in known and not (pattern and re.search(pattern, key))
+    ]
+    verb = "was" if len(extras) == 1 else "were"
+    if message != _UNEXPECTED_KEYS.format(listed=", ".join(map(repr, extras)), verb=verb):
+        return bounded(message)
+    listed = ", ".join(shown(key) for key in extras[:MAX_RENDERED_ISSUES])
+    if len(extras) > MAX_RENDERED_ISSUES:
+        listed = f"{listed}, and {len(extras) - MAX_RENDERED_ISSUES} more"
+    return _UNEXPECTED_KEYS.format(listed=listed, verb=verb)
 
 
 def _json_pointer(parts: Any) -> str:

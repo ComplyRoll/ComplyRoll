@@ -657,13 +657,15 @@ class SQLiteEventStore:
         SQLite failure (unreadable file, I/O error) is still an error, not a fault.
 
         Faults arrive in a fixed order: schema objects sorted by ``(type, name)``, then the
+        schema objects holding text that is not UTF-8 in `sqlite_master` order, then the
         header's schema marker and then its application id, then the migration record, then
         the projection checkpoints by name, then the sequence counter, then rows by ascending
-        sequence. A store opened through
-        `open_for_verification` reaches the first five, which the normal constructor refuses
-        to open at all. A file holding no schema objects at schema 0 has its marker left
-        alone and its application id judged only when it is not 0, so a file the open would
-        initialize reports only its missing objects. When the `events` table is itself gone
+        sequence. A store opened through `open_for_verification` reaches the schema, header,
+        migration and counter faults, which the normal constructor refuses to open at all.
+        A store whose only fault is a checkpoint opens normally, and only verify reports it.
+        A file holding no schema objects at schema 0 has its marker left alone and its
+        application id judged only when it is not 0, so a file the open would initialize
+        reports only its missing objects. When the `events` table is itself gone
         the schema faults are reported and the walk is skipped rather than letting SQLite
         raise. A table rebuilt without a column `append` writes, or so `sequence` holds
         anything but an integer, is treated the same way, because the walk reads each row by
@@ -688,6 +690,7 @@ class SQLiteEventStore:
         ):
             present = self._schema_objects(connection)
             faults.extend(self._schema_faults(connection))
+            faults.extend(self._schema_text_faults(connection))
             faults.extend(self._header_faults(connection, present))
             faults.extend(self._migration_faults(connection, present))
             faults.extend(self._checkpoint_faults(connection, present))
@@ -827,6 +830,45 @@ class SQLiteEventStore:
                         message=f"{object_type} {name} does not match its expected definition",
                     )
                 )
+        return tuple(faults)
+
+    @staticmethod
+    def _schema_text_faults(connection: sqlite3.Connection) -> tuple[IntegrityFault, ...]:
+        """Report each schema object the store never created that holds text that is not UTF-8.
+
+        Every other open reads `sqlite_master` strictly and refuses such a row, so verify must
+        name it. An expected object whose definition is not UTF-8 is `schema_object_altered`,
+        and an unknown object that decodes stays unreported (ADR 0004, amendment 2026-10-21).
+        """
+
+        faults: list[IntegrityFault] = []
+        rows = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY rowid"
+        ).fetchall()
+        for row in rows:
+            kind, name = row["type"], row["name"]
+            if isinstance(kind, str) and isinstance(name, str):
+                if (kind.lower(), name) in EXPECTED_SCHEMA_OBJECTS:
+                    continue
+            column = next(
+                (
+                    column
+                    for column in ("type", "name", "tbl_name", "sql")
+                    if row[column] is _UNDECODABLE_TEXT
+                ),
+                None,
+            )
+            if column is None:
+                continue
+            described = kind if isinstance(kind, str) else "schema object"
+            faults.append(
+                IntegrityFault(
+                    sequence=None,
+                    code="schema_text_invalid",
+                    message=f"{described} {_shown_name(name)} holds {column} text that is not "
+                    "valid UTF-8",
+                )
+            )
         return tuple(faults)
 
     @staticmethod
@@ -1630,9 +1672,9 @@ def _storage_class(value: object) -> str:
 def _shown_name(value: object) -> str:
     """Quote a stored name for a message, or describe one no append could have written.
 
-    A name inside `_require_name`'s grammar is at most 500 characters and is quoted exactly
-    as before, so a healthy store's messages do not change. Anything else is described by
-    its length or storage class and never echoed: a row edited in place can hold any length.
+    A name inside `_require_name`'s grammar is quoted through `shown`, so one past
+    `SHOWN_LIMIT` characters is cut like any stored value. Anything else is described by its
+    length or storage class and never echoed: a row edited in place can hold any length.
     """
 
     if not isinstance(value, str):
@@ -1641,7 +1683,7 @@ def _shown_name(value: object) -> str:
         _require_name(value, "name")
     except ValueError:
         return f"<{len(value)} characters outside the name grammar>"
-    return repr(value)
+    return shown(value)
 
 
 #: How many characters of a quoted stored value a message shows before it is cut.
@@ -1907,7 +1949,7 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
     actual_digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
     if actual_digest != expected_digest:
         raise EventIntegrityError(
-            f"event {row['event_id']!r} payload does not match its recorded digest",
+            f"event {_shown_name(row['event_id'])} payload does not match its recorded digest",
             sequence=sequence,
         )
     metadata_json = str(row["metadata_json"])
@@ -1915,38 +1957,44 @@ def _event_from_row(row: sqlite3.Row) -> EventRecord:
         metadata_json, "metadata"
     )
     if problem is not None:
-        raise EventIntegrityError(f"event {row['event_id']!r} {problem}", sequence=sequence)
+        raise EventIntegrityError(
+            f"event {_shown_name(row['event_id'])} {problem}", sequence=sequence
+        )
 
     try:
         payload = json.loads(payload_json)
         metadata = json.loads(metadata_json)
     except json.JSONDecodeError as exc:
         raise EventIntegrityError(
-            f"event {row['event_id']!r} contains invalid JSON",
+            f"event {_shown_name(row['event_id'])} contains invalid JSON",
             sequence=sequence,
         ) from exc
     except (ValueError, RecursionError) as exc:
         # An integer literal past the interpreter's digit limit raises a bare ValueError and
         # nesting past the recursion limit a RecursionError; neither is a JSONDecodeError.
         raise EventIntegrityError(
-            f"event {row['event_id']!r} contains JSON past the decoder's limits",
+            f"event {_shown_name(row['event_id'])} contains JSON past the decoder's limits",
             sequence=sequence,
         ) from exc
     if not isinstance(payload, dict) or not isinstance(metadata, dict):
         raise EventIntegrityError(
-            f"event {row['event_id']!r} JSON must contain objects",
+            f"event {_shown_name(row['event_id'])} JSON must contain objects",
             sequence=sequence,
         )
     problem = _append_json_problem(payload, payload_json, "payload") or _append_json_problem(
         metadata, metadata_json, "metadata"
     )
     if problem is not None:
-        raise EventIntegrityError(f"event {row['event_id']!r} {problem}", sequence=sequence)
+        raise EventIntegrityError(
+            f"event {_shown_name(row['event_id'])} {problem}", sequence=sequence
+        )
     problem = _timestamp_problem(row["occurred_at"], "occurred_at") or _timestamp_problem(
         row["recorded_at"], "recorded_at"
     )
     if problem is not None:
-        raise EventIntegrityError(f"event {row['event_id']!r} {problem}", sequence=sequence)
+        raise EventIntegrityError(
+            f"event {_shown_name(row['event_id'])} {problem}", sequence=sequence
+        )
 
     return EventRecord(
         sequence=sequence,

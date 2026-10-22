@@ -87,7 +87,7 @@ from complyroll.events.contracts import (
     _placement_problem,
     _timestamp_pointers,
 )
-from complyroll.events.repository import MAX_RENDERED_ISSUES
+from complyroll.events.repository import MAX_RENDERED_ISSUES, _unexpected_keys_message
 from complyroll.models import (
     Observation,
     ObservationDisposition,
@@ -103,7 +103,7 @@ from complyroll.store import (
     SQLiteEventStore,
     UnsupportedSchemaError,
 )
-from complyroll.store.sqlite import SHOWN_LIMIT, shown
+from complyroll.store.sqlite import SHOWN_LIMIT, bounded, shown
 
 NOW = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 DIGEST = "a" * 64
@@ -3601,6 +3601,43 @@ class StoredValueEchoTests(unittest.TestCase):
             "detection.attested version 1 payload is invalid: "
             + "; ".join(issue.render() for issue in issues),
         )
+
+    def test_many_unexpected_keys_are_listed_first_ten_and_counted(self) -> None:
+        # CL4B-02: jsonschema lists every unexpected key in one issue, so the issue cap did not
+        # reach it: 30,000 short keys made a 300,173-character verify line on 6327fa78.
+        payload: dict[str, Any] = dict(GOOD_PAYLOADS["case.created"])
+        payload.update({f"k{index:05d}": 1 for index in range(30_000)})
+
+        message = self.contract_error(payload)
+
+        listed = ", ".join(f"'k{index:05d}'" for index in range(MAX_RENDERED_ISSUES))
+        self.assertEqual(
+            message,
+            "case.created version 1 payload is invalid: <root>: additionalProperties: "
+            f"Additional properties are not allowed ({listed}, and 29990 more were unexpected)",
+        )
+        self.assertLessEqual(len(message.encode()), 1024)
+
+    def test_a_few_unexpected_keys_are_listed_as_jsonschema_words_them(self) -> None:
+        for extras, verb in ((["extra"], "was"), (["a", "b"], "were")):
+            with self.subTest(extras=extras):
+                payload: dict[str, Any] = dict(GOOD_PAYLOADS["case.created"])
+                payload.update({key: 1 for key in extras})
+                listed = ", ".join(repr(key) for key in extras)
+
+                self.assertTrue(
+                    self.contract_error(payload).endswith(
+                        f"Additional properties are not allowed ({listed} {verb} unexpected)"
+                    )
+                )
+
+    def test_unexpected_keys_in_other_words_are_cut_whole(self) -> None:
+        # A jsonschema that words the message differently gets the plain cut, never a full echo.
+        message = "Unexpected keys: " + ", ".join(f"k{index}" for index in range(5000))
+
+        cut = _unexpected_keys_message(message, {"k0": 1}, {"properties": {}})
+
+        self.assertEqual(cut, bounded(message))
 
     def test_metadata_breaches_list_long_keys_within_the_bound(self) -> None:
         stored = {**metadata().to_dict(), self.LONG: "x"}

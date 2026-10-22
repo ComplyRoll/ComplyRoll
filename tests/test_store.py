@@ -261,6 +261,43 @@ def add_counter_row(path: Path, value: object) -> None:
         connection.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('events', ?)", (value,))
 
 
+def plant_undecodable_schema_object(path: Path, kind: str) -> str:
+    """Add one schema object the store never created, holding text that is not UTF-8.
+
+    `sqlite3` cannot pass such text as SQL, so the object is created plainly and its
+    `sqlite_master` row rewritten with `writable_schema`. Returns the fault message verify gives.
+    """
+
+    with closing(raw_connection(path)) as connection:
+        if kind == "trigger":
+            connection.execute("CREATE TRIGGER planted AFTER INSERT ON events BEGIN SELECT 1; END")
+            row = (
+                b"planted",
+                b"events",
+                b"CREATE TRIGGER planted AFTER INSERT ON events BEGIN SELECT '\xff\xfe'; END",
+            )
+            expected = "trigger 'planted' holds sql text that is not valid UTF-8"
+        elif kind == "index":
+            connection.execute("CREATE INDEX planted ON events (event_type)")
+            row = (b"pl\xff", b"events", b'CREATE INDEX "pl\xff" ON events (event_type)')
+            expected = (
+                "index <text that is not valid UTF-8 value> holds name text that is not valid UTF-8"
+            )
+        else:
+            connection.execute("CREATE TABLE planted (x INTEGER)")
+            row = (b"pl\xff", b"pl\xff", b'CREATE TABLE "pl\xff" (x INTEGER)')
+            expected = (
+                "table <text that is not valid UTF-8 value> holds name text that is not valid UTF-8"
+            )
+        connection.execute("PRAGMA writable_schema = ON")
+        connection.execute(
+            "UPDATE sqlite_master SET name = CAST(? AS TEXT), tbl_name = CAST(? AS TEXT), "
+            "sql = CAST(? AS TEXT) WHERE name = 'planted'",
+            row,
+        )
+    return expected
+
+
 class FakeConnection:
     """Connection double that records statements and can fail COMMIT or ROLLBACK."""
 
@@ -2728,6 +2765,36 @@ class StoredValueRefusalTests(unittest.TestCase):
         self.assertIn("event_name_invalid", faults)
         self.assertIn(shown, faults["stream_version_gap"])
 
+    def test_n4_a_name_at_the_cap_is_cut_like_any_stored_value(self) -> None:
+        """CL4B-03: a name inside the grammar was quoted whole, up to 500 characters."""
+
+        event_id = "e" * 500
+        cut = f"'{event_id[:199]}... (502 characters)"
+        self.insert(event_id=event_id, payload_sha256="0" * 64)
+        refused = self.refusal()
+        self.assertEqual(str(refused), f"event {cut} payload does not match its recorded digest")
+        self.assertEqual(
+            self.faults()["payload_digest_mismatch"],
+            f"event {cut} payload does not match its recorded digest",
+        )
+
+    def test_n5_a_checkpoint_name_at_the_cap_is_cut(self) -> None:
+        name = "p" * 500
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO projection_checkpoints VALUES (?, 'abc', ?)", (name, RECORDED_TEXT)
+            )
+        expected = (
+            f"projection checkpoint '{name[:199]}... (502 characters) has last_sequence stored as "
+            "text, not an integer"
+        )
+
+        with SQLiteEventStore(self.database_path) as store:
+            with self.assertRaises(EventIntegrityError) as caught:
+                store.get_projection_checkpoint(name)
+        self.assertEqual(str(caught.exception), expected)
+        self.assertEqual(self.faults(), {"projection_checkpoint_invalid": expected})
+
     def test_n3_a_blob_stream_id_is_described_by_its_storage_class(self) -> None:
         """Open and `verify_history` both say `<blob value>`; neither echoes the bytes.
 
@@ -2951,6 +3018,26 @@ class StoredValueRefusalTests(unittest.TestCase):
             self.faults(),
             {"migration_altered": "migration record 1 does not carry its expected description"},
         )
+
+    def test_u_an_unknown_schema_object_holding_undecodable_text_is_named(self) -> None:
+        """CL4B-01: every open refused it, and verify, reading the stand-in, passed it.
+
+        On ed9fcf4 verify refused it too, as `store_unavailable` quoting the text.
+        """
+
+        for kind in ("trigger", "index", "table"):
+            with self.subTest(kind):
+                self.database_path = self.build(f"schema-{kind}.db")
+                expected = plant_undecodable_schema_object(self.database_path, kind)
+                refused = self.refusal()
+                self.assertIn("holds text that is not valid UTF-8", str(refused))
+                store = SQLiteEventStore.open_for_verification(self.database_path)
+                self.addCleanup(store.close)
+                report = store.verify_history()
+                self.assertEqual(
+                    [(fault.sequence, fault.code, fault.message) for fault in report.faults],
+                    [(None, "schema_text_invalid", expected)],
+                )
 
     def test_u_the_connection_reads_text_again_after_verify(self) -> None:
         store = SQLiteEventStore.open_for_verification(self.database_path)

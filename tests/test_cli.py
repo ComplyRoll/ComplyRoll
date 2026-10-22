@@ -24,7 +24,7 @@ from test_cyclonedx import compile_cyclonedx_golden, compile_cyclonedx_historica
 from test_hdf import compile_hdf_golden
 from test_replay import bumped, moved
 from test_sarif import compile_sarif_golden, make_log, make_result, make_run
-from test_store import retype_sequence_as_text
+from test_store import plant_undecodable_schema_object, retype_sequence_as_text
 
 from complyroll import __version__
 from complyroll import cli as cli_module
@@ -7550,6 +7550,17 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
             err,
         )
         self.assertNotIn("store_unavailable", err)
+
+    def test_u_a_schema_object_holding_undecodable_text_is_refused_by_every_command(self) -> None:
+        # CL4B-01: verify read the stand-in and passed what every open refuses.
+        for kind in ("trigger", "index", "table"):
+            with self.subTest(kind):
+                self.database.unlink()
+                self.setUp()
+                plant_undecodable_schema_object(self.database, kind)
+                self.assert_refused(
+                    "holds text that is not valid UTF-8", {"schema_text_invalid"}, at_open=True
+                )
 
     # H: the header's schema marker. On 298f1be a marker of -1 verified clean and the next
     # append ended in `KeyError: 0`.

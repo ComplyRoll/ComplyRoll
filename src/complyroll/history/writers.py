@@ -65,6 +65,7 @@ from complyroll.reports.vdt import (
     system_record_kind,
 )
 from complyroll.store import EventRecord
+from complyroll.store.sqlite import shown
 
 from .fold import (
     ARTIFACT_INGESTED,
@@ -1121,7 +1122,7 @@ def _require_unique_effective_ids(
             continue
         previous_case, previous_location = previous
         problems.append(
-            f"{location}: effective tracking id {effective!r} is claimed by "
+            f"{location}: effective tracking id {shown(effective)} is claimed by "
             f"{previous_location} (originally {previous_case.tracking_id}) and "
             f"{location} (originally {case.tracking_id}); an override may rename one "
             "case but may not merge two"
@@ -1216,7 +1217,7 @@ def _identification_retained_warning(case: CaseState, entry: EvaluationInput) ->
 
     return (
         f"identification_retained: {case.tracking_id}: {entry.location} states no trackingId, "
-        f"so the recorded override {case.provider_tracking_id!r} stands and the persisted "
+        f"so the recorded override {shown(case.provider_tracking_id)} stands and the persisted "
         "report keeps reporting it; ComplyRoll has no retraction event, and returning to the "
         "correlation identifier is not something an evaluations file can ask for"
     )

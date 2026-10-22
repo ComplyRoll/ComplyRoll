@@ -241,20 +241,23 @@ those three match, and a test pins it.
   `store verify` reports it (`event_name_invalid`, `event_version_invalid`, `payload_not_json`,
   `event_timestamp_invalid`, `sequence_counter_mismatch`). A text column that is not valid UTF-8 is
   refused as `store_integrity`, naming the column and never its text, and `store verify` reports its
-  row as `event_text_invalid` and walks on. A value rewritten to another one `append` could have
-  written is not detected. Store integrity errors never quote a name outside the grammar: the
-  refusal of the name gives the rule it breaks, and a message that identifies its event or stream
-  for another fault, such as a version gap or a digest mismatch, gives its length or storage class.
-  A refusal or fault message cuts each stored value it quotes at 200 characters and gives the full
-  length: a payload value, the value and unexpected key a contract issue quotes, its JSON pointer,
-  the keys a `metadata_breaches` message lists, and a stream identifier a stream-id parse quotes.
-  Other messages quote a stream identifier whole, which the name rule holds to 500 characters. A
-  contract error renders its first 10 issues and counts the rest ("and K more"), so a stored list of
-  many invalid values no longer grows the message; the error object keeps every issue. Some output
-  carries stored text unescaped, newlines and terminal escape sequences included: a payload key in a
-  contract issue's JSON pointer, a key in a `metadata_breaches` message, and the actor
-  `cases history` prints on stdout, even from a store that verifies clean. Treat any output read
-  from an untrusted store as untrusted text.
+  row as `event_text_invalid` and walks on. A schema object the store never created that holds such
+  text is refused the same way by every open, and `store verify` reports it as
+  `schema_text_invalid`. A value rewritten to another one `append` could have written is not
+  detected. Store integrity errors never quote a name outside the grammar: the refusal of the name
+  gives the rule it breaks, and a message that identifies its event or stream for another fault,
+  such as a version gap or a digest mismatch, gives its length or storage class. A refusal, fault or
+  warning message cuts each stored value it quotes at 200 characters and gives the full length: a
+  payload value, the value and each unexpected key a contract issue quotes (a list of unexpected
+  keys shows its first 10 and counts the rest), its JSON pointer, the keys a `metadata_breaches`
+  message lists, a stream identifier a stream-id parse quotes, a provider tracking id, and every
+  name a store message quotes. Other domain messages quote a stream identifier whole, which the name
+  rule holds to 500 characters. A contract error renders its first 10 issues and counts the rest
+  ("and K more"), so a stored list of many invalid values no longer grows the message; the error
+  object keeps every issue. Some output carries stored text unescaped, newlines and terminal escape
+  sequences included: a payload key in a contract issue's JSON pointer, a key in a
+  `metadata_breaches` message, and the actor `cases history` prints on stdout, even from a store
+  that verifies clean. Treat any output read from an untrusted store as untrusted text.
 - A projection checkpoint must hold a non-negative integer count and a time with a timezone. The
   library's checkpoint reader and its compare-and-swap refuse any other row as
   `EventIntegrityError`, and `store verify` reports it as `projection_checkpoint_invalid`. No

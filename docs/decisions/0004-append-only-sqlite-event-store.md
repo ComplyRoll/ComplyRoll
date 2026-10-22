@@ -333,14 +333,23 @@ before.
 
 Two stored values still reached a conversion no check guarded. These rules bind from this date.
 
-- **Stored text is valid UTF-8.** `sqlite3` decodes every text value as strict UTF-8 and ends
-  the whole fetch on the first that fails, with an error quoting the bytes. Every command, `store
-  verify` included, reported that as `store_unavailable` with the column's text, and text such as
-  "database is locked" read as a busy store. A read now refuses it as `store_integrity`, naming
-  the column and never its text. `store verify` decodes text itself for its walk and reports the
-  row once as the new fault `event_text_invalid`, at its sequence, then walks on past it. Text
-  that is not UTF-8 elsewhere reads in the walk as a value no writer stored, so the counter is
-  `sequence_counter_mismatch` and a migration description `migration_altered`.
+- **Text a reader reads is valid UTF-8.** `sqlite3` decodes every text value as strict UTF-8
+  and ends the whole fetch on the first that fails, with an error quoting the bytes. Every
+  command, `store verify` included, reported that as `store_unavailable` with the column's text,
+  and text such as "database is locked" read as a busy store. A read now refuses it as
+  `store_integrity`, naming the column and never its text. `store verify` decodes text itself
+  and names what a reader would refuse:
+  - An events row: the new fault `event_text_invalid`, once, at its sequence. The walk goes on
+    past it.
+  - A schema object the store never created whose type, name, table or SQL is not UTF-8: the new
+    fault `schema_text_invalid`, in `sqlite_master` order, after the other schema faults. Every
+    open reads `sqlite_master` and refuses such an object. One that decodes is still not
+    refused. An expected object whose SQL is not UTF-8 is `schema_object_altered`.
+  - The counter is `sequence_counter_mismatch`, a migration description `migration_altered`,
+    and a checkpoint count or time `projection_checkpoint_invalid`.
+
+  No reader reads a migration record's `applied_at` or a stored checkpoint name, so neither
+  is checked.
 - **A projection checkpoint holds a count and a time.** The column is INTEGER without STRICT, so
   text passes `CHECK (last_sequence >= 0)`, and `get_projection_checkpoint` ran `int()` on it,
   which raised on text and truncated a real. The reader and the compare-and-swap of
@@ -355,7 +364,8 @@ Two stored values still reached a conversion no check guarded. These rules bind 
   sequence counter is behind the event history". SQLite still numbers the next row past the last
   one, so no sequence is reused, but such a counter no longer shows how far history ran.
 
-The fault order of ADR 0008's first 2026-08-22 amendment gains one step: schema objects, the
-header, migration, then projection checkpoints by name, then the counter, then rows by sequence.
+The fault order of ADR 0008's first 2026-08-22 amendment gains two steps: schema objects, then
+schema objects holding text that is not UTF-8, the header, migration, then projection
+checkpoints by name, then the counter, then rows by sequence.
 None of the checks refuses a row or a checkpoint a released build wrote, so every such store
 opens, verifies and reports as before.

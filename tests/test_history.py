@@ -1122,6 +1122,19 @@ class EffectiveIdCollisionTests(WriterFixture):
         self.assertIn(UBUNTU_CASE, str(error))
         self.assertIn(WINDOWS_CASE, str(error))
 
+    def test_a_long_colliding_override_is_quoted_within_the_bound(self) -> None:
+        long = "PROV-" + "X" * 5000
+        payload = example_payload()
+        entry_for(payload, "V-260470")["trackingId"] = long
+        entry_for(payload, "V-253260")["trackingId"] = long
+
+        error = self.assertRefused(
+            EvaluationMatchError, lambda: self.evaluate(evaluations_of(payload))
+        )
+
+        self.assertIn(f"effective tracking id '{long[:199]}... (5007 characters) is", str(error))
+        self.assertNotIn(long, str(error))
+
     def test_an_override_colliding_with_an_earlier_run_is_refused(self) -> None:
         first = example_payload()
         entry_for(first, "V-260470")["trackingId"] = "PROV-7"
@@ -1245,6 +1258,18 @@ class RetainedFactTests(WriterFixture):
         self.assertIn("PROV-7", warnings[0])
         self.assertEqual(case.provider_tracking_id, "PROV-7")
         self.assertEqual(case.effective_tracking_id, "PROV-7")
+
+    def test_a_long_retained_override_is_quoted_within_the_bound(self) -> None:
+        # CL4B-05: providerTrackingId has no length cap, and the warning quoted it whole.
+        long = "PROV-" + "X" * 5000
+        payload = example_payload()
+        entry_for(payload, "V-260470")["trackingId"] = long
+        self.evaluate(evaluations_of(payload))
+
+        (warning,) = self.warnings_for(example_payload())
+
+        self.assertIn(f"override '{long[:199]}... ({len(long) + 2} characters) stands", warning)
+        self.assertNotIn(long, warning)
 
     def test_a_retained_fact_appends_nothing(self) -> None:
         payload = example_payload()

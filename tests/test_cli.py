@@ -6345,24 +6345,20 @@ class StoreRefusalCommandTests(PersistedStoreTestCase):
         )
         self.assertFalse(self.database.exists())
 
-    def test_a_rationale_over_the_store_cap_is_a_coded_refusal(self) -> None:
-        # The unpatched cap is reachable: a rationale is stored as given.
+    def test_an_evaluation_over_the_store_cap_is_a_coded_refusal(self) -> None:
+        # The unpatched cap is reachable: an evaluations file may hold 8 MiB, and its rationale
+        # is stored as given. On ed9fcf4 this ended `cases evaluate` in a ValueError traceback.
         self.ingest_fixtures()
         self.correlate()
         before = self.latest_sequence()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = payload["evaluations"][:1]
+        payload["evaluations"][0]["rationale"] = "x" * MAX_EVENT_JSON_BYTES
+        path = self.workspace / "evaluations-long.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
 
         code, out, err = run(
-            [
-                "cases",
-                "attest-detection",
-                "--db",
-                str(self.database),
-                "--all-missing",
-                "--detected-at",
-                ATTESTED_AT,
-                "--rationale",
-                "x" * MAX_EVENT_JSON_BYTES,
-            ]
+            ["cases", "evaluate", "--db", str(self.database), "--evaluations", str(path)]
         )
 
         self.assertEqual((code, out), (1, ""))

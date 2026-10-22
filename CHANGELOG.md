@@ -6,6 +6,36 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- Stored text that is not valid UTF-8 no longer reads as `store_unavailable` quoting the bytes,
+  in every command and in `store verify`, and text such as "database is locked" in that column no
+  longer reads as a busy store. Reads refuse it as `store_integrity`, naming the column and never
+  its text, and `store verify` reports the row as `event_text_invalid` and walks on past it (ADR
+  0004 amendment 2026-10-21, second).
+- A refusal or fault that quotes a stored value now cuts it at 200 characters and gives its full
+  length, as the artifact and failure identity checks already did: a contract issue's value,
+  unexpected key and JSON pointer, a `case.created` tracking id on the wrong stream, the keys of a
+  `metadata_breaches` message, a repeated observation id, and a stream id a stream-id parse
+  quotes. A 5155-character tracking id made `store verify` print 10,667 bytes; it now prints 795.
+- A sequence counter lowered below the last stored row, or deleted, no longer reads "event history
+  was truncated", the words for a counter ahead of it. It reads "the sequence counter is behind
+  the event history", at open, at append and in `store verify`, under the same
+  `sequence_counter_mismatch`.
+- `SQLiteEventStore.get_projection_checkpoint` no longer runs `int()` on a stored count, which
+  raised on text the column's `CHECK` lets through and truncated a real. The reader and the
+  compare-and-swap refuse a count that is not a non-negative integer, and the reader a time that
+  does not parse, as `EventIntegrityError`, and `store verify` reports such a row as
+  `projection_checkpoint_invalid`. No command reads a checkpoint.
+- An insert that a trigger the store never created aborts no longer reads "conflicts with
+  committed history". The append names SQLite's reason, cut at 200 characters; only a UNIQUE key
+  is still called a conflict. Such a trigger is still not refused at open or by `store verify`.
+- Re-ingesting a recorded detection failure that this build classifies another way, such as a log
+  an earlier build recorded as content, no longer prints a `detection_failure_recorded` notice
+  naming the class this run would mint. The notice names the class the stored head records, on a
+  hold's rerun too.
+- An event past one of the store's caps (1 MiB, 64 levels of nesting, or 100,000 values) no longer
+  ends a command in a `ValueError` traceback. An evaluations file whose rationale ran past 1 MiB
+  reached it through `cases evaluate`. It is the refusal `event_too_large`, exit 1, and nothing is
+  appended. The store raises `EventPayloadLimitError`, which is still a `ValueError`.
 - A case stream whose id names no tracking id, such as `case/foo`, no longer ends
   `store verify`, `report ... --db`, `cases list`, `cases evaluate` or
   `cases attest-detection` in a `ValueError` traceback. The readers refuse it as

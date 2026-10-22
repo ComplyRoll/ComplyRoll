@@ -2939,6 +2939,19 @@ class StoredValueRefusalTests(unittest.TestCase):
             "the events sequence counter is stored as text that is not valid UTF-8, not an integer",
         )
 
+    def test_u_an_undecodable_migration_description_is_named_by_verify(self) -> None:
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE complyroll_schema_migrations SET description = CAST(? AS TEXT) "
+                "WHERE version = 1",
+                (self.UNDECODABLE,),
+            )
+
+        self.assertEqual(
+            self.faults(),
+            {"migration_altered": "migration record 1 does not carry its expected description"},
+        )
+
     def test_u_the_connection_reads_text_again_after_verify(self) -> None:
         store = SQLiteEventStore.open_for_verification(self.database_path)
         self.addCleanup(store.close)

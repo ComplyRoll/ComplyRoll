@@ -29,6 +29,7 @@ from complyroll.adapters import (
     failure_diagnostics,
     system_observation_for,
 )
+from complyroll.adapters.failures import DETECTION_FAILURE_RECORDED, failure_recorded_message
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import (
     COVERAGE_RECORDED,
@@ -64,6 +65,7 @@ from complyroll.reports.vdt import (
     system_record_kind,
 )
 from complyroll.store import EventRecord
+from complyroll.store.sqlite import shown
 
 from .fold import (
     ARTIFACT_INGESTED,
@@ -80,6 +82,7 @@ from .fold import (
     CaseState,
     HistoryError,
     _coverage_stream_problem,
+    _failure_record,
     _failure_stream_problem,
     _stream_tracking_id,
     artifact_history,
@@ -128,7 +131,8 @@ class FailureOutcome:
     """What one `record_failure` call did.
 
     `stream_id` is this reading's own failure stream, written now or found already
-    recorded. `observation_id` is the system observation the store holds for this failure.
+    recorded. `observation_id` is the system observation the store holds for this failure,
+    and `failure_class` the class its head records, which a rerun can classify another way.
     `held_by` names the recorded failure stream that first holds that observation when this
     reading's stream is a hold beneath it, and is None otherwise. It is never stored: the
     log already says which stream holds an observation first.
@@ -474,12 +478,21 @@ def _record_failure(
                 f"{reason}; a failure stream is written whole, so it is refused rather than resumed"
             )
         observation_id = str(observed[0].payload.get(OBSERVATION_ID_KEY))
+        # A reading this build classifies another way, such as one an earlier build recorded,
+        # meets its stream on rerun, and the notice names the class history holds.
+        recorded_class = _failure_record(repository, heads[0]).failure_class
+        diagnostics = tuple(
+            replace(item, message=failure_recorded_message(recorded_class, artifact.digest_sha256))
+            if item.code == DETECTION_FAILURE_RECORDED
+            else item
+            for item in diagnostics
+        )
         if heads[0].event_type != FAILURE_HELD:
             return FailureOutcome(
                 stream_id=stream_id,
                 appended=False,
                 observation_id=observation_id,
-                failure_class=failure_class,
+                failure_class=recorded_class,
                 diagnostics=diagnostics,
             )
         # A rerun of a hold says so again, so every run that meets the hold names its holder.
@@ -490,7 +503,7 @@ def _record_failure(
             stream_id=stream_id,
             appended=False,
             observation_id=observation_id,
-            failure_class=failure_class,
+            failure_class=recorded_class,
             diagnostics=(*diagnostics, _held_by_another_stream(repository, holder, artifact)),
             held_by=holder,
         )
@@ -597,6 +610,9 @@ def _record_coverage_gaps(
             continue
         heads = [record for record in existing if record.event_type == COVERAGE_RECORDED]
         observed = [record for record in existing if record.event_type == OBSERVATION_RECORDED]
+        # NOTE: Unreachable today: `_read_coverage_streams`, run by `rehydrate_observations`
+        # above, refuses both shapes first. The checks stay so this writer refuses a stream it
+        # would resume on its own, whatever that reader comes to accept.
         problem = _coverage_stream_problem(stream_id, len(heads), len(observed))
         reason = None if problem is None else problem[1]
         if reason is None and len(heads) + len(observed) != len(existing):
@@ -1106,7 +1122,7 @@ def _require_unique_effective_ids(
             continue
         previous_case, previous_location = previous
         problems.append(
-            f"{location}: effective tracking id {effective!r} is claimed by "
+            f"{location}: effective tracking id {shown(effective)} is claimed by "
             f"{previous_location} (originally {previous_case.tracking_id}) and "
             f"{location} (originally {case.tracking_id}); an override may rename one "
             "case but may not merge two"
@@ -1201,7 +1217,7 @@ def _identification_retained_warning(case: CaseState, entry: EvaluationInput) ->
 
     return (
         f"identification_retained: {case.tracking_id}: {entry.location} states no trackingId, "
-        f"so the recorded override {case.provider_tracking_id!r} stands and the persisted "
+        f"so the recorded override {shown(case.provider_tracking_id)} stands and the persisted "
         "report keeps reporting it; ComplyRoll has no retraction event, and returning to the "
         "correlation identifier is not something an evaluations file can ask for"
     )

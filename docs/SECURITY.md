@@ -221,35 +221,50 @@ those three match, and a test pins it.
   digest; a full-envelope digest with a per-store hash chain is planned for the next schema
   version.
 - SQLite triggers reject application-level updates and deletes from event history, and opening a
-  store verifies that the expected tables, indexes, and triggers are still present.
+  store verifies that the expected tables, indexes, and triggers are still present. A schema
+  object the store never created, such as an added trigger, is not refused; an insert it aborts
+  is refused with SQLite's reason, cut at 200 characters, and only a UNIQUE key reads as a
+  conflict with committed history.
 - Reads verify that global sequences and stream versions are contiguous, so a deleted event is
   reported as an integrity error instead of being skipped.
-- Reads apply the append rules to event names, version columns, and the sequence counter, and
-  the canonical-JSON checks to both JSON columns. The metadata key rule is applied at append
-  and by `store verify`, not on read (ADR 0008). Event IDs, stream identifiers, and event
-  types must be at most 500 characters
-  from the allowed set. The stream version and event version must be stored as integers of at least
-  1, and the sequence counter as one integer in one row. Stored JSON must pass the checks `append`
-  runs on it (nesting, value count, size, no
-  NaN or infinity, valid Unicode) and be the exact canonical text `append` writes, so reindented,
-  padded or reordered JSON and a duplicate object member are refused, and JSON past the decoder's
-  own limits is refused like JSON that does not parse. Both timestamp columns must be the exact
-  UTC text `append` writes, with six fraction digits and a `Z`, so another offset or spelling of
-  an instant is refused. A row edited in place to break any of these is refused with
-  `store_integrity` rather than a traceback, and `store verify` reports it (`event_name_invalid`,
-  `event_version_invalid`, `payload_not_json`, `event_timestamp_invalid`,
-  `sequence_counter_mismatch`). A text column that is not valid
-  UTF-8 is refused as `store_unavailable`, and that message can quote the stored text. A value
-  rewritten to another one `append` could have written is not detected. Store integrity errors
-  never quote a name outside the grammar: the refusal of the name gives
-  the rule it breaks, and a message that identifies its event or stream for another fault, such as a
-  version gap or a digest mismatch, gives its length or storage class. The artifact and failure
-  identity checks cut a quoted payload value at 200 characters; other domain messages can still
-  quote one at full length. Some output carries stored text unescaped, newlines and terminal escape
-  sequences included: a payload key in a contract issue's JSON pointer, a key in a
-  `metadata_breaches` message, the UTF-8 decode message above, and the actor `cases history` prints
-  on stdout, even from a store that verifies clean. Treat any output read from an untrusted store as
-  untrusted text.
+- Reads apply the append rules to event names, version columns, and the sequence counter, and the
+  canonical-JSON checks to both JSON columns. The metadata key rule is applied at append and by
+  `store verify`, not on read (ADR 0008). Event IDs, stream identifiers, and event types must be at
+  most 500 characters from the allowed set. The stream version and event version must be stored as
+  integers of at least 1, and the sequence counter as one integer in one row. Stored JSON must pass
+  the checks `append` runs on it (nesting, value count, size, no NaN or infinity, valid Unicode) and
+  be the exact canonical text `append` writes, so reindented, padded or reordered JSON and a
+  duplicate object member are refused, and JSON past the decoder's own limits is refused like JSON
+  that does not parse. Both timestamp columns must be the exact UTC text `append` writes, with six
+  fraction digits and a `Z`, so another offset or spelling of an instant is refused. A row edited in
+  place to break any of these is refused with `store_integrity` rather than a traceback, and
+  `store verify` reports it (`event_name_invalid`, `event_version_invalid`, `payload_not_json`,
+  `event_timestamp_invalid`, `sequence_counter_mismatch`). A text column that is not valid UTF-8 is
+  refused as `store_integrity`, naming the column and never its text, and `store verify` reports its
+  row as `event_text_invalid` and walks on. A schema object the store never created that holds such
+  text is refused the same way by every open, and `store verify` reports it as
+  `schema_text_invalid`. A value rewritten to another one `append` could have written is not
+  detected. Store integrity errors never quote a name outside the grammar: the refusal of the name
+  gives the rule it breaks, and a message that identifies its event or stream for another fault,
+  such as a version gap or a digest mismatch, gives its length or storage class. A refusal, fault or
+  warning message cuts each stored value it quotes at 200 characters and gives the full length: a
+  payload value, the value and each unexpected key a contract issue quotes (a list of unexpected
+  keys shows its first 10 and counts the rest), its JSON pointer, the keys a `metadata_breaches`
+  message lists, a stream identifier a stream-id parse quotes, a provider tracking id, and every
+  stored name a store message quotes. Four store messages quote a name the caller passed whole,
+  which the name rule holds to 500 characters: the stream id in `EventConcurrencyError` and in a
+  stream page's version gap, the projection name in `ProjectionConcurrencyError`, and the event id
+  in a refused insert. Other domain messages quote a stream identifier whole, held to 500 characters
+  the same way. A contract error renders its first 10 issues and counts the rest ("and K more"), so
+  a stored list of many invalid values no longer grows the message; the error object keeps every
+  issue. Some output carries stored text unescaped, newlines and terminal escape sequences included:
+  a payload key in a contract issue's JSON pointer, a key in a `metadata_breaches` message, and the
+  actor `cases history` prints on stdout, even from a store that verifies clean. Treat any output
+  read from an untrusted store as untrusted text.
+- A projection checkpoint must hold a non-negative integer count and a time with a timezone. The
+  library's checkpoint reader and its compare-and-swap refuse any other row as
+  `EventIntegrityError`, and `store verify` reports it as `projection_checkpoint_invalid`. No
+  command reads a checkpoint.
 - `store verify` holds the migration records to the schema marker: a record the marker needs
   and the table lacks (`migration_missing`), a record whose description is not the one its
   migration writes (`migration_altered`), and, with the marker in the supported range, a record

@@ -19,6 +19,7 @@ from complyroll.store import (
     EventConcurrencyError,
     EventConflictError,
     EventIntegrityError,
+    EventPayloadLimitError,
     EventStoreBusyError,
     EventStoreError,
     IntegrityReport,
@@ -31,11 +32,13 @@ from complyroll.store.sqlite import (
     _SCHEMA_V1,
     APPLICATION_ID,
     EXPECTED_SCHEMA_OBJECTS,
+    MAX_EVENT_JSON_DEPTH,
     MAX_EVENT_JSON_VALUES,
     SCHEMA_VERSION,
     SUPPORTED_SCHEMA_VERSION,
     _stored_stream_version,
     _write_transaction,
+    shown,
 )
 
 OCCURRED_AT = datetime(2026, 8, 20, 9, 30, tzinfo=timezone(timedelta(hours=-7)))
@@ -256,6 +259,47 @@ def add_counter_row(path: Path, value: object) -> None:
 
     with closing(raw_connection(path)) as connection:
         connection.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('events', ?)", (value,))
+
+
+def plant_undecodable_schema_object(path: Path, kind: str) -> str:
+    """Add one schema object the store never created, holding text that is not UTF-8.
+
+    `sqlite3` cannot pass such text as SQL, so the object is created plainly and its
+    `sqlite_master` row rewritten with `writable_schema`. Returns the fault message verify gives.
+    """
+
+    with closing(raw_connection(path)) as connection:
+        if kind == "trigger":
+            connection.execute("CREATE TRIGGER planted AFTER INSERT ON events BEGIN SELECT 1; END")
+            row = (
+                b"planted",
+                b"events",
+                b"CREATE TRIGGER planted AFTER INSERT ON events BEGIN SELECT '\xff\xfe'; END",
+            )
+            expected = "trigger 'planted' holds sql text that is not valid UTF-8"
+        elif kind == "index":
+            connection.execute("CREATE INDEX planted ON events (event_type)")
+            row = (b"pl\xff", b"events", b'CREATE INDEX "pl\xff" ON events (event_type)')
+            expected = (
+                "index <text that is not valid UTF-8 value> holds name text that is not valid UTF-8"
+            )
+        elif kind == "view":
+            connection.execute("CREATE VIEW planted AS SELECT 1 AS x")
+            row = (b"planted", b"planted", b"CREATE VIEW planted AS SELECT '\xff\xfe' AS x")
+            expected = "view 'planted' holds sql text that is not valid UTF-8"
+        else:
+            connection.execute("CREATE TABLE planted (x INTEGER)")
+            row = (b"pl\xff", b"pl\xff", b'CREATE TABLE "pl\xff" (x INTEGER)')
+            expected = (
+                "table <text that is not valid UTF-8 value> holds name text that is not valid UTF-8"
+            )
+        connection.execute("PRAGMA writable_schema = ON")
+        connection.execute(
+            "UPDATE sqlite_master SET name = CAST(? AS TEXT), tbl_name = CAST(? AS TEXT), "
+            "sql = CAST(? AS TEXT) WHERE name = 'planted'",
+            row,
+        )
+    return expected
 
 
 class FakeConnection:
@@ -505,6 +549,77 @@ class SQLiteEventStoreTests(unittest.TestCase):
 
         self.assertEqual(store.current_stream_version("case/case-002"), 0)
         self.assertEqual(store.latest_sequence, 1)
+
+    def test_an_insert_a_planted_trigger_aborts_is_not_called_a_conflict(self) -> None:
+        """CL-42: on ed9fcf4 every integrity error read "conflicts with committed history".
+
+        A trigger the store never created can abort an insert, and `store verify` passes the
+        file, since unknown schema objects are not refused. SQLite's message is quoted, cut.
+        """
+
+        store = self.open_store()
+        store.append("case/case-001", [sample_event("evt-existing")], expected_version=0)
+        for label, reason in (("short", "planted refusal"), ("long", "z" * 5000)):
+            with self.subTest(label):
+                with closing(raw_connection(self.database_path)) as connection:
+                    connection.execute("DROP TRIGGER IF EXISTS planted")
+                    connection.execute(
+                        "CREATE TRIGGER planted BEFORE INSERT ON events BEGIN "
+                        f"SELECT RAISE(ABORT, '{reason}'); END"
+                    )
+                with self.assertRaises(EventConflictError) as caught:
+                    store.append("case/case-002", [sample_event("evt-new")], expected_version=0)
+                self.assertEqual(
+                    str(caught.exception), f"the database refused event 'evt-new': {shown(reason)}"
+                )
+                self.assertLessEqual(len(str(caught.exception)), 300)
+                self.assertEqual(store.latest_sequence, 1)
+
+    def test_a_payload_over_a_store_cap_raises_the_typed_limit_error(self) -> None:
+        """CL-47: the caps raised a bare ValueError that no command caught."""
+
+        store = self.open_store()
+        nested: dict[str, object] = {}
+        for _ in range(MAX_EVENT_JSON_DEPTH + 1):
+            nested = {"n": nested}
+        cases = (
+            (
+                "bytes",
+                {"pad": "x" * MAX_EVENT_JSON_BYTES},
+                f"exceeds the {MAX_EVENT_JSON_BYTES}-byte limit",
+            ),
+            ("depth", nested, "exceeds the JSON depth limit"),
+            ("values", {"a": [0] * MAX_EVENT_JSON_VALUES}, "exceeds the JSON value limit"),
+        )
+        for label, value, problem in cases:
+            for field in ("payload", "metadata"):
+                with self.subTest(label, field=field):
+                    event = NewEvent(
+                        event_id="evt-big",
+                        event_type="case.created",
+                        occurred_at=OCCURRED_AT,
+                        payload=value if field == "payload" else {"case_id": "case-001"},
+                        metadata=value if field == "metadata" else {},
+                    )
+                    with self.assertRaises(EventPayloadLimitError) as caught:
+                        store.append("case/case-big", [event], expected_version=0)
+                    self.assertIsInstance(caught.exception, ValueError)
+                    self.assertEqual(str(caught.exception), f"{field} {problem}")
+                    self.assertEqual(store.latest_sequence, 0)
+
+    def test_a_payload_that_is_not_json_is_not_a_limit_error(self) -> None:
+        store = self.open_store()
+        event = NewEvent(
+            event_id="evt-nan",
+            event_type="case.created",
+            occurred_at=OCCURRED_AT,
+            payload={"n": float("nan")},
+        )
+
+        with self.assertRaises(ValueError) as caught:
+            store.append("case/case-nan", [event], expected_version=0)
+
+        self.assertNotIsInstance(caught.exception, EventPayloadLimitError)
 
     def test_rolled_back_batch_does_not_burn_a_global_sequence(self) -> None:
         store = self.open_store()
@@ -1134,6 +1249,27 @@ class StorageErrorMappingTests(unittest.TestCase):
                 connection.execute("SELECT * FROM missing_table")
             except sqlite3.OperationalError as error:
                 self.assertFalse(_is_busy_error(error))
+
+    def test_undecodable_text_is_an_integrity_error_whatever_the_text_says(self) -> None:
+        """The decode error carries no SQLite result name, so its text was read for one.
+
+        Stored text that reads "database is locked" made it a busy error a caller retries.
+        """
+
+        from complyroll.store.sqlite import _storage_error
+
+        for text in ("database is locked", "malformed", "not a database", "x" * 5000):
+            with self.subTest(text=text[:20]):
+                error = sqlite3.OperationalError(
+                    f"Could not decode to UTF-8 column 'payload_json' with text '{text}'"
+                )
+                mapped = _storage_error("could not read event history", error)
+                self.assertIs(type(mapped), EventIntegrityError)
+                self.assertEqual(
+                    str(mapped),
+                    "could not read event history: column payload_json holds text that is not "
+                    "valid UTF-8",
+                )
 
     def test_opening_a_fresh_store_while_a_peer_holds_the_file_is_busy_not_raw(self) -> None:
         with closing(sqlite3.connect(self.database_path, isolation_level=None)) as holder:
@@ -2633,6 +2769,36 @@ class StoredValueRefusalTests(unittest.TestCase):
         self.assertIn("event_name_invalid", faults)
         self.assertIn(shown, faults["stream_version_gap"])
 
+    def test_n4_a_name_at_the_cap_is_cut_like_any_stored_value(self) -> None:
+        """CL4B-03: a name inside the grammar was quoted whole, up to 500 characters."""
+
+        event_id = "e" * 500
+        cut = f"'{event_id[:199]}... (502 characters)"
+        self.insert(event_id=event_id, payload_sha256="0" * 64)
+        refused = self.refusal()
+        self.assertEqual(str(refused), f"event {cut} payload does not match its recorded digest")
+        self.assertEqual(
+            self.faults()["payload_digest_mismatch"],
+            f"event {cut} payload does not match its recorded digest",
+        )
+
+    def test_n5_a_checkpoint_name_at_the_cap_is_cut(self) -> None:
+        name = "p" * 500
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO projection_checkpoints VALUES (?, 'abc', ?)", (name, RECORDED_TEXT)
+            )
+        expected = (
+            f"projection checkpoint '{name[:199]}... (502 characters) has last_sequence stored as "
+            "text, not an integer"
+        )
+
+        with SQLiteEventStore(self.database_path) as store:
+            with self.assertRaises(EventIntegrityError) as caught:
+                store.get_projection_checkpoint(name)
+        self.assertEqual(str(caught.exception), expected)
+        self.assertEqual(self.faults(), {"projection_checkpoint_invalid": expected})
+
     def test_n3_a_blob_stream_id_is_described_by_its_storage_class(self) -> None:
         """Open and `verify_history` both say `<blob value>`; neither echoes the bytes.
 
@@ -2728,6 +2894,324 @@ class StoredValueRefusalTests(unittest.TestCase):
         self.assertEqual(
             str(caught.exception), "the events sequence counter is stored in more than one row"
         )
+
+    # U: text that is not valid UTF-8, which `sqlite3` fails to decode before any check runs.
+
+    TEXT_COLUMNS = (
+        "event_id",
+        "stream_id",
+        "event_type",
+        "occurred_at",
+        "recorded_at",
+        "payload_json",
+        "metadata_json",
+        "payload_sha256",
+    )
+    UNDECODABLE = b"\xff" + b"u" * LONG
+
+    def insert_undecodable(self, column: str) -> None:
+        """INSERT one row after the last whose `column` holds bytes that are not UTF-8."""
+
+        values: dict[str, object] = {
+            "event_id": "evt-planted",
+            "stream_id": "stream-planted",
+            "stream_version": 1,
+            "event_type": "case.created",
+            "event_version": 1,
+            "occurred_at": RECORDED_TEXT,
+            "recorded_at": RECORDED_TEXT,
+            "payload_json": "{}",
+            "metadata_json": "{}",
+            "payload_sha256": self.digest("{}"),
+        }
+        # The digest column's CHECK counts characters, and SQLite counts each lead byte as one.
+        values[column] = b"\xff" + b"0" * 63 if column == "payload_sha256" else self.UNDECODABLE
+        columns = ", ".join(values)
+        marks = ", ".join("CAST(? AS TEXT)" if name == column else "?" for name in values)
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                f"INSERT INTO events ({columns}) VALUES ({marks})", tuple(values.values())
+            )
+
+    def test_u_text_that_is_not_utf8_is_refused_and_named_in_every_column(self) -> None:
+        """On ed9fcf4 the read ended as a plain store error quoting the column's bytes.
+
+        The reader refuses it as an integrity error that names the column and not its text,
+        and `verify_history` names the row as `event_text_invalid` and walks on past it.
+        """
+
+        for column in self.TEXT_COLUMNS:
+            with self.subTest(column=column):
+                self.database_path = self.build(f"u-{column}.db")
+                self.insert_undecodable(column)
+                refused = self.refusal()
+                self.assertIn(f"column {column} holds text that is not valid UTF-8", str(refused))
+                self.assertNotIn("uuuu", str(refused))
+                store = SQLiteEventStore.open_for_verification(self.database_path)
+                self.addCleanup(store.close)
+                report = store.verify_history()
+                self.assertEqual(
+                    [(fault.sequence, fault.code, fault.message) for fault in report.faults],
+                    [
+                        (
+                            4,
+                            "event_text_invalid",
+                            f"event column {column} holds text that is not valid UTF-8",
+                        )
+                    ],
+                )
+                self.assertEqual(report.checked_events, 4)
+
+    def test_u_the_walk_reports_what_follows_an_undecodable_row(self) -> None:
+        self.insert_undecodable("payload_json")
+        self.insert(event_id="evt-after", stream_id="stream-after", payload_sha256="0" * 64)
+
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+        report = store.verify_history()
+
+        self.assertEqual(
+            [(fault.sequence, fault.code) for fault in report.faults],
+            [(4, "event_text_invalid"), (5, "payload_digest_mismatch")],
+        )
+
+    def test_u_two_undecodable_stream_ids_are_not_counted_as_one_stream(self) -> None:
+        self.insert_undecodable("stream_id")
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO events (event_id, stream_id, stream_version, event_type, "
+                "event_version, occurred_at, recorded_at, payload_json, metadata_json, "
+                "payload_sha256) VALUES ('evt-second', CAST(? AS TEXT), 1, 'case.created', 1, "
+                "?, ?, '{}', '{}', ?)",
+                (b"\xfe" + b"v" * 10, RECORDED_TEXT, RECORDED_TEXT, self.digest("{}")),
+            )
+
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+        report = store.verify_history()
+
+        self.assertEqual(
+            [(fault.sequence, fault.code) for fault in report.faults],
+            [(4, "event_text_invalid"), (5, "event_text_invalid")],
+        )
+
+    def test_u_an_undecodable_counter_is_named_by_verify(self) -> None:
+        self.update(
+            "UPDATE sqlite_sequence SET seq = CAST(? AS TEXT) WHERE name = 'events'",
+            (self.UNDECODABLE,),
+        )
+
+        refused = self.refusal()
+
+        self.assertIn("holds text that is not valid UTF-8", str(refused))
+        self.assertNotIn("uuuu", str(refused))
+        self.assertEqual(
+            self.faults()["sequence_counter_mismatch"],
+            "the events sequence counter is stored as text that is not valid UTF-8, not an integer",
+        )
+
+    def test_u_an_undecodable_migration_description_is_named_by_verify(self) -> None:
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE complyroll_schema_migrations SET description = CAST(? AS TEXT) "
+                "WHERE version = 1",
+                (self.UNDECODABLE,),
+            )
+
+        self.assertEqual(
+            self.faults(),
+            {"migration_altered": "migration record 1 does not carry its expected description"},
+        )
+
+    def test_u_an_unknown_schema_object_holding_undecodable_text_is_named(self) -> None:
+        """CL4B-01: every open refused it, and verify, reading the stand-in, passed it.
+
+        On ed9fcf4 verify refused it too, as `store_unavailable` quoting the text.
+        """
+
+        for kind in ("trigger", "index", "view", "table"):
+            with self.subTest(kind):
+                self.database_path = self.build(f"schema-{kind}.db")
+                expected = plant_undecodable_schema_object(self.database_path, kind)
+                refused = self.refusal()
+                self.assertIn("holds text that is not valid UTF-8", str(refused))
+                store = SQLiteEventStore.open_for_verification(self.database_path)
+                self.addCleanup(store.close)
+                report = store.verify_history()
+                self.assertEqual(
+                    [(fault.sequence, fault.code, fault.message) for fault in report.faults],
+                    [(None, "schema_text_invalid", expected)],
+                )
+
+    def test_u_an_expected_object_with_undecodable_sql_is_named_only_as_altered(self) -> None:
+        with closing(raw_connection(self.database_path)) as connection:
+            sql = (
+                recorded_sql(connection, "events_reject_update")
+                .encode()
+                .replace(b"append-only", b"append-only\xff")
+            )
+            connection.execute("PRAGMA writable_schema = ON")
+            connection.execute(
+                "UPDATE sqlite_master SET sql = CAST(? AS TEXT) "
+                "WHERE name = 'events_reject_update'",
+                (sql,),
+            )
+
+        self.assertIn("column sql holds text that is not valid UTF-8", str(self.refusal()))
+        self.assertEqual(
+            self.faults(),
+            {
+                "schema_object_altered": (
+                    "trigger events_reject_update does not match its expected definition"
+                )
+            },
+        )
+
+    def test_u_an_undecodable_type_or_table_is_refused_by_sqlite_on_every_open(self) -> None:
+        """CL4B-D-01: SQLite checks `type` and `tbl_name` itself when it loads the schema.
+
+        Such a file fails as "malformed database schema" before any check reads a row, so verify
+        refuses it as the readers do, with an integrity error and no fault.
+        """
+
+        for column, value in (("type", b"trig\xff"), ("tbl_name", b"ev\xff")):
+            with self.subTest(column):
+                self.database_path = self.build(f"schema-{column}.db")
+                with closing(raw_connection(self.database_path)) as connection:
+                    connection.execute(
+                        "CREATE TRIGGER planted AFTER INSERT ON events BEGIN SELECT 1; END"
+                    )
+                    connection.execute("PRAGMA writable_schema = ON")
+                    connection.execute(
+                        f"UPDATE sqlite_master SET {column} = CAST(? AS TEXT) "
+                        "WHERE name = 'planted'",
+                        (value,),
+                    )
+                self.assertIn("malformed database schema", str(self.refusal()))
+                store = SQLiteEventStore.open_for_verification(self.database_path)
+                self.addCleanup(store.close)
+                with self.assertRaises(EventIntegrityError) as caught:
+                    store.verify_history()
+                self.assertEqual(
+                    str(caught.exception),
+                    "could not verify event history: malformed database schema (planted)",
+                )
+
+    def test_u_the_connection_reads_text_again_after_verify(self) -> None:
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+
+        self.assertTrue(store.verify_history().ok)
+
+        self.assertEqual(type(store.read_all()[0].stream_id), str)
+        assert store._connection is not None
+        self.assertIs(store._connection.text_factory, str)
+
+    # C: a counter behind the last row. On ed9fcf4 it read "event history was truncated", the
+    # words for a counter ahead of the last row, whose tail rows were deleted (CL-39).
+
+    def set_counter(self, value: int | None) -> None:
+        """Rewrite the AUTOINCREMENT counter, or delete its row when `value` is None."""
+
+        with closing(raw_connection(self.database_path)) as connection:
+            if value is None:
+                connection.execute("DELETE FROM sqlite_sequence WHERE name = 'events'")
+            else:
+                connection.execute(
+                    "UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (value,)
+                )
+
+    def test_c_a_counter_behind_the_last_row_has_its_own_message(self) -> None:
+        for label, value, counter in (("lowered", 1, 1), ("zero", 0, 0), ("row deleted", None, 0)):
+            with self.subTest(label):
+                self.database_path = self.build(f"c-{label}.db")
+                self.set_counter(value)
+                expected = (
+                    "the sequence counter is behind the event history: last stored sequence "
+                    f"is 3 but the sequence counter is {counter}"
+                )
+                refused = self.refusal()
+                self.assertEqual((str(refused), refused.sequence), (expected, 3))
+                self.assertEqual(self.faults()["sequence_counter_mismatch"], expected)
+
+    def test_c_a_counter_ahead_of_the_last_row_still_reads_as_truncated(self) -> None:
+        self.set_counter(5)
+        expected = (
+            "event history was truncated: last stored sequence is 3 but the sequence counter is 5"
+        )
+
+        self.assertEqual(str(self.refusal()), expected)
+        self.assertEqual(self.faults()["sequence_counter_mismatch"], expected)
+
+    def test_c_a_counter_lowered_after_the_open_stops_the_append(self) -> None:
+        store = SQLiteEventStore(self.database_path, clock=lambda: RECORDED_AT)
+        self.addCleanup(store.close)
+        self.set_counter(2)
+
+        with self.assertRaises(EventIntegrityError) as caught:
+            store.append("stream-h", [sample_event("evt-h-3")], expected_version=3)
+
+        self.assertEqual(
+            str(caught.exception),
+            "the sequence counter is behind the event history: last stored sequence is 3 but "
+            "the sequence counter is 2",
+        )
+
+    # P: a projection checkpoint the store never writes. The column is INTEGER without STRICT,
+    # so text passes its CHECK, and on ed9fcf4 the read ran `int()` on whatever it held (CL-40).
+
+    def plant_checkpoint(self, last_sequence: object, updated_at: object = RECORDED_TEXT) -> None:
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            connection.execute(
+                "INSERT INTO projection_checkpoints VALUES ('case-list', ?, ?)",
+                (last_sequence, updated_at),
+            )
+
+    def test_p_a_checkpoint_that_is_not_a_count_is_refused_and_named(self) -> None:
+        cases = (
+            ("text", "x", "last_sequence stored as text, not an integer"),
+            ("long text", "x" * self.LONG, "last_sequence stored as text, not an integer"),
+            (
+                "numeric past 64 bits",
+                "1" * self.LONG,
+                "last_sequence stored as real, not an integer",
+            ),
+            ("real", 1.5, "last_sequence stored as real, not an integer"),
+            ("blob", b"\x00", "last_sequence stored as blob, not an integer"),
+            ("negative", -1, "last_sequence -1; checkpoints start at 0"),
+            ("timestamp", 0, "an updated_at that is not an ISO 8601 timestamp with a timezone"),
+        )
+        for label, value, problem in cases:
+            with self.subTest(label):
+                self.database_path = self.build(f"p-{label}.db")
+                if label == "timestamp":
+                    self.plant_checkpoint(value, updated_at="yesterday")
+                else:
+                    self.plant_checkpoint(value)
+                expected = f"projection checkpoint 'case-list' has {problem}"
+                with SQLiteEventStore(self.database_path) as store:
+                    with self.assertRaises(EventIntegrityError) as read:
+                        store.get_projection_checkpoint("case-list")
+                    self.assertEqual(str(read.exception), expected)
+                    # The compare-and-swap reads only the count, so only a bad count stops it.
+                    if label != "timestamp":
+                        with self.assertRaises(EventIntegrityError) as advanced:
+                            store.advance_projection(
+                                "case-list", expected_sequence=0, last_sequence=1
+                            )
+                        self.assertEqual(str(advanced.exception), expected)
+                        with self.assertRaises(EventIntegrityError) as reset:
+                            store.reset_projection("case-list", expected_sequence=0)
+                        self.assertEqual(str(reset.exception), expected)
+                self.assertEqual(self.faults(), {"projection_checkpoint_invalid": expected})
+
+    def test_p_a_checkpoint_the_store_wrote_reads_and_verifies(self) -> None:
+        with SQLiteEventStore(self.database_path, clock=lambda: RECORDED_AT) as store:
+            store.advance_projection("case-list", expected_sequence=0, last_sequence=3)
+            self.assertEqual(store.get_projection_checkpoint("case-list").last_sequence, 3)
+        with SQLiteEventStore.open_for_verification(self.database_path) as store:
+            self.assertTrue(store.verify_history().ok)
 
 
 class StoreHeaderTests(unittest.TestCase):

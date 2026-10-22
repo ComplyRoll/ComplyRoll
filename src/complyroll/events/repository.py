@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import uuid4
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, ValidationError
 
 from complyroll import __version__
 from complyroll.adapters.common import encode_list
@@ -41,6 +41,7 @@ from complyroll.models import (
 )
 from complyroll.policy import RuleForce
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
+from complyroll.store.sqlite import SHOWN_LIMIT, bounded, shown
 
 from .contracts import (
     COVERAGE_RECORDED,
@@ -224,7 +225,25 @@ class ContractIssue:
     def render(self) -> str:
         """Return the single-line form used in error messages."""
 
-        return f"{self.instance_pointer or '<root>'}: {self.validator}: {self.message}"
+        return f"{bounded(self.instance_pointer) or '<root>'}: {self.validator}: {self.message}"
+
+
+#: How many issues, or unexpected keys in one issue, a contract error's message renders; the
+#: error's `issues` keeps every issue.
+MAX_RENDERED_ISSUES: Final = 10
+
+
+def _rendered_issues(issues: Sequence[ContractIssue]) -> str:
+    """Join a contract error's first issues, in the order given, and count the rest.
+
+    Each issue is bounded, but a stored list of many invalid values yields one issue per value,
+    so a full join grew with the payload: 20,000 values gave 1,257,829 characters.
+    """
+
+    rendered = "; ".join(issue.render() for issue in issues[:MAX_RENDERED_ISSUES])
+    if len(issues) <= MAX_RENDERED_ISSUES:
+        return rendered
+    return f"{rendered}; and {len(issues) - MAX_RENDERED_ISSUES} more"
 
 
 class EventContractError(ValueError):
@@ -341,7 +360,7 @@ class EventRepository:
                     ContractIssue(
                         instance_pointer=_json_pointer(error.absolute_path),
                         validator=str(error.validator),
-                        message=error.message,
+                        message=_issue_message(error),
                     )
                     for error in validator.iter_errors(dict(payload))
                 ),
@@ -349,9 +368,9 @@ class EventRepository:
             )
         )
         if issues:
-            rendered = "; ".join(issue.render() for issue in issues)
             raise EventContractError(
-                f"{event_type} version {event_version} payload is invalid: {rendered}",
+                f"{event_type} version {event_version} payload is invalid: "
+                f"{_rendered_issues(issues)}",
                 issues=issues,
             )
         _require_real_instants(event_type, event_version, payload)
@@ -674,7 +693,7 @@ def metadata_breaches(metadata: Mapping[str, Any]) -> tuple[str, ...]:
     problems: list[str] = []
     keys = sorted(metadata)
     if keys != sorted(METADATA_KEYS):
-        listed = ", ".join(keys) if keys else "nothing"
+        listed = bounded(", ".join(keys)) if keys else "nothing"
         problems.append(
             f"metadata must carry exactly {', '.join(sorted(METADATA_KEYS))}, got {listed}"
         )
@@ -726,23 +745,6 @@ def _is_run_identifier(value: object) -> bool:
     return parsed.version == 4 and parsed.variant == uuid.RFC_4122 and str(parsed) == text
 
 
-_SHOWN_LIMIT = 200
-
-
-def _shown(value: Any) -> str:
-    """Quote one payload-sourced value for a message, cut short past `_SHOWN_LIMIT` characters.
-
-    The payload digest proves a payload is the one recorded, not that its values are short, and
-    a value edited in place with its digest recomputed reaches these messages at any length. A
-    value whose quoted form fits is shown exactly as before.
-    """
-
-    text = repr(value)
-    if len(text) <= _SHOWN_LIMIT:
-        return text
-    return f"{text[:_SHOWN_LIMIT]}... ({len(text)} characters)"
-
-
 def artifact_identity_breach(
     stream_id: str,
     event_type: str,
@@ -773,8 +775,8 @@ def artifact_identity_breach(
     if recorded == expected:
         return None
     return (
-        f"{event_type} records digest {_shown(recorded[0])} read by {_shown(recorded[1])} "
-        f"version {_shown(recorded[2])} on stream {stream_id!r}, which names digest "
+        f"{event_type} records digest {shown(recorded[0])} read by {shown(recorded[1])} "
+        f"version {shown(recorded[2])} on stream {stream_id!r}, which names digest "
         f"{expected[0]!r} read "
         f"by {expected[1]!r} version {expected[2]!r}"
     )
@@ -828,8 +830,8 @@ def failure_identity_breach(
         if recorded == expected:
             return None
         return (
-            f"{event_type} records digest {_shown(recorded[0])} read by "
-            f"{_shown(recorded[1])} version {_shown(recorded[2])} on stream {stream_id!r}, "
+            f"{event_type} records digest {shown(recorded[0])} read by "
+            f"{shown(recorded[1])} version {shown(recorded[2])} on stream {stream_id!r}, "
             "which names digest "
             f"{expected[0]!r} read by {expected[1]!r} version {expected[2]!r}"
         )
@@ -878,8 +880,8 @@ def failure_record_disagreement(
             agrees = described == recorded
         if not agrees:
             return (
-                f"failure stream {stream_id!r} records {head_key} {_shown(recorded)} in its "
-                f"{head_type} and {metadata_key} {_shown(described)} in its system "
+                f"failure stream {stream_id!r} records {head_key} {shown(recorded)} in its "
+                f"{head_type} and {metadata_key} {shown(described)} in its system "
                 "record; "
                 "the two describe one failure"
             )
@@ -939,12 +941,12 @@ def failure_hold_orphan_message(
         found = "carries no system observation"
     elif holder is None:
         found = (
-            f"records observation {_shown(observation_id)}, which no other failure stream of "
+            f"records observation {shown(observation_id)}, which no other failure stream of "
             "the same digest records"
         )
     else:
         found = (
-            f"records observation {_shown(observation_id)}, which failure stream "
+            f"records observation {shown(observation_id)}, which failure stream "
             f"{holder!r} records first without opening with its {FAILURE_RECORDED}"
         )
     return (
@@ -966,21 +968,21 @@ def _failure_metadata_problem(
             return f"its metadata has no {key!r}"
     for key in raw:
         if key not in FAILURE_METADATA_KEYS:
-            return f"its metadata carries {_shown(key)}, which a system record does not"
+            return f"its metadata carries {shown(key)}, which a system record does not"
     for key, named in zip(
         ("artifact.sha256", "artifact.parser", "artifact.parserVersion"), expected, strict=True
     ):
         if raw[key] != named:
-            return f"its metadata {key} is {_shown(raw[key])}, where the stream names {named!r}"
+            return f"its metadata {key} is {shown(raw[key])}, where the stream names {named!r}"
     size = raw["artifact.sizeBytes"]
     if not isinstance(size, str) or _COUNT_TEXT.fullmatch(size) is None:
-        return f"its metadata artifact.sizeBytes is {_shown(size)}, not a count"
+        return f"its metadata artifact.sizeBytes is {shown(size)}, not a count"
     if raw["failure.class"] not in _FAILURE_CLASS_VALUES:
-        return f"its metadata failure.class is {_shown(raw['failure.class'])}, not a failure class"
+        return f"its metadata failure.class is {shown(raw['failure.class'])}, not a failure class"
     codes = decode_failure_codes(raw["failure.codes"])
     if codes is None:
         return (
-            f"its metadata failure.codes is {_shown(raw['failure.codes'])}, not the compact JSON "
+            f"its metadata failure.codes is {shown(raw['failure.codes'])}, not the compact JSON "
             "array of sorted, distinct failure codes its writer stores"
         )
     # The classifier derives the class from the codes, so a class they do not name is one no
@@ -988,14 +990,14 @@ def _failure_metadata_problem(
     named = failure_class_for_codes(codes).value
     if raw["failure.class"] != named:
         return (
-            f"its metadata failure.class is {_shown(raw['failure.class'])}, and its "
-            f"failure.codes {_shown(raw['failure.codes'])} are those of class {named!r}"
+            f"its metadata failure.class is {shown(raw['failure.class'])}, and its "
+            f"failure.codes {shown(raw['failure.codes'])} are those of class {named!r}"
         )
     if raw["failure.clock"] not in FAILURE_CLOCK_VALUES:
-        return f"its metadata failure.clock is {_shown(raw['failure.clock'])}, not a failure clock"
+        return f"its metadata failure.clock is {shown(raw['failure.clock'])}, not a failure clock"
     if raw["failure.rule"] != DETECTION_FAILURE_RULE:
         return (
-            f"its metadata failure.rule is {_shown(raw['failure.rule'])}, "
+            f"its metadata failure.rule is {shown(raw['failure.rule'])}, "
             f"not {DETECTION_FAILURE_RULE!r}"
         )
     return None
@@ -1009,46 +1011,46 @@ def _system_record_problem(digest: str, payload: Mapping[str, Any]) -> str | Non
     resource_id = resource.get("resource_id") if isinstance(resource, Mapping) else None
     derived = f"obs-{payload.get('fingerprint')}"
     if payload.get("origin") != ObservationOrigin.SYSTEM.value:
-        return f"its origin is {_shown(payload.get('origin'))}"
+        return f"its origin is {shown(payload.get('origin'))}"
     if payload.get("source_type") != DETECTION_FAILURE_SOURCE_TYPE:
-        return f"its source type is {_shown(payload.get('source_type'))}"
+        return f"its source type is {shown(payload.get('source_type'))}"
     if payload.get("source_record_id") != DETECTION_FAILURE_RECORD_ID:
-        return f"its source record id is {_shown(payload.get('source_record_id'))}"
+        return f"its source record id is {shown(payload.get('source_record_id'))}"
     if payload.get("source_tool") != DETECTION_FAILURE_SOURCE_TOOL:
-        return f"its source tool is {_shown(payload.get('source_tool'))}"
+        return f"its source tool is {shown(payload.get('source_tool'))}"
     parser = (payload.get("parser_name"), payload.get("parser_version"))
     if parser != (DETECTION_FAILURE_PARSER_NAME, DETECTION_FAILURE_PARSER_VERSION):
-        return f"its parser is {_shown(parser[0])} version {_shown(parser[1])}"
+        return f"its parser is {shown(parser[0])} version {shown(parser[1])}"
     if payload.get("context_key") != reference:
-        return f"its context key is {_shown(payload.get('context_key'))}"
+        return f"its context key is {shown(payload.get('context_key'))}"
     if resource_id != reference:
-        return f"its resource id is {_shown(resource_id)}"
+        return f"its resource id is {shown(resource_id)}"
     if payload.get(OBSERVATION_ID_KEY) != derived:
         return (
-            f"its id is {_shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
-            f"{_shown(derived)}"
+            f"its id is {shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
+            f"{shown(derived)}"
         )
     # The builder fixes these, as it fixes a gap record's, and a report reads each of them
     # back from the record: a record edited to `pass` drops out of `detectionFailures`.
     if payload.get("disposition") != ObservationDisposition.OPEN.value:
-        return f"its disposition is {_shown(payload.get('disposition'))}"
+        return f"its disposition is {shown(payload.get('disposition'))}"
     if payload.get("source_severity") != SourceSeverity.UNKNOWN.value:
-        return f"its source severity is {_shown(payload.get('source_severity'))}"
+        return f"its source severity is {shown(payload.get('source_severity'))}"
     if payload.get("source_identifiers") != []:
-        return f"its source identifiers are {_shown(payload.get('source_identifiers'))}"
+        return f"its source identifiers are {shown(payload.get('source_identifiers'))}"
     # The report prints the title as the vulnerability description.
     if payload.get("title") != DETECTION_FAILURE_TITLE.format(digest=digest):
-        return f"its title is {_shown(payload.get('title'))}"
+        return f"its title is {shown(payload.get('title'))}"
     if payload.get("description") != "":
-        return f"its description is {_shown(payload.get('description'))}"
+        return f"its description is {shown(payload.get('description'))}"
     # NOTE: The observation contract refuses either artifact field on a system record first,
     # so on a store path these two answer only a direct call.
     if payload.get("source_artifact_digest") != "":
-        return f"its source artifact digest is {_shown(payload.get('source_artifact_digest'))}"
+        return f"its source artifact digest is {shown(payload.get('source_artifact_digest'))}"
     if payload.get("source_artifact_name") != "":
-        return f"its source artifact name is {_shown(payload.get('source_artifact_name'))}"
+        return f"its source artifact name is {shown(payload.get('source_artifact_name'))}"
     if payload.get("evidence_ids") != [reference]:
-        return f"its evidence ids are {_shown(payload.get('evidence_ids'))}"
+        return f"its evidence ids are {shown(payload.get('evidence_ids'))}"
     return None
 
 
@@ -1185,8 +1187,8 @@ def coverage_record_disagreement(
         )
         if described != recorded:
             return (
-                f"coverage stream {stream_id!r} records {head_key} {_shown(recorded)} in its "
-                f"{COVERAGE_RECORDED} and {record_key} {_shown(described)} in its gap record; "
+                f"coverage stream {stream_id!r} records {head_key} {shown(recorded)} in its "
+                f"{COVERAGE_RECORDED} and {record_key} {shown(described)} in its gap record; "
                 "the two describe one gap"
             )
     return None
@@ -1206,36 +1208,36 @@ def _gap_record_problem(payload: Mapping[str, Any]) -> str | None:
 
     derived = f"obs-{payload.get('fingerprint')}"
     if payload.get("origin") != ObservationOrigin.SYSTEM.value:
-        return f"its origin is {_shown(payload.get('origin'))}"
+        return f"its origin is {shown(payload.get('origin'))}"
     if payload.get("source_type") != COVERAGE_SOURCE_TYPE:
-        return f"its source type is {_shown(payload.get('source_type'))}"
+        return f"its source type is {shown(payload.get('source_type'))}"
     if payload.get("source_record_id") != COVERAGE_RECORD_ID:
-        return f"its source record id is {_shown(payload.get('source_record_id'))}"
+        return f"its source record id is {shown(payload.get('source_record_id'))}"
     if payload.get("source_tool") != COVERAGE_SOURCE_TOOL:
-        return f"its source tool is {_shown(payload.get('source_tool'))}"
+        return f"its source tool is {shown(payload.get('source_tool'))}"
     parser = (payload.get("parser_name"), payload.get("parser_version"))
     if parser != (COVERAGE_PARSER_NAME, COVERAGE_PARSER_VERSION):
-        return f"its parser is {_shown(parser[0])} version {_shown(parser[1])}"
+        return f"its parser is {shown(parser[0])} version {shown(parser[1])}"
     if payload.get(OBSERVATION_ID_KEY) != derived:
         return (
-            f"its id is {_shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
-            f"{_shown(derived)}"
+            f"its id is {shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
+            f"{shown(derived)}"
         )
     # The builder fixes these, and a report reads each of them back from the record.
     if payload.get("disposition") != ObservationDisposition.OPEN.value:
-        return f"its disposition is {_shown(payload.get('disposition'))}"
+        return f"its disposition is {shown(payload.get('disposition'))}"
     if payload.get("source_severity") != SourceSeverity.UNKNOWN.value:
-        return f"its source severity is {_shown(payload.get('source_severity'))}"
+        return f"its source severity is {shown(payload.get('source_severity'))}"
     if payload.get("source_identifiers") != []:
-        return f"its source identifiers are {_shown(payload.get('source_identifiers'))}"
+        return f"its source identifiers are {shown(payload.get('source_identifiers'))}"
     if payload.get("description") != COVERAGE_DESCRIPTION:
-        return f"its description is {_shown(payload.get('description'))}"
+        return f"its description is {shown(payload.get('description'))}"
     # NOTE: The observation contract refuses either artifact field on a system record first,
     # so on a store path these two answer only a direct call.
     if payload.get("source_artifact_digest") != "":
-        return f"its source artifact digest is {_shown(payload.get('source_artifact_digest'))}"
+        return f"its source artifact digest is {shown(payload.get('source_artifact_digest'))}"
     if payload.get("source_artifact_name") != "":
-        return f"its source artifact name is {_shown(payload.get('source_artifact_name'))}"
+        return f"its source artifact name is {shown(payload.get('source_artifact_name'))}"
     return None
 
 
@@ -1260,41 +1262,41 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
             return f"its metadata has no {key!r}"
     for key in raw:
         if key not in COVERAGE_METADATA_KEYS:
-            return f"its metadata carries {_shown(key)}, which a gap record does not"
+            return f"its metadata carries {shown(key)}, which a gap record does not"
     observed = payload.get("observed_at")
     observed_text = None if not isinstance(observed, str) else iso_utc(parse_utc(observed))
     if raw["coverage.windowClosedAt"] != observed_text:
         return (
-            f"its metadata coverage.windowClosedAt is {_shown(raw['coverage.windowClosedAt'])}, "
-            f"where the record is observed at {_shown(observed_text)}"
+            f"its metadata coverage.windowClosedAt is {shown(raw['coverage.windowClosedAt'])}, "
+            f"where the record is observed at {shown(observed_text)}"
         )
     context_key = payload.get("context_key")
     rule = raw["coverage.rule"]
     if not isinstance(context_key, str) or not context_key.startswith(f"{rule}:"):
         return (
-            f"its metadata coverage.rule is {_shown(rule)}, and its context key "
-            f"{_shown(context_key)} does not lead with it"
+            f"its metadata coverage.rule is {shown(rule)}, and its context key "
+            f"{shown(context_key)} does not lead with it"
         )
     evidence = [f"sha256:{raw['coverage.inventorySha256']}"]
     if payload.get("evidence_ids") != evidence:
         return (
-            f"its evidence ids are {_shown(payload.get('evidence_ids'))}, where its metadata "
-            f"coverage.inventorySha256 names {_shown(evidence)}"
+            f"its evidence ids are {shown(payload.get('evidence_ids'))}, where its metadata "
+            f"coverage.inventorySha256 names {shown(evidence)}"
         )
     # The window runs from its anchor to its close, and no rule's timeframe is empty.
     anchor_at = _canonical_instant(raw["coverage.anchorAt"])
     if anchor_at is None:
         return (
-            f"its metadata coverage.anchorAt is {_shown(raw['coverage.anchorAt'])}, not an "
+            f"its metadata coverage.anchorAt is {shown(raw['coverage.anchorAt'])}, not an "
             "instant as its writer spells one"
         )
     if observed_text is None or anchor_at >= parse_utc(observed_text):
         return (
-            f"its metadata coverage.anchorAt is {_shown(raw['coverage.anchorAt'])}, which does "
-            f"not precede its window close {_shown(observed_text)}"
+            f"its metadata coverage.anchorAt is {shown(raw['coverage.anchorAt'])}, which does "
+            f"not precede its window close {shown(observed_text)}"
         )
     if raw["coverage.force"] not in _RULE_FORCE_VALUES:
-        return f"its metadata coverage.force is {_shown(raw['coverage.force'])}, not a rule force"
+        return f"its metadata coverage.force is {shown(raw['coverage.force'])}, not a rule force"
     # A job names the case its context key keys the gap to; with none, the resource does.
     job = raw["coverage.job"]
     resource = payload.get("resource")
@@ -1306,8 +1308,8 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
     keyed = f"{rule}:job:{job}" if job else f"{rule}:resource:{subject[0]}:{subject[1]}"
     if context_key != keyed:
         return (
-            f"its metadata coverage.job is {_shown(job)}, and its context key "
-            f"{_shown(context_key)} is not {_shown(keyed)}"
+            f"its metadata coverage.job is {shown(job)}, and its context key "
+            f"{shown(context_key)} is not {shown(keyed)}"
         )
     # The title restates the rule, the resource and the close, so it is checked once they are.
     title = COVERAGE_TITLE.format(
@@ -1317,10 +1319,10 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
         closed_at=raw["coverage.windowClosedAt"],
     )
     if payload.get("title") != title:
-        return f"its title is {_shown(payload.get('title'))}"
+        return f"its title is {shown(payload.get('title'))}"
     if raw["coverage.basis"] not in COVERAGE_BASIS_TEXTS:
         return (
-            f"its metadata coverage.basis is {_shown(raw['coverage.basis'])}, not a basis its "
+            f"its metadata coverage.basis is {shown(raw['coverage.basis'])}, not a basis its "
             "writer records"
         )
     return None
@@ -1353,7 +1355,7 @@ def duplicate_observation_message(stream_id: str, observation_id: str) -> str:
     else:
         kind = "artifact"
     return (
-        f"{kind} stream {stream_id!r} records observation {observation_id!r} more than "
+        f"{kind} stream {stream_id!r} records observation {shown(observation_id)} more than "
         "once; the same finding would be rehydrated twice"
     )
 
@@ -1367,7 +1369,7 @@ def failure_duplicate_observation_message(
     """
 
     return (
-        f"failure stream {stream_id!r} records observation {observation_id!r}, which "
+        f"failure stream {stream_id!r} records observation {shown(observation_id)}, which "
         f"failure stream {other_stream_id!r} of the same digest already records; one "
         "failure would be rehydrated twice"
     )
@@ -1414,13 +1416,13 @@ def _require_stream_compatible(
         expected = tracking_id_from_stream(stream_id)
     except ValueError as exc:
         raise EventContractError(
-            f"{CASE_CREATED} cannot be stored on stream {stream_id!r}: {exc}"
+            f"{CASE_CREATED} cannot be stored on stream {shown(stream_id)}: {exc}"
         ) from exc
     recorded = payload.get("trackingId")
     if recorded != expected:
         raise EventContractError(
-            f"{CASE_CREATED} records tracking id {recorded!r} on stream {stream_id!r}, "
-            f"which names {expected!r}"
+            f"{CASE_CREATED} records tracking id {shown(recorded)} on stream "
+            f"{shown(stream_id)}, which names {expected!r}"
         )
 
 
@@ -1448,9 +1450,8 @@ def _require_real_instants(
                 ContractIssue(instance_pointer=pointer, validator="timestamp", message=problem)
             )
     if issues:
-        rendered = "; ".join(issue.render() for issue in issues)
         raise EventContractError(
-            f"{event_type} version {event_version} payload is invalid: {rendered}",
+            f"{event_type} version {event_version} payload is invalid: {_rendered_issues(issues)}",
             issues=tuple(issues),
         )
 
@@ -1488,6 +1489,49 @@ def _value_at(payload: Mapping[str, Any], pointer: str) -> Any:
             return None
         current = current[part]
     return current
+
+
+def _issue_message(error: ValidationError) -> str:
+    """Return jsonschema's message with each long stored value it quotes cut by `shown`.
+
+    jsonschema quotes the failing instance in full, and lists every unexpected key.
+    """
+
+    message = str(error.message)
+    instance = error.instance
+    if error.validator == "additionalProperties" and isinstance(instance, Mapping):
+        return _unexpected_keys_message(message, instance, error.schema)
+    quoted = [instance, *instance] if isinstance(instance, Mapping) else [instance]
+    for value in quoted:
+        text = repr(value)
+        if len(text) > SHOWN_LIMIT:
+            message = message.replace(text, shown(value))
+    return message
+
+
+_UNEXPECTED_KEYS = "Additional properties are not allowed ({listed} {verb} unexpected)"
+
+
+def _unexpected_keys_message(message: str, instance: Mapping[str, Any], schema: Any) -> str:
+    """List the first unexpected keys, each through `shown`, and count the rest.
+
+    The keys are found and sorted as jsonschema finds and sorts them. A message in any other
+    words, which this jsonschema does not write, is cut whole rather than left unbounded.
+    """
+
+    known = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
+    pattern = "|".join(schema.get("patternProperties", {})) if isinstance(schema, Mapping) else ""
+    extras = sorted(
+        (key for key in instance if key not in known and not (pattern and re.search(pattern, key))),
+        key=str,
+    )
+    verb = "was" if len(extras) == 1 else "were"
+    if message != _UNEXPECTED_KEYS.format(listed=", ".join(map(repr, extras)), verb=verb):
+        return bounded(message)
+    listed = ", ".join(shown(key) for key in extras[:MAX_RENDERED_ISSUES])
+    if len(extras) > MAX_RENDERED_ISSUES:
+        listed = f"{listed}, and {len(extras) - MAX_RENDERED_ISSUES} more"
+    return _UNEXPECTED_KEYS.format(listed=listed, verb=verb)
 
 
 def _json_pointer(parts: Any) -> str:

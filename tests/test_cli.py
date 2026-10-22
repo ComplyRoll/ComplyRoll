@@ -24,7 +24,7 @@ from test_cyclonedx import compile_cyclonedx_golden, compile_cyclonedx_historica
 from test_hdf import compile_hdf_golden
 from test_replay import bumped, moved
 from test_sarif import compile_sarif_golden, make_log, make_result, make_run
-from test_store import retype_sequence_as_text
+from test_store import plant_undecodable_schema_object, retype_sequence_as_text
 
 from complyroll import __version__
 from complyroll import cli as cli_module
@@ -56,7 +56,7 @@ from complyroll.history import (
 )
 from complyroll.models import Observation
 from complyroll.reports import vdt as vdt_module
-from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
+from complyroll.store import MAX_EVENT_JSON_BYTES, EventRecord, NewEvent, SQLiteEventStore
 
 # Versions after the shipped SARIF parser, for a fixture re-read under another version.
 SARIF_NEXT = str(int(SARIF_PARSER_VERSION) + 1)
@@ -6129,6 +6129,70 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                 self.assertEqual(run(argv), (1, "", refused))
         self.assertEqual(self.latest_sequence(), before)
 
+    def test_a_long_stored_value_is_quoted_within_the_bound(self) -> None:
+        # CL-41, R1: on ed9fcf4 a 5155-character trackingId made `store verify` print 10,667
+        # bytes, because the contract issue and the placement fault each quoted it whole.
+        self.populate()
+        long = "x" * 5155
+        sequence = self.smuggle(
+            "case.created",
+            {
+                "trackingId": long,
+                "sourceType": "cklb",
+                "sourceRecordId": "V-260470",
+                "contextKey": "Canonical Ubuntu 24.04 LTS STIG",
+                "title": "Inactive accounts are not disabled",
+                "description": "Inactive accounts are not disabled on the shared host.",
+                "createdAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=SMUGGLED_CASE_STREAM,
+        )
+        cut = f"'{long[:199]}... ({len(long) + 2} characters)"
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertLessEqual(len(err.encode()), 1024, err[:300])
+        for fault in ("case_tracking_id_mismatch", "payload_contract_invalid"):
+            with self.subTest(fault=fault):
+                prefix = f"error: sequence {sequence}: {fault}: "
+                (line,) = [line for line in err.splitlines() if line.startswith(prefix)]
+                self.assertIn(cut, line)
+        self.assertIn(
+            f"case.created records tracking id {cut} on stream {SMUGGLED_CASE_STREAM!r}", err
+        )
+        code, out, err = run(["cases", "list", "--db", str(self.database)])
+        self.assertEqual(code, 1, err[:300])
+        self.assertIn(cut, err)
+        self.assertLessEqual(len(err.encode()), 1024, err[:300])
+
+    def test_a_long_case_stream_id_is_quoted_within_the_bound(self) -> None:
+        # The store holds a stream id to 500 characters, and the message quoted it twice.
+        self.populate()
+        stream_id = "case/" + "y" * 495
+        self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=stream_id,
+        )
+        named = (
+            f"stream '{stream_id[:199]}... (502 characters) names no tracking id: tracking_id "
+            f"must match 'case-<16 hex characters>', got '{'y' * 199}... (497 characters)"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(f"case_tracking_id_mismatch: {named}\n", err)
+        self.assertEqual(
+            run(["cases", "list", "--db", str(self.database)]),
+            (1, "", f"error: history_invalid: {named}\n"),
+        )
+
     def test_a_rewritten_payload_is_named_and_exits_one(self) -> None:
         self.populate()
         tamper_with_one_payload(self.database)
@@ -6232,6 +6296,76 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn(f"error: store_integrity: {message}", err)
+
+
+class StoreRefusalCommandTests(PersistedStoreTestCase):
+    """An append the store refuses for a reason other than history is a coded refusal."""
+
+    def test_an_insert_a_planted_trigger_aborts_is_not_called_a_conflict(self) -> None:
+        # CL-42: unknown schema objects are not refused, so `store verify` passes this file,
+        # and the abort used to read "conflicts with committed history".
+        self.ingest_fixtures()
+        with closing(self.raw()) as connection:
+            connection.execute(
+                "CREATE TRIGGER planted BEFORE INSERT ON events BEGIN "
+                "SELECT RAISE(ABORT, 'planted refusal'); END"
+            )
+        self.assertEqual(run(["store", "verify", "--db", str(self.database)])[0], 0)
+        before = self.latest_sequence()
+
+        code, out, err = run(["cases", "correlate", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertRegex(
+            err,
+            r"^error: store_unavailable: the database refused event 'evt-[0-9a-f-]+': "
+            r"'planted refusal'\n$",
+        )
+        self.assertEqual(self.latest_sequence(), before)
+
+    def test_an_event_over_a_store_cap_is_a_coded_refusal_with_nothing_appended(self) -> None:
+        # CL-47: the cap raised a bare ValueError, which `_persisted_run` did not catch.
+        with patch("complyroll.store.sqlite.MAX_EVENT_JSON_BYTES", 256):
+            code, out, err = run(
+                [
+                    "ingest",
+                    str(FIXTURES / "windows-host.ckl"),
+                    "--db",
+                    str(self.database),
+                    "--as-of",
+                    INGESTED_AT,
+                ]
+            )
+
+        self.assertEqual((code, out), (1, ""))
+        # The reading's own WARNING lines come first; the refusal is the one error line.
+        self.assertEqual(
+            [line for line in err.splitlines() if line.startswith("error: ")],
+            ["error: event_too_large: payload exceeds the 256-byte limit"],
+        )
+        self.assertFalse(self.database.exists())
+
+    def test_an_evaluation_over_the_store_cap_is_a_coded_refusal(self) -> None:
+        # The unpatched cap is reachable: an evaluations file may hold 8 MiB, and its rationale
+        # is stored as given. On ed9fcf4 this ended `cases evaluate` in a ValueError traceback.
+        self.ingest_fixtures()
+        self.correlate()
+        before = self.latest_sequence()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = payload["evaluations"][:1]
+        payload["evaluations"][0]["rationale"] = "x" * MAX_EVENT_JSON_BYTES
+        path = self.workspace / "evaluations-long.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        code, out, err = run(
+            ["cases", "evaluate", "--db", str(self.database), "--evaluations", str(path)]
+        )
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err, f"error: event_too_large: payload exceeds the {MAX_EVENT_JSON_BYTES}-byte limit\n"
+        )
+        self.assertEqual(self.latest_sequence(), before)
 
 
 class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
@@ -7393,6 +7527,42 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assert_refused(
             "sequence counter is stored as text", {"sequence_counter_mismatch"}, at_open=True
         )
+
+    # U: text that is not valid UTF-8. On ed9fcf4 `sqlite3` failed to decode it before any
+    # check ran, and every command, `store verify` included, printed `store_unavailable`
+    # quoting the column's bytes.
+
+    def test_u_text_that_is_not_utf8_is_refused_by_every_command(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                "UPDATE events SET payload_json = CAST(? AS TEXT) WHERE sequence = 1",
+                (b"\xff" + b"u" * self.LONG,),
+            )
+
+        self.update(work)
+        self.assert_refused(
+            "column payload_json holds text that is not valid UTF-8", {"event_text_invalid"}
+        )
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertIn(
+            "error: event_text_invalid: sequence 1: event column payload_json holds text that is "
+            "not valid UTF-8\n",
+            err,
+        )
+        self.assertNotIn("store_unavailable", err)
+
+    def test_u_a_schema_object_holding_undecodable_text_is_refused_by_every_command(self) -> None:
+        # CL4B-01: verify read the stand-in and passed what every open refuses.
+        for kind in ("trigger", "index", "view", "table"):
+            with self.subTest(kind):
+                self.database.unlink()
+                self.setUp()
+                expected = plant_undecodable_schema_object(self.database, kind)
+                self.assert_refused(
+                    "holds text that is not valid UTF-8", {"schema_text_invalid"}, at_open=True
+                )
+                _code, _out, err = run(["store", "verify", "--db", str(self.database)])
+                self.assertIn(f"error: schema_text_invalid: {expected}\n", err)
 
     # H: the header's schema marker. On 298f1be a marker of -1 verified clean and the next
     # append ended in `KeyError: 0`.

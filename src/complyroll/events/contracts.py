@@ -31,6 +31,7 @@ from complyroll.models import (
     SourceSeverity,
 )
 from complyroll.policy import COVERAGE_RULE_IDS
+from complyroll.store.sqlite import shown
 
 #: Statuses that record a disposition. `new`, `evaluating`, and `active` are not
 #: dispositions, so `case.disposition_recorded` refuses them (ADR 0008 Decision 2).
@@ -705,7 +706,7 @@ def coverage_stream_fingerprint(stream_id: str) -> str:
 
     start = f"{COVERAGE_STREAM_PREFIX}/"
     if not isinstance(stream_id, str) or not stream_id.startswith(start):
-        raise ValueError(f"stream_id must start with {start!r}, got {stream_id!r}")
+        raise ValueError(f"stream_id must start with {start!r}, got {shown(stream_id)}")
     _require_stream_id(stream_id)
     return _require_digest(stream_id[len(start) :], "fingerprint")
 
@@ -724,13 +725,13 @@ def _reading_stream_components(prefix: str, described: str, stream_id: str) -> t
 
     start = f"{prefix}/"
     if not isinstance(stream_id, str) or not stream_id.startswith(start):
-        raise ValueError(f"stream_id must start with {start!r}, got {stream_id!r}")
+        raise ValueError(f"stream_id must start with {start!r}, got {shown(stream_id)}")
     _require_stream_id(stream_id)
     parts = stream_id[len(start) :].split("/")
     if len(parts) != 3:
         raise ValueError(
             f"{described} stream id names a digest, a parser name, and a parser version, "
-            f"got {stream_id!r}"
+            f"got {shown(stream_id)}"
         )
     digest, parser_name, parser_version = parts
     return (
@@ -751,7 +752,7 @@ def tracking_id_from_stream(stream_id: str) -> str:
 
     prefix = f"{CASE_STREAM_PREFIX}/"
     if not isinstance(stream_id, str) or not stream_id.startswith(prefix):
-        raise ValueError(f"stream_id must start with {prefix!r}, got {stream_id!r}")
+        raise ValueError(f"stream_id must start with {prefix!r}, got {shown(stream_id)}")
     return require_tracking_id(stream_id[len(prefix) :])
 
 
@@ -783,7 +784,7 @@ def require_tracking_id(value: str) -> str:
     """Validate a correlation v0 tracking identifier, `case-` plus sixteen hex digits."""
 
     if not isinstance(value, str) or TRACKING_ID_PATTERN.fullmatch(value) is None:
-        raise ValueError(f"tracking_id must match 'case-<16 hex characters>', got {value!r}")
+        raise ValueError(f"tracking_id must match 'case-<16 hex characters>', got {shown(value)}")
     return value
 
 
@@ -808,9 +809,9 @@ def parse_utc(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError as exc:
-        raise ValueError(f"timestamp must be RFC 3339, got {value!r}") from exc
+        raise ValueError(f"timestamp must be RFC 3339, got {shown(value)}") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError(f"timestamp must include a UTC offset, got {value!r}")
+        raise ValueError(f"timestamp must include a UTC offset, got {shown(value)}")
     return parsed.astimezone(UTC)
 
 
@@ -824,7 +825,7 @@ def _require_component(value: str, field_name: str) -> str:
     if not isinstance(value, str) or _COMPONENT_PATTERN.fullmatch(value) is None:
         raise ValueError(
             f"{field_name} must be letters, digits, '.', '_', ':', or '-' and must not "
-            f"contain the stream separator, got {value!r}"
+            f"contain the stream separator, got {shown(value)}"
         )
     return value
 

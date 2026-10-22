@@ -54,7 +54,9 @@ from complyroll.events import (
     artifact_stream_id,
     canonical_payload_digest,
     case_stream_id,
+    coverage_stream_fingerprint,
     coverage_stream_id,
+    duplicate_observation_message,
     event_belongs_on_stream,
     failure_duplicate_observation_message,
     failure_head_order_message,
@@ -85,7 +87,7 @@ from complyroll.events.contracts import (
     _placement_problem,
     _timestamp_pointers,
 )
-from complyroll.events.repository import _SHOWN_LIMIT, _shown
+from complyroll.events.repository import MAX_RENDERED_ISSUES, _unexpected_keys_message
 from complyroll.models import (
     Observation,
     ObservationDisposition,
@@ -101,6 +103,7 @@ from complyroll.store import (
     SQLiteEventStore,
     UnsupportedSchemaError,
 )
+from complyroll.store.sqlite import SHOWN_LIMIT, bounded, shown
 
 NOW = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 DIGEST = "a" * 64
@@ -1740,14 +1743,14 @@ class StreamCompatibilityTests(unittest.TestCase):
         )
 
     def test_a_quote_of_exactly_the_limit_is_shown_whole(self) -> None:
-        # The cut is past `_SHOWN_LIMIT` characters of the quoted form, not at it: 198 nines
+        # The cut is past `SHOWN_LIMIT` characters of the quoted form, not at it: 198 nines
         # quote to exactly 200 characters and are shown unchanged, and one more nine is cut
         # just before its closing quote and counted.
         fits, over = "9" * 198, "9" * 199
-        self.assertEqual(len(repr(fits)), _SHOWN_LIMIT)
+        self.assertEqual(len(repr(fits)), SHOWN_LIMIT)
 
-        self.assertEqual(_shown(fits), repr(fits))
-        self.assertEqual(_shown(over), "'" + over + "... (201 characters)")
+        self.assertEqual(shown(fits), repr(fits))
+        self.assertEqual(shown(over), "'" + over + "... (201 characters)")
 
     def test_the_same_identity_on_its_own_stream_is_accepted(self) -> None:
         # The check is about agreement between the payload and the stream, not about one
@@ -3496,6 +3499,220 @@ class StreamIdCapTests(unittest.TestCase):
                     parse(past)
                 self.assertIn(f"at most {_MAX_STREAM_ID_LENGTH} characters", str(caught.exception))
                 self.assertNotIn(past, str(caught.exception))
+
+
+class StoredValueEchoTests(unittest.TestCase):
+    """CL-41: a message quoting a stored value shows at most `SHOWN_LIMIT` characters of it.
+
+    On ed9fcf4 a 5155-character trackingId made `store verify` print 10,667 bytes: the contract
+    issue and the placement fault each quoted it whole.
+    """
+
+    LONG = "x" * 5155
+    BOUND = 1024
+
+    def setUp(self) -> None:
+        self.store = SQLiteEventStore(":memory:")
+        self.addCleanup(self.store.close)
+        self.repository = EventRepository(self.store)
+
+    def assert_cut(self, message: str, value: str) -> None:
+        self.assertIn(cut_quote(value), message)
+        self.assertNotIn(value, message)
+        self.assertLessEqual(len(message.encode()), self.BOUND)
+
+    def contract_error(self, payload: dict[str, Any]) -> str:
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("case.created", payload)
+        return str(caught.exception)
+
+    def test_a_contract_issue_quotes_a_long_instance_within_the_bound(self) -> None:
+        message = self.contract_error({**GOOD_PAYLOADS["case.created"], "trackingId": self.LONG})
+
+        self.assert_cut(message, self.LONG)
+        self.assertIn(f"/trackingId: pattern: {cut_quote(self.LONG)} does not match", message)
+
+    def test_a_contract_issue_quotes_a_long_unexpected_key_within_the_bound(self) -> None:
+        message = self.contract_error({**GOOD_PAYLOADS["case.created"], self.LONG: 1})
+
+        self.assert_cut(message, self.LONG)
+        self.assertIn("additionalProperties", message)
+
+    def test_a_contract_issue_cuts_a_long_pointer(self) -> None:
+        payload = observation().to_canonical_dict()
+        payload["source_metadata"] = {self.LONG: 1}
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("observation.recorded", payload)
+
+        message = str(caught.exception)
+        self.assertNotIn(self.LONG, message)
+        self.assertLessEqual(len(message.encode()), self.BOUND)
+
+    def test_a_short_instance_is_quoted_as_jsonschema_words_it(self) -> None:
+        message = self.contract_error({**GOOD_PAYLOADS["case.created"], "trackingId": "nope"})
+
+        self.assertIn("/trackingId: pattern: 'nope' does not match", message)
+
+    def test_a_contract_error_renders_its_first_issues_and_counts_the_rest(self) -> None:
+        # On ed9fcf4, 20,000 non-strings in one list gave a 1,257,829-character message: every
+        # issue was rendered. The issues themselves stay on the error, all of them.
+        payload = observation().to_canonical_dict()
+        payload["source_identifiers"] = list(range(20_000))
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("observation.recorded", payload)
+
+        message = str(caught.exception)
+        self.assertEqual(len(caught.exception.issues), 20_000)
+        shown_issues = caught.exception.issues[:MAX_RENDERED_ISSUES]
+        self.assertEqual(
+            message,
+            "observation.recorded version 1 payload is invalid: "
+            + "; ".join(issue.render() for issue in shown_issues)
+            + f"; and {20_000 - MAX_RENDERED_ISSUES} more",
+        )
+        self.assertLessEqual(len(message.encode()), 1024)
+
+    def test_a_contract_error_at_the_issue_cap_renders_every_issue(self) -> None:
+        payload = observation().to_canonical_dict()
+        payload["source_identifiers"] = list(range(MAX_RENDERED_ISSUES))
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("observation.recorded", payload)
+
+        self.assertEqual(len(caught.exception.issues), MAX_RENDERED_ISSUES)
+        self.assertNotIn("more", str(caught.exception))
+        self.assertTrue(
+            str(caught.exception).endswith(caught.exception.issues[-1].render()),
+            str(caught.exception)[-120:],
+        )
+
+    def test_the_instant_check_joins_its_issues_at_the_same_point(self) -> None:
+        payload = {
+            **GOOD_PAYLOADS["detection.attested"],
+            "detectedAt": "2026-08-31T24:00:00Z",
+            "attestedAt": "2026-08-31T24:00:00Z",
+        }
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload("detection.attested", payload)
+
+        issues = caught.exception.issues
+        self.assertEqual(len(issues), 2)
+        self.assertEqual(
+            str(caught.exception),
+            "detection.attested version 1 payload is invalid: "
+            + "; ".join(issue.render() for issue in issues),
+        )
+
+    def test_many_unexpected_keys_are_listed_first_ten_and_counted(self) -> None:
+        # CL4B-02: jsonschema lists every unexpected key in one issue, so the issue cap did not
+        # reach it: 30,000 short keys made a 300,173-character verify line on 6327fa78.
+        payload: dict[str, Any] = dict(GOOD_PAYLOADS["case.created"])
+        payload.update({f"k{index:05d}": 1 for index in range(30_000)})
+
+        message = self.contract_error(payload)
+
+        listed = ", ".join(f"'k{index:05d}'" for index in range(MAX_RENDERED_ISSUES))
+        self.assertEqual(
+            message,
+            "case.created version 1 payload is invalid: <root>: additionalProperties: "
+            f"Additional properties are not allowed ({listed}, and 29990 more were unexpected)",
+        )
+        self.assertLessEqual(len(message.encode()), 1024)
+
+    def test_unexpected_keys_in_any_order_are_listed_as_jsonschema_sorts_them(self) -> None:
+        # CL4B-D-02: jsonschema sorts the keys it lists. Rebuilt in the payload's order, an
+        # unsorted payload fell back to the whole-message cut.
+        payload: dict[str, Any] = dict(GOOD_PAYLOADS["case.created"])
+        payload.update({f"k{index:05d}": 1 for index in reversed(range(30_000))})
+
+        message = self.contract_error(payload)
+
+        listed = ", ".join(f"'k{index:05d}'" for index in range(MAX_RENDERED_ISSUES))
+        self.assertTrue(
+            message.endswith(
+                f"Additional properties are not allowed ({listed}, and 29990 more were unexpected)"
+            ),
+            message[-160:],
+        )
+
+    def test_a_few_unexpected_keys_are_listed_as_jsonschema_words_them(self) -> None:
+        for extras, verb in ((["extra"], "was"), (["a", "b"], "were"), (["z", "y"], "were")):
+            with self.subTest(extras=extras):
+                payload: dict[str, Any] = dict(GOOD_PAYLOADS["case.created"])
+                payload.update({key: 1 for key in extras})
+                listed = ", ".join(repr(key) for key in sorted(extras))
+
+                self.assertTrue(
+                    self.contract_error(payload).endswith(
+                        f"Additional properties are not allowed ({listed} {verb} unexpected)"
+                    )
+                )
+
+    def test_unexpected_keys_in_other_words_are_cut_whole(self) -> None:
+        # A jsonschema that words the message differently gets the plain cut, never a full echo.
+        message = "Unexpected keys: " + ", ".join(f"k{index}" for index in range(5000))
+
+        cut = _unexpected_keys_message(message, {"k0": 1}, {"properties": {}})
+
+        self.assertEqual(cut, bounded(message))
+
+    def test_metadata_breaches_list_long_keys_within_the_bound(self) -> None:
+        stored = {**metadata().to_dict(), self.LONG: "x"}
+
+        (problem,) = metadata_breaches(stored)
+
+        self.assertNotIn(self.LONG, problem)
+        self.assertIn("got actor, method, runId, tool, toolVersion, xxx", problem)
+        self.assertTrue(problem.endswith(f"... ({41 + len(self.LONG)} characters)"), problem[-60:])
+        self.assertLessEqual(len(problem.encode()), self.BOUND)
+
+    def test_duplicate_observation_messages_quote_a_long_id_within_the_bound(self) -> None:
+        self.assert_cut(duplicate_observation_message(ARTIFACT_STREAM_ID, self.LONG), self.LONG)
+        self.assert_cut(
+            failure_duplicate_observation_message(FAILURE_STREAM_ID, self.LONG, HELD_STREAM_ID),
+            self.LONG,
+        )
+
+    def test_stream_id_parsers_quote_a_long_value_within_the_bound(self) -> None:
+        many_parts = f"artifact/{DIGEST}/x/y/" + "1" * 300
+        failures = (
+            ("case prefix", tracking_id_from_stream, "bogus/" + self.LONG, "bogus/" + self.LONG),
+            ("case tracking id", tracking_id_from_stream, "case/" + self.LONG, self.LONG),
+            ("artifact prefix", artifact_stream_components, "bogus/" + self.LONG, None),
+            ("failure prefix", failure_stream_components, "bogus/" + self.LONG, None),
+            ("coverage prefix", coverage_stream_fingerprint, "bogus/" + self.LONG, None),
+            ("artifact parts", artifact_stream_components, many_parts, many_parts),
+            ("tracking id", require_tracking_id, self.LONG, self.LONG),
+            ("timestamp", parse_utc, self.LONG, self.LONG),
+        )
+        for label, parse, value, quoted in failures:
+            with self.subTest(label):
+                with self.assertRaises(ValueError) as caught:
+                    parse(value)
+                self.assert_cut(str(caught.exception), value if quoted is None else quoted)
+
+    def test_a_case_created_on_an_untracked_stream_quotes_it_within_the_bound(self) -> None:
+        stream_id = "case/" + "y" * 495
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.append(
+                stream_id,
+                "case.created",
+                GOOD_PAYLOADS["case.created"],
+                occurred_at=NOW,
+                metadata=metadata(),
+                expected_version=0,
+            )
+
+        message = str(caught.exception)
+        self.assertTrue(
+            message.startswith(f"case.created cannot be stored on stream {cut_quote(stream_id)}: ")
+        )
+        self.assert_cut(message, "y" * 495)
+
+    def test_a_long_parser_component_is_quoted_within_the_bound(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            artifact_stream_id(DIGEST, self.LONG + "/", "1")
+
+        self.assert_cut(str(caught.exception), self.LONG + "/")
 
 
 if __name__ == "__main__":

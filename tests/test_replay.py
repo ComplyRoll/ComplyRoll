@@ -73,9 +73,11 @@ from complyroll.events import (
 )
 from complyroll.history import (
     HistoryError,
+    HistoryFault,
     apply_evaluations,
     artifact_history,
     attest_detection,
+    audit_history,
     correlate_cases,
     fold_all_cases,
     fold_case,
@@ -1460,6 +1462,44 @@ class DispositionWithoutEvaluationTests(StoreFixture):
         self.assertEqual(diagnostic.level.value, "error")
         self.assertIn(WINDOWS_CASE, diagnostic.message)
         self.assertEqual(diagnostic.location, f"case/{WINDOWS_CASE}")
+
+    def test_store_verify_names_the_disposition_the_report_refuses(self) -> None:
+        # On ecc382d the audit passed this store, `cases correlate` extended it, and only a
+        # report refused it. The fault sits at the disposition the report names, the last
+        # one recorded, with the report's own words.
+        self.ingest(WINDOWS_ONLY)
+        self.correlate()
+        self.attest()
+        self.record_disposition(WINDOWS_CASE)
+        self.record_disposition(WINDOWS_CASE, status="partially_mitigated")
+        last = self.repository.read_stream(case_stream_id(WINDOWS_CASE))[-1]
+
+        with self.assertRaises(ReportCompileError) as caught:
+            self.replay()
+
+        (diagnostic,) = caught.exception.diagnostics
+        self.assertIn("'partially_mitigated'", diagnostic.message)
+        self.assertEqual(
+            audit_history(self.repository),
+            (
+                HistoryFault(
+                    sequence=last.sequence,
+                    code="disposition_without_evaluation",
+                    message=diagnostic.message,
+                ),
+            ),
+        )
+
+    def test_store_verify_passes_an_evaluated_case_with_a_disposition(self) -> None:
+        path = self.write_evaluations([windows_evaluation(disposition="partially_mitigated")])
+        self.ingest(WINDOWS_ONLY)
+        self.correlate()
+        self.attest()
+        self.evaluate(path)
+        # A later disposition on the evaluated case rides on its evaluation.
+        self.record_disposition(WINDOWS_CASE, status="fully_mitigated")
+
+        self.assertEqual(audit_history(self.repository), ())
 
     def test_a_case_created_and_disposed_with_no_evaluation_fails_closed(self) -> None:
         self.ingest(WINDOWS_ONLY)

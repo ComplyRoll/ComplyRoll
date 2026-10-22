@@ -270,6 +270,24 @@ def classify_ingest(result: IngestResult) -> FailureClassification | None:
     return FailureClassification.unmintable(UnmintableReason.UNKNOWN_CODE, errors)
 
 
+def failure_class_for_codes(codes: Iterable[str]) -> FailureClass:
+    """Return the class classify_ingest mints a reading with these failure codes under.
+
+    A minted classification's codes are the reading's ERROR codes, plus
+    execution_unsuccessful for the execution class, so the class follows from them in
+    classify_ingest's order. A stored record keeps both, and the audit holds one to the
+    other with this.
+    """
+    present = frozenset(codes)
+    if EXECUTION_UNSUCCESSFUL in present:
+        return FailureClass.EXECUTION
+    if present & PARSE_CODES:
+        return FailureClass.PARSE
+    if present & CONTENT_CODES:
+        return FailureClass.CONTENT
+    raise ValueError("the codes name no failure class")
+
+
 def failure_diagnostics(
     result: IngestResult, classification: FailureClassification, *, name: str
 ) -> tuple[IngestDiagnostic, ...]:

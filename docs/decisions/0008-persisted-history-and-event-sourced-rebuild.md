@@ -506,3 +506,57 @@ with the windows a run derives, so Decision 5 gets a second named carve-out in t
   any coverage stream and on every read path, so `report ... --db`, `cases correlate`, and
   `cases coverage` each exit 1 with `history_invalid` and the text of the placement audit's
   `event_stream_mismatch` fault.
+
+## Amendment 2026-10-21: what store verify names that a reader refuses
+
+A report from the store refused several shapes that `store verify` passed or ended in a
+traceback on. Anything a reader refuses, `store verify` now rejects with a named fault. These
+rules bind from this date.
+
+- **A case stream id that names no tracking id.** Every reader that folds cases used to end in
+  a `ValueError` traceback on a stream such as `case/foo` whose first event is not
+  `case.created`. The fold now raises `history_invalid` with "stream ... names no tracking id",
+  so `report ... --db`, `cases list`, `cases evaluate` and `cases attest-detection` refuse it,
+  and the audit reports it as
+  `case_tracking_id_mismatch` once per stream, at its first event, whatever that event's type.
+  A `case.created` on such a stream is no longer reported a second time.
+- **A failure record holds every field its builder fixes.** The identity check now also holds
+  the system record's record id, tool and parser to the builder's, its disposition to `open`,
+  its severity to `unknown`, its source identifiers and artifact fields to empty, its title to
+  the one built from its digest, its description to empty, and its evidence ids to exactly
+  `["sha256:<digest>"]`, which `system_observation_for` stores, as the 2026-10-16 amendment's
+  audit fixes hold a gap record. A record edited to `pass` used to verify and then drop out of
+  `detectionFailures`, and an edited title used to verify and reach the report as the
+  vulnerability description. Each is `failure_stream_mismatch` in the audit and
+  refused by the failure reader and at append.
+- **A failure class names its own codes.** `classify_ingest` derives the class from the codes
+  (execution when `execution_unsuccessful` is present, then parse for any parse code, then
+  content), so the record's metadata class must be the one its codes name. The class decides
+  supersession, so a forged class used to verify and rank a reading under rules that do not
+  apply to it. The mismatch is `failure_stream_mismatch`, and the head is held to the record by
+  the existing disagreement check.
+- **A gap record's metadata values.** The audit held `coverage.force`, `coverage.job` and
+  `coverage.basis` to presence and never compared the anchor with the close (ADR 0015, "Left
+  for later" of 2026-10-16). `coverage.anchorAt` must now be an instant in the form the writer
+  spells it that precedes `coverage.windowClosedAt`, since no rule's timeframe is empty;
+  `coverage.force` a rule force; `coverage.job` the job the context key names, or empty when
+  the key names the record's own resource; and `coverage.basis` a text the writer has
+  recorded. A reworded basis is added to the accepted texts, never put in place of one. The
+  record's title must be the one its rule, resource and window close build, and its description
+  the builder's. Each is `coverage_identity_breach`, refused by the coverage reader and at
+  append. Without an inventory to derive windows from, `store verify` cannot tell a window from
+  another the same rule could have run: an `anchorAt` moved earlier, still before the close, or
+  a `force` swapped for another rule force, made the same in head and record, verifies clean.
+- **A disposition with no evaluation.** The replay's `disposition_without_evaluation` refusal
+  (first 2026-08-22 amendment) is now also an audit fault of that code, at the case's last
+  disposition, with the report's message. No case writer records the state, and `cases
+  correlate` still extends such a case, as it extends any case it may.
+
+`AUDIT_FAULT_CODES` gains `disposition_without_evaluation`; the other shapes reuse existing
+codes. A marker lowered below its own migration records is now `migration_unexpected` (ADR
+0004, amendment of this date), a store fault. Like every store fault it stops `store verify`
+before the domain audit, so no domain fault in such a store, `failure_schema_unmarked` and
+`coverage_schema_unmarked` included, is reported until the marker agrees with its records. For a
+store whose marker and records agree, those two stay content-neutral as the second 2026-10-14
+amendment describes. The
+writer refuses no new shape except the marking append of ADR 0004, and no golden changes.

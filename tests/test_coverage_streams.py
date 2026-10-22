@@ -29,6 +29,8 @@ from test_events import observation as artifact_observation
 from complyroll.correlation import group_open_observations
 from complyroll.events import (
     COVERAGE_ANCHOR_VALUES,
+    COVERAGE_BASIS_TEXTS,
+    COVERAGE_DESCRIPTION,
     COVERAGE_METADATA_KEYS,
     COVERAGE_PARSER_NAME,
     COVERAGE_PARSER_VERSION,
@@ -39,6 +41,7 @@ from complyroll.events import (
     COVERAGE_SOURCE_TYPE,
     COVERAGE_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_SCHEMA_VERSION,
+    COVERAGE_TITLE,
     FAILURE_HELD,
     HELD_FAILURE_SCHEMA_VERSION,
     EventContractError,
@@ -71,14 +74,16 @@ from complyroll.history import (
 )
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, Observation
 from complyroll.policy import COVERAGE_RULE_IDS
-from complyroll.reports.coverage import MVX_RULE, PSD_RULE, AnchorKind
+from complyroll.reports.coverage import COVERAGE_BASIS, MVX_RULE, PSD_RULE, AnchorKind
 from complyroll.reports.gaps import (
+    COVERAGE_GAP_DESCRIPTION,
     COVERAGE_GAP_METADATA_KEYS,
     COVERAGE_GAP_PARSER_NAME,
     COVERAGE_GAP_PARSER_VERSION,
     COVERAGE_GAP_RECORD_ID,
     COVERAGE_GAP_SOURCE_TOOL,
     COVERAGE_GAP_SOURCE_TYPE,
+    COVERAGE_GAP_TITLE,
     coverage_gap_observations,
 )
 from complyroll.store import (
@@ -118,6 +123,9 @@ FIXED_FIELD_EDITS: dict[str, tuple[Any, str]] = {
     "source_severity": ("high", "its source severity is 'high'"),
     "source_identifiers": (["CVE-2099-0001"], "its source identifiers are ['CVE-2099-0001']"),
     "evidence_ids": ([f"sha256:{'d' * 64}"], f"its evidence ids are ['sha256:{'d' * 64}']"),
+    # The report prints both; the title is built from the rule, the resource and the close.
+    "title": ("Nothing to see here", "its title is 'Nothing to see here'"),
+    "description": ("x", "its description is 'x'"),
 }
 #: The two artifact fields a gap record leaves empty. The observation contract refuses either
 #: on any system record before the identity check reads the payload.
@@ -265,6 +273,13 @@ class CoverageIdentityConstantTests(unittest.TestCase):
         )
         self.assertTrue(COVERAGE_SOURCE_TYPE.startswith(RESERVED_SOURCE_TYPE_PREFIX))
         self.assertEqual(COVERAGE_METADATA_KEYS, COVERAGE_GAP_METADATA_KEYS)
+        # A reworded basis is added to the texts the audit accepts, never put in place of
+        # one: every gap a store already holds keeps the text it was recorded with.
+        self.assertIn(COVERAGE_BASIS, COVERAGE_BASIS_TEXTS)
+        self.assertEqual(
+            (COVERAGE_TITLE, COVERAGE_DESCRIPTION),
+            (COVERAGE_GAP_TITLE, COVERAGE_GAP_DESCRIPTION),
+        )
         for record in coverage_gap_observations(fleet_result(), ingested_at=NOW):
             with self.subTest(context=record.context_key):
                 self.assertEqual(
@@ -1037,7 +1052,48 @@ class CoverageAuditTests(StoreCase):
                 {**source, "coverage.rule": "VDR-TFR-PDD"},
                 "coverage.rule is 'VDR-TFR-PDD'",
             ),
+            # The window runs from its anchor to its close, and a rule's timeframe is never
+            # empty, so the writer's anchor always precedes the close.
+            "an anchor at the close": (
+                {**source, "coverage.anchorAt": "2026-07-08T00:00:00Z"},
+                "coverage.anchorAt is '2026-07-08T00:00:00Z', which does not precede its "
+                "window close '2026-07-08T00:00:00Z'",
+            ),
+            "an anchor after the close": (
+                {**source, "coverage.anchorAt": "2026-07-09T00:00:00Z"},
+                "which does not precede its window close",
+            ),
+            "an anchor spelled with an offset": (
+                {**source, "coverage.anchorAt": "2026-07-01T00:00:00+00:00"},
+                "coverage.anchorAt is '2026-07-01T00:00:00+00:00', not an instant as its "
+                "writer spells one",
+            ),
+            "an anchor that is no instant": (
+                {**source, "coverage.anchorAt": "last week"},
+                "coverage.anchorAt is 'last week', not an instant as its writer spells one",
+            ),
+            "a force that is none": (
+                {**source, "coverage.force": "MAYBE"},
+                "coverage.force is 'MAYBE', not a rule force",
+            ),
+            "another job": (
+                {**source, "coverage.job": "weekly-scan"},
+                "coverage.job is 'weekly-scan', and its context key "
+                "'VDR-TFR-MVX:job:nightly-openscap' is not 'VDR-TFR-MVX:job:weekly-scan'",
+            ),
+            "no job": (
+                {**source, "coverage.job": ""},
+                "coverage.job is '', and its context key 'VDR-TFR-MVX:job:nightly-openscap' is "
+                "not 'VDR-TFR-MVX:resource:host:lab-01'",
+            ),
+            "another basis": (
+                {**source, "coverage.basis": "Coverage looked fine."},
+                "coverage.basis is 'Coverage looked fine.', not a basis its writer records",
+            ),
         }
+        self.assertEqual(
+            (source["coverage.job"], canonical["context_key"]), ("nightly-openscap", JOB_KEY)
+        )
         for label, (source_metadata, message) in shapes.items():
             with self.subTest(label):
                 self.setUp()
@@ -1048,6 +1104,28 @@ class CoverageAuditTests(StoreCase):
 
                 # The fingerprint covers no metadata, so the stream id still names the record.
                 self.assert_faults([(sequences[1], "coverage_identity_breach")], message)
+                # Every reader refuses what the audit names.
+                with self.assertRaises(HistoryError) as caught:
+                    rehydrate_observations(self.repository)
+                self.assertIn(message, str(caught.exception))
+
+    def test_every_gap_the_builder_writes_passes_the_metadata_check(self) -> None:
+        # Job-keyed, resource-keyed and sample-group windows, under MUST and SHOULD rules,
+        # each anchored before its close: what the writer records is never a breach.
+        records = coverage_gap_observations(fleet_result(), ingested_at=NOW)
+        self.assertEqual(
+            {dict(record.source_metadata)["coverage.force"] for record in records},
+            {"MUST", "SHOULD"},
+        )
+        for record in records:
+            with self.subTest(context=record.context_key):
+                self.assertIsNone(
+                    coverage_record_problem(
+                        coverage_stream_id_of(record),
+                        "observation.recorded",
+                        record.to_canonical_dict(),
+                    )
+                )
 
     def test_a_gap_record_carrying_what_its_builder_never_writes_is_an_identity_breach(
         self,
@@ -1234,6 +1312,92 @@ class CoverageStoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn(f"error: sequence {sequence}: {code}:", err)
         self.assertIn(message, err)
         self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_gap_metadata_its_writer_never_records_is_refused_by_verify_and_the_report(
+        self,
+    ) -> None:
+        # The head is the record's own, so only the record's metadata is wrong. On ecc382d
+        # the audit held force, job and basis to presence alone and never compared the
+        # anchor with the close, so each of these verified clean.
+        populated = self.database
+        source = self.observation[1]["source_metadata"]
+        shapes = {
+            "an anchor after the close": (
+                {"coverage.anchorAt": "2026-07-09T00:00:00Z"},
+                "which does not precede its window close",
+            ),
+            "a force that is none": ({"coverage.force": "MAYBE"}, "not a rule force"),
+            "another job": ({"coverage.job": "weekly-scan"}, "coverage.job is 'weekly-scan'"),
+            "another basis": ({"coverage.basis": "x"}, "not a basis its writer records"),
+        }
+        for index, (label, (edits, message)) in enumerate(shapes.items()):
+            with self.subTest(label):
+                self.copy_store(populated, f"gap-metadata-{index}.db")
+                observation = {**self.observation[1], "source_metadata": {**source, **edits}}
+                sequences = self.smuggle(
+                    self.stream_id, [self.head, ("observation.recorded", observation)]
+                )
+
+                self.assert_one_fault(sequences[1], "coverage_identity_breach", message)
+                code, out, err = run(
+                    [
+                        "report",
+                        "vdt",
+                        "--db",
+                        str(self.database),
+                        "--class",
+                        "C",
+                        "--package-uri",
+                        "https://example.test/cpo",
+                        "--from",
+                        "2026-08-01T00:00:00Z",
+                        "--to",
+                        "2026-08-31T23:59:59Z",
+                        "--as-of",
+                        "2026-08-21T12:00:00Z",
+                    ]
+                )
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("error: history_invalid: ", err)
+                self.assertIn(message, err)
+
+    def test_a_gap_record_carrying_another_title_or_description_is_refused_everywhere(
+        self,
+    ) -> None:
+        # The fingerprint covers neither, and the report prints the title as the
+        # vulnerability description, so an edited one used to verify and reach the report.
+        populated = self.database
+        for index, field in enumerate(("title", "description")):
+            with self.subTest(field):
+                self.copy_store(populated, f"gap-text-{index}.db")
+                observation = {**self.observation[1], field: "FORGED"}
+                sequences = self.smuggle(
+                    self.stream_id, [self.head, ("observation.recorded", observation)]
+                )
+                message = f"its {field} is 'FORGED'"
+
+                self.assert_one_fault(sequences[1], "coverage_identity_breach", message)
+                code, out, err = run(
+                    [
+                        "report",
+                        "vdt",
+                        "--db",
+                        str(self.database),
+                        "--class",
+                        "C",
+                        "--package-uri",
+                        "https://example.test/cpo",
+                        "--from",
+                        "2026-08-01T00:00:00Z",
+                        "--to",
+                        "2026-08-31T23:59:59Z",
+                        "--as-of",
+                        "2026-08-21T12:00:00Z",
+                    ]
+                )
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("error: history_invalid: ", err)
+                self.assertIn(message, err)
 
     def test_a_whole_coverage_stream_verifies_and_its_gap_reaches_the_report(self) -> None:
         # Moved on purpose in PR 3 step 5: the fold reads the stream, so the report gains the

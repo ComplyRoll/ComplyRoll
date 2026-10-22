@@ -2404,6 +2404,104 @@ class FailureStreamIdentityTests(unittest.TestCase):
                 self.assertIn(f"is not the system record of digest {DIGEST!r}", str(breach))
                 self.assertIn(expected, str(breach))
 
+    def test_each_field_the_failure_builder_fixes_is_held(self) -> None:
+        # The derived id is read from the stored fingerprint, and replay reads each of these
+        # back from the record, so a record edited to `pass` used to verify and then drop out
+        # of `detectionFailures`. Each shape changes one field of a good record.
+        good = system_record().to_canonical_dict()
+        other = f"sha256:{'b' * 64}"
+        for label, pointer, value, expected in (
+            ("another record id", "/source_record_id", "x", "its source record id is 'x'"),
+            ("another tool", "/source_tool", "scanner", "its source tool is 'scanner'"),
+            ("another parser", "/parser_name", "x", "its parser is 'x' version '1'"),
+            ("another parser version", "/parser_version", "2", "its parser is"),
+            ("a passing disposition", "/disposition", "pass", "its disposition is 'pass'"),
+            ("a severity", "/source_severity", "high", "its source severity is 'high'"),
+            (
+                "an identifier",
+                "/source_identifiers",
+                ["CVE-2099-0001"],
+                "its source identifiers are ['CVE-2099-0001']",
+            ),
+            ("another evidence id", "/evidence_ids", [other], f"its evidence ids are [{other!r}]"),
+            ("no evidence id", "/evidence_ids", [], "its evidence ids are []"),
+            ("another title", "/title", "FORGED", "its title is 'FORGED'"),
+            ("a description", "/description", "x", "its description is 'x'"),
+            (
+                "a second evidence id",
+                "/evidence_ids",
+                [f"sha256:{DIGEST}", other],
+                f"its evidence ids are ['sha256:{DIGEST}', {other!r}]",
+            ),
+            # The observation contract refuses either artifact field on a system record
+            # first, so on a store path these two answer only a direct call.
+            ("an artifact digest", "/source_artifact_digest", "c" * 64, "its source artifact"),
+            ("an artifact name", "/source_artifact_name", "scan.sarif", "its source artifact"),
+        ):
+            with self.subTest(shape=label):
+                breach = failure_identity_breach(
+                    FAILURE_STREAM_ID, "observation.recorded", with_value(good, pointer, value)
+                )
+
+                self.assertIsNotNone(breach)
+                self.assertIn(f"is not the system record of digest {DIGEST!r}", str(breach))
+                self.assertIn(expected, str(breach))
+        self.assertEqual(good["evidence_ids"], [f"sha256:{DIGEST}"])
+
+    def test_a_failure_class_whose_codes_name_another_class_is_refused(self) -> None:
+        # The class decides supersession, and the classifier derives it from the codes, so
+        # a class the codes do not name is one no reading was minted under.
+        good = system_record().to_canonical_dict()
+        stored = good["source_metadata"]
+        self.assertEqual(
+            (stored["failure.class"], stored["failure.codes"]),
+            ("parse", '["artifact_parse_failed"]'),
+        )
+        for failure_class, codes, named in (
+            ("content", '["artifact_parse_failed"]', "parse"),
+            ("execution", '["artifact_parse_failed"]', "parse"),
+            ("parse", '["no_observations"]', "content"),
+            ("execution", '["no_observations"]', "content"),
+            ("parse", '["artifact_parse_failed","execution_unsuccessful"]', "execution"),
+            ("content", '["execution_unsuccessful"]', "execution"),
+        ):
+            with self.subTest(failure_class=failure_class, codes=codes):
+                payload = {
+                    **good,
+                    "source_metadata": {
+                        **stored,
+                        "failure.class": failure_class,
+                        "failure.codes": codes,
+                    },
+                }
+
+                self.assertEqual(
+                    failure_identity_breach(FAILURE_STREAM_ID, "observation.recorded", payload),
+                    f"observation.recorded on failure stream {FAILURE_STREAM_ID!r} is not the "
+                    f"system record of digest {DIGEST!r}: its metadata failure.class is "
+                    f"{failure_class!r}, and its failure.codes {codes!r} are those of class "
+                    f"{named!r}",
+                )
+        for failure_class, codes in (
+            ("execution", '["execution_unsuccessful"]'),
+            ("execution", '["artifact_parse_failed","execution_unsuccessful"]'),
+            ("parse", '["artifact_parse_failed","no_observations"]'),
+            ("content", '["invalid_rule","no_observations"]'),
+        ):
+            with self.subTest(failure_class=failure_class, codes=codes, minted=True):
+                payload = {
+                    **good,
+                    "source_metadata": {
+                        **stored,
+                        "failure.class": failure_class,
+                        "failure.codes": codes,
+                    },
+                }
+
+                self.assertIsNone(
+                    failure_identity_breach(FAILURE_STREAM_ID, "observation.recorded", payload)
+                )
+
     def test_a_long_system_record_value_is_cut_short_in_the_message(self) -> None:
         good = system_record().to_canonical_dict()
         value = "c" * 5000

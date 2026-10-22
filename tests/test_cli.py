@@ -14,7 +14,7 @@ import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager, redirect_stderr, redirect_stdout, suppress
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -1610,6 +1610,8 @@ COVERED_AUDIT_CODES = {
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    # Its library tests live in `tests/test_replay.py`, beside the report's refusal.
+    "disposition_without_evaluation",
     # The five coverage codes' `store verify` command tests live in
     # `tests/test_coverage_streams.py`.
     "coverage_identity_breach",
@@ -5781,19 +5783,36 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
         self.assertEqual((head["failureClass"], head["clock"]), ("parse", "as-of"))
         metadata = observation["source_metadata"]
-        for index, (label, key, value, head_key) in enumerate(
+        for index, (label, edits, key, head_key) in enumerate(
             (
-                ("another class", "failure.class", "content", "failureClass"),
-                ("other codes", "failure.codes", '["no_observations"]', "failureCodes"),
-                ("another clock", "failure.clock", "invocation", "clock"),
-                ("another name", "artifact.name", "other.sarif", "name"),
-                ("another size", "artifact.sizeBytes", "1", "sizeBytes"),
-                ("another media type", "artifact.mediaType", "text/plain", "mediaType"),
+                # Each record keeps a class its own codes name, so only the head disagrees.
+                (
+                    "another class",
+                    {"failure.class": "content", "failure.codes": '["no_observations"]'},
+                    "failure.class",
+                    "failureClass",
+                ),
+                (
+                    "other codes",
+                    {"failure.codes": '["artifact_parse_failed","no_observations"]'},
+                    "failure.codes",
+                    "failureCodes",
+                ),
+                ("another clock", {"failure.clock": "invocation"}, "failure.clock", "clock"),
+                ("another name", {"artifact.name": "other.sarif"}, "artifact.name", "name"),
+                ("another size", {"artifact.sizeBytes": "1"}, "artifact.sizeBytes", "sizeBytes"),
+                (
+                    "another media type",
+                    {"artifact.mediaType": "text/plain"},
+                    "artifact.mediaType",
+                    "mediaType",
+                ),
             )
         ):
             with self.subTest(shape=label):
                 self.copy_store(populated, f"pair-{index}.db")
-                damaged = {**observation, "source_metadata": {**metadata, key: value}}
+                value = edits[key]
+                damaged = {**observation, "source_metadata": {**metadata, **edits}}
                 sequences = self.smuggle_failure(
                     stream_id,
                     [("failure.recorded", head), ("observation.recorded", damaged)],
@@ -5804,6 +5823,70 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                     f"failure stream {stream_id!r} records {head_key} {head[head_key]!r} in its "
                     f"failure.recorded and {key} {value!r} in its system record",
                 )
+
+    def test_a_system_record_carrying_what_its_builder_never_writes_is_named_and_exits_one(
+        self,
+    ) -> None:
+        # The derived id is read from the stored fingerprint, so each copy below keeps it.
+        # A record edited to `pass` used to verify clean and then drop out of
+        # `detectionFailures`, the report printing one vulnerability fewer.
+        self.populate()
+        populated = self.database
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        evidence = f"sha256:{head['sha256']}"
+        self.assertEqual(observation["evidence_ids"], [evidence])
+        other = f"sha256:{'d' * 64}"
+        for index, (field, value, expected) in enumerate(
+            (
+                ("disposition", "pass", "its disposition is 'pass'"),
+                ("source_severity", "high", "its source severity is 'high'"),
+                (
+                    "source_identifiers",
+                    ["CVE-2099-0001"],
+                    "its source identifiers are ['CVE-2099-0001']",
+                ),
+                ("evidence_ids", [other], f"its evidence ids are [{other!r}]"),
+                ("evidence_ids", [evidence, other], "its evidence ids are"),
+                # The report prints the title as the vulnerability description.
+                ("title", "FORGED FAILURE TITLE", "its title is 'FORGED FAILURE TITLE'"),
+                ("description", "x", "its description is 'x'"),
+            )
+        ):
+            with self.subTest(field=field, value=value):
+                self.copy_store(populated, f"fixed-{index}.db")
+                sequences = self.smuggle_failure(
+                    stream_id,
+                    [
+                        ("failure.recorded", head),
+                        ("observation.recorded", {**observation, field: value}),
+                    ],
+                )
+
+                self.assert_one_failure_mismatch(sequences[1], expected)
+
+    def test_a_failure_class_its_codes_do_not_name_is_named_and_exits_one(self) -> None:
+        # The head and the record agree, so the disagreement check passes them, and the
+        # class decides which reading supersedes which.
+        self.populate()
+        stream_id, head, observation = self.failed_reading(TRUNCATED_FIXTURE)
+        self.assertEqual(
+            (head["failureClass"], head["failureCodes"]), ("parse", ["artifact_parse_failed"])
+        )
+        forged = {**head, "failureClass": "content"}
+        metadata = {**observation["source_metadata"], "failure.class": "content"}
+        sequences = self.smuggle_failure(
+            stream_id,
+            [
+                ("failure.recorded", forged),
+                ("observation.recorded", {**observation, "source_metadata": metadata}),
+            ],
+        )
+
+        self.assert_one_failure_mismatch(
+            sequences[1],
+            "its metadata failure.class is 'content', and its failure.codes "
+            "'[\"artifact_parse_failed\"]' are those of class 'parse'",
+        )
 
     def test_a_failure_stream_opened_by_its_observation_is_named_and_exits_one(self) -> None:
         # Both events are exactly what the writer records, in the wrong order: the writer
@@ -5841,6 +5924,59 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch:", err)
         self.assertIn(OTHER_UNKNOWN_CASE, err)
         self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_a_disposition_with_no_evaluation_is_named_and_exits_one(self) -> None:
+        # No case writer records one, but nothing refused it on the way in: `store verify`
+        # passed it, `cases correlate` extended it, and only a report refused it.
+        self.ingest_fixtures()
+        self.correlate()
+        self.attest_missing()
+        stream_id = f"case/{WINDOWS_CASE}"
+        with SQLiteEventStore(self.database) as store:
+            version = len(store.read_stream(stream_id))
+        sequence = self.smuggle(
+            "case.disposition_recorded",
+            {
+                "status": "fully_mitigated",
+                "closedDisposition": None,
+                "acceptanceRationale": None,
+                "recordedAt": INGESTED_AT,
+            },
+            stream_id=stream_id,
+            expected_version=version,
+        )
+        message = (
+            f"{WINDOWS_CASE} records disposition 'fully_mitigated' with no evaluation, so the "
+            "disposition cannot be reported"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(
+            f"error: sequence {sequence}: disposition_without_evaluation: {message}\n", err
+        )
+        self.assertIn("faults: 1 domain fault(s) in", err)
+        code, out, err = run(
+            [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(f"disposition_without_evaluation: {message}", err)
 
     def test_an_event_on_the_wrong_kind_of_stream_is_named_and_exits_one(self) -> None:
         # A `detection.attested` on an artifact stream is read by nobody: the fold reads
@@ -5888,8 +6024,8 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn("faults: 1 domain fault(s) in", err)
 
     def test_a_metadata_fault_beside_a_case_stream_naming_no_tracking_id_is_named(self) -> None:
-        # A case stream whose id names no tracking id fails its fold with a plain
-        # ValueError, which no audit code names. The metadata fault is still reported.
+        # A case stream whose id names no tracking id is a fault of its own, at its first
+        # event, so the metadata fault is reported beside it rather than alone.
         self.populate()
         sequence = self.smuggle(
             "detection.attested",
@@ -5906,8 +6042,92 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
+        self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch:", err)
         self.assertIn(f"error: sequence {sequence}: event_metadata_invalid:", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
+    def test_a_case_stream_naming_no_tracking_id_is_refused_by_every_reader(self) -> None:
+        # Its id is `case/` and then no tracking id. No event on it is `case.created`, so
+        # the placement check had nothing to say, and verify, `cases list`, a report,
+        # `cases evaluate` and `cases attest-detection` each ended in a ValueError traceback
+        # when they folded it.
+        self.populate()
+        stream_id = "case/not-a-valid-id"
+        sequence = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=stream_id,
+        )
+        second = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=stream_id,
+            expected_version=1,
+        )
+        named = (
+            f"stream {stream_id!r} names no tracking id: tracking_id must match "
+            "'case-<16 hex characters>', got 'not-a-valid-id'"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        # One fault for the stream, at its first event, not one per event.
+        self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch: {named}\n", err)
+        self.assertNotIn(f"sequence {second}:", err)
         self.assertIn("faults: 1 domain fault(s) in", err)
+        refused = f"error: history_invalid: {named}\n"
+        commands = {
+            "cases list": ["cases", "list", "--db", str(self.database)],
+            "cases evaluate": [
+                "cases",
+                "evaluate",
+                "--db",
+                str(self.database),
+                "--evaluations",
+                str(EXAMPLES / "evaluations.json"),
+            ],
+            "cases attest-detection": [
+                "cases",
+                "attest-detection",
+                "--db",
+                str(self.database),
+                "--all-missing",
+                "--detected-at",
+                ATTESTED_AT,
+                "--rationale",
+                RATIONALE,
+            ],
+            "report vdt": [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--as-of",
+                INGESTED_AT,
+            ],
+        }
+        before = self.latest_sequence()
+        for label, argv in commands.items():
+            with self.subTest(label):
+                self.assertEqual(run(argv), (1, "", refused))
+        self.assertEqual(self.latest_sequence(), before)
 
     def test_a_rewritten_payload_is_named_and_exits_one(self) -> None:
         self.populate()
@@ -6169,6 +6389,20 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
         self.assertEqual(self.case_reads(), self.twin_reads)
         self.assertEqual(self.appended(), self.twin_appended)
 
+    def mark_schema_by_hand(self, marker: int) -> None:
+        """Leave the store marked `marker`, with exactly the migration records it needs.
+
+        The records above it go too: a marker lowered below a stored record is a store fault
+        of its own (`migration_unexpected`), and these shapes are a stream the marker does
+        not account for, not a marker its own records contradict.
+        """
+
+        with closing(self.raw()) as connection:
+            connection.execute(
+                "DELETE FROM complyroll_schema_migrations WHERE version > ?", (marker,)
+            )
+            connection.execute(f"PRAGMA user_version = {int(marker)}")
+
     def record(self, event_type: str, stream_id: str | None = None) -> EventRecord:
         """Return the first event of a type in the log, on one stream if one is named."""
 
@@ -6277,8 +6511,7 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
         failure = self.record("failure.recorded")
 
         def plant() -> list[tuple[int, str]]:
-            with closing(self.raw()) as connection:
-                connection.execute("PRAGMA user_version = 1")
+            self.mark_schema_by_hand(1)
             return [(failure.sequence, "failure_schema_unmarked")]
 
         self.assert_content_neutral("schema", plant)
@@ -6305,8 +6538,7 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
                 ],
                 expected_version=len(store.read_stream(evaluated.stream_id)),
             )
-        with closing(self.raw()) as connection:
-            connection.execute("PRAGMA user_version = 1")
+        self.mark_schema_by_hand(1)
 
         self.assertEqual(
             self.verify_faults(),
@@ -6343,8 +6575,7 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
         self.twin_appended = self.appended()
 
         def plant() -> list[tuple[int, str]]:
-            with closing(self.raw()) as connection:
-                connection.execute("PRAGMA user_version = 3")
+            self.mark_schema_by_hand(3)
             return [(coverage.sequence, "coverage_schema_unmarked")]
 
         self.assert_content_neutral("coverage-schema", plant)
@@ -7076,6 +7307,82 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
             "characters outside the name grammar>",
             {"event_name_invalid", "stream_version_gap"},
             at_open=True,
+        )
+
+    # K: stored JSON in a spelling `append` never writes. The digest is recomputed, so only
+    # the text check stands between it and a read.
+
+    def test_k_a_payload_in_another_spelling_is_refused_by_every_command(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            (stored,) = connection.execute(
+                "SELECT payload_json FROM events WHERE sequence = 1"
+            ).fetchone()
+            text = json.dumps(json.loads(stored), indent=1, sort_keys=True)
+            connection.execute(
+                "UPDATE events SET payload_json = ?, payload_sha256 = ? WHERE sequence = 1",
+                (text, self.digest(text)),
+            )
+
+        self.update(work)
+        self.assert_refused(
+            "payload is not the canonical JSON text append writes", {"payload_not_json"}
+        )
+
+    # T: a stored timestamp in a spelling `append` never writes. On ecc382d an `occurred_at`
+    # moved to `+14:00` read everywhere and `cases history` printed the offset.
+
+    def test_t_a_timestamp_in_another_spelling_is_refused_by_every_command(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            (stored,) = connection.execute(
+                "SELECT occurred_at FROM events WHERE sequence = 1"
+            ).fetchone()
+            moved = datetime.fromisoformat(stored).astimezone(timezone(timedelta(hours=14)))
+            connection.execute(
+                "UPDATE events SET occurred_at = ? WHERE sequence = 1",
+                (moved.isoformat(timespec="microseconds"),),
+            )
+
+        self.update(work)
+        self.assert_refused(
+            "occurred_at is not in the UTC form append writes", {"event_timestamp_invalid"}
+        )
+
+    # M: migration records against the marker. On ecc382d a marker lowered below a record
+    # ended the next marking append in `store_unavailable` "UNIQUE constraint failed".
+
+    def test_m_a_record_above_a_lowered_marker_refuses_the_marking_ingest(self) -> None:
+        with closing(self.raw()) as connection:
+            connection.execute("PRAGMA user_version = 1")
+        before = self.header_state()
+        self.assertEqual(before[0], 1)
+        self.assertEqual(before[2], [1, 2])
+
+        code, out, err = run(
+            [
+                "ingest",
+                str(INVALID_RULES_FIXTURE),
+                "--record-failed-imports",
+                "--db",
+                str(self.database),
+                "--as-of",
+                INGESTED_AT,
+            ]
+        )
+
+        self.assertEqual((code, out), (1, ""), err[:500])
+        self.assertIn(
+            "error: store_unavailable: database holds migration record 2 above its schema "
+            "marker 1\n",
+            err,
+        )
+        self.assertNotIn("UNIQUE", err)
+        self.assertEqual(self.header_state(), before)
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 1, err[:500])
+        self.assertIn(
+            "error: migration_unexpected: database holds migration record 2 above its schema "
+            "marker 1\n",
+            err,
         )
 
     # Q: the AUTOINCREMENT counter.

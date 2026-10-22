@@ -6,6 +6,21 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- A case stream whose id names no tracking id, such as `case/foo`, no longer ends
+  `store verify`, `report ... --db`, `cases list`, `cases evaluate` or
+  `cases attest-detection` in a `ValueError` traceback. The readers refuse it as
+  `history_invalid` and `store verify` reports it as `case_tracking_id_mismatch`, once per
+  stream (ADR 0008 amendment 2026-10-21).
+- A detection failure's system record edited to disposition `pass`, to a severity, to a source
+  identifier, or to an evidence id other than its digest's own no longer verifies clean and
+  drops out of `detectionFailures`, and one edited to another title or a description no longer
+  verifies clean and prints the edited title in the report. `store verify` reports each as
+  `failure_stream_mismatch` and every report from the store refuses it, as a gap record's fixed
+  fields already were.
+- A store whose schema marker was lowered below a migration record no longer ends
+  `ingest --record-failed-imports` in `store_unavailable` "UNIQUE constraint failed". The
+  append that would mark the store refuses it, naming the record and the marker, and changes
+  nothing (ADR 0004 amendment 2026-10-21).
 - An HDF profile that failed to load no longer vanishes when another profile in the same
   document loads. InSpec writes such a profile with `status: "failed"` and `controls: []`, so it
   yielded no observation and raised `profile_not_loaded` alone: the document imported as
@@ -480,6 +495,25 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- `store verify` rejects every shape below. The readers refuse the stored JSON and timestamp
+  shapes as `store_integrity` and the record shapes as `history_invalid`, as a report already
+  refused a disposition with no evaluation (ADR 0004 and ADR 0008 amendments 2026-10-21). No
+  store a released build wrote holds any of them.
+  - Stored JSON that is not the exact canonical text `append` writes: reindented, padded or
+    reordered JSON and a duplicate object member (`payload_not_json`).
+  - A stored `occurred_at` or `recorded_at` that is not the UTC text `append` writes, another
+    offset included (new fault `event_timestamp_invalid`).
+  - A migration record whose description is not its own (new fault `migration_altered`) and a
+    record above the schema marker (new fault `migration_unexpected`); neither is refused on
+    read.
+  - A detection failure record whose class is not the one its codes name
+    (`failure_stream_mismatch`).
+  - A coverage gap record whose `coverage.anchorAt` does not precede its window close, whose
+    `coverage.force` is not a rule force, whose `coverage.job` is not the job its context key
+    names, whose `coverage.basis` is not a text its writer records, or whose title or
+    description is not the one its builder writes (`coverage_identity_breach`).
+  - A case that records a disposition and no evaluation, which every report already refused
+    (new audit fault `disposition_without_evaluation`).
 - The thirty files that were not `ruff format` clean are reformatted, once, with no other change:
   every module's syntax tree is unchanged but for docstring whitespace, and every golden is
   byte-identical. CI's `lint` job now also runs `ruff format --check src tests stigroll.py`

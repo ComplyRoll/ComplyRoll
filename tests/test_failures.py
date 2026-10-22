@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -73,6 +74,7 @@ from complyroll.adapters.failures import (
     FAILURE_DIAGNOSTICS_TRUNCATED,
     PARSE_CODES,
     UNMINTABLE_CODES,
+    failure_class_for_codes,
 )
 from complyroll.adapters.hdf import HdfAdapter
 from complyroll.adapters.sarif import SarifAdapter
@@ -834,6 +836,41 @@ class PrecedenceTests(unittest.TestCase):
             classify_ingest(result),
             FailureClassification(PARSE, None, ("artifact_parse_failed", "invalid_rule")),
         )
+
+    def test_the_class_read_back_from_the_codes_is_the_class_minted(self) -> None:
+        # A stored record keeps its class and its codes side by side, so the audit reads the
+        # class back from the codes. Every class code alone, and every mix of one code of
+        # each class, with and without a failed invocation, mints the class it names.
+        mixes = [frozenset({code}) for code in sorted(CLASS_CODES)]
+        mixes += [
+            frozenset(pair)
+            for pair in itertools.combinations(
+                ("artifact_parse_failed", "invalid_rule", "no_observations"), 2
+            )
+        ]
+        mixes.append(frozenset({"artifact_parse_failed", "invalid_rule", "no_observations"}))
+        mixes.append(frozenset())
+        checked = 0
+        for errors in mixes:
+            for executed in (False, True):
+                diagnostics = [error(code) for code in sorted(errors)]
+                if executed:
+                    diagnostics.append(warning(EXECUTION_UNSUCCESSFUL))
+                classification = classify_ingest(reading(*diagnostics))
+                if classification is None or classification.failure_class is None:
+                    continue
+                with self.subTest(errors=sorted(errors), executed=executed):
+                    self.assertIs(
+                        failure_class_for_codes(classification.codes),
+                        classification.failure_class,
+                    )
+                    checked += 1
+        self.assertEqual(checked, 2 * (len(CLASS_CODES) + 4) + 1)
+        # Codes that name no class are no minted reading's, so no class is read back.
+        for codes in ((), ("artifact_read_failed",), tuple(sorted(UNMINTABLE_CODES))):
+            with self.subTest(codes=codes):
+                with self.assertRaises(ValueError):
+                    failure_class_for_codes(codes)
 
     def test_a_partial_reading_takes_precedence_over_execution(self) -> None:
         result = reading(

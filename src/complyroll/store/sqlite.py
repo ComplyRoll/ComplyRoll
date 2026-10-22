@@ -91,6 +91,13 @@ class EventIntegrityError(EventStoreError):
         super().__init__(message)
 
 
+class EventPayloadLimitError(ValueError):
+    """Raised when an event's payload or metadata passes a store cap: size, depth, or values.
+
+    It stays a ``ValueError``, as the caps raised before it had a type of its own.
+    """
+
+
 class ProjectionConcurrencyError(EventStoreError):
     """Raised when a projection checkpoint compare-and-swap fails."""
 
@@ -569,9 +576,7 @@ class SQLiteEventStore:
                         ),
                     )
                 except sqlite3.IntegrityError as exc:
-                    raise EventConflictError(
-                        f"event {event.event_id!r} conflicts with committed history"
-                    ) from exc
+                    raise _insert_refusal(event.event_id, exc) from exc
                 if cursor.lastrowid is None:
                     raise EventStoreError("SQLite did not report a sequence for the event")
 
@@ -653,7 +658,8 @@ class SQLiteEventStore:
 
         Faults arrive in a fixed order: schema objects sorted by ``(type, name)``, then the
         header's schema marker and then its application id, then the migration record, then
-        the sequence counter, then rows by ascending sequence. A store opened through
+        the projection checkpoints by name, then the sequence counter, then rows by ascending
+        sequence. A store opened through
         `open_for_verification` reaches the first five, which the normal constructor refuses
         to open at all. A file holding no schema objects at schema 0 has its marker left
         alone and its application id judged only when it is not 0, so a file the open would
@@ -684,6 +690,7 @@ class SQLiteEventStore:
             faults.extend(self._schema_faults(connection))
             faults.extend(self._header_faults(connection, present))
             faults.extend(self._migration_faults(connection, present))
+            faults.extend(self._checkpoint_faults(connection, present))
             if ("table", "events") not in present:
                 return IntegrityReport(ok=not faults, checked_events=0, faults=tuple(faults))
             if (
@@ -934,11 +941,45 @@ class SQLiteEventStore:
         return tuple(faults)
 
     @staticmethod
+    def _checkpoint_faults(
+        connection: sqlite3.Connection,
+        present: frozenset[tuple[str, str]],
+    ) -> tuple[IntegrityFault, ...]:
+        """Report each projection checkpoint `get_projection_checkpoint` refuses, by name.
+
+        A table that is gone, or was rebuilt without a column the reader reads, already
+        carries a schema fault, and querying the column would raise instead of reporting.
+        """
+
+        if ("table", "projection_checkpoints") not in present:
+            return ()
+        if not _table_columns(connection, "projection_checkpoints").issuperset(
+            ("projection_name", "last_sequence", "updated_at")
+        ):
+            return ()
+        rows = connection.execute(
+            "SELECT projection_name, last_sequence, updated_at FROM projection_checkpoints "
+            "ORDER BY projection_name"
+        ).fetchall()
+        faults: list[IntegrityFault] = []
+        for row in rows:
+            problem = _checkpoint_problem(row)
+            if problem is not None:
+                faults.append(
+                    IntegrityFault(
+                        sequence=None,
+                        code="projection_checkpoint_invalid",
+                        message=str(_checkpoint_error(row["projection_name"], problem)),
+                    )
+                )
+        return tuple(faults)
+
+    @staticmethod
     def _counter_faults(
         connection: sqlite3.Connection,
         present: frozenset[tuple[str, str]],
     ) -> tuple[IntegrityFault, ...]:
-        """Report a truncated tail: the AUTOINCREMENT counter outruns the last row.
+        """Report an AUTOINCREMENT counter that is not the last row's sequence.
 
         ``sqlite_sequence`` exists only while some table declares AUTOINCREMENT, so a
         database that lost it reads as a counter of zero rather than raising.
@@ -962,10 +1003,7 @@ class SQLiteEventStore:
             IntegrityFault(
                 sequence=latest,
                 code="sequence_counter_mismatch",
-                message=(
-                    f"event history was truncated: last stored sequence is {latest} but the "
-                    f"sequence counter is {counter}"
-                ),
+                message=_counter_mismatch_message(latest, counter),
             ),
         )
 
@@ -985,9 +1023,12 @@ class SQLiteEventStore:
             ).fetchone()
         if row is None:
             return ProjectionCheckpoint(name=name, last_sequence=0, updated_at=None)
+        problem = _checkpoint_problem(row)
+        if problem is not None:
+            raise _checkpoint_error(name, problem)
         return ProjectionCheckpoint(
             name=str(row["projection_name"]),
-            last_sequence=int(row["last_sequence"]),
+            last_sequence=row["last_sequence"],
             updated_at=_parse_timestamp(str(row["updated_at"]), "updated_at"),
         )
 
@@ -1253,7 +1294,7 @@ class SQLiteEventStore:
 
     @staticmethod
     def _require_sequence_counter_intact(connection: sqlite3.Connection) -> None:
-        """Detect a truncated tail: the AUTOINCREMENT counter must equal the last stored row.
+        """Detect a truncated tail or a lowered counter: it must equal the last stored row.
 
         Deleting the most recent rows leaves no gap between the rows that remain, but
         SQLite's sequence counter still remembers them, so the two disagree. That is the one
@@ -1269,11 +1310,7 @@ class SQLiteEventStore:
         if problem is not None:
             raise EventIntegrityError(problem, sequence=latest)
         if counter != latest:
-            raise EventIntegrityError(
-                f"event history was truncated: last stored sequence is {latest} but the "
-                f"sequence counter is {counter}",
-                sequence=latest,
-            )
+            raise EventIntegrityError(_counter_mismatch_message(latest, counter), sequence=latest)
 
     @classmethod
     def _require_history_contiguous(
@@ -1391,7 +1428,12 @@ class SQLiteEventStore:
             "SELECT last_sequence FROM projection_checkpoints WHERE projection_name = ?",
             (name,),
         ).fetchone()
-        return 0 if row is None else int(row[0])
+        if row is None:
+            return 0
+        problem = _checkpoint_count_problem(row[0])
+        if problem is not None:
+            raise _checkpoint_error(name, problem)
+        return int(row[0])
 
     def _require_open(self) -> sqlite3.Connection:
         if self._connection is None:
@@ -1709,6 +1751,23 @@ def _counter_problem(rows: Sequence[Sequence[object]]) -> str | None:
     return f"the events sequence counter is stored as {_storage_class(value)}, not an integer"
 
 
+def _counter_mismatch_message(latest: int, counter: int) -> str:
+    """Word a counter that disagrees with the last stored row, for the open and for verify."""
+
+    if counter > latest:
+        return (
+            f"event history was truncated: last stored sequence is {latest} but the sequence "
+            f"counter is {counter}"
+        )
+    # A counter behind the last row was lowered after that row was written. SQLite still
+    # numbers the next row past the last one, but the counter no longer shows how far
+    # history ran, so a tail deleted beside it would leave no trace.
+    return (
+        f"the sequence counter is behind the event history: last stored sequence is {latest} "
+        f"but the sequence counter is {counter}"
+    )
+
+
 def _stored_stream_version(connection: sqlite3.Connection, stream_id: object, value: object) -> int:
     """Return one aggregated stream_version, refusing a stream that stores anything else.
 
@@ -1736,6 +1795,37 @@ def _stored_stream_version(connection: sqlite3.Connection, stream_id: object, va
         f"event at sequence {sequence} has stream_version stored as {row[1]}, not an integer",
         sequence=sequence,
     )
+
+
+def _checkpoint_count_problem(value: object) -> str | None:
+    """Say why a stored checkpoint count is not a non-negative integer, or return None.
+
+    The column is INTEGER without STRICT. SQLite orders text above every integer, so text
+    passes `CHECK (last_sequence >= 0)`, and `int()` would truncate a real or raise on text.
+    """
+
+    if type(value) is not int:
+        return f"last_sequence stored as {_storage_class(value)}, not an integer"
+    if value < 0:
+        return f"last_sequence {value}; checkpoints start at 0"
+    return None
+
+
+def _checkpoint_problem(row: sqlite3.Row) -> str | None:
+    """Say why a stored checkpoint row is not one `advance_projection` writes, or return None."""
+
+    problem = _checkpoint_count_problem(row["last_sequence"])
+    if problem is not None:
+        return problem
+    try:
+        _parse_timestamp(str(row["updated_at"]), "updated_at")
+    except EventIntegrityError:
+        return "an updated_at that is not an ISO 8601 timestamp with a timezone"
+    return None
+
+
+def _checkpoint_error(name: object, problem: str) -> EventIntegrityError:
+    return EventIntegrityError(f"projection checkpoint {_shown_name(name)} has {problem}")
 
 
 def _append_json_problem(value: Mapping[str, Any], text: str, field_name: str) -> str | None:
@@ -2076,6 +2166,19 @@ def _require_contiguous_stream_versions(
         expected += 1
 
 
+def _insert_refusal(event_id: str, error: sqlite3.IntegrityError) -> EventConflictError:
+    """Word one insert SQLite refused: a conflict for a UNIQUE key, else SQLite's own reason.
+
+    `append` checks every column before the insert, so a UNIQUE key, the event id or the
+    stream version, is the conflict with history. Anything else is a constraint the store
+    never created, such as a planted trigger's `RAISE(ABORT, ...)`.
+    """
+
+    if _sqlite_error_name(error) == "SQLITE_CONSTRAINT_UNIQUE":
+        return EventConflictError(f"event {event_id!r} conflicts with committed history")
+    return EventConflictError(f"the database refused event {event_id!r}: {shown(str(error))}")
+
+
 def _sqlite_error_name(error: BaseException) -> str:
     """Return SQLite's symbolic result name (Python 3.11+), or an empty string."""
 
@@ -2326,7 +2429,7 @@ def _canonical_json_object(value: Mapping[str, Any], field_name: str) -> str:
         raise ValueError(f"{field_name} must contain valid JSON values") from exc
     problem = _json_size_problem(encoded, field_name)
     if problem is not None:
-        raise ValueError(problem)
+        raise EventPayloadLimitError(problem)
     return encoded
 
 
@@ -2349,9 +2452,9 @@ def _validate_json_tree(value: Mapping[str, Any], field_name: str) -> None:
         current, depth = stack.pop()
         values_seen += 1
         if values_seen > MAX_EVENT_JSON_VALUES:
-            raise ValueError(f"{field_name} exceeds the JSON value limit")
+            raise EventPayloadLimitError(f"{field_name} exceeds the JSON value limit")
         if depth > MAX_EVENT_JSON_DEPTH:
-            raise ValueError(f"{field_name} exceeds the JSON depth limit")
+            raise EventPayloadLimitError(f"{field_name} exceeds the JSON depth limit")
 
         if isinstance(current, Mapping):
             for key, child in current.items():

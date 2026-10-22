@@ -78,6 +78,7 @@ from .schemas import (
 from .store import (
     EventConcurrencyError,
     EventIntegrityError,
+    EventPayloadLimitError,
     EventStoreError,
     IntegrityFault,
     SQLiteEventStore,
@@ -1374,6 +1375,8 @@ def _persisted_run(stream: TextIO, action: Callable[[], int]) -> int:
         return _fail(stream, "event_contract_invalid", str(exc))
     except EventConcurrencyError as exc:
         return _fail(stream, "store_conflict", str(exc))
+    except EventPayloadLimitError as exc:
+        return _fail(stream, "event_too_large", str(exc))
     except EventIntegrityError as exc:
         return _fail(stream, "store_integrity", str(exc))
     except EventStoreError as exc:

@@ -56,7 +56,7 @@ from complyroll.history import (
 )
 from complyroll.models import Observation
 from complyroll.reports import vdt as vdt_module
-from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
+from complyroll.store import MAX_EVENT_JSON_BYTES, EventRecord, NewEvent, SQLiteEventStore
 
 # Versions after the shipped SARIF parser, for a fixture re-read under another version.
 SARIF_NEXT = str(int(SARIF_PARSER_VERSION) + 1)
@@ -6296,6 +6296,80 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn(f"error: store_integrity: {message}", err)
+
+
+class StoreRefusalCommandTests(PersistedStoreTestCase):
+    """An append the store refuses for a reason other than history is a coded refusal."""
+
+    def test_an_insert_a_planted_trigger_aborts_is_not_called_a_conflict(self) -> None:
+        # CL-42: unknown schema objects are not refused, so `store verify` passes this file,
+        # and the abort used to read "conflicts with committed history".
+        self.ingest_fixtures()
+        with closing(self.raw()) as connection:
+            connection.execute(
+                "CREATE TRIGGER planted BEFORE INSERT ON events BEGIN "
+                "SELECT RAISE(ABORT, 'planted refusal'); END"
+            )
+        self.assertEqual(run(["store", "verify", "--db", str(self.database)])[0], 0)
+        before = self.latest_sequence()
+
+        code, out, err = run(["cases", "correlate", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertRegex(
+            err,
+            r"^error: store_unavailable: the database refused event 'evt-[0-9a-f-]+': "
+            r"'planted refusal'\n$",
+        )
+        self.assertEqual(self.latest_sequence(), before)
+
+    def test_an_event_over_a_store_cap_is_a_coded_refusal_with_nothing_appended(self) -> None:
+        # CL-47: the cap raised a bare ValueError, which `_persisted_run` did not catch.
+        with patch("complyroll.store.sqlite.MAX_EVENT_JSON_BYTES", 256):
+            code, out, err = run(
+                [
+                    "ingest",
+                    str(FIXTURES / "windows-host.ckl"),
+                    "--db",
+                    str(self.database),
+                    "--as-of",
+                    INGESTED_AT,
+                ]
+            )
+
+        self.assertEqual((code, out), (1, ""))
+        # The reading's own WARNING lines come first; the refusal is the one error line.
+        self.assertEqual(
+            [line for line in err.splitlines() if line.startswith("error: ")],
+            ["error: event_too_large: payload exceeds the 256-byte limit"],
+        )
+        self.assertFalse(self.database.exists())
+
+    def test_a_rationale_over_the_store_cap_is_a_coded_refusal(self) -> None:
+        # The unpatched cap is reachable: a rationale is stored as given.
+        self.ingest_fixtures()
+        self.correlate()
+        before = self.latest_sequence()
+
+        code, out, err = run(
+            [
+                "cases",
+                "attest-detection",
+                "--db",
+                str(self.database),
+                "--all-missing",
+                "--detected-at",
+                ATTESTED_AT,
+                "--rationale",
+                "x" * MAX_EVENT_JSON_BYTES,
+            ]
+        )
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err, f"error: event_too_large: payload exceeds the {MAX_EVENT_JSON_BYTES}-byte limit\n"
+        )
+        self.assertEqual(self.latest_sequence(), before)
 
 
 class ContentNeutralFaultCommandTests(PersistedStoreTestCase):

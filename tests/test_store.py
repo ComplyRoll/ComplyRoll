@@ -19,6 +19,7 @@ from complyroll.store import (
     EventConcurrencyError,
     EventConflictError,
     EventIntegrityError,
+    EventPayloadLimitError,
     EventStoreBusyError,
     EventStoreError,
     IntegrityReport,
@@ -31,11 +32,13 @@ from complyroll.store.sqlite import (
     _SCHEMA_V1,
     APPLICATION_ID,
     EXPECTED_SCHEMA_OBJECTS,
+    MAX_EVENT_JSON_DEPTH,
     MAX_EVENT_JSON_VALUES,
     SCHEMA_VERSION,
     SUPPORTED_SCHEMA_VERSION,
     _stored_stream_version,
     _write_transaction,
+    shown,
 )
 
 OCCURRED_AT = datetime(2026, 8, 20, 9, 30, tzinfo=timezone(timedelta(hours=-7)))
@@ -505,6 +508,77 @@ class SQLiteEventStoreTests(unittest.TestCase):
 
         self.assertEqual(store.current_stream_version("case/case-002"), 0)
         self.assertEqual(store.latest_sequence, 1)
+
+    def test_an_insert_a_planted_trigger_aborts_is_not_called_a_conflict(self) -> None:
+        """CL-42: on ed9fcf4 every integrity error read "conflicts with committed history".
+
+        A trigger the store never created can abort an insert, and `store verify` passes the
+        file, since unknown schema objects are not refused. SQLite's message is quoted, cut.
+        """
+
+        store = self.open_store()
+        store.append("case/case-001", [sample_event("evt-existing")], expected_version=0)
+        for label, reason in (("short", "planted refusal"), ("long", "z" * 5000)):
+            with self.subTest(label):
+                with closing(raw_connection(self.database_path)) as connection:
+                    connection.execute("DROP TRIGGER IF EXISTS planted")
+                    connection.execute(
+                        "CREATE TRIGGER planted BEFORE INSERT ON events BEGIN "
+                        f"SELECT RAISE(ABORT, '{reason}'); END"
+                    )
+                with self.assertRaises(EventConflictError) as caught:
+                    store.append("case/case-002", [sample_event("evt-new")], expected_version=0)
+                self.assertEqual(
+                    str(caught.exception), f"the database refused event 'evt-new': {shown(reason)}"
+                )
+                self.assertLessEqual(len(str(caught.exception)), 300)
+                self.assertEqual(store.latest_sequence, 1)
+
+    def test_a_payload_over_a_store_cap_raises_the_typed_limit_error(self) -> None:
+        """CL-47: the caps raised a bare ValueError that no command caught."""
+
+        store = self.open_store()
+        nested: dict[str, object] = {}
+        for _ in range(MAX_EVENT_JSON_DEPTH + 1):
+            nested = {"n": nested}
+        cases = (
+            (
+                "bytes",
+                {"pad": "x" * MAX_EVENT_JSON_BYTES},
+                f"exceeds the {MAX_EVENT_JSON_BYTES}-byte limit",
+            ),
+            ("depth", nested, "exceeds the JSON depth limit"),
+            ("values", {"a": [0] * MAX_EVENT_JSON_VALUES}, "exceeds the JSON value limit"),
+        )
+        for label, value, problem in cases:
+            for field in ("payload", "metadata"):
+                with self.subTest(label, field=field):
+                    event = NewEvent(
+                        event_id="evt-big",
+                        event_type="case.created",
+                        occurred_at=OCCURRED_AT,
+                        payload=value if field == "payload" else {"case_id": "case-001"},
+                        metadata=value if field == "metadata" else {},
+                    )
+                    with self.assertRaises(EventPayloadLimitError) as caught:
+                        store.append("case/case-big", [event], expected_version=0)
+                    self.assertIsInstance(caught.exception, ValueError)
+                    self.assertEqual(str(caught.exception), f"{field} {problem}")
+                    self.assertEqual(store.latest_sequence, 0)
+
+    def test_a_payload_that_is_not_json_is_not_a_limit_error(self) -> None:
+        store = self.open_store()
+        event = NewEvent(
+            event_id="evt-nan",
+            event_type="case.created",
+            occurred_at=OCCURRED_AT,
+            payload={"n": float("nan")},
+        )
+
+        with self.assertRaises(ValueError) as caught:
+            store.append("case/case-nan", [event], expected_version=0)
+
+        self.assertNotIsInstance(caught.exception, EventPayloadLimitError)
 
     def test_rolled_back_batch_does_not_burn_a_global_sequence(self) -> None:
         store = self.open_store()
@@ -2874,6 +2948,112 @@ class StoredValueRefusalTests(unittest.TestCase):
         self.assertEqual(type(store.read_all()[0].stream_id), str)
         assert store._connection is not None
         self.assertIs(store._connection.text_factory, str)
+
+    # C: a counter behind the last row. On ed9fcf4 it read "event history was truncated", the
+    # words for a counter ahead of the last row, whose tail rows were deleted (CL-39).
+
+    def set_counter(self, value: int | None) -> None:
+        """Rewrite the AUTOINCREMENT counter, or delete its row when `value` is None."""
+
+        with closing(raw_connection(self.database_path)) as connection:
+            if value is None:
+                connection.execute("DELETE FROM sqlite_sequence WHERE name = 'events'")
+            else:
+                connection.execute(
+                    "UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (value,)
+                )
+
+    def test_c_a_counter_behind_the_last_row_has_its_own_message(self) -> None:
+        for label, value, counter in (("lowered", 1, 1), ("zero", 0, 0), ("row deleted", None, 0)):
+            with self.subTest(label):
+                self.database_path = self.build(f"c-{label}.db")
+                self.set_counter(value)
+                expected = (
+                    "the sequence counter is behind the event history: last stored sequence "
+                    f"is 3 but the sequence counter is {counter}"
+                )
+                refused = self.refusal()
+                self.assertEqual((str(refused), refused.sequence), (expected, 3))
+                self.assertEqual(self.faults()["sequence_counter_mismatch"], expected)
+
+    def test_c_a_counter_ahead_of_the_last_row_still_reads_as_truncated(self) -> None:
+        self.set_counter(5)
+        expected = (
+            "event history was truncated: last stored sequence is 3 but the sequence counter is 5"
+        )
+
+        self.assertEqual(str(self.refusal()), expected)
+        self.assertEqual(self.faults()["sequence_counter_mismatch"], expected)
+
+    def test_c_a_counter_lowered_after_the_open_stops_the_append(self) -> None:
+        store = SQLiteEventStore(self.database_path, clock=lambda: RECORDED_AT)
+        self.addCleanup(store.close)
+        self.set_counter(2)
+
+        with self.assertRaises(EventIntegrityError) as caught:
+            store.append("stream-h", [sample_event("evt-h-3")], expected_version=3)
+
+        self.assertEqual(
+            str(caught.exception),
+            "the sequence counter is behind the event history: last stored sequence is 3 but "
+            "the sequence counter is 2",
+        )
+
+    # P: a projection checkpoint the store never writes. The column is INTEGER without STRICT,
+    # so text passes its CHECK, and on ed9fcf4 the read ran `int()` on whatever it held (CL-40).
+
+    def plant_checkpoint(self, last_sequence: object, updated_at: object = RECORDED_TEXT) -> None:
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            connection.execute(
+                "INSERT INTO projection_checkpoints VALUES ('case-list', ?, ?)",
+                (last_sequence, updated_at),
+            )
+
+    def test_p_a_checkpoint_that_is_not_a_count_is_refused_and_named(self) -> None:
+        cases = (
+            ("text", "x", "last_sequence stored as text, not an integer"),
+            ("long text", "x" * self.LONG, "last_sequence stored as text, not an integer"),
+            (
+                "numeric past 64 bits",
+                "1" * self.LONG,
+                "last_sequence stored as real, not an integer",
+            ),
+            ("real", 1.5, "last_sequence stored as real, not an integer"),
+            ("blob", b"\x00", "last_sequence stored as blob, not an integer"),
+            ("negative", -1, "last_sequence -1; checkpoints start at 0"),
+            ("timestamp", 0, "an updated_at that is not an ISO 8601 timestamp with a timezone"),
+        )
+        for label, value, problem in cases:
+            with self.subTest(label):
+                self.database_path = self.build(f"p-{label}.db")
+                if label == "timestamp":
+                    self.plant_checkpoint(value, updated_at="yesterday")
+                else:
+                    self.plant_checkpoint(value)
+                expected = f"projection checkpoint 'case-list' has {problem}"
+                with SQLiteEventStore(self.database_path) as store:
+                    with self.assertRaises(EventIntegrityError) as read:
+                        store.get_projection_checkpoint("case-list")
+                    self.assertEqual(str(read.exception), expected)
+                    # The compare-and-swap reads only the count, so only a bad count stops it.
+                    if label != "timestamp":
+                        with self.assertRaises(EventIntegrityError) as advanced:
+                            store.advance_projection(
+                                "case-list", expected_sequence=0, last_sequence=1
+                            )
+                        self.assertEqual(str(advanced.exception), expected)
+                        with self.assertRaises(EventIntegrityError) as reset:
+                            store.reset_projection("case-list", expected_sequence=0)
+                        self.assertEqual(str(reset.exception), expected)
+                self.assertEqual(self.faults(), {"projection_checkpoint_invalid": expected})
+
+    def test_p_a_checkpoint_the_store_wrote_reads_and_verifies(self) -> None:
+        with SQLiteEventStore(self.database_path, clock=lambda: RECORDED_AT) as store:
+            store.advance_projection("case-list", expected_sequence=0, last_sequence=3)
+            self.assertEqual(store.get_projection_checkpoint("case-list").last_sequence, 3)
+        with SQLiteEventStore.open_for_verification(self.database_path) as store:
+            self.assertTrue(store.verify_history().ok)
 
 
 class StoreHeaderTests(unittest.TestCase):

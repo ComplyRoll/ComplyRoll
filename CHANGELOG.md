@@ -18,12 +18,15 @@ All notable project changes will be documented here.
   value, unexpected keys and JSON pointer, a `case.created` tracking id on the wrong stream, the
   keys of a `metadata_breaches` message, a repeated observation id, a stream id a stream-id parse
   quotes, a provider tracking id in `identification_retained` and the effective-id refusal, and
-  a name in a store message, which used to be quoted whole up to 500 characters. A
+  a stored name in a store message, which used to be quoted whole up to 500 characters. A
   5155-character tracking id made `store verify` print 10,667 bytes; it now prints 795. A
   contract error renders its first 10 issues and then "and K more", where it rendered every one:
   20,000 non-strings in one stored list made a 1,257,829-character message, now 677 bytes. A
-  list of unexpected keys shows its first 10 the same way: 30,000 short extra keys made a
-  300,173-character line.
+  list of unexpected keys shows its first 10, in jsonschema's sorted order, the same way:
+  30,000 short extra keys made a 300,173-character line. Four store messages still quote a name
+  the caller passed, held to 500 characters by the name rule: the stream id in a concurrency
+  error and in a stream page's version gap, the projection name in a checkpoint concurrency
+  error, and the event id in a refused insert.
 - A sequence counter lowered below the last stored row, or deleted, no longer reads "event history
   was truncated", the words for a counter ahead of it. It reads "the sequence counter is behind
   the event history", at open, at append and in `store verify`, under the same

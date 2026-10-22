@@ -7553,14 +7553,16 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
 
     def test_u_a_schema_object_holding_undecodable_text_is_refused_by_every_command(self) -> None:
         # CL4B-01: verify read the stand-in and passed what every open refuses.
-        for kind in ("trigger", "index", "table"):
+        for kind in ("trigger", "index", "view", "table"):
             with self.subTest(kind):
                 self.database.unlink()
                 self.setUp()
-                plant_undecodable_schema_object(self.database, kind)
+                expected = plant_undecodable_schema_object(self.database, kind)
                 self.assert_refused(
                     "holds text that is not valid UTF-8", {"schema_text_invalid"}, at_open=True
                 )
+                _code, _out, err = run(["store", "verify", "--db", str(self.database)])
+                self.assertIn(f"error: schema_text_invalid: {expected}\n", err)
 
     # H: the header's schema marker. On 298f1be a marker of -1 verified clean and the next
     # append ended in `KeyError: 0`.

@@ -842,31 +842,25 @@ class SQLiteEventStore:
         """
 
         faults: list[IntegrityFault] = []
-        rows = connection.execute(
-            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY rowid"
-        ).fetchall()
-        for row in rows:
+        # NOTE: SQLite checks `type` and `tbl_name` itself when it loads the schema, so text
+        # that is not UTF-8 there fails every statement as a malformed schema before this runs.
+        rows = connection.execute("SELECT type, name, sql FROM sqlite_master ORDER BY rowid")
+        for row in rows.fetchall():
             kind, name = row["type"], row["name"]
-            if isinstance(kind, str) and isinstance(name, str):
-                if (kind.lower(), name) in EXPECTED_SCHEMA_OBJECTS:
-                    continue
-            column = next(
-                (
-                    column
-                    for column in ("type", "name", "tbl_name", "sql")
-                    if row[column] is _UNDECODABLE_TEXT
-                ),
-                None,
-            )
-            if column is None:
+            if isinstance(name, str) and (kind.lower(), name) in EXPECTED_SCHEMA_OBJECTS:
                 continue
-            described = kind if isinstance(kind, str) else "schema object"
+            if name is _UNDECODABLE_TEXT:
+                column = "name"
+            elif row["sql"] is _UNDECODABLE_TEXT:
+                column = "sql"
+            else:
+                continue
             faults.append(
                 IntegrityFault(
                     sequence=None,
                     code="schema_text_invalid",
-                    message=f"{described} {_shown_name(name)} holds {column} text that is not "
-                    "valid UTF-8",
+                    message=f"{kind} {_shown_name(name)} holds {column} text that is not valid "
+                    "UTF-8",
                 )
             )
         return tuple(faults)

@@ -1515,15 +1515,16 @@ _UNEXPECTED_KEYS = "Additional properties are not allowed ({listed} {verb} unexp
 def _unexpected_keys_message(message: str, instance: Mapping[str, Any], schema: Any) -> str:
     """List the first unexpected keys, each through `shown`, and count the rest.
 
-    The keys are found as jsonschema finds them. A message in any other words, which this
-    jsonschema does not write, is cut whole rather than left unbounded.
+    The keys are found and sorted as jsonschema finds and sorts them. A message in any other
+    words, which this jsonschema does not write, is cut whole rather than left unbounded.
     """
 
     known = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
     pattern = "|".join(schema.get("patternProperties", {})) if isinstance(schema, Mapping) else ""
-    extras = [
-        key for key in instance if key not in known and not (pattern and re.search(pattern, key))
-    ]
+    extras = sorted(
+        (key for key in instance if key not in known and not (pattern and re.search(pattern, key))),
+        key=str,
+    )
     verb = "was" if len(extras) == 1 else "were"
     if message != _UNEXPECTED_KEYS.format(listed=", ".join(map(repr, extras)), verb=verb):
         return bounded(message)

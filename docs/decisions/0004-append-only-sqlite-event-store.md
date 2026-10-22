@@ -341,15 +341,19 @@ Two stored values still reached a conversion no check guarded. These rules bind 
   and names what a reader would refuse:
   - An events row: the new fault `event_text_invalid`, once, at its sequence. The walk goes on
     past it.
-  - A schema object the store never created whose type, name, table or SQL is not UTF-8: the new
-    fault `schema_text_invalid`, in `sqlite_master` order, after the other schema faults. Every
-    open reads `sqlite_master` and refuses such an object. One that decodes is still not
-    refused. An expected object whose SQL is not UTF-8 is `schema_object_altered`.
+  - A schema object the store never created whose name or SQL is not UTF-8: the new fault
+    `schema_text_invalid`, in `sqlite_master` order, after the other schema faults. Every open
+    reads `sqlite_master` and refuses such an object. One that decodes is still not refused. An
+    expected object whose SQL is not UTF-8 is `schema_object_altered`.
+  - A schema object whose type or table is not UTF-8 is refused by SQLite itself, which checks
+    both when it loads the schema and fails every statement as a malformed schema. Verify then
+    ends in `store_integrity`, as every reader does, with no fault named.
   - The counter is `sequence_counter_mismatch`, a migration description `migration_altered`,
     and a checkpoint count or time `projection_checkpoint_invalid`.
 
-  No reader reads a migration record's `applied_at` or a stored checkpoint name, so neither
-  is checked.
+  No reader reads a migration record's `applied_at`, so it is not checked. A stored checkpoint
+  name is not checked either: `get_projection_checkpoint` selects it, but only a row whose name
+  is byte-equal to the caller's name, which is valid UTF-8, can come back.
 - **A projection checkpoint holds a count and a time.** The column is INTEGER without STRICT, so
   text passes `CHECK (last_sequence >= 0)`, and `get_projection_checkpoint` ran `int()` on it,
   which raised on text and truncated a real. The reader and the compare-and-swap of

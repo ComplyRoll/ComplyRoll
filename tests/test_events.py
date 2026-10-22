@@ -3618,12 +3618,28 @@ class StoredValueEchoTests(unittest.TestCase):
         )
         self.assertLessEqual(len(message.encode()), 1024)
 
+    def test_unexpected_keys_in_any_order_are_listed_as_jsonschema_sorts_them(self) -> None:
+        # CL4B-D-02: jsonschema sorts the keys it lists. Rebuilt in the payload's order, an
+        # unsorted payload fell back to the whole-message cut.
+        payload: dict[str, Any] = dict(GOOD_PAYLOADS["case.created"])
+        payload.update({f"k{index:05d}": 1 for index in reversed(range(30_000))})
+
+        message = self.contract_error(payload)
+
+        listed = ", ".join(f"'k{index:05d}'" for index in range(MAX_RENDERED_ISSUES))
+        self.assertTrue(
+            message.endswith(
+                f"Additional properties are not allowed ({listed}, and 29990 more were unexpected)"
+            ),
+            message[-160:],
+        )
+
     def test_a_few_unexpected_keys_are_listed_as_jsonschema_words_them(self) -> None:
-        for extras, verb in ((["extra"], "was"), (["a", "b"], "were")):
+        for extras, verb in ((["extra"], "was"), (["a", "b"], "were"), (["z", "y"], "were")):
             with self.subTest(extras=extras):
                 payload: dict[str, Any] = dict(GOOD_PAYLOADS["case.created"])
                 payload.update({key: 1 for key in extras})
-                listed = ", ".join(repr(key) for key in extras)
+                listed = ", ".join(repr(key) for key in sorted(extras))
 
                 self.assertTrue(
                     self.contract_error(payload).endswith(

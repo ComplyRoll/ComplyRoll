@@ -283,6 +283,10 @@ def plant_undecodable_schema_object(path: Path, kind: str) -> str:
             expected = (
                 "index <text that is not valid UTF-8 value> holds name text that is not valid UTF-8"
             )
+        elif kind == "view":
+            connection.execute("CREATE VIEW planted AS SELECT 1 AS x")
+            row = (b"planted", b"planted", b"CREATE VIEW planted AS SELECT '\xff\xfe' AS x")
+            expected = "view 'planted' holds sql text that is not valid UTF-8"
         else:
             connection.execute("CREATE TABLE planted (x INTEGER)")
             row = (b"pl\xff", b"pl\xff", b'CREATE TABLE "pl\xff" (x INTEGER)')
@@ -3025,7 +3029,7 @@ class StoredValueRefusalTests(unittest.TestCase):
         On ed9fcf4 verify refused it too, as `store_unavailable` quoting the text.
         """
 
-        for kind in ("trigger", "index", "table"):
+        for kind in ("trigger", "index", "view", "table"):
             with self.subTest(kind):
                 self.database_path = self.build(f"schema-{kind}.db")
                 expected = plant_undecodable_schema_object(self.database_path, kind)
@@ -3037,6 +3041,60 @@ class StoredValueRefusalTests(unittest.TestCase):
                 self.assertEqual(
                     [(fault.sequence, fault.code, fault.message) for fault in report.faults],
                     [(None, "schema_text_invalid", expected)],
+                )
+
+    def test_u_an_expected_object_with_undecodable_sql_is_named_only_as_altered(self) -> None:
+        with closing(raw_connection(self.database_path)) as connection:
+            sql = (
+                recorded_sql(connection, "events_reject_update")
+                .encode()
+                .replace(b"append-only", b"append-only\xff")
+            )
+            connection.execute("PRAGMA writable_schema = ON")
+            connection.execute(
+                "UPDATE sqlite_master SET sql = CAST(? AS TEXT) "
+                "WHERE name = 'events_reject_update'",
+                (sql,),
+            )
+
+        self.assertIn("column sql holds text that is not valid UTF-8", str(self.refusal()))
+        self.assertEqual(
+            self.faults(),
+            {
+                "schema_object_altered": (
+                    "trigger events_reject_update does not match its expected definition"
+                )
+            },
+        )
+
+    def test_u_an_undecodable_type_or_table_is_refused_by_sqlite_on_every_open(self) -> None:
+        """CL4B-D-01: SQLite checks `type` and `tbl_name` itself when it loads the schema.
+
+        Such a file fails as "malformed database schema" before any check reads a row, so verify
+        refuses it as the readers do, with an integrity error and no fault.
+        """
+
+        for column, value in (("type", b"trig\xff"), ("tbl_name", b"ev\xff")):
+            with self.subTest(column):
+                self.database_path = self.build(f"schema-{column}.db")
+                with closing(raw_connection(self.database_path)) as connection:
+                    connection.execute(
+                        "CREATE TRIGGER planted AFTER INSERT ON events BEGIN SELECT 1; END"
+                    )
+                    connection.execute("PRAGMA writable_schema = ON")
+                    connection.execute(
+                        f"UPDATE sqlite_master SET {column} = CAST(? AS TEXT) "
+                        "WHERE name = 'planted'",
+                        (value,),
+                    )
+                self.assertIn("malformed database schema", str(self.refusal()))
+                store = SQLiteEventStore.open_for_verification(self.database_path)
+                self.addCleanup(store.close)
+                with self.assertRaises(EventIntegrityError) as caught:
+                    store.verify_history()
+                self.assertEqual(
+                    str(caught.exception),
+                    "could not verify event history: malformed database schema (planted)",
                 )
 
     def test_u_the_connection_reads_text_again_after_verify(self) -> None:

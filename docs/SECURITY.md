@@ -251,13 +251,16 @@ those three match, and a test pins it.
   payload value, the value and each unexpected key a contract issue quotes (a list of unexpected
   keys shows its first 10 and counts the rest), its JSON pointer, the keys a `metadata_breaches`
   message lists, a stream identifier a stream-id parse quotes, a provider tracking id, and every
-  name a store message quotes. Other domain messages quote a stream identifier whole, which the name
-  rule holds to 500 characters. A contract error renders its first 10 issues and counts the rest
-  ("and K more"), so a stored list of many invalid values no longer grows the message; the error
-  object keeps every issue. Some output carries stored text unescaped, newlines and terminal escape
-  sequences included: a payload key in a contract issue's JSON pointer, a key in a
-  `metadata_breaches` message, and the actor `cases history` prints on stdout, even from a store
-  that verifies clean. Treat any output read from an untrusted store as untrusted text.
+  stored name a store message quotes. Four store messages quote a name the caller passed whole,
+  which the name rule holds to 500 characters: the stream id in `EventConcurrencyError` and in a
+  stream page's version gap, the projection name in `ProjectionConcurrencyError`, and the event id
+  in a refused insert. Other domain messages quote a stream identifier whole, held to 500 characters
+  the same way. A contract error renders its first 10 issues and counts the rest ("and K more"), so
+  a stored list of many invalid values no longer grows the message; the error object keeps every
+  issue. Some output carries stored text unescaped, newlines and terminal escape sequences included:
+  a payload key in a contract issue's JSON pointer, a key in a `metadata_breaches` message, and the
+  actor `cases history` prints on stdout, even from a store that verifies clean. Treat any output
+  read from an untrusted store as untrusted text.
 - A projection checkpoint must hold a non-negative integer count and a time with a timezone. The
   library's checkpoint reader and its compare-and-swap refuse any other row as
   `EventIntegrityError`, and `store verify` reports it as `projection_checkpoint_invalid`. No

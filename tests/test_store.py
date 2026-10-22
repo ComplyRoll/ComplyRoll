@@ -1135,6 +1135,27 @@ class StorageErrorMappingTests(unittest.TestCase):
             except sqlite3.OperationalError as error:
                 self.assertFalse(_is_busy_error(error))
 
+    def test_undecodable_text_is_an_integrity_error_whatever_the_text_says(self) -> None:
+        """The decode error carries no SQLite result name, so its text was read for one.
+
+        Stored text that reads "database is locked" made it a busy error a caller retries.
+        """
+
+        from complyroll.store.sqlite import _storage_error
+
+        for text in ("database is locked", "malformed", "not a database", "x" * 5000):
+            with self.subTest(text=text[:20]):
+                error = sqlite3.OperationalError(
+                    f"Could not decode to UTF-8 column 'payload_json' with text '{text}'"
+                )
+                mapped = _storage_error("could not read event history", error)
+                self.assertIs(type(mapped), EventIntegrityError)
+                self.assertEqual(
+                    str(mapped),
+                    "could not read event history: column payload_json holds text that is not "
+                    "valid UTF-8",
+                )
+
     def test_opening_a_fresh_store_while_a_peer_holds_the_file_is_busy_not_raw(self) -> None:
         with closing(sqlite3.connect(self.database_path, isolation_level=None)) as holder:
             holder.execute("BEGIN IMMEDIATE")
@@ -2728,6 +2749,131 @@ class StoredValueRefusalTests(unittest.TestCase):
         self.assertEqual(
             str(caught.exception), "the events sequence counter is stored in more than one row"
         )
+
+    # U: text that is not valid UTF-8, which `sqlite3` fails to decode before any check runs.
+
+    TEXT_COLUMNS = (
+        "event_id",
+        "stream_id",
+        "event_type",
+        "occurred_at",
+        "recorded_at",
+        "payload_json",
+        "metadata_json",
+        "payload_sha256",
+    )
+    UNDECODABLE = b"\xff" + b"u" * LONG
+
+    def insert_undecodable(self, column: str) -> None:
+        """INSERT one row after the last whose `column` holds bytes that are not UTF-8."""
+
+        values: dict[str, object] = {
+            "event_id": "evt-planted",
+            "stream_id": "stream-planted",
+            "stream_version": 1,
+            "event_type": "case.created",
+            "event_version": 1,
+            "occurred_at": RECORDED_TEXT,
+            "recorded_at": RECORDED_TEXT,
+            "payload_json": "{}",
+            "metadata_json": "{}",
+            "payload_sha256": self.digest("{}"),
+        }
+        # The digest column's CHECK counts characters, and SQLite counts each lead byte as one.
+        values[column] = b"\xff" + b"0" * 63 if column == "payload_sha256" else self.UNDECODABLE
+        columns = ", ".join(values)
+        marks = ", ".join("CAST(? AS TEXT)" if name == column else "?" for name in values)
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                f"INSERT INTO events ({columns}) VALUES ({marks})", tuple(values.values())
+            )
+
+    def test_u_text_that_is_not_utf8_is_refused_and_named_in_every_column(self) -> None:
+        """On ed9fcf4 the read ended as a plain store error quoting the column's bytes.
+
+        The reader refuses it as an integrity error that names the column and not its text,
+        and `verify_history` names the row as `event_text_invalid` and walks on past it.
+        """
+
+        for column in self.TEXT_COLUMNS:
+            with self.subTest(column=column):
+                self.database_path = self.build(f"u-{column}.db")
+                self.insert_undecodable(column)
+                refused = self.refusal()
+                self.assertIn(f"column {column} holds text that is not valid UTF-8", str(refused))
+                self.assertNotIn("uuuu", str(refused))
+                store = SQLiteEventStore.open_for_verification(self.database_path)
+                self.addCleanup(store.close)
+                report = store.verify_history()
+                self.assertEqual(
+                    [(fault.sequence, fault.code, fault.message) for fault in report.faults],
+                    [
+                        (
+                            4,
+                            "event_text_invalid",
+                            f"event column {column} holds text that is not valid UTF-8",
+                        )
+                    ],
+                )
+                self.assertEqual(report.checked_events, 4)
+
+    def test_u_the_walk_reports_what_follows_an_undecodable_row(self) -> None:
+        self.insert_undecodable("payload_json")
+        self.insert(event_id="evt-after", stream_id="stream-after", payload_sha256="0" * 64)
+
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+        report = store.verify_history()
+
+        self.assertEqual(
+            [(fault.sequence, fault.code) for fault in report.faults],
+            [(4, "event_text_invalid"), (5, "payload_digest_mismatch")],
+        )
+
+    def test_u_two_undecodable_stream_ids_are_not_counted_as_one_stream(self) -> None:
+        self.insert_undecodable("stream_id")
+        with closing(raw_connection(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO events (event_id, stream_id, stream_version, event_type, "
+                "event_version, occurred_at, recorded_at, payload_json, metadata_json, "
+                "payload_sha256) VALUES ('evt-second', CAST(? AS TEXT), 1, 'case.created', 1, "
+                "?, ?, '{}', '{}', ?)",
+                (b"\xfe" + b"v" * 10, RECORDED_TEXT, RECORDED_TEXT, self.digest("{}")),
+            )
+
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+        report = store.verify_history()
+
+        self.assertEqual(
+            [(fault.sequence, fault.code) for fault in report.faults],
+            [(4, "event_text_invalid"), (5, "event_text_invalid")],
+        )
+
+    def test_u_an_undecodable_counter_is_named_by_verify(self) -> None:
+        self.update(
+            "UPDATE sqlite_sequence SET seq = CAST(? AS TEXT) WHERE name = 'events'",
+            (self.UNDECODABLE,),
+        )
+
+        refused = self.refusal()
+
+        self.assertIn("holds text that is not valid UTF-8", str(refused))
+        self.assertNotIn("uuuu", str(refused))
+        self.assertEqual(
+            self.faults()["sequence_counter_mismatch"],
+            "the events sequence counter is stored as text that is not valid UTF-8, not an integer",
+        )
+
+    def test_u_the_connection_reads_text_again_after_verify(self) -> None:
+        store = SQLiteEventStore.open_for_verification(self.database_path)
+        self.addCleanup(store.close)
+
+        self.assertTrue(store.verify_history().ok)
+
+        self.assertEqual(type(store.read_all()[0].stream_id), str)
+        assert store._connection is not None
+        self.assertIs(store._connection.text_factory, str)
 
 
 class StoreHeaderTests(unittest.TestCase):

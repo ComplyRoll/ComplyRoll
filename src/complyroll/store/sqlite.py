@@ -666,13 +666,20 @@ class SQLiteEventStore:
         column, and only an integer there counts as a record, as `_mark_schema` writes it.
         The walk's first page has no lower bound, so a row numbered below 1, which every
         other command refuses at open, is checked like any other and reported as
-        `sequence_gap`.
+        `sequence_gap`. A row holding text that is not valid UTF-8 in any column, which every
+        other command refuses on read, is reported once as `event_text_invalid`, and the walk
+        goes on past it.
         """
 
         connection = self._require_open()
         faults: list[IntegrityFault] = []
         checked = 0
-        with _sqlite_errors("could not verify event history"):
+        # Text that is not UTF-8 reads as a stand-in, so a fault names it where `sqlite3`'s
+        # own decode would end the walk.
+        with (
+            _sqlite_errors("could not verify event history"),
+            _undecodable_text_read(connection),
+        ):
             present = self._schema_objects(connection)
             faults.extend(self._schema_faults(connection))
             faults.extend(self._header_faults(connection, present))
@@ -716,9 +723,19 @@ class SQLiteEventStore:
                     checked += 1
                     sequence = int(row["sequence"])
                     after_sequence = sequence
-                    faults.extend(_column_faults(row, sequence))
-                    faults.extend(_payload_faults(row, sequence))
-                    faults.extend(_timestamp_faults(row, sequence))
+                    undecodable = _undecodable_column(row)
+                    if undecodable is None:
+                        faults.extend(_column_faults(row, sequence))
+                        faults.extend(_payload_faults(row, sequence))
+                        faults.extend(_timestamp_faults(row, sequence))
+                    else:
+                        faults.append(
+                            IntegrityFault(
+                                sequence=sequence,
+                                code="event_text_invalid",
+                                message=f"event column {undecodable} {_UNDECODABLE_MESSAGE}",
+                            )
+                        )
                     if sequence < 1:
                         # Counted, this row would misreport every gap after it, so it stays
                         # out of both the sequence and the stream-version walks.
@@ -751,9 +768,14 @@ class SQLiteEventStore:
                     stored_stream_id = row["stream_id"]
                     stream_id = str(stored_stream_id)
                     stream_version = row["stream_version"]
-                    if type(stream_version) is not int or stream_version < 1:
-                        # `_column_faults` has reported this row, and a version that is not
-                        # an integer of at least 1 has no place in the stream's count.
+                    if (
+                        type(stream_version) is not int
+                        or stream_version < 1
+                        or stored_stream_id is _UNDECODABLE_TEXT
+                    ):
+                        # A fault above has reported this row, and a version that is not an
+                        # integer of at least 1, or a stream id that is not text, has no place
+                        # in a stream's count.
                         continue
                     expected_version = stream_versions.get(stream_id, 0) + 1
                     if stream_version != expected_version:
@@ -1514,12 +1536,46 @@ def _has_event_columns(connection: sqlite3.Connection) -> bool:
     return _table_columns(connection, "events").issuperset(_EVENT_COLUMNS)
 
 
+class _UndecodableText:
+    """Stands in for stored text that is not valid UTF-8 while `verify_history` walks."""
+
+    __slots__ = ()
+
+
+_UNDECODABLE_TEXT = _UndecodableText()
+
+
+def _stored_text(data: bytes) -> object:
+    """Decode one stored text value as `sqlite3` does, or return the stand-in.
+
+    `sqlite3` decodes every text value strictly as UTF-8 and ends the whole fetch on the
+    first that fails, with an error quoting the bytes, so a walk could not get past the row.
+    """
+
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return _UNDECODABLE_TEXT
+
+
+@contextmanager
+def _undecodable_text_read(connection: sqlite3.Connection) -> Iterator[None]:
+    """Read text through `_stored_text` for the block, then as `sqlite3` reads it again."""
+
+    connection.text_factory = _stored_text
+    try:
+        yield
+    finally:
+        connection.text_factory = str
+
+
 _STORAGE_CLASSES: dict[type, str] = {
     int: "integer",
     float: "real",
     str: "text",
     bytes: "blob",
     type(None): "null",
+    _UndecodableText: "text that is not valid UTF-8",
 }
 
 
@@ -1544,6 +1600,38 @@ def _shown_name(value: object) -> str:
     except ValueError:
         return f"<{len(value)} characters outside the name grammar>"
     return repr(value)
+
+
+#: How many characters of a quoted stored value a message shows before it is cut.
+SHOWN_LIMIT = 200
+
+
+def bounded(text: str) -> str:
+    """Return text for a message, cut short past `SHOWN_LIMIT` characters and counted."""
+
+    if len(text) <= SHOWN_LIMIT:
+        return text
+    return f"{text[:SHOWN_LIMIT]}... ({len(text)} characters)"
+
+
+# SECURITY: The payload digest proves a payload is the one recorded, not that its values are
+# short, so every message that quotes a value read from the store quotes it through here.
+def shown(value: object) -> str:
+    """Quote one stored value for a message, cut short past `SHOWN_LIMIT` characters.
+
+    A value whose quoted form fits is shown exactly as `repr` shows it.
+    """
+
+    return bounded(repr(value))
+
+
+def _undecodable_column(row: sqlite3.Row) -> str | None:
+    """Name the first column of a row read through `_stored_text` that is not UTF-8."""
+
+    for column in _EVENT_COLUMNS:
+        if row[column] is _UNDECODABLE_TEXT:
+            return column
+    return None
 
 
 def _name_problem(row: sqlite3.Row) -> str | None:
@@ -2016,6 +2104,11 @@ def _is_not_a_database_error(error: BaseException) -> bool:
     return "not a database" in str(error).lower()
 
 
+_UNDECODABLE_PREFIX = "Could not decode to UTF-8 column "
+_UNDECODABLE_COLUMN = re.compile(r"'([A-Za-z_][A-Za-z0-9_]{0,63})' with text ")
+_UNDECODABLE_MESSAGE = "holds text that is not valid UTF-8"
+
+
 def _storage_error(
     context: str,
     error: sqlite3.Error,
@@ -2023,12 +2116,19 @@ def _storage_error(
 ) -> EventStoreError:
     """Map any SQLite failure onto the store's error vocabulary.
 
-    Contention becomes the retryable ``EventStoreBusyError``, a corrupt file becomes
-    ``EventIntegrityError``, a file that is not SQLite at all becomes
+    Contention becomes the retryable ``EventStoreBusyError``, a corrupt file and stored text
+    that is not valid UTF-8 become ``EventIntegrityError``, the second naming its column and
+    never its text, a file that is not SQLite at all becomes
     ``UnsupportedSchemaError``, and everything else (disk full, read-only media, I/O
     errors) becomes a plain ``EventStoreError`` that still carries SQLite's message.
     """
 
+    if isinstance(error, sqlite3.OperationalError) and str(error).startswith(_UNDECODABLE_PREFIX):
+        # `sqlite3` raises this one, not SQLite, so it carries no result name, and the text it
+        # quotes is stored text: damaged history, never a busy or unavailable store.
+        named = _UNDECODABLE_COLUMN.match(str(error)[len(_UNDECODABLE_PREFIX) :])
+        column = "a column" if named is None else f"column {named[1]}"
+        return EventIntegrityError(f"{context}: {column} {_UNDECODABLE_MESSAGE}")
     detail = f"{context}: {error}"
     if rollback_error is not None:
         detail = f"{detail} (rollback also failed: {rollback_error})"

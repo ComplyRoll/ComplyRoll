@@ -55,6 +55,7 @@ from complyroll.models import CaseStatus, Observation, PainRating
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction
 from complyroll.reports.replay import disposition_without_evaluation_message
 from complyroll.store import EventRecord
+from complyroll.store.sqlite import shown
 
 ARTIFACT_INGESTED = "artifact.ingested"
 OBSERVATION_RECORDED = "observation.recorded"
@@ -2030,7 +2031,7 @@ def _disposition_faults(
 def _untracked_stream_message(stream_id: str, exc: ValueError) -> str:
     """Word a case stream whose id names no tracking id, for the audit and the fold."""
 
-    return f"stream {stream_id!r} names no tracking id: {exc}"
+    return f"stream {shown(stream_id)} names no tracking id: {exc}"
 
 
 def _stream_tracking_id(stream_id: str) -> str:
@@ -2100,8 +2101,8 @@ def _placement_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
             sequence=record.sequence,
             code="case_tracking_id_mismatch",
             message=(
-                f"{CASE_CREATED} records tracking id {recorded!r} on stream "
-                f"{record.stream_id!r}, which names {expected!r}"
+                f"{CASE_CREATED} records tracking id {shown(recorded)} on stream "
+                f"{shown(record.stream_id)}, which names {expected!r}"
             ),
         ),
     )

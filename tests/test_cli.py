@@ -6129,6 +6129,70 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
                 self.assertEqual(run(argv), (1, "", refused))
         self.assertEqual(self.latest_sequence(), before)
 
+    def test_a_long_stored_value_is_quoted_within_the_bound(self) -> None:
+        # CL-41, R1: on ed9fcf4 a 5155-character trackingId made `store verify` print 10,667
+        # bytes, because the contract issue and the placement fault each quoted it whole.
+        self.populate()
+        long = "x" * 5155
+        sequence = self.smuggle(
+            "case.created",
+            {
+                "trackingId": long,
+                "sourceType": "cklb",
+                "sourceRecordId": "V-260470",
+                "contextKey": "Canonical Ubuntu 24.04 LTS STIG",
+                "title": "Inactive accounts are not disabled",
+                "description": "Inactive accounts are not disabled on the shared host.",
+                "createdAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=SMUGGLED_CASE_STREAM,
+        )
+        cut = f"'{long[:199]}... ({len(long) + 2} characters)"
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertLessEqual(len(err.encode()), 1024, err[:300])
+        for fault in ("case_tracking_id_mismatch", "payload_contract_invalid"):
+            with self.subTest(fault=fault):
+                prefix = f"error: sequence {sequence}: {fault}: "
+                (line,) = [line for line in err.splitlines() if line.startswith(prefix)]
+                self.assertIn(cut, line)
+        self.assertIn(
+            f"case.created records tracking id {cut} on stream {SMUGGLED_CASE_STREAM!r}", err
+        )
+        code, out, err = run(["cases", "list", "--db", str(self.database)])
+        self.assertEqual(code, 1, err[:300])
+        self.assertIn(cut, err)
+        self.assertLessEqual(len(err.encode()), 1024, err[:300])
+
+    def test_a_long_case_stream_id_is_quoted_within_the_bound(self) -> None:
+        # The store holds a stream id to 500 characters, and the message quoted it twice.
+        self.populate()
+        stream_id = "case/" + "y" * 495
+        self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=stream_id,
+        )
+        named = (
+            f"stream '{stream_id[:199]}... (502 characters) names no tracking id: tracking_id "
+            f"must match 'case-<16 hex characters>', got '{'y' * 199}... (497 characters)"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(f"case_tracking_id_mismatch: {named}\n", err)
+        self.assertEqual(
+            run(["cases", "list", "--db", str(self.database)]),
+            (1, "", f"error: history_invalid: {named}\n"),
+        )
+
     def test_a_rewritten_payload_is_named_and_exits_one(self) -> None:
         self.populate()
         tamper_with_one_payload(self.database)
@@ -7393,6 +7457,29 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assert_refused(
             "sequence counter is stored as text", {"sequence_counter_mismatch"}, at_open=True
         )
+
+    # U: text that is not valid UTF-8. On ed9fcf4 `sqlite3` failed to decode it before any
+    # check ran, and every command, `store verify` included, printed `store_unavailable`
+    # quoting the column's bytes.
+
+    def test_u_text_that_is_not_utf8_is_refused_by_every_command(self) -> None:
+        def work(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                "UPDATE events SET payload_json = CAST(? AS TEXT) WHERE sequence = 1",
+                (b"\xff" + b"u" * self.LONG,),
+            )
+
+        self.update(work)
+        self.assert_refused(
+            "column payload_json holds text that is not valid UTF-8", {"event_text_invalid"}
+        )
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertIn(
+            "error: event_text_invalid: sequence 1: event column payload_json holds text that is "
+            "not valid UTF-8\n",
+            err,
+        )
+        self.assertNotIn("store_unavailable", err)
 
     # H: the header's schema marker. On 298f1be a marker of -1 verified clean and the next
     # append ended in `KeyError: 0`.

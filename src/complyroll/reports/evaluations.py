@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from complyroll.models import CaseStatus, PainRating
+from complyroll.store.sqlite import shown
 
 MAX_EVALUATIONS_BYTES = 8 * 1024 * 1024
 MAX_EVALUATIONS_DEPTH = 64
@@ -492,7 +494,8 @@ def _parse_json_bounded(content: bytes) -> Any:
         value: dict[str, Any] = {}
         for key, item in pairs:
             if key in value:
-                raise ReportInputError(f"duplicate JSON object key is prohibited: {key}")
+                # SECURITY: The key is untrusted text bound for a terminal, so it is quoted and cut.
+                raise ReportInputError(f"duplicate JSON object key is prohibited: {shown(key)}")
             value[key] = item
         return value
 
@@ -506,6 +509,14 @@ def _parse_json_bounded(content: bytes) -> Any:
         raise ReportInputError("evaluations file must be UTF-8 JSON") from exc
     except json.JSONDecodeError as exc:
         raise ReportInputError(f"evaluations file contains malformed JSON: {exc}") from exc
+    except ReportInputError:
+        # The hooks above raise it, and it is a ValueError too.
+        raise
+    except ValueError as exc:
+        # The one other ValueError json.loads raises: an integer past the digit limit.
+        limit = sys.get_int_max_str_digits()
+        message = f"evaluations file contains an integer longer than {limit} digits"
+        raise ReportInputError(message) from exc
     except RecursionError as exc:
         raise ReportInputError("evaluations file exceeds the safe JSON recursion limit") from exc
 

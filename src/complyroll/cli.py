@@ -1547,18 +1547,29 @@ def _refuse_input_overwrite(
     outputs: Sequence[Path | None],
     inputs: Sequence[Path],
 ) -> None:
-    resolved_inputs = {item.resolve(): item for item in inputs}
+    resolved_inputs = {_resolved(item): item for item in inputs}
     written: dict[Path, Path] = {}
     for target in outputs:
         if target is None:
             continue
-        resolved = target.resolve()
+        resolved = _resolved(target)
         source = resolved_inputs.get(resolved)
         if source is not None:
             raise ValueError(f"refusing to overwrite the input file {source}")
         if resolved in written:
             raise ValueError(f"refusing to write two outputs to the same file {target}")
         written[resolved] = target
+
+
+def _resolved(path: Path) -> Path:
+    """Return a path with its links followed as far as they go, on every interpreter.
+
+    `Path.resolve` raises `RuntimeError` on a symbolic-link loop on Python 3.11 and returns
+    the path on 3.13 and later. `os.path.realpath` returns it on all of them, so a loop
+    reaches the read that refuses it with a code rather than a traceback.
+    """
+
+    return Path(os.path.realpath(path))
 
 
 class OutputRollbackError(Exception):

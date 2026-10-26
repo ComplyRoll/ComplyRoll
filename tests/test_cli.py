@@ -8283,5 +8283,143 @@ class PersistedTimedCoverageGoldenTests(PersistedStoreTestCase):
         )
 
 
+#: A duplicated key that would print as its own `error:` line, and clear the screen, if it
+#: reached stderr raw.
+FORGED_KEY = "a\\nerror: forged: injected\\u001b[2J"
+
+
+def forged_lines(err: str) -> list[str]:
+    """Return every stderr line that begins as a forged diagnostic would."""
+
+    return [line for line in err.splitlines() if line.startswith("error: forged")]
+
+
+class InputRefusalCommandTests(unittest.TestCase):
+    """Input files the CLI refuses with one coded line and no traceback (cleanup PR 5a).
+
+    `main` runs in this process, so a traceback is an exception out of `run` and fails the
+    test; each refusal is also checked for its code, since a wrong code is the other way
+    these inputs used to fail.
+    """
+
+    def setUp(self) -> None:
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        self.workspace = Path(workspace.name)
+        # Sized against the default digit limit, not whatever PYTHONINTMAXSTRDIGITS set.
+        self.addCleanup(sys.set_int_max_str_digits, sys.get_int_max_str_digits())
+        sys.set_int_max_str_digits(sys.int_info.default_max_str_digits)
+
+    def write(self, name: str, text: str) -> Path:
+        path = self.workspace / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def loop(self, name: str) -> Path:
+        link = self.workspace / name
+        link.symlink_to(link)
+        return link
+
+    def report_with(self, *, artifact: Path | None = None, evaluations: Path | None = None):
+        argv = list(REPORT_ARGUMENTS)
+        if artifact is not None:
+            argv[2:5] = [str(artifact)]
+        if evaluations is not None:
+            argv[argv.index("--evaluations") + 1] = str(evaluations)
+        return run(argv)
+
+    def test_validate_quotes_a_duplicate_key(self) -> None:
+        path = self.write("report.json", f'{{"{FORGED_KEY}": 1, "{FORGED_KEY}": 2}}')
+
+        code, out, err = run(["validate", str(path), "--schema", "vulnerability-detail"])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(forged_lines(err), [])
+        self.assertNotIn("\x1b", err)
+        self.assertEqual(
+            err,
+            "error: report_malformed: duplicate JSON object key is prohibited: "
+            f"'a\\nerror: forged: injected\\x1b[2J' [{path}]\n",
+        )
+
+    def test_evaluations_quote_a_duplicate_key(self) -> None:
+        evaluations = self.write("evaluations.json", f'{{"{FORGED_KEY}": 1, "{FORGED_KEY}": 2}}')
+
+        code, out, err = self.report_with(evaluations=evaluations)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(forged_lines(err), [])
+        self.assertEqual(
+            err,
+            "error: invalid_input: duplicate JSON object key is prohibited: "
+            "'a\\nerror: forged: injected\\x1b[2J'\n",
+        )
+
+    def test_validate_refuses_an_integer_past_the_digit_limit(self) -> None:
+        limit = sys.int_info.default_max_str_digits
+        path = self.write("report.json", '{"n": ' + "9" * 5000 + "}")
+
+        code, out, err = run(["validate", str(path), "--schema", "vulnerability-detail"])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(
+            err,
+            f"error: report_malformed: report contains an integer longer than {limit} digits "
+            f"[{path}]\n",
+        )
+
+    def test_evaluations_refuse_an_integer_past_the_digit_limit_as_input(self) -> None:
+        limit = sys.int_info.default_max_str_digits
+        evaluations = self.write("evaluations.json", '{"n": ' + "9" * 5000 + "}")
+
+        code, out, err = self.report_with(evaluations=evaluations)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(
+            err,
+            "error: invalid_input: evaluations file contains an integer longer than "
+            f"{limit} digits\n",
+        )
+
+    def test_an_artifact_that_is_a_symlink_loop_is_an_artifact_read_failure(self) -> None:
+        loop = self.loop("loop.ckl")
+
+        code, out, err = self.report_with(artifact=loop)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertTrue(err.startswith("error: artifact_read_failed: "), err)
+        self.assertEqual(len(err.splitlines()), 1)
+
+    def test_a_symlink_loop_is_refused_alike_where_resolve_raises(self) -> None:
+        # Python 3.11's Path.resolve raises RuntimeError on a loop, where 3.13 and later
+        # return the path; the overwrite check must not depend on which one runs it.
+        real = Path.resolve
+
+        def resolve(path: Path, strict: bool = False) -> Path:
+            if path.name.startswith("loop"):
+                raise RuntimeError(f"Symlink loop from {str(path)!r}")
+            return real(path, strict=strict)
+
+        artifact = self.loop("loop.ckl")
+        evaluations = self.loop("loop-evaluations.json")
+        with patch.object(Path, "resolve", resolve):
+            artifact_run = self.report_with(artifact=artifact)
+            evaluations_run = self.report_with(evaluations=evaluations)
+
+        code, out, err = artifact_run
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("error: artifact_read_failed: "), err)
+        code, out, err = evaluations_run
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(
+            err.startswith("error: invalid_input: evaluations file cannot be read"), err
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

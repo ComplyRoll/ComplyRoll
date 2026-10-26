@@ -1142,6 +1142,59 @@ class FailureClassificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only an execution failure"):
             FailureClassification(None, UnmintableReason.NO_DIGEST, (), clock=INVOKED)
 
+    def test_an_execution_failure_names_execution_unsuccessful(self) -> None:
+        with self.assertRaisesRegex(ValueError, "execution failure names execution_unsuccessful"):
+            FailureClassification(EXECUTION, None, ("invalid_run",))
+        with self.assertRaisesRegex(ValueError, "execution failure names execution_unsuccessful"):
+            FailureClassification(EXECUTION, None, ("no_observations",), clock=INVOKED)
+        accepted = FailureClassification(
+            EXECUTION, None, (EXECUTION_UNSUCCESSFUL,), side_record=True, clock=INVOKED
+        )
+        self.assertTrue(accepted.side_record)
+
+    def test_a_classification_carries_at_least_one_code(self) -> None:
+        for failure_class, reason in (
+            (EXECUTION, None),
+            (PARSE, None),
+            (CONTENT, None),
+            (None, UnmintableReason.NO_DIGEST),
+            (None, UnmintableReason.READ_ELSEWHERE),
+        ):
+            with self.subTest(failure_class=failure_class, reason=reason):
+                with self.assertRaisesRegex(ValueError, "at least one code"):
+                    FailureClassification(failure_class, reason, ())
+        with self.assertRaisesRegex(ValueError, "at least one code"):
+            FailureClassification.unmintable(UnmintableReason.UNKNOWN_CODE, [])
+
+    def test_side_record_is_a_bool(self) -> None:
+        for value in (1, "yes", None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TypeError, "side_record must be a bool"):
+                    FailureClassification(
+                        EXECUTION,
+                        None,
+                        (EXECUTION_UNSUCCESSFUL,),
+                        side_record=value,  # type: ignore[arg-type]
+                    )
+
+    def test_a_clock_is_an_aware_datetime(self) -> None:
+        with self.assertRaisesRegex(ValueError, "clock must carry a UTC offset"):
+            FailureClassification(
+                EXECUTION, None, (EXECUTION_UNSUCCESSFUL,), clock=INVOKED.replace(tzinfo=None)
+            )
+        with self.assertRaisesRegex(TypeError, "clock must be a datetime or None"):
+            FailureClassification(
+                EXECUTION,
+                None,
+                (EXECUTION_UNSUCCESSFUL,),
+                clock="2026-08-31T09:30:00Z",  # type: ignore[arg-type]
+            )
+        offset = INVOKED.astimezone(timezone(timedelta(hours=-7)))
+        self.assertEqual(
+            FailureClassification(EXECUTION, None, (EXECUTION_UNSUCCESSFUL,), clock=offset).clock,
+            offset,
+        )
+
     def test_a_refusal_sorts_and_deduplicates_its_codes(self) -> None:
         refused = FailureClassification.unmintable(
             UnmintableReason.UNKNOWN_CODE, ["b_code", "a_code", "b_code"]

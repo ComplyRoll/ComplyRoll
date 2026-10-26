@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -10,6 +11,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from referencing.exceptions import Unresolvable
+
+from complyroll.store.sqlite import shown
 
 from .source import (
     SchemaBundle,
@@ -173,7 +176,8 @@ def _parse_report_json(content: bytes) -> Any:
         value: dict[str, Any] = {}
         for key, item in pairs:
             if key in value:
-                raise ReportDocumentError(f"duplicate JSON object key is prohibited: {key}")
+                # SECURITY: The key is untrusted text bound for a terminal, so it is quoted and cut.
+                raise ReportDocumentError(f"duplicate JSON object key is prohibited: {shown(key)}")
             value[key] = item
         return value
 
@@ -187,6 +191,14 @@ def _parse_report_json(content: bytes) -> Any:
         raise ReportDocumentError("report must be UTF-8 JSON") from exc
     except json.JSONDecodeError as exc:
         raise ReportDocumentError(f"report contains malformed JSON: {exc}") from exc
+    except ReportDocumentError:
+        # The hooks above raise it, and it is a ValueError too.
+        raise
+    except ValueError as exc:
+        # The one other ValueError json.loads raises: an integer past the digit limit.
+        limit = sys.get_int_max_str_digits()
+        message = f"report contains an integer longer than {limit} digits"
+        raise ReportDocumentError(message) from exc
     except RecursionError as exc:
         raise ReportDocumentError("report exceeds the safe JSON recursion limit") from exc
 

@@ -3,11 +3,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+from complyroll.policy import source as policy_source
+from complyroll.policy.source import PolicySourceError
+from complyroll.reports import ReportInputError
+from complyroll.reports import evaluations as evaluations_module
 from complyroll.schemas import (
     COMMON_DEFINITIONS_NAME,
     ReportDocumentError,
@@ -17,6 +23,7 @@ from complyroll.schemas import (
     SchemaIntegrityError,
     SchemaManifestEntry,
     SchemaResolutionError,
+    SchemaSourceError,
     load_bundled_schema_bundle,
     load_bundled_schema_manifest,
     load_schema_bundle,
@@ -24,6 +31,9 @@ from complyroll.schemas import (
     validate_bundled_report_bytes,
     validate_report,
 )
+from complyroll.schemas import source as schema_source
+from complyroll.schemas import validation as validation_module
+from complyroll.store.sqlite import SHOWN_LIMIT
 
 TEST_ROOT = Path(__file__).parent
 GOLDEN = TEST_ROOT / "golden" / "ver-schema-examples.json"
@@ -392,6 +402,84 @@ class CompiledGoldenValidationTests(unittest.TestCase):
             [("required", "")],
         )
         self.assertIn("generatedAt", result.issues[0].message)
+
+
+class JsonReaderRefusalTests(unittest.TestCase):
+    """The four bounded JSON readers outside the adapters refuse the same inputs alike.
+
+    Each names a duplicate key as a bounded repr, so a key cannot forge a terminal line or
+    flood one, and each refuses an integer past the interpreter's digit limit as its own
+    error rather than as a bare ValueError that reached the CLI as a traceback or as the
+    wrong code.
+    """
+
+    READERS: tuple[tuple[str, Callable[[bytes], object], type[ValueError]], ...] = (
+        ("evaluations file", evaluations_module._parse_json_bounded, ReportInputError),
+        ("report", validation_module._parse_report_json, ReportDocumentError),
+        ("rule source", policy_source._parse_json_bounded, PolicySourceError),
+        ("schema content", schema_source._parse_json_bounded, SchemaSourceError),
+    )
+
+    def setUp(self) -> None:
+        # Sized against the default digit limit, not whatever PYTHONINTMAXSTRDIGITS set.
+        self.addCleanup(sys.set_int_max_str_digits, sys.get_int_max_str_digits())
+        sys.set_int_max_str_digits(sys.int_info.default_max_str_digits)
+
+    def refusal(self, reader: Callable[[bytes], object], error: type[ValueError], content: bytes):
+        with self.assertRaises(error) as caught:
+            reader(content)
+        # Exactly the reader's own error: a bare ValueError is what the CLI mis-coded.
+        self.assertIs(type(caught.exception), error)
+        return str(caught.exception)
+
+    def test_a_duplicate_key_is_quoted_so_no_line_is_forged(self) -> None:
+        key = b'"a\\nerror: forged: x\\u2028\\u001b[2J"'
+        content = b"{" + key + b": 1, " + key + b": 2}"
+        for name, reader, error in self.READERS:
+            with self.subTest(reader=name):
+                message = self.refusal(reader, error, content)
+                self.assertEqual(
+                    message,
+                    "duplicate JSON object key is prohibited: "
+                    "'a\\nerror: forged: x\\u2028\\x1b[2J'",
+                )
+
+    def test_a_short_duplicate_key_is_quoted_whole(self) -> None:
+        for name, reader, error in self.READERS:
+            with self.subTest(reader=name):
+                message = self.refusal(
+                    reader, error, b'{"vulnerabilities": 1, "vulnerabilities": 2}'
+                )
+                self.assertEqual(
+                    message, "duplicate JSON object key is prohibited: 'vulnerabilities'"
+                )
+
+    def test_a_long_duplicate_key_is_cut_and_counted(self) -> None:
+        key = b"k" * 5000
+        content = b'{"' + key + b'": 1, "' + key + b'": 2}'
+        for name, reader, error in self.READERS:
+            with self.subTest(reader=name):
+                message = self.refusal(reader, error, content)
+                self.assertEqual(
+                    message,
+                    "duplicate JSON object key is prohibited: "
+                    f"'{'k' * (SHOWN_LIMIT - 1)}... (5002 characters)",
+                )
+
+    def test_an_integer_past_the_digit_limit_is_refused_as_the_readers_error(self) -> None:
+        limit = sys.int_info.default_max_str_digits
+        content = b'{"n": ' + b"9" * (limit + 1) + b"}"
+        for name, reader, error in self.READERS:
+            with self.subTest(reader=name):
+                message = self.refusal(reader, error, content)
+                self.assertEqual(message, f"{name} contains an integer longer than {limit} digits")
+
+    def test_an_integer_at_the_digit_limit_still_reads(self) -> None:
+        limit = sys.int_info.default_max_str_digits
+        content = b'{"n": ' + b"9" * limit + b"}"
+        for name, reader, _error in self.READERS:
+            with self.subTest(reader=name):
+                self.assertEqual(reader(content), {"n": int("9" * limit)})
 
 
 if __name__ == "__main__":

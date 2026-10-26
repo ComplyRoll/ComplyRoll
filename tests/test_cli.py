@@ -36,6 +36,7 @@ from complyroll.adapters import (
     classify_ingest,
     ingest_stig_artifact,
 )
+from complyroll.adapters.common import parse_timestamp
 from complyroll.adapters.hdf import HDF_PARSER_VERSION
 from complyroll.adapters.sarif import SARIF_PARSER_VERSION
 from complyroll.cli import main
@@ -1636,7 +1637,9 @@ COVERED_AUDIT_CODES = {
 #: `observation.recorded` stores exactly what `to_canonical_dict` writes, and this is
 #: text the replay reader refuses, so the contract refuses to store it in the first
 #: place. The refusal lands with the store already open, which is what makes it worth
-#: a test of its own.
+#: a test of its own. The XCCDF reader now refuses such a clock itself (`parse_clock`), so
+#: the tests read it through `unguarded_stig_clocks`, standing in for any reading that
+#: hands the store a payload its contract refuses.
 SUB_MINUTE_OFFSET_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
 <Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="odd">
   <TestResult id="odd" end-time="2026-08-03T09:00:00+00:01:30">
@@ -1648,6 +1651,14 @@ SUB_MINUTE_OFFSET_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
   </TestResult>
 </Benchmark>
 """
+
+
+@contextmanager
+def unguarded_stig_clocks() -> Iterator[None]:
+    """Read CKLB and XCCDF clocks with the unguarded parser the STIG adapter once used."""
+
+    with patch("complyroll.adapters.stig.parse_clock", parse_timestamp):
+        yield
 
 
 def current_rating(document: dict[str, Any], source_record_id: str) -> Any:
@@ -2743,9 +2754,10 @@ class PersistedIngestTests(PersistedStoreTestCase):
         artifact = self.workspace / "odd.xml"
         artifact.write_text(SUB_MINUTE_OFFSET_XCCDF, encoding="utf-8")
 
-        code, out, err = run(
-            ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
-        )
+        with unguarded_stig_clocks():
+            code, out, err = run(
+                ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
+            )
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
@@ -2776,17 +2788,18 @@ class PersistedIngestTests(PersistedStoreTestCase):
         refused = self.workspace / "odd.xml"
         refused.write_text(SUB_MINUTE_OFFSET_XCCDF, encoding="utf-8")
 
-        code, out, err = run(
-            [
-                "ingest",
-                PERSISTED_ARTIFACTS[1],
-                str(refused),
-                "--db",
-                str(self.database),
-                "--as-of",
-                INGESTED_AT,
-            ]
-        )
+        with unguarded_stig_clocks():
+            code, out, err = run(
+                [
+                    "ingest",
+                    PERSISTED_ARTIFACTS[1],
+                    str(refused),
+                    "--db",
+                    str(self.database),
+                    "--as-of",
+                    INGESTED_AT,
+                ]
+            )
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
@@ -2810,9 +2823,10 @@ class PersistedIngestTests(PersistedStoreTestCase):
         artifact = self.workspace / "odd.xml"
         artifact.write_text(SUB_MINUTE_OFFSET_XCCDF, encoding="utf-8")
 
-        code, _, err = run(
-            ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
-        )
+        with unguarded_stig_clocks():
+            code, _, err = run(
+                ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
+            )
 
         self.assertEqual(code, 1)
         self.assertIn("error: event_contract_invalid", err)
@@ -4668,16 +4682,17 @@ class PersistedStorePublicationTests(PersistedStoreTestCase):
         return artifact
 
     def ingest_refused(self) -> tuple[int, str, str]:
-        return run(
-            [
-                "ingest",
-                str(self.refused_artifact()),
-                "--db",
-                str(self.database),
-                "--as-of",
-                INGESTED_AT,
-            ]
-        )
+        with unguarded_stig_clocks():
+            return run(
+                [
+                    "ingest",
+                    str(self.refused_artifact()),
+                    "--db",
+                    str(self.database),
+                    "--as-of",
+                    INGESTED_AT,
+                ]
+            )
 
     def test_a_successful_first_ingest_leaves_exactly_the_database_file(self) -> None:
         self.ingest_fixtures()
@@ -8320,8 +8335,18 @@ class InputRefusalCommandTests(unittest.TestCase):
         link.symlink_to(link)
         return link
 
-    def report_with(self, *, artifact: Path | None = None, evaluations: Path | None = None):
+    def report_with(
+        self,
+        *,
+        artifact: Path | None = None,
+        evaluations: Path | None = None,
+        ubuntu: Path | None = None,
+    ):
+        """Run the fixture report with its artifacts, evaluations or Ubuntu checklist swapped."""
+
         argv = list(REPORT_ARGUMENTS)
+        if ubuntu is not None:
+            argv[2] = str(ubuntu)
         if artifact is not None:
             argv[2:5] = [str(artifact)]
         if evaluations is not None:
@@ -8394,6 +8419,66 @@ class InputRefusalCommandTests(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertTrue(err.startswith("error: artifact_read_failed: "), err)
         self.assertEqual(len(err.splitlines()), 1)
+
+    def test_a_clock_flag_outside_the_supported_years_is_refused_coded(self) -> None:
+        # Year 1 used to overflow in the compiler and end the run in a traceback.
+        for flag in ("--as-of", "--from", "--to", "--detected-at"):
+            for value in ("0001-01-01T00:00:00Z", "9999-12-31T23:59:59Z"):
+                with self.subTest(flag=flag, value=value):
+                    argv = list(REPORT_ARGUMENTS)
+                    argv[argv.index(flag) + 1] = value
+                    code, out, err = run(argv)
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertEqual(
+                        err,
+                        f"error: invalid_input: {flag} must fall in the years 1970 through 9000 "
+                        f"UTC, got '{value}'\n",
+                    )
+
+    def test_a_long_clock_flag_is_refused_without_being_echoed(self) -> None:
+        argv = list(REPORT_ARGUMENTS)
+        argv[argv.index("--as-of") + 1] = "2" * 100_000
+
+        code, out, err = run(argv)
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err, "error: invalid_input: --as-of must be at most 64 characters, got 100000\n"
+        )
+
+    def test_ingest_refuses_an_unsupported_as_of_and_creates_no_store(self) -> None:
+        database = self.workspace / "history.db"
+
+        code, out, err = run(
+            [
+                "ingest",
+                str(FIXTURES / "ubuntu-host.cklb"),
+                "--db",
+                str(database),
+                "--as-of",
+                "2026-08-21T12:00:00+05:30:15",
+            ]
+        )
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err,
+            "error: invalid_input: --as-of must have a UTC offset in whole minutes, got "
+            "'2026-08-21T12:00:00+05:30:15'\n",
+        )
+        self.assertFalse(database.exists())
+
+    def test_a_checklist_clock_no_report_can_compute_with_is_read_as_absent(self) -> None:
+        # Year 9999 used to ingest and then overflow the deadline arithmetic in every report.
+        document = json.loads((FIXTURES / "ubuntu-host.cklb").read_text(encoding="utf-8"))
+        document["completed_at"] = "9999-12-31T23:59:59Z"
+        artifact = self.write("ubuntu-host.cklb", json.dumps(document))
+
+        code, out, err = self.report_with(ubuntu=artifact)
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: source_timestamp_missing:", err)
+        self.assertNotIn("9999", out)
 
     def test_a_symlink_loop_is_refused_alike_where_resolve_raises(self) -> None:
         # Python 3.11's Path.resolve raises RuntimeError on a loop, where 3.13 and later

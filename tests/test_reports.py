@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from itertools import permutations
 from pathlib import Path
 from typing import Literal, overload
@@ -57,6 +57,7 @@ from complyroll.reports import (
     compile_vdt_report,
     load_evaluations,
     parse_evaluations,
+    parse_rfc3339,
     project_avi,
     project_historical,
     project_vdt,
@@ -4573,6 +4574,99 @@ class GoldenFailedHistoricalReportTests(unittest.TestCase):
 
     def test_markdown_carries_the_json(self) -> None:
         assert_markdown_carries_the_json(self, self.report, sections=HISTORICAL_DETAIL_SECTIONS)
+
+
+class ClockParserTests(unittest.TestCase):
+    """`parse_rfc3339` reads an instant with the guards the adapters' `parse_clock` applies.
+
+    It reads every CLI clock flag and every evaluations file instant, so an instant no report
+    can compute with is refused where the operator typed it, the same way on every interpreter.
+    """
+
+    def test_an_instant_keeps_its_offset(self) -> None:
+        for text, expected in (
+            ("2026-08-21T12:00:00Z", datetime(2026, 8, 21, 12, tzinfo=UTC)),
+            ("2026-08-21t12:00:00z", datetime(2026, 8, 21, 12, tzinfo=UTC)),
+            (" 2026-08-21T12:00:00Z ", datetime(2026, 8, 21, 12, tzinfo=UTC)),
+            (
+                "2026-08-21T05:00:00-07:00",
+                datetime(2026, 8, 21, 5, tzinfo=timezone(timedelta(hours=-7))),
+            ),
+            ("1970-01-01T00:00:00Z", datetime(1970, 1, 1, tzinfo=UTC)),
+            ("9000-12-31T23:59:59Z", datetime(9000, 12, 31, 23, 59, 59, tzinfo=UTC)),
+        ):
+            with self.subTest(text=text):
+                parsed = parse_rfc3339(text, "--as-of")
+                self.assertEqual(parsed, expected)
+                self.assertEqual(parsed.utcoffset(), expected.utcoffset())
+
+    def test_the_end_of_day_hour_is_the_next_midnight_on_every_interpreter(self) -> None:
+        # Python reads hour 24 only from 3.14; RFC 3339 leaves it to the spec's 24:00.
+        for text in ("2026-08-31T24:00:00Z", "2026-08-31T24:00Z", "2026-08-31T24:00:00.000Z"):
+            with self.subTest(text=text):
+                self.assertEqual(parse_rfc3339(text, "--as-of"), datetime(2026, 9, 1, tzinfo=UTC))
+        for text in ("2026-08-31T24:30:00Z", "2026-08-31T24:00:01Z", "20260831T24:00:00Z"):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(
+                    ReportInputError,
+                    re.escape(f"--as-of must be an RFC 3339 timestamp, got '{text}'"),
+                ):
+                    parse_rfc3339(text, "--as-of")
+
+    def test_an_offset_with_seconds_is_refused(self) -> None:
+        text = "2026-08-21T12:00:00+05:30:15"
+        with self.assertRaisesRegex(
+            ReportInputError,
+            re.escape(f"--as-of must have a UTC offset in whole minutes, got '{text}'"),
+        ):
+            parse_rfc3339(text, "--as-of")
+
+    def test_an_instant_outside_the_supported_years_is_refused(self) -> None:
+        for text in (
+            "0001-01-01T00:00:00+01:00",
+            "0001-01-01T00:00:00Z",
+            "1969-12-31T23:59:59Z",
+            "9001-01-01T00:00:00Z",
+            "9999-12-31T23:59:59-01:00",
+            "9999-12-31T23:59:59Z",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(ReportInputError) as caught:
+                    parse_rfc3339(text, "--as-of")
+                self.assertEqual(
+                    str(caught.exception),
+                    f"--as-of must fall in the years 1970 through 9000 UTC, got '{text}'",
+                )
+
+    def test_a_long_value_is_refused_without_being_quoted(self) -> None:
+        for text in ("2" * 65, "2026-08-21T12:00:00Z" + " " * 60, "9" * (1024 * 1024)):
+            with self.subTest(length=len(text)):
+                with self.assertRaises(ReportInputError) as caught:
+                    parse_rfc3339(text, "--as-of")
+                self.assertEqual(
+                    str(caught.exception),
+                    f"--as-of must be at most 64 characters, got {len(text)}",
+                )
+
+    def test_the_existing_refusals_keep_their_text(self) -> None:
+        for text, message in (
+            ("21 August", "--as-of must be an RFC 3339 timestamp, got '21 August'"),
+            ("2026-08-21T12:00:00", "--as-of must include a UTC offset, got '2026-08-21T12:00:00'"),
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(ReportInputError) as caught:
+                    parse_rfc3339(text, "--as-of")
+                self.assertEqual(str(caught.exception), message)
+
+    def test_an_evaluations_instant_is_read_the_same_way(self) -> None:
+        for field_name, value in (
+            ("completedAt", "0001-01-01T00:00:00+01:00"),
+            ("completedAt", "2026-08-04T12:00:00+00:00:30"),
+        ):
+            with self.subTest(value=value):
+                payload = evaluation_json(**{field_name: value}).encode("utf-8")
+                with self.assertRaisesRegex(ReportInputError, "completedAt must"):
+                    parse_evaluations(payload)
 
 
 if __name__ == "__main__":

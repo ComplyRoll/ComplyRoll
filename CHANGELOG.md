@@ -6,6 +6,15 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- A CKLB or XCCDF clock outside the years 1970 through 9000 UTC no longer ingests. The two
+  readers used `parse_timestamp`, which kept any year, so the file read cleanly; with year 1 and
+  a positive offset, or year 9999, every report of it then ended in an `OverflowError`
+  traceback, on the stateless path and from a store. They now read through `parse_clock`, as the SARIF, HDF and CycloneDX readers do: such
+  a clock, an offset carrying seconds, or an hour 24 other than 24:00 counts as absent, as an
+  unparsable one always has, so the next clock key is read and otherwise the reading says its
+  source time is missing. The spec's 24:00 reads as the next midnight on every interpreter, where
+  only 3.14 read it. An offset carrying seconds was refused at append as `event_contract_invalid`
+  and now reads as absent.
 - Stored text that is not valid UTF-8 no longer reads as `store_unavailable` quoting the bytes,
   in every command and in `store verify`, and text such as "database is locked" in that column no
   longer reads as a busy store. Reads refuse it as `store_integrity`, naming the column and never

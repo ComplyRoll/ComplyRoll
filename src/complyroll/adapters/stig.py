@@ -30,7 +30,7 @@ from .base import (
 from .common import (
     make_observation,
     missing_time_diagnostic,
-    parse_timestamp,
+    parse_clock,
     text_of,
     unique,
 )
@@ -150,9 +150,11 @@ class CklbAdapter:
                 )
             )
 
+        # SECURITY: A clock outside the years every report can compute with counts as absent,
+        # as an unparsable one does, so the next key is read (CL-54).
         observed_at = None
         for timestamp_key in ("completed_at", "scan_time", "scan_date", "updated_at"):
-            observed_at = parse_timestamp(data.get(timestamp_key))
+            observed_at = parse_clock(data.get(timestamp_key))
             if observed_at:
                 break
         if observed_at is None:
@@ -446,7 +448,7 @@ class XccdfAdapter:
                         artifact.name,
                     )
                 )
-            observed_at = parse_timestamp(container.get("end-time")) or parse_timestamp(
+            observed_at = parse_clock(container.get("end-time")) or parse_clock(
                 container.get("start-time")
             )
             if observed_at is None:

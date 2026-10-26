@@ -14,14 +14,23 @@ import re
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from complyroll.adapters.common import (
+    END_OF_DAY,
+    HOUR_24,
+    MAX_CLOCK_YEAR,
+    MIN_CLOCK_YEAR,
+    parse_clock,
+)
 from complyroll.models import CaseStatus, PainRating
 from complyroll.store.sqlite import shown
 
 MAX_EVALUATIONS_BYTES = 8 * 1024 * 1024
+# An RFC 3339 instant with nine fraction digits and an offset is 35 characters.
+MAX_TIMESTAMP_CHARS = 64
 MAX_EVALUATIONS_DEPTH = 64
 MAX_EVALUATIONS_VALUES = 200_000
 # json.loads decodes the escape of a lone surrogate, such as "\\ud800", into text that
@@ -457,20 +466,46 @@ def _parse_timestamp(value: Any, field_name: str) -> datetime:
 
 
 def parse_rfc3339(value: str, field_name: str) -> datetime:
-    """Parse an RFC 3339 timestamp, requiring an explicit UTC offset."""
+    """Parse an RFC 3339 instant with the guards an adapter's source clock gets.
 
+    `parse_clock` is the one reading: a whole-minute offset, the spec's 24:00 as the next
+    midnight on every interpreter, and the years 1970 through 9000 UTC, so no report or
+    writer overflows on an instant an operator typed. Only the refusal text is worked out
+    here, and only once the value is known to be short enough to quote.
+    """
+
+    if len(value) > MAX_TIMESTAMP_CHARS:
+        raise ReportInputError(
+            f"{field_name} must be at most {MAX_TIMESTAMP_CHARS} characters, got {len(value)}"
+        )
     text = value.strip()
     if text.endswith(("Z", "z")):
         text = f"{text[:-1]}+00:00"
+    timestamp = parse_clock(text)
+    if timestamp is None:
+        raise ReportInputError(f"{field_name} {_clock_refusal(text)}, got {value!r}")
+    return timestamp
+
+
+def _clock_refusal(text: str) -> str:
+    """Say why `parse_clock` refused one stripped instant, offset already spelled out."""
+
+    end_of_day = END_OF_DAY.fullmatch(text)
+    if end_of_day is not None:
+        day, clock, zone = end_of_day.groups()
+        text = f"{day}T00{clock}{zone}"
+    elif HOUR_24.match(text):
+        return "must be an RFC 3339 timestamp"
     try:
         timestamp = datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise ReportInputError(
-            f"{field_name} must be an RFC 3339 timestamp, got {value!r}"
-        ) from exc
-    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-        raise ReportInputError(f"{field_name} must include a UTC offset, got {value!r}")
-    return timestamp
+    except ValueError:
+        return "must be an RFC 3339 timestamp"
+    offset = timestamp.utcoffset()
+    if offset is None:
+        return "must include a UTC offset"
+    if offset % timedelta(minutes=1):
+        return "must have a UTC offset in whole minutes"
+    return f"must fall in the years {MIN_CLOCK_YEAR} through {MAX_CLOCK_YEAR} UTC"
 
 
 def _reject_unknown_keys(value: dict[str, Any], allowed: frozenset[str], prefix: str) -> None:

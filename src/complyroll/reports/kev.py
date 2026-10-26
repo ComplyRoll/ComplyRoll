@@ -421,18 +421,13 @@ def _date_released(value: str) -> datetime:
     if len(value) > MAX_DATE_RELEASED_CHARS:
         raise _refusal("", f"dateReleased must be at most {MAX_DATE_RELEASED_CHARS} characters")
     _matching(value, _DATE_RELEASED, "", "dateReleased", "an RFC 3339 timestamp")
+    # parse_rfc3339 refuses an impossible date and keeps the years 1970 through 9000 UTC, so
+    # the conversion below cannot overflow.
     try:
         parsed = parse_rfc3339(value, "dateReleased")
-    except ReportInputError:
-        raise _refusal("", f"dateReleased must be a real RFC 3339 instant, got {value!r}") from None
-    # NOTE: Year 1 with a positive offset and year 9999 with a negative one overflow here.
-    try:
-        released = parsed.astimezone(UTC)
-    except OverflowError:
-        released = None
-    if released is None or not MIN_CLOCK_YEAR <= released.year <= MAX_CLOCK_YEAR:
-        raise _refusal("", f"dateReleased must fall in {_year_window()} UTC, got {value!r}")
-    return released
+    except ReportInputError as exc:
+        raise _refusal("", str(exc)) from None
+    return parsed.astimezone(UTC)
 
 
 def _count(raw: Mapping[str, Any]) -> int:

@@ -265,6 +265,94 @@ class StigAdapterTests(unittest.TestCase):
         self.assertEqual(result.errors[0].code, "unsupported_artifact")
 
 
+#: Clocks `parse_clock` refuses: outside the years 1970 through 9000 UTC (year 1 east also
+#: overflows the UTC conversion), an offset with seconds, and an hour 24 that is not 24:00.
+REFUSED_STIG_CLOCKS = (
+    "0001-01-01T00:00:00+01:00",
+    "0001-01-01T00:00:00Z",
+    "1969-12-31T23:59:59Z",
+    "9001-01-01T00:00:00Z",
+    "9999-12-31T23:59:59Z",
+    "2026-08-03T09:00:00+00:01:30",
+    "2026-08-03T24:30:00Z",
+)
+
+
+def cklb_with(**clocks: str) -> bytes:
+    """Return the Ubuntu checklist with the given top-level clock keys set."""
+
+    document = json.loads((FIXTURES / "ubuntu-host.cklb").read_text(encoding="utf-8"))
+    document.update(clocks)
+    return json.dumps(document).encode("utf-8")
+
+
+def xccdf_with(**attributes: str) -> bytes:
+    """Return a one-rule XCCDF TestResult carrying the given attributes."""
+
+    spelled = " ".join(f'{name.replace("_", "-")}="{value}"' for name, value in attributes.items())
+    return f"""<TestResult xmlns="http://checklists.nist.gov/xccdf/1.2" id="clocked" {spelled}>
+      <target>synthetic-host</target>
+      <rule-result idref="synthetic_rule_one" severity="low"><result>fail</result></rule-result>
+    </TestResult>""".encode()
+
+
+class StigClockGuardTests(unittest.TestCase):
+    """CKLB and XCCDF read their clocks through `parse_clock`, as the JSON adapters do.
+
+    The unguarded parser kept year 1 and year 9999, which then overflowed every report.
+    A refused clock counts as absent, as an unparsable one always has, so the next key is
+    read and, when none is left, the reading says its time is missing.
+    """
+
+    def read(self, name: str, content: bytes) -> IngestResult:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / name
+            path.write_bytes(content)
+            return ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+    def assert_untimed(self, result: IngestResult) -> None:
+        self.assertTrue(result.successful)
+        self.assertEqual({item.observed_at for item in result.observations}, {None})
+        self.assertIn("source_timestamp_missing", {item.code for item in result.warnings})
+
+    def test_a_cklb_clock_parse_clock_refuses_is_absent(self) -> None:
+        for clock in REFUSED_STIG_CLOCKS:
+            with self.subTest(clock=clock):
+                self.assert_untimed(self.read("host.cklb", cklb_with(completed_at=clock)))
+
+    def test_a_refused_cklb_clock_falls_through_to_the_next_key(self) -> None:
+        content = cklb_with(completed_at="9999-12-31T23:59:59Z", scan_time="2026-08-03T09:00:00Z")
+
+        result = self.read("host.cklb", content)
+
+        self.assertEqual(
+            {item.observed_at for item in result.observations},
+            {datetime(2026, 8, 3, 9, tzinfo=UTC)},
+        )
+
+    def test_the_end_of_day_clock_is_the_next_midnight_on_every_interpreter(self) -> None:
+        result = self.read("host.cklb", cklb_with(completed_at="2026-08-31T24:00:00Z"))
+
+        self.assertEqual(
+            {item.observed_at for item in result.observations}, {datetime(2026, 9, 1, tzinfo=UTC)}
+        )
+
+    def test_an_xccdf_clock_parse_clock_refuses_is_absent(self) -> None:
+        for clock in REFUSED_STIG_CLOCKS:
+            with self.subTest(clock=clock):
+                self.assert_untimed(self.read("host.xml", xccdf_with(end_time=clock)))
+
+    def test_a_refused_xccdf_end_time_falls_back_to_the_start_time(self) -> None:
+        content = xccdf_with(end_time="9999-12-31T23:59:59Z", start_time="2026-08-03T08:00:00Z")
+
+        result = self.read("host.xml", content)
+
+        self.assertEqual(
+            [item.observed_at for item in result.observations],
+            [datetime(2026, 8, 3, 8, tzinfo=UTC)],
+        )
+
+
 class ArfAdapterTests(unittest.TestCase):
     """ARF is an advertised input, and its envelope is not a bare XCCDF file.
 
@@ -979,7 +1067,7 @@ class CommonHelperMoveTests(unittest.TestCase):
     def test_the_stig_adapters_use_the_shared_helpers(self) -> None:
         self.assertIs(stig.text_of, common.text_of)
         self.assertIs(stig.unique, common.unique)
-        self.assertIs(stig.parse_timestamp, common.parse_timestamp)
+        self.assertIs(stig.parse_clock, common.parse_clock)
         self.assertIs(stig.make_observation, common.make_observation)
         self.assertIs(stig.missing_time_diagnostic, common.missing_time_diagnostic)
 

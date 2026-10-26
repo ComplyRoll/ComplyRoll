@@ -20,9 +20,7 @@ from types import MappingProxyType
 from typing import Any
 
 from complyroll.adapters.common import (
-    MAX_CLOCK_YEAR,
     MAX_IDENTITY_CHARS,
-    MIN_CLOCK_YEAR,
     identity_problem,
 )
 from complyroll.adapters.safeio import (
@@ -521,22 +519,13 @@ def _instant(value: str, key: str, where: str) -> datetime:
         raise _refusal(where, f"{key} must be at most {MAX_INSTANT_CHARS} characters")
     if _INSTANT.fullmatch(value) is None:
         raise _refusal(where, f"{key} must be an RFC 3339 timestamp, got {_excerpt(value)}")
+    # parse_rfc3339 refuses an impossible date and keeps the years 1970 through 9000 UTC, so
+    # the conversion below cannot overflow.
     try:
         parsed = parse_rfc3339(value, key)
-    except ReportInputError:
-        raise _refusal(where, f"{key} must be a real RFC 3339 instant, got {value!r}") from None
-    # NOTE: Year 1 with a positive offset and year 9999 with a negative one overflow here.
-    try:
-        instant: datetime | None = parsed.astimezone(UTC)
-    except OverflowError:
-        instant = None
-    if instant is None or not MIN_CLOCK_YEAR <= instant.year <= MAX_CLOCK_YEAR:
-        raise _refusal(
-            where,
-            f"{key} must fall in the years {MIN_CLOCK_YEAR} through {MAX_CLOCK_YEAR} UTC, "
-            f"got {value!r}",
-        )
-    return instant
+    except ReportInputError as exc:
+        raise _refusal(where, str(exc)) from None
+    return parsed.astimezone(UTC)
 
 
 def _optional_instant(raw: Mapping[str, Any], key: str, where: str) -> datetime | None:

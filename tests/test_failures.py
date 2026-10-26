@@ -19,7 +19,6 @@ import subprocess
 import sys
 import tempfile
 import traceback
-import unicodedata
 import unittest
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -59,6 +58,7 @@ from complyroll.adapters.base import (
     IngestResult,
     ParsedDocument,
 )
+from complyroll.adapters.categories import prohibited_category
 from complyroll.adapters.common import (
     MAX_METADATA_VALUE_CHARS,
     MAX_OBSERVATION_JSON_BYTES,
@@ -122,9 +122,6 @@ GOOD_RULE: dict[str, Any] = {
     "severity": "high",
     "rule_title": "synthetic rule",
 }
-
-# Code points diagnostic_text removes or maps to a newline.
-PROHIBITED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
 # Emitters that pass a level through rather than choose one. Diagnostics.emit re-renders the
 # levels its add calls chose, and failure_diagnostics can only lower a level.
@@ -236,7 +233,7 @@ def prohibited(text: str) -> list[str]:
     return [
         f"U+{ord(char):04X}"
         for char in text
-        if unicodedata.category(char) in PROHIBITED_CATEGORIES and char not in "\t\n"
+        if prohibited_category(char) is not None and char not in "\t\n"
     ]
 
 
@@ -1141,6 +1138,59 @@ class FailureClassificationTests(unittest.TestCase):
             FailureClassification(CONTENT, None, ("no_observations",), clock=INVOKED)
         with self.assertRaisesRegex(ValueError, "only an execution failure"):
             FailureClassification(None, UnmintableReason.NO_DIGEST, (), clock=INVOKED)
+
+    def test_an_execution_failure_names_execution_unsuccessful(self) -> None:
+        with self.assertRaisesRegex(ValueError, "execution failure names execution_unsuccessful"):
+            FailureClassification(EXECUTION, None, ("invalid_run",))
+        with self.assertRaisesRegex(ValueError, "execution failure names execution_unsuccessful"):
+            FailureClassification(EXECUTION, None, ("no_observations",), clock=INVOKED)
+        accepted = FailureClassification(
+            EXECUTION, None, (EXECUTION_UNSUCCESSFUL,), side_record=True, clock=INVOKED
+        )
+        self.assertTrue(accepted.side_record)
+
+    def test_a_classification_carries_at_least_one_code(self) -> None:
+        for failure_class, reason in (
+            (EXECUTION, None),
+            (PARSE, None),
+            (CONTENT, None),
+            (None, UnmintableReason.NO_DIGEST),
+            (None, UnmintableReason.READ_ELSEWHERE),
+        ):
+            with self.subTest(failure_class=failure_class, reason=reason):
+                with self.assertRaisesRegex(ValueError, "at least one code"):
+                    FailureClassification(failure_class, reason, ())
+        with self.assertRaisesRegex(ValueError, "at least one code"):
+            FailureClassification.unmintable(UnmintableReason.UNKNOWN_CODE, [])
+
+    def test_side_record_is_a_bool(self) -> None:
+        for value in (1, "yes", None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TypeError, "side_record must be a bool"):
+                    FailureClassification(
+                        EXECUTION,
+                        None,
+                        (EXECUTION_UNSUCCESSFUL,),
+                        side_record=value,  # type: ignore[arg-type]
+                    )
+
+    def test_a_clock_is_an_aware_datetime(self) -> None:
+        with self.assertRaisesRegex(ValueError, "clock must carry a UTC offset"):
+            FailureClassification(
+                EXECUTION, None, (EXECUTION_UNSUCCESSFUL,), clock=INVOKED.replace(tzinfo=None)
+            )
+        with self.assertRaisesRegex(TypeError, "clock must be a datetime or None"):
+            FailureClassification(
+                EXECUTION,
+                None,
+                (EXECUTION_UNSUCCESSFUL,),
+                clock="2026-08-31T09:30:00Z",  # type: ignore[arg-type]
+            )
+        offset = INVOKED.astimezone(timezone(timedelta(hours=-7)))
+        self.assertEqual(
+            FailureClassification(EXECUTION, None, (EXECUTION_UNSUCCESSFUL,), clock=offset).clock,
+            offset,
+        )
 
     def test_a_refusal_sorts_and_deduplicates_its_codes(self) -> None:
         refused = FailureClassification.unmintable(

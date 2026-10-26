@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -490,15 +491,16 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _tolerate_unencodable_output()
     args = build_parser().parse_args(argv)
 
     if args.command == "version":
-        print(f"ComplyRoll {__version__}")
+        _say(f"ComplyRoll {__version__}")
         return 0
 
     if args.command == "plan":
         for phase, outcome in PHASES:
-            print(f"Phase {phase}: {outcome}")
+            _say(f"Phase {phase}: {outcome}")
         return 0
 
     if args.command == "ingest":
@@ -657,7 +659,7 @@ def _run_ingest(args: argparse.Namespace) -> int:
     # observations it then discarded.
     _write_diagnostics(stderr, pending)
     for line in recorded:
-        print(line)
+        _say(line)
     # A rerun finds its failures already recorded and still exits 3: the store holds them,
     # so the run's input still failed to read (ADR 0014).
     return EXIT_DETECTION_FAILURES if failures_seen else 0
@@ -872,7 +874,7 @@ def _run_cases_correlate(args: argparse.Namespace) -> int:
     def correlate() -> int:
         with _open_repository(database) as repository:
             outcome = correlate_cases(repository, metadata=metadata, now=_now())
-        print(
+        _say(
             f"created {len(outcome.created)} case(s), "
             f"linked {outcome.linked} observation(s), "
             f"skipped {outcome.skipped_links} already-linked observation(s)"
@@ -913,17 +915,17 @@ def _run_cases_attest(args: argparse.Namespace) -> int:
                 now=_now(),
             )
         for tracking_id in outcome.not_applicable:
-            print(
+            _say(
                 f"warning: attestation_not_applicable: {tracking_id} carries a source timestamp",
                 file=stderr,
             )
         if args.all_missing:
             # A sweep chooses its own cases, so the count it chose is the one fact the
             # operator cannot read off the command line.
-            print(
+            _say(
                 f"selected {len(tracking_ids)} case(s) with no source timestamp on any observation"
             )
-        print(
+        _say(
             f"attested {len(outcome.attested)} case(s), "
             f"skipped {len(outcome.skipped)} unchanged case(s), "
             f"{len(outcome.not_applicable)} not applicable case(s)"
@@ -950,7 +952,7 @@ def _run_cases_evaluate(args: argparse.Namespace) -> int:
         with _open_repository(database) as repository:
             outcome = apply_evaluations(repository, evaluations, metadata=metadata, now=_now())
         for warning in outcome.warnings:
-            print(f"warning: {warning}", file=stderr)
+            _say(f"warning: {warning}", file=stderr)
         for label, appended, skipped in (
             ("evaluations", outcome.evaluations_appended, outcome.evaluations_skipped),
             ("pain reductions", outcome.reductions_appended, outcome.reductions_skipped),
@@ -961,7 +963,7 @@ def _run_cases_evaluate(args: argparse.Namespace) -> int:
                 outcome.identifications_skipped,
             ),
         ):
-            print(f"{label}: {appended} appended, {skipped} skipped")
+            _say(f"{label}: {appended} appended, {skipped} skipped")
         return 0
 
     return _persisted_run(stderr, evaluate)
@@ -1007,10 +1009,10 @@ def _run_cases_coverage(args: argparse.Namespace) -> int:
         _write_diagnostics(stderr, outcome.diagnostics)
         # Each list is in window order: what this run recorded, then what history held.
         for gap in outcome.recorded:
-            print(f"{gap.observation_id}: recorded {_gap_window(gap)}")
+            _say(f"{gap.observation_id}: recorded {_gap_window(gap)}")
         for gap in outcome.already_recorded:
-            print(f"{gap.observation_id}: already_recorded {_gap_window(gap)}")
-        print(
+            _say(f"{gap.observation_id}: already_recorded {_gap_window(gap)}")
+        _say(
             f"recorded {len(outcome.recorded)} coverage gap(s), "
             f"skipped {len(outcome.already_recorded)} already-recorded coverage gap(s)"
         )
@@ -1040,7 +1042,7 @@ def _run_cases_list(args: argparse.Namespace) -> int:
         with _open_repository(database) as repository:
             cases = fold_all_cases(repository)
         for line in _case_table(cases):
-            print(line)
+            _say(line)
         return 0
 
     return _persisted_run(stderr, listing)
@@ -1061,7 +1063,7 @@ def _run_cases_history(args: argparse.Namespace) -> int:
         with _open_repository(database) as repository:
             entries = case_history(repository, tracking_id)
         for entry in entries:
-            print(entry.render())
+            _say(entry.render())
         return 0
 
     return _persisted_run(stderr, listing)
@@ -1081,11 +1083,11 @@ def _run_store_verify(args: argparse.Namespace) -> int:
             report = store.verify_history()
             if not report.ok:
                 for fault in report.faults:
-                    print(f"error: {fault.code}: {_fault_message(fault)}", file=stderr)
-                print(report.render(), file=stderr)
+                    _say(f"error: {fault.code}: {_fault_message(fault)}", file=stderr)
+                _say(report.render(), file=stderr)
                 # A log with holes in it cannot be read event by event, and a contract
                 # failure read off damaged rows would describe the damage twice.
-                print(
+                _say(
                     "warning: payload_contracts_unchecked: the faults above were "
                     "reported instead; verify again once they are fixed",
                     file=stderr,
@@ -1100,14 +1102,14 @@ def _run_store_verify(args: argparse.Namespace) -> int:
 
         if faults:
             for domain_fault in faults:
-                print(f"error: {domain_fault.render()}", file=stderr)
-            print(
+                _say(f"error: {domain_fault.render()}", file=stderr)
+            _say(
                 f"faults: {len(faults)} domain fault(s) in "
                 f"{report.checked_events} verified event(s)",
                 file=stderr,
             )
             return 1
-        print(report.render())
+        _say(report.render())
         return 0
 
     return _persisted_run(stderr, verify)
@@ -1301,7 +1303,7 @@ def _publish(
         return _fail(stderr, "output_write_failed", str(exc), location=location)
 
     if output is None:
-        sys.stdout.write(json_text)
+        sys.stdout.write(_stdout_json(json_text))
     return 0
 
 
@@ -1328,12 +1330,12 @@ def _run_validate(args: argparse.Namespace) -> int:
     provenance = result.provenance
     summary = f"{provenance.schema_id} {provenance.schema_version} {provenance.schema_sha256}"
     if result.is_valid:
-        print(f"valid: {summary}")
+        _say(f"valid: {summary}")
         return 0
     for issue in result.issues:
         location = issue.instance_pointer or "<root>"
-        print(f"{location}: {issue.validator}: {issue.message}", file=stderr)
-    print(f"schema: {summary}", file=stderr)
+        _say(f"{location}: {issue.validator}: {issue.message}", file=stderr)
+    _say(f"schema: {summary}", file=stderr)
     return 1
 
 
@@ -1547,18 +1549,29 @@ def _refuse_input_overwrite(
     outputs: Sequence[Path | None],
     inputs: Sequence[Path],
 ) -> None:
-    resolved_inputs = {item.resolve(): item for item in inputs}
+    resolved_inputs = {_resolved(item): item for item in inputs}
     written: dict[Path, Path] = {}
     for target in outputs:
         if target is None:
             continue
-        resolved = target.resolve()
+        resolved = _resolved(target)
         source = resolved_inputs.get(resolved)
         if source is not None:
             raise ValueError(f"refusing to overwrite the input file {source}")
         if resolved in written:
             raise ValueError(f"refusing to write two outputs to the same file {target}")
         written[resolved] = target
+
+
+def _resolved(path: Path) -> Path:
+    """Return a path with its links followed as far as they go, on every interpreter.
+
+    `Path.resolve` raises `RuntimeError` on a symbolic-link loop on Python 3.11 and returns
+    the path on 3.13 and later. `os.path.realpath` returns it on all of them, so a loop
+    reaches the read that refuses it with a code rather than a traceback.
+    """
+
+    return Path(os.path.realpath(path))
 
 
 class OutputRollbackError(Exception):
@@ -1764,9 +1777,77 @@ def _discard(staged: Sequence[tuple[Path, Path]]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+# SECURITY: File names, stored text and messages that quote either reach a terminal through
+# here. A newline, carriage return, line or paragraph separator, or any other C0 or C1
+# control, DEL included, would forge a line or drive the terminal, so each is spelled as an
+# escape; a tab, which moves no line, is kept (CL-50).
+_TERMINAL_CONTROLS = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
+_SHORT_ESCAPES = {"\n": "\\n", "\r": "\\r"}
+_NON_ASCII = re.compile("[^\x00-\x7f]")
+
+
+def _terminal_text(text: str) -> str:
+    """Return one line of text output with every control character spelled as an escape."""
+
+    return _TERMINAL_CONTROLS.sub(_control_escape, text)
+
+
+def _control_escape(match: re.Match[str]) -> str:
+    char = match.group()
+    if char in _SHORT_ESCAPES:
+        return _SHORT_ESCAPES[char]
+    code = ord(char)
+    return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+
+
+def _say(text: str, *, file: TextIO | None = None) -> None:
+    """Print one line of text output, the one way every command prints one."""
+
+    print(_terminal_text(text), file=file)
+
+
+def _tolerate_unencodable_output() -> None:
+    """Let a stream that cannot encode a character write it as a backslash escape.
+
+    Under `PYTHONIOENCODING=ascii` a strict stream ended the run on the first character it
+    could not encode, and `ingest` did so after its store write had committed, so a saved
+    write exited 1. Only a strict stream changes, and only for characters it cannot encode,
+    so UTF-8 output is byte for byte what it was (CL-51). JSON is escaped before it is written
+    (`_stdout_json`), since a backslash escape is not valid JSON.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None and getattr(stream, "errors", None) == "strict":
+            reconfigure(errors="backslashreplace")
+
+
+def _stdout_json(text: str) -> str:
+    """Return JSON text that stdout can encode, as the same document.
+
+    JSON keeps every character outside ASCII inside a string, so one stdout cannot encode is
+    written as a JSON escape instead, and an encodable document is written unchanged.
+    """
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        return _NON_ASCII.sub(_json_escape, text)
+    return text
+
+
+def _json_escape(match: re.Match[str]) -> str:
+    code = ord(match.group())
+    if code < 0x10000:
+        return f"\\u{code:04x}"
+    code -= 0x10000
+    return f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}"
+
+
 def _write_diagnostics(stream: TextIO, diagnostics: Sequence[ReportDiagnostic]) -> None:
     for diagnostic in diagnostics:
-        print(diagnostic.render(), file=stream)
+        _say(diagnostic.render(), file=stream)
 
 
 def _fail(stream: TextIO, code: str, message: str, location: str | None = None) -> int:
@@ -1776,5 +1857,5 @@ def _fail(stream: TextIO, code: str, message: str, location: str | None = None) 
         message=message,
         location=location,
     )
-    print(diagnostic.render(), file=stream)
+    _say(diagnostic.render(), file=stream)
     return 1

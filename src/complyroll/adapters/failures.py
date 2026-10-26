@@ -160,6 +160,20 @@ class FailureClassification:
             self.side_record or self.clock is not None
         ):
             raise ValueError("only an execution failure is a side record or carries a clock")
+        if not self.codes:
+            raise ValueError("a classification carries at least one code")
+        if (
+            self.failure_class is FailureClass.EXECUTION
+            and EXECUTION_UNSUCCESSFUL not in self.codes
+        ):
+            raise ValueError("an execution failure names execution_unsuccessful in its codes")
+        if not isinstance(self.side_record, bool):
+            raise TypeError("side_record must be a bool")
+        if self.clock is not None:
+            if not isinstance(self.clock, datetime):
+                raise TypeError("clock must be a datetime or None")
+            if self.clock.tzinfo is None or self.clock.utcoffset() is None:
+                raise ValueError("clock must carry a UTC offset")
 
     @property
     def mintable(self) -> bool:

@@ -560,3 +560,65 @@ before the domain audit, so no domain fault in such a store, `failure_schema_unm
 store whose marker and records agree, those two stay content-neutral as the second 2026-10-14
 amendment describes. The
 writer refuses no new shape except the marking append of ADR 0004, and no golden changes.
+
+## Amendment 2026-10-25: clocks no report can compute with
+
+0.3.0a0 read CKLB and XCCDF clocks, and every clock given on the command line or in an evaluations
+file (`--as-of`, `--detected-at`, and an evaluation's `completedAt`, `reducedAt` and `estimatedAt`),
+with unguarded parsers, so a store an earlier build wrote can hold a clock in any year. Such a store
+verified clean, and then some readers ended in an `OverflowError` traceback. The current readers
+hold every one of those clocks to the years 1970 through 9000 UTC (the CHANGELOG has them), so no
+current build writes such a clock; this amendment is about history an earlier build left.
+
+Every use a reader makes of a stored clock that can overflow is refused, and nothing else, by
+one predicate, `reports.vdt.clock_problem`, which the readers and `store verify` share. The uses
+were found by probing stores written with each clock source an earlier build left unguarded
+(source clocks, attestations, evaluation `completedAt`, pain reduction and projection instants,
+and coverage gaps recorded at a late `--as-of`) through every reader: the three reports with and
+without `--inventory` under both classes, `cases correlate`, `cases coverage`, `cases evaluate`,
+`cases list` and `store verify`. Three uses overflow:
+
+- **The conversion to UTC.** A source clock whose UTC instant falls outside the years 1 to 9999,
+  such as year 1 with a positive offset or year 9999 with a negative one. A report refuses the
+  record whose detection time it is, and with `--inventory` coverage refuses every observation
+  carrying one; both are the ERROR `clock_out_of_range`, raised as `ReportCompileError`. `cases
+  coverage` refuses it the same way, and `cases correlate` refuses the link that would store it
+  as `history_invalid`, with nothing appended. The order check of `cases evaluate` and
+  `attest-detection` passes such a group by, as it passes one with no detection time; the report
+  refuses it. Attestations and evaluation instants are stored in UTC, so only a source clock
+  reaches this.
+- **The detection deadline.** A detection time, from a source clock or an attestation, whose
+  VER-TFR-EVU deadline overflows: 5 days under Class C and 7 under Class B in the pinned rules, so
+  a detection time late in 9999-12 is refused under one class and not the other.
+- **The evaluation deadlines.** An evaluation `completedAt` whose VDR-TFR-PVR response target or
+  VER-TFR-MAV threshold overflows. MAV runs 192 days in both classes and is always computed, so a
+  `completedAt` on or after 9999-06-23 is refused under both; PVR is never longer. The report
+  refuses the record whose evaluation it is, under its own class. Its message names the first of
+  the two that overflows, in the order the report computes them, PVR then MAV, so which rule it
+  names depends on the evaluation's PAIN and context.
+
+Each refusal is the ERROR `clock_out_of_range` in a report. Only the conversion reaches `cases
+coverage` and `cases correlate`; neither computes a deadline, so a store whose clocks overflow only
+a deadline is refused by a report alone. Pain reduction and projection
+instants are only compared and printed, and a coverage window never runs from an anchor later
+than the run's `--as-of`, so none of them is refused. A clock that computes is never refused:
+year 1 with no offset, 1969, 9001 and 9990 as source clocks, and a `completedAt` of 9999-06-22,
+report exactly as before, byte for byte.
+
+`store verify` reports each as the audit fault `clock_out_of_range`, which `AUDIT_FAULT_CODES`
+gains, beside `evaluation_before_detection` and under the same conditions. An observation whose
+source time has no UTC instant is a fault at its own sequence. A group's detection time, resolved
+with the recorded attestations as a report from the store resolves it, is a fault when its
+deadline overflows under either class, at the earliest observation or the attestation that gives
+it. The current evaluation of that group's case is a fault, at the event that recorded it, when
+its deadlines overflow under either class. Verify does not know which class a report will use, so
+it names every clock some report would refuse. It loads the same pinned rules the report does,
+and since every one of these timeframes is in days in every class, the calendar zone cannot
+change the answer. Each fault carries the reader's message, with one difference: it names the first
+class whose deadline overflows, B before C, where a report names its own class. Verify also names
+the evaluation of a group whose detection deadline already overflows, which a report never reaches
+because it refuses the record for its detection time first.
+
+An append-only store has no repair for such a clock. Refusing it in the event contract instead
+was rejected: every command, `cases list` included, would then refuse the whole store, including
+the stores whose clocks report today. No golden changes.

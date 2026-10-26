@@ -800,6 +800,18 @@ def compile_record_set(
     gap_tracking: dict[str, str] = {}
 
     for group in groups:
+        clock = detection_clock(group, attestation)
+        problem = None if clock is None else clock_problem(clock, (policy,))
+        if clock is not None and problem is not None:
+            errors.append(
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code=CLOCK_OUT_OF_RANGE,
+                    message=detection_clock_message(group.tracking_id, clock, problem),
+                    location=group.source_record_id,
+                )
+            )
+            continue
         detected_at, detected_source = resolve_detection_time(group, attestation)
         if detected_at is None:
             missing_detection.append(group.tracking_id)
@@ -836,19 +848,33 @@ def compile_record_set(
                 record_errors.append(order)
             elif order is not None:
                 diagnostics.append(order)
-        try:
-            record = _build_record(
-                group=group,
-                detected_at=detected_at,
-                detected_at_source=detected_source,
-                evaluation=evaluation,
-                policy=policy,
-                snapshot=snapshot,
-                options=options,
-                kev_rule=kev_rule,
-            )
-        except ReportCompileError as exc:
-            record_errors.extend(exc.diagnostics)
+            problem = clock_problem(evaluation.completed_at, (policy,), evaluation=evaluation)
+            if problem is not None:
+                record_errors.append(
+                    ReportDiagnostic(
+                        level=DiagnosticLevel.ERROR,
+                        code=CLOCK_OUT_OF_RANGE,
+                        message=evaluation_clock_message(
+                            group.tracking_id, evaluation.completed_at, problem
+                        ),
+                        location=group.source_record_id,
+                    )
+                )
+        # The record's deadlines would overflow on a refused clock, so it is not built.
+        if not any(item.code == CLOCK_OUT_OF_RANGE for item in record_errors):
+            try:
+                record = _build_record(
+                    group=group,
+                    detected_at=detected_at,
+                    detected_at_source=detected_source,
+                    evaluation=evaluation,
+                    policy=policy,
+                    snapshot=snapshot,
+                    options=options,
+                    kev_rule=kev_rule,
+                )
+            except ReportCompileError as exc:
+                record_errors.extend(exc.diagnostics)
         if record_errors:
             errors.extend(record_errors)
             continue
@@ -1348,6 +1374,122 @@ def _matches(entry: EvaluationInput, group: VulnerabilityGroup) -> bool:
     )
 
 
+#: The ERROR a report raises, and the fault `store verify` reports, for a clock in history that
+#: no report can compute with (cleanup PR 5a, CL-54).
+CLOCK_OUT_OF_RANGE = "clock_out_of_range"
+
+
+class EvaluatedClock(Protocol):
+    """The fields of an evaluation the policy deadlines read: its clock and its response inputs."""
+
+    @property
+    def completed_at(self) -> datetime: ...
+
+    @property
+    def pain(self) -> PainRating: ...
+
+    @property
+    def is_internet_reachable(self) -> bool: ...
+
+    @property
+    def is_likely_exploitable(self) -> bool: ...
+
+
+# NOTE: A current build reads every clock inside the years 1970 through 9000 UTC, so only
+# history an earlier build wrote reaches either refusal: 0.3.0a0 read CKLB and XCCDF clocks
+# and every CLI clock unguarded. Year 1 Z, 1969, 9001 and 9990 compute fine and are never
+# refused here.
+def clock_problem(
+    clock: datetime,
+    policies: Sequence[SelectedPolicy] = (),
+    *,
+    evaluation: EvaluatedClock | None = None,
+) -> str | None:
+    """Say why one stored clock cannot be computed with, or None when it can.
+
+    Every use a report makes of a stored clock is checked, and only those: the conversion to
+    UTC every reader makes, and, for each policy given, every policy deadline a report adds to
+    the clock. A detection time (no `evaluation`) takes VER-TFR-EVU. An evaluation's
+    `completedAt` (`evaluation` given) takes its VDR-TFR-PVR response target and VER-TFR-MAV
+    threshold. A report passes its own policy and `store verify` one per class, so verify names
+    every clock some report refuses. Every one of these timeframes is in days in every class of
+    the pinned rules, so the calendar zone a policy carries cannot change the answer.
+    """
+
+    try:
+        instant = clock.astimezone(UTC)
+    except OverflowError:
+        return "has no UTC instant inside the years 1 to 9999"
+    for policy in policies:
+        for rule_id, deadline in _clock_deadlines(policy, instant, evaluation):
+            try:
+                deadline()
+            except OverflowError:
+                return (
+                    f"leaves no room for its {rule_id} deadline under Class "
+                    f"{policy.profile.certification_class.value} before the end of year 9999"
+                )
+    return None
+
+
+def _clock_deadlines(
+    policy: SelectedPolicy, instant: datetime, evaluation: EvaluatedClock | None
+) -> tuple[tuple[str, Callable[[], object]], ...]:
+    """Return each deadline `_compute_deadlines` computes from one clock, by its rule id."""
+
+    if evaluation is None:
+        return ((_EVALUATION_RULE, lambda: policy.evaluation_deadline(instant)),)
+    return (
+        (
+            _RESPONSE_RULE,
+            lambda: policy.response_deadline(
+                instant,
+                pain=evaluation.pain,
+                is_internet_reachable=evaluation.is_internet_reachable,
+                is_likely_exploitable=evaluation.is_likely_exploitable,
+            ),
+        ),
+        (_ACCEPTANCE_RULE, lambda: policy.acceptance_deadline(instant)),
+    )
+
+
+def detection_clock_message(tracking_id: str, clock: datetime, problem: str) -> str:
+    """Word one record refused for its detection time, as the report and verify both print it."""
+
+    return (
+        f"{tracking_id} has detection time {clock.isoformat()} in history, which {problem}, "
+        "so no report can compute with it"
+    )
+
+
+def evaluation_clock_message(tracking_id: str, clock: datetime, problem: str) -> str:
+    """Word one record refused for its evaluation's `completedAt`, in the report and verify."""
+
+    return (
+        f"{tracking_id} has an evaluation completed {clock.isoformat()} in history, which "
+        f"{problem}, so no report can compute with it"
+    )
+
+
+def observation_clock_message(observation_id: str, clock: datetime, problem: str) -> str:
+    """Word one observation refused for its source time, wherever a reader converts it."""
+
+    return (
+        f"observation {observation_id} has source time {clock.isoformat()} in history, which "
+        f"{problem}, so no report can compute with it"
+    )
+
+
+def detection_clock(
+    group: VulnerabilityGroup, attestation: DetectionAttestation
+) -> datetime | None:
+    """Return the clock `resolve_detection_time` resolves, before it converts it to UTC."""
+
+    if group.earliest_observed_at is not None:
+        return group.earliest_observed_at
+    return attestation.for_tracking_id(group.tracking_id)
+
+
 def resolve_detection_time(
     group: VulnerabilityGroup,
     attestation: DetectionAttestation,
@@ -1816,6 +1958,23 @@ def _coverage(
                 ),
             )
         )
+    # Coverage converts every observation's clock to UTC, so one that cannot be is refused
+    # here, named, rather than ending the run in the derivation.
+    unusable = tuple(
+        ReportDiagnostic(
+            level=DiagnosticLevel.ERROR,
+            code=CLOCK_OUT_OF_RANGE,
+            message=observation_clock_message(
+                observation.observation_id, observation.observed_at, problem
+            ),
+            location=observation.source_record_id,
+        )
+        for observation in observations
+        if observation.observed_at is not None
+        and (problem := clock_problem(observation.observed_at)) is not None
+    )
+    if unusable:
+        raise ReportCompileError(unusable)
     return derive_coverage(observations, inventory, policy, as_of)
 
 
@@ -3468,6 +3627,7 @@ def _require_absolute_http_uri(value: object) -> None:
 
 __all__ = [
     "ACTIVE_STATUSES",
+    "CLOCK_OUT_OF_RANGE",
     "DISCLAIMER",
     "EXTENSION_KEY",
     "FINAL_DISPOSITIONS",
@@ -3480,14 +3640,20 @@ __all__ = [
     "CompiledVdtReport",
     "CompiledVulnerability",
     "DetectionAttestation",
+    "EvaluatedClock",
     "ReportCompileError",
     "ReportDiagnostic",
     "ReportInputError",
     "ReportMetadata",
     "ReportOptions",
+    "clock_problem",
     "compile_record_set",
     "compile_record_set_from_artifacts",
     "compile_records",
     "compile_vdt_report",
+    "detection_clock",
+    "detection_clock_message",
+    "evaluation_clock_message",
+    "observation_clock_message",
     "project_vdt",
 ]

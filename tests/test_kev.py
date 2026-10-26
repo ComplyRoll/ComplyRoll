@@ -460,6 +460,16 @@ class KevLoaderRefusalTests(unittest.TestCase):
             "dateReleased",
         )
 
+    def test_a_date_released_refusal_names_why(self) -> None:
+        # The shared clock parser words both refusals; the KEV reader passes its text on.
+        for value, why in (
+            ("0001-01-01T00:00:00+01:00", "must fall in the years 1970 through 9000 UTC"),
+            ("2026-02-30T17:00:00Z", "must be an RFC 3339 timestamp"),
+        ):
+            with self.subTest(value=value):
+                message = self.assert_refused(with_root("dateReleased", value))
+                self.assertTrue(message.endswith(f"dateReleased {why}, got {value!r}"), message)
+
     def test_an_overlong_date_released_is_refused_without_being_quoted(self) -> None:
         for value in ("2" * 65, "2" * (1024 * 1024)):
             with self.subTest(length=len(value)):
@@ -655,7 +665,7 @@ class KevMatchingTests(unittest.TestCase):
 
     def test_matches_sort_by_due_date_then_cve_id(self) -> None:
         found = self.catalog.matches(
-            ["CVE-2099-0003", "CWE-22", "CVE-2099-0002", "GHSA-aaaa-bbbb-cccc", "CVE-2099-0001"],
+            ["CVE-2099-0003", "CWE-22", "CVE-2099-0002", "GHSA-cfgh-jmpq-rvwx", "CVE-2099-0001"],
             on_or_before=date(2026, 9, 15),
         )
         self.assertEqual(
@@ -845,7 +855,7 @@ class KevMatchIncompleteUnitTests(unittest.TestCase):
 
     def test_a_cut_list_ending_in_cwes_kept_every_cve(self) -> None:
         self.assert_missing(False, self.CUT, self.CVES_AND_CWES)
-        self.assert_missing(False, self.CUT, ("GHSA-aaaa-bbbb-cccc",))
+        self.assert_missing(False, self.CUT, ("GHSA-cfgh-jmpq-rvwx",))
 
     def test_an_empty_cut_list_may_be_missing_one(self) -> None:
         self.assert_missing(True, self.CUT, ())

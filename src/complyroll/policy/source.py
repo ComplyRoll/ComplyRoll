@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from complyroll.store.sqlite import shown
 
 MAX_RULE_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_RULE_SOURCE_DEPTH = 128
@@ -209,7 +212,8 @@ def _parse_json_bounded(content: bytes) -> Any:
         value: dict[str, Any] = {}
         for key, item in pairs:
             if key in value:
-                raise PolicySourceError(f"duplicate JSON object key is prohibited: {key}")
+                # SECURITY: The key is untrusted text bound for a terminal, so it is quoted and cut.
+                raise PolicySourceError(f"duplicate JSON object key is prohibited: {shown(key)}")
             value[key] = item
         return value
 
@@ -223,6 +227,14 @@ def _parse_json_bounded(content: bytes) -> Any:
         raise PolicySourceError("rule source must be UTF-8 JSON") from exc
     except json.JSONDecodeError as exc:
         raise PolicySourceError(f"rule source contains malformed JSON: {exc}") from exc
+    except PolicySourceError:
+        # The hooks above raise it, and it is a ValueError too.
+        raise
+    except ValueError as exc:
+        # The one other ValueError json.loads raises: an integer past the digit limit.
+        limit = sys.get_int_max_str_digits()
+        message = f"rule source contains an integer longer than {limit} digits"
+        raise PolicySourceError(message) from exc
     except RecursionError as exc:
         raise PolicySourceError("rule source exceeds the safe JSON recursion limit") from exc
 

@@ -1001,6 +1001,18 @@ class InventoryRefusalTests(unittest.TestCase):
         )
         self.assert_refused(with_verification("at", None), "at must be a JSON string")
 
+    def test_an_instant_refusal_names_why(self) -> None:
+        # The shared clock parser words both refusals; the inventory reader passes its text on.
+        for value, why in (
+            ("9999-12-31T23:59:59-01:00", "must fall in the years 1970 through 9000 UTC"),
+            ("2026-02-30T00:00:00Z", "must be an RFC 3339 timestamp"),
+        ):
+            with self.subTest(value=value):
+                message = self.assert_refused(with_entry("expectedSince", value))
+                self.assertTrue(
+                    message.endswith(f"resources[0]: expectedSince {why}, got {value!r}"), message
+                )
+
     def test_an_overlong_instant_is_refused_without_being_quoted(self) -> None:
         for value in ("2" * 65, "2" * (1024 * 1024)):
             with self.subTest(length=len(value)):

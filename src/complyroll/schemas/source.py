@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +17,8 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
+
+from complyroll.store.sqlite import shown
 
 COMMON_DEFINITIONS_NAME = "common-definitions"
 MAX_SCHEMA_BYTES = 1024 * 1024
@@ -324,7 +327,8 @@ def _parse_json_bounded(content: bytes) -> Any:
         value: dict[str, Any] = {}
         for key, item in pairs:
             if key in value:
-                raise SchemaSourceError(f"duplicate JSON object key is prohibited: {key}")
+                # SECURITY: The key is untrusted text bound for a terminal, so it is quoted and cut.
+                raise SchemaSourceError(f"duplicate JSON object key is prohibited: {shown(key)}")
             value[key] = item
         return value
 
@@ -338,6 +342,14 @@ def _parse_json_bounded(content: bytes) -> Any:
         raise SchemaSourceError("schema content must be UTF-8 JSON") from exc
     except json.JSONDecodeError as exc:
         raise SchemaSourceError(f"schema content contains malformed JSON: {exc}") from exc
+    except SchemaSourceError:
+        # The hooks above raise it, and it is a ValueError too.
+        raise
+    except ValueError as exc:
+        # The one other ValueError json.loads raises: an integer past the digit limit.
+        limit = sys.get_int_max_str_digits()
+        message = f"schema content contains an integer longer than {limit} digits"
+        raise SchemaSourceError(message) from exc
     except RecursionError as exc:
         raise SchemaSourceError("schema content exceeds the safe JSON recursion limit") from exc
 

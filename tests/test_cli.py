@@ -36,6 +36,8 @@ from complyroll.adapters import (
     classify_ingest,
     ingest_stig_artifact,
 )
+from complyroll.adapters import common as adapters_common
+from complyroll.adapters.common import parse_timestamp
 from complyroll.adapters.hdf import HDF_PARSER_VERSION
 from complyroll.adapters.sarif import SARIF_PARSER_VERSION
 from complyroll.cli import main
@@ -1610,6 +1612,8 @@ COVERED_AUDIT_CODES = {
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    # Its `store verify` command tests live in `UnusableStoredClockTests` below.
+    "clock_out_of_range",
     # Its library tests live in `tests/test_replay.py`, beside the report's refusal.
     "disposition_without_evaluation",
     # The five coverage codes' `store verify` command tests live in
@@ -1636,7 +1640,9 @@ COVERED_AUDIT_CODES = {
 #: `observation.recorded` stores exactly what `to_canonical_dict` writes, and this is
 #: text the replay reader refuses, so the contract refuses to store it in the first
 #: place. The refusal lands with the store already open, which is what makes it worth
-#: a test of its own.
+#: a test of its own. The XCCDF reader now refuses such a clock itself (`parse_clock`), so
+#: the tests read it through `unguarded_stig_clocks`, standing in for any reading that
+#: hands the store a payload its contract refuses.
 SUB_MINUTE_OFFSET_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
 <Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="odd">
   <TestResult id="odd" end-time="2026-08-03T09:00:00+00:01:30">
@@ -1648,6 +1654,14 @@ SUB_MINUTE_OFFSET_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
   </TestResult>
 </Benchmark>
 """
+
+
+@contextmanager
+def unguarded_stig_clocks() -> Iterator[None]:
+    """Read CKLB and XCCDF clocks with the unguarded parser the STIG adapter once used."""
+
+    with patch("complyroll.adapters.stig.parse_clock", parse_timestamp):
+        yield
 
 
 def current_rating(document: dict[str, Any], source_record_id: str) -> Any:
@@ -2743,9 +2757,10 @@ class PersistedIngestTests(PersistedStoreTestCase):
         artifact = self.workspace / "odd.xml"
         artifact.write_text(SUB_MINUTE_OFFSET_XCCDF, encoding="utf-8")
 
-        code, out, err = run(
-            ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
-        )
+        with unguarded_stig_clocks():
+            code, out, err = run(
+                ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
+            )
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
@@ -2776,17 +2791,18 @@ class PersistedIngestTests(PersistedStoreTestCase):
         refused = self.workspace / "odd.xml"
         refused.write_text(SUB_MINUTE_OFFSET_XCCDF, encoding="utf-8")
 
-        code, out, err = run(
-            [
-                "ingest",
-                PERSISTED_ARTIFACTS[1],
-                str(refused),
-                "--db",
-                str(self.database),
-                "--as-of",
-                INGESTED_AT,
-            ]
-        )
+        with unguarded_stig_clocks():
+            code, out, err = run(
+                [
+                    "ingest",
+                    PERSISTED_ARTIFACTS[1],
+                    str(refused),
+                    "--db",
+                    str(self.database),
+                    "--as-of",
+                    INGESTED_AT,
+                ]
+            )
 
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
@@ -2810,9 +2826,10 @@ class PersistedIngestTests(PersistedStoreTestCase):
         artifact = self.workspace / "odd.xml"
         artifact.write_text(SUB_MINUTE_OFFSET_XCCDF, encoding="utf-8")
 
-        code, _, err = run(
-            ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
-        )
+        with unguarded_stig_clocks():
+            code, _, err = run(
+                ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
+            )
 
         self.assertEqual(code, 1)
         self.assertIn("error: event_contract_invalid", err)
@@ -4668,16 +4685,17 @@ class PersistedStorePublicationTests(PersistedStoreTestCase):
         return artifact
 
     def ingest_refused(self) -> tuple[int, str, str]:
-        return run(
-            [
-                "ingest",
-                str(self.refused_artifact()),
-                "--db",
-                str(self.database),
-                "--as-of",
-                INGESTED_AT,
-            ]
-        )
+        with unguarded_stig_clocks():
+            return run(
+                [
+                    "ingest",
+                    str(self.refused_artifact()),
+                    "--db",
+                    str(self.database),
+                    "--as-of",
+                    INGESTED_AT,
+                ]
+            )
 
     def test_a_successful_first_ingest_leaves_exactly_the_database_file(self) -> None:
         self.ingest_fixtures()
@@ -8280,6 +8298,727 @@ class PersistedTimedCoverageGoldenTests(PersistedStoreTestCase):
         self.assertEqual(json_path.read_bytes(), (GOLDEN / "vdt-coverage-timed.json").read_bytes())
         self.assertEqual(
             markdown_path.read_bytes(), (GOLDEN / "vdt-coverage-timed.md").read_bytes()
+        )
+
+
+def run_on_encoding(argv: Sequence[str], encoding: str) -> tuple[int, bytes, bytes]:
+    """Run one CLI invocation on byte streams that encode as a terminal set to `encoding` does.
+
+    `run` captures text, so it can never fail to encode; a real stdout under
+    `PYTHONIOENCODING=ascii` is a strict wrapper like these.
+    """
+
+    out_bytes = io.BytesIO()
+    err_bytes = io.BytesIO()
+    out = io.TextIOWrapper(out_bytes, encoding=encoding, errors="strict", write_through=True)
+    err = io.TextIOWrapper(err_bytes, encoding=encoding, errors="strict", write_through=True)
+    with redirect_stdout(out), redirect_stderr(err):
+        code = main(list(argv))
+    return code, out_bytes.getvalue(), err_bytes.getvalue()
+
+
+#: Text that would forge a diagnostic line, move the cursor and clear the screen if a terminal
+#: received it raw: a newline, a carriage return, a line separator and ANSI escapes.
+FORGING_TEXT = "x\nerror: forged: injected\r\u2028\x1b[2J\x9b"
+#: The same text as text output prints it, every control spelled as an escape.
+FORGING_SHOWN = "x\\nerror: forged: injected\\r\\u2028\\x1b[2J\\x9b"
+
+
+class TerminalTextTests(PersistedStoreTestCase):
+    """Text output escapes control characters, so no input forges a line (CL-50, CL-51).
+
+    Every line the CLI prints goes through one choke point that spells C0 and C1 controls,
+    DEL, U+2028 and U+2029 as escapes; JSON output already escapes them and is unchanged.
+    A stream that cannot encode a character writes it as a backslash escape rather than
+    ending the run, and JSON written to such a stream spells it as a JSON escape.
+    """
+
+    def assert_unforged(self, text: str) -> None:
+        for line in text.splitlines():
+            self.assertFalse(line.startswith("error: forged"), line)
+        self.assertNotIn("\x1b", text)
+        self.assertNotIn("\r", text)
+        self.assertNotIn("\u2028", text)
+        self.assertNotIn("\x9b", text)
+
+    def test_a_file_name_forges_no_line_on_the_stateless_path(self) -> None:
+        artifact = self.workspace / f"{FORGING_TEXT}.cklb"
+        artifact.write_text("{not json", encoding="utf-8")
+        argv = list(REPORT_ARGUMENTS)
+        argv[2:5] = [str(artifact)]
+
+        code, out, err = run(argv)
+
+        self.assertEqual((code, out), (1, ""))
+        self.assert_unforged(err)
+        self.assertEqual(len(err.splitlines()), 1)
+        self.assertIn(f"[{FORGING_SHOWN}.cklb]", err)
+
+    def test_an_ingest_summary_names_a_file_with_its_controls_escaped(self) -> None:
+        artifact = self.workspace / f"{FORGING_TEXT}.cklb"
+        artifact.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
+
+        code, out, err = run(["ingest", str(artifact), "--db", str(self.database)])
+
+        self.assertEqual(code, 0, err)
+        self.assert_unforged(out + err)
+        self.assertEqual(out, f"{FORGING_SHOWN}.cklb: recorded 6 observation(s)\n")
+
+    def test_stored_text_forges_no_line_in_cases_history(self) -> None:
+        self.ingest_fixtures()
+        self.correlate()
+        self.attest_missing()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        for entry in payload["evaluations"]:
+            entry["evaluator"] = FORGING_TEXT
+        evaluations = self.workspace / "evaluations.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        self.evaluate(evaluations, actor=FORGING_TEXT)
+
+        listing, err = self.succeeds(["cases", "history", WINDOWS_CASE, "--db", str(self.database)])
+
+        self.assert_unforged(listing + err)
+        evaluated = [line for line in listing.splitlines() if "\tcase.evaluated\t" in line]
+        self.assertEqual(len(evaluated), 1)
+        fields = evaluated[0].split("\t")
+        self.assertEqual(fields[3], FORGING_SHOWN)
+        self.assertTrue(fields[4].endswith(f" by {FORGING_SHOWN}"), fields[4])
+
+    def test_a_nul_is_spelled_as_an_escape(self) -> None:
+        # A NUL can reach a stored actor in process, where no argv or file name can carry one.
+        self.ingest_fixtures()
+        self.correlate(actor="a\x00b")
+
+        listing, _ = self.succeeds(["cases", "history", WINDOWS_CASE, "--db", str(self.database)])
+
+        self.assertNotIn("\x00", listing)
+        first = listing.splitlines()[0].split("\t")
+        self.assertEqual(first[3], "a\\x00b")
+
+    def test_a_tab_stays_a_tab(self) -> None:
+        # `cases history` separates its fields with tabs; a tab moves no line.
+        self.ingest_fixtures()
+        self.correlate()
+
+        listing, _ = self.succeeds(["cases", "history", WINDOWS_CASE, "--db", str(self.database)])
+
+        self.assertTrue(all(line.count("\t") == 4 for line in listing.splitlines()))
+
+    def test_json_on_stdout_is_unchanged(self) -> None:
+        code, out, _ = run_on_encoding(REPORT_ARGUMENTS, "utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out, (GOLDEN / "vdt-fixtures.json").read_bytes())
+
+    def test_json_on_an_ascii_stdout_is_the_same_document(self) -> None:
+        code, out, err = run_on_encoding(REPORT_ARGUMENTS, "ascii")
+
+        self.assertEqual(code, 0, err)
+        golden = (GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8")
+        self.assertIn("\u00ae", golden)
+        self.assertEqual(json.loads(out.decode("ascii")), json.loads(golden))
+        self.assertEqual(out.decode("ascii"), golden.replace("\u00ae", "\\u00ae"))
+
+    def test_an_astral_character_on_an_ascii_stdout_is_a_json_surrogate_pair(self) -> None:
+        # The artifact's name reaches the report; U+1F600 has no single four-digit escape.
+        artifact = self.workspace / "host-\U0001f600.cklb"
+        artifact.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
+        argv = list(REPORT_ARGUMENTS)
+        argv[2] = str(artifact)
+
+        code, ascii_out, err = run_on_encoding(argv, "ascii")
+        _, utf8_out, _ = run_on_encoding(argv, "utf-8")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn(b'"host-\\ud83d\\ude00.cklb"', ascii_out)
+        self.assertEqual(json.loads(ascii_out.decode("ascii")), json.loads(utf8_out))
+
+    def test_ingest_on_an_ascii_stdout_reports_the_write_it_committed(self) -> None:
+        artifact = self.workspace / "caf\u00e9-host.cklb"
+        artifact.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
+        argv = ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
+
+        code, out, err = run_on_encoding(argv, "ascii")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, b"caf\\xe9-host.cklb: recorded 6 observation(s)\n")
+        self.assertIn(b"warning: source_timestamp_missing: ", err)
+        self.assertIn(b"[caf\\xe9-host.cklb]", err)
+        code, out, _ = run_on_encoding(argv, "utf-8")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "caf\u00e9-host.cklb: already_recorded\n".encode())
+
+    def test_a_diagnostic_on_an_ascii_stderr_does_not_end_the_run(self) -> None:
+        artifact = self.workspace / "caf\u00e9.cklb"
+        artifact.write_text("{not json", encoding="utf-8")
+        argv = list(REPORT_ARGUMENTS)
+        argv[2:5] = [str(artifact)]
+
+        code, out, err = run_on_encoding(argv, "ascii")
+
+        self.assertEqual((code, out), (1, b""))
+        self.assertTrue(err.startswith(b"error: artifact_parse_failed: "), err)
+        self.assertIn(b"[caf\\xe9.cklb]", err)
+
+
+class FrozenCategoryStoreTests(PersistedStoreTestCase):
+    """A store 0.3.0a0 wrote on 3.11 can hold an identity the frozen table refuses (CL-65).
+
+    3.11's Unicode 14.0.0 database called U+13439 to U+1343F unassigned, so 0.3.0a0 on 3.11
+    accepted them in an identity. No reader or `store verify` calls `identity_problem`, so
+    such a store still reads and verifies; only reading the same bytes again refuses them.
+    """
+
+    def test_a_stored_identity_holding_one_of_the_seven_still_reads_and_verifies(self) -> None:
+        uri = "src/egyptian\U00013439.py"
+        artifact = self.workspace / "egyptian.sarif"
+        artifact.write_text(json.dumps(make_log(make_run([make_result(uri=uri)]))), "utf-8")
+        argv = ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
+        real = adapters_common.prohibited_category
+
+        # 0.3.0a0 on 3.11: the code point read as unassigned, so the identity was accepted.
+        def unassigned(char: str) -> str | None:
+            return None if char == "\U00013439" else real(char)
+
+        with patch.object(adapters_common, "prohibited_category", unassigned):
+            self.succeeds(argv)
+
+        self.succeeds(["store", "verify", "--db", str(self.database)])
+        self.correlate()
+        self.attest_missing()
+        listing, _ = self.succeeds(["cases", "list", "--db", str(self.database)])
+        self.assertEqual(len(listing.splitlines()), 2)
+        out, _ = self.report()
+        self.assertIn('"resourceId": "src/egyptian\U00013439.py"', out)
+        self.succeeds(["store", "verify", "--db", str(self.database)])
+
+        code, out, err = run(argv)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("error: identity_input_invalid: ", err)
+        self.assertIn("contains prohibited code point U+13439", err)
+
+
+class UnusableStoredClockTests(PersistedStoreTestCase):
+    """A store an earlier build wrote can hold a clock no report can compute with (CL-54).
+
+    0.3.0a0 read CKLB and XCCDF clocks unguarded, so a store can hold year 1 or year 9999.
+    The readers refuse exactly the clocks whose use overflows, each with a code and no
+    traceback, and `store verify` names every one of them with the same predicate. Clocks
+    that reported before still report, byte for byte.
+    """
+
+    #: Year 1 east and year 9999 west: the conversion to UTC overflows, in every reader.
+    CONVERSION = ("0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-01:00")
+    #: The VER-TFR-EVU deadline overflows: 5 days under Class C, 7 under Class B.
+    DEADLINE_BOTH = "9999-12-31T23:59:59Z"
+    DEADLINE_B = "9999-12-26T12:00:00Z"
+    #: Outside the years a current build reads, and still reported today.
+    REPORTED = (
+        "0001-01-01T00:00:00Z",
+        "1969-12-31T23:59:59Z",
+        "9001-01-01T00:00:00Z",
+        "9990-01-01T00:00:00Z",
+    )
+    KINDS = ("vdt", "avi", "historical")
+
+    def checklist(self, clock: str, name: str = "ubuntu-host.cklb") -> Path:
+        document = json.loads((FIXTURES / "ubuntu-host.cklb").read_text(encoding="utf-8"))
+        document["completed_at"] = clock
+        path = self.workspace / name
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def ingest_clock(self, clock: str, name: str = "ubuntu-host.cklb") -> Path:
+        """Ingest the Ubuntu checklist at `clock` the way 0.3.0a0 read it, unguarded."""
+
+        path = self.checklist(clock, name)
+        with unguarded_stig_clocks():
+            self.succeeds(["ingest", str(path), "--db", str(self.database), "--as-of", INGESTED_AT])
+        return path
+
+    def report_argv(
+        self, kind: str, certification_class: str = "C", *, inventory: bool = False
+    ) -> list[str]:
+        argv = ["report", kind, "--db", str(self.database), "--class", certification_class]
+        argv += ["--package-uri", "https://example.test/cpo", "--as-of", INGESTED_AT]
+        if kind != "historical":
+            argv += ["--from", "2026-08-01T00:00:00Z", "--to", "2026-08-31T23:59:59Z"]
+        if inventory:
+            argv += ["--inventory", str(EXAMPLE_INVENTORY)]
+        return argv
+
+    def assert_clock_refusal(self, argv: Sequence[str], clock: str) -> list[str]:
+        """Assert one run is refused with `clock_out_of_range` lines only; return messages."""
+
+        code, out, err = run(argv)
+        self.assertEqual((code, out), (1, ""), err)
+        lines = err.splitlines()
+        self.assertTrue(lines)
+        prefix = "error: clock_out_of_range: "
+        for line in lines:
+            self.assertTrue(line.startswith(prefix), line)
+            self.assertIn(clock, line)
+        return [line[len(prefix) :].rsplit(" [", 1)[0] for line in lines]
+
+    def verify_faults(self) -> list[str]:
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual((code, out), (1, ""), err)
+        faults = [line for line in err.splitlines() if ": clock_out_of_range: " in line]
+        self.assertTrue(faults, err)
+        return [line.split(": clock_out_of_range: ", 1)[1] for line in faults]
+
+    def test_a_clock_whose_utc_conversion_overflows_is_refused_by_every_report(self) -> None:
+        for clock in self.CONVERSION:
+            with self.subTest(clock=clock):
+                self.setUp()
+                self.ingest_clock(clock)
+                for kind in self.KINDS:
+                    for inventory in (False, True):
+                        messages = self.assert_clock_refusal(
+                            self.report_argv(kind, inventory=inventory), clock
+                        )
+                        # Coverage converts all six observations; a report, each case's first.
+                        self.assertEqual(len(messages), 6 if inventory else 3)
+
+    def test_the_conversion_message_names_the_case_and_the_clock(self) -> None:
+        self.ingest_clock(self.CONVERSION[0])
+
+        code, _, err = run(self.report_argv("vdt"))
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            err.splitlines()[0],
+            "error: clock_out_of_range: case-9bed0d8f88355393 has detection time "
+            "0001-01-01T00:00:00+01:00 in history, which has no UTC instant inside the years "
+            "1 to 9999, so no report can compute with it [V-260469]",
+        )
+
+    def test_a_detection_time_whose_deadline_overflows_is_refused_under_its_class(self) -> None:
+        self.ingest_clock(self.DEADLINE_BOTH)
+        for kind in self.KINDS:
+            for certification_class in ("B", "C"):
+                self.assert_clock_refusal(self.report_argv(kind, certification_class), "9999")
+
+    def test_a_deadline_only_one_class_overflows_is_refused_only_under_it(self) -> None:
+        self.ingest_clock(self.DEADLINE_B)
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                messages = self.assert_clock_refusal(self.report_argv(kind, "B"), "9999")
+                self.assertIn("VER-TFR-EVU deadline under Class B", messages[0])
+                self.succeeds(self.report_argv(kind, "C"))
+
+    def test_correlate_refuses_a_conversion_overflow_and_appends_nothing(self) -> None:
+        for clock in self.CONVERSION:
+            with self.subTest(clock=clock):
+                self.setUp()
+                self.ingest_clock(clock)
+                before = self.latest_sequence()
+
+                code, out, err = run(["cases", "correlate", "--db", str(self.database)])
+
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(len(err.splitlines()), 1)
+                self.assertTrue(err.startswith("error: history_invalid: observation obs-"), err)
+                self.assertIn(f"has source time {clock} in history", err)
+                self.assertEqual(self.latest_sequence(), before)
+
+    def test_correlate_links_a_clock_only_a_deadline_overflows(self) -> None:
+        self.ingest_clock(self.DEADLINE_BOTH)
+
+        self.correlate()
+
+    def test_cases_coverage_refuses_a_conversion_overflow_and_appends_nothing(self) -> None:
+        self.ingest_clock(self.CONVERSION[0])
+        before = self.latest_sequence()
+
+        argv = ["cases", "coverage", "--db", str(self.database), "--class", "C"]
+        argv += ["--as-of", INGESTED_AT, "--inventory", str(EXAMPLE_INVENTORY)]
+        self.assert_clock_refusal(argv, self.CONVERSION[0])
+        self.assertEqual(self.latest_sequence(), before)
+
+    def test_store_verify_names_each_clock_in_the_words_a_reader_refuses_it_with(self) -> None:
+        for clock, argv in (
+            (self.CONVERSION[0], lambda: self.report_argv("vdt", inventory=True)),
+            (self.CONVERSION[1], lambda: self.report_argv("vdt", inventory=True)),
+            (self.DEADLINE_BOTH, lambda: self.report_argv("vdt", "B")),
+            (self.DEADLINE_B, lambda: self.report_argv("vdt", "B")),
+        ):
+            with self.subTest(clock=clock):
+                self.setUp()
+                self.ingest_clock(clock)
+                refused = self.assert_clock_refusal(argv(), clock[:4])
+                self.assertEqual(self.verify_faults(), refused)
+
+    def test_clocks_that_reported_before_still_report_and_verify(self) -> None:
+        for clock in self.REPORTED:
+            with self.subTest(clock=clock):
+                self.setUp()
+                path = self.ingest_clock(clock)
+                self.succeeds(["store", "verify", "--db", str(self.database)])
+                for kind in self.KINDS:
+                    for certification_class in ("B", "C"):
+                        argv = self.report_argv(kind, certification_class, inventory=True)
+                        persisted, _ = self.succeeds(argv)
+                        stateless = [*argv[:2], str(path), *argv[4:]]
+                        stateless += ["--detected-at", ATTESTED_AT]
+                        with unguarded_stig_clocks():
+                            direct, _ = self.succeeds(stateless)
+                        self.assertEqual(persisted, direct)
+                self.correlate()
+                self.succeeds(["store", "verify", "--db", str(self.database)])
+
+    def test_verify_names_such_a_clock_beside_a_fault_no_reader_refuses(self) -> None:
+        # The clock check runs beside the three content-neutral faults, as the order check does.
+        self.ingest_clock(self.CONVERSION[0])
+
+        def unrun(connection: sqlite3.Connection) -> None:
+            (stored,) = connection.execute(
+                "SELECT metadata_json FROM events WHERE sequence = 1"
+            ).fetchone()
+            metadata = {**json.loads(stored), "runId": "run-not-a-uuid"}
+            connection.execute(
+                "UPDATE events SET metadata_json = ? WHERE sequence = 1",
+                (self.canonical(metadata),),
+            )
+
+        self.update(unrun)
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("error: sequence 1: event_metadata_invalid: ", err)
+        self.assertEqual(err.count(": clock_out_of_range: "), 6)
+        self.assertIn("faults: 7 domain fault(s) in", err)
+
+    def evaluate_completed_at(self, completed_at: str, **fields: Any) -> int:
+        """Record the Ubuntu evaluation completed at `completed_at`, read unguarded as 0.3.0a0 did.
+
+        Returns the sequence of the `case.evaluated` event it appended.
+        """
+
+        self.ingest_fixtures()
+        self.correlate()
+        self.attest_missing()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = payload["evaluations"][:1]
+        payload["evaluations"][0]["completedAt"] = completed_at
+        payload["evaluations"][0].update(fields)
+        evaluations = self.workspace / "late-evaluation.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        with patch("complyroll.reports.evaluations.parse_clock", parse_timestamp):
+            self.evaluate(evaluations)
+        (record,) = [item for item in self.records() if item.event_type == "case.evaluated"]
+        return record.sequence
+
+    def test_an_evaluation_whose_deadlines_overflow_is_refused_by_every_report(self) -> None:
+        # VER-TFR-MAV runs 192 days from completedAt in both classes; 9999-06-23 leaves no room.
+        self.evaluate_completed_at("9999-06-23T00:00:00Z")
+        for kind in self.KINDS:
+            for certification_class in ("B", "C"):
+                for inventory in (False, True):
+                    argv = self.report_argv(kind, certification_class, inventory=inventory)
+                    (message,) = self.assert_clock_refusal(argv, "9999-06-23")
+                    self.assertEqual(
+                        message,
+                        f"{UBUNTU_CASE} has an evaluation completed 9999-06-23T00:00:00+00:00 in "
+                        "history, which leaves no room for its VER-TFR-MAV deadline under Class "
+                        f"{certification_class} before the end of year 9999, so no report can "
+                        "compute with it",
+                    )
+
+    def test_a_response_target_that_overflows_first_is_named(self) -> None:
+        # PAIN 2, neither reachable nor exploitable: VDR-TFR-PVR runs 192 days in both classes,
+        # as long as VER-TFR-MAV, and the response target is checked first.
+        self.evaluate_completed_at(
+            "9999-06-23T00:00:00Z", pain=2, isInternetReachable=False, isLikelyExploitable=False
+        )
+        for certification_class in ("B", "C"):
+            (message,) = self.assert_clock_refusal(
+                self.report_argv("vdt", certification_class), "9999-06-23"
+            )
+            self.assertIn(
+                f"its VDR-TFR-PVR deadline under Class {certification_class} before", message
+            )
+
+    def test_store_verify_names_such_an_evaluation_at_its_event(self) -> None:
+        sequence = self.evaluate_completed_at("9999-06-23T00:00:00Z")
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        (refused,) = self.assert_clock_refusal(self.report_argv("vdt", "B"), "9999-06-23")
+        self.assertIn(f"error: sequence {sequence}: clock_out_of_range: {refused}\n", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def evaluate_again(self, completed_at: str) -> int:
+        """Record a second Ubuntu evaluation, read unguarded; return its event's sequence."""
+
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = payload["evaluations"][:1]
+        payload["evaluations"][0]["completedAt"] = completed_at
+        payload["evaluations"][0]["pain"] = 4
+        evaluations = self.workspace / "second-evaluation.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        with patch("complyroll.reports.evaluations.parse_clock", parse_timestamp):
+            self.evaluate(evaluations)
+        evaluated = [item for item in self.records() if item.event_type == "case.evaluated"]
+        self.assertEqual(len(evaluated), 2)
+        return evaluated[-1].sequence
+
+    def test_only_the_current_evaluation_decides_a_late_clock(self) -> None:
+        # A report reads a case's latest evaluation, so verify must read that one too.
+        with self.subTest(order="late, then in range"):
+            self.evaluate_completed_at("9999-06-23T00:00:00Z")
+            self.evaluate_again("2026-08-05T12:00:00Z")
+            self.succeeds(["store", "verify", "--db", str(self.database)])
+            for kind in self.KINDS:
+                for certification_class in ("B", "C"):
+                    self.succeeds(self.report_argv(kind, certification_class))
+        with self.subTest(order="in range, then late"):
+            self.setUp()
+            self.evaluate_completed_at("2026-08-05T12:00:00Z")
+            sequence = self.evaluate_again("9999-06-23T00:00:00Z")
+            code, out, err = run(["store", "verify", "--db", str(self.database)])
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn(f"error: sequence {sequence}: clock_out_of_range: ", err)
+            self.assertIn("faults: 1 domain fault(s) in", err)
+            for kind in self.KINDS:
+                for certification_class in ("B", "C"):
+                    self.assert_clock_refusal(
+                        self.report_argv(kind, certification_class), "9999-06-23"
+                    )
+
+    def test_an_evaluation_whose_deadlines_fit_still_reports_and_verifies(self) -> None:
+        self.evaluate_completed_at("9999-06-22T00:00:00Z")
+
+        self.succeeds(["store", "verify", "--db", str(self.database)])
+        for kind in self.KINDS:
+            for certification_class in ("B", "C"):
+                self.succeeds(self.report_argv(kind, certification_class, inventory=True))
+
+    def test_an_evaluated_case_that_gains_such_a_clock_is_a_fault_not_a_traceback(self) -> None:
+        # The order check resolves the group's detection time, which converted the clock.
+        self.ingest_clock("2026-08-03T09:00:00Z", "timed.cklb")
+        self.correlate()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = payload["evaluations"][:1]
+        evaluations = self.workspace / "ubuntu-evaluation.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        self.evaluate(evaluations)
+        self.ingest_clock(self.CONVERSION[0], "year-one.cklb")
+
+        faults = self.verify_faults()
+
+        self.assertEqual(len(faults), 6)
+        self.assert_clock_refusal(self.report_argv("vdt"), self.CONVERSION[0])
+        self.evaluate(evaluations)
+
+
+#: A duplicated key that would print as its own `error:` line, and clear the screen, if it
+#: reached stderr raw.
+FORGED_KEY = "a\\nerror: forged: injected\\u001b[2J"
+
+
+def forged_lines(err: str) -> list[str]:
+    """Return every stderr line that begins as a forged diagnostic would."""
+
+    return [line for line in err.splitlines() if line.startswith("error: forged")]
+
+
+class InputRefusalCommandTests(unittest.TestCase):
+    """Input files the CLI refuses with one coded line and no traceback (cleanup PR 5a).
+
+    `main` runs in this process, so a traceback is an exception out of `run` and fails the
+    test; each refusal is also checked for its code, since a wrong code is the other way
+    these inputs used to fail.
+    """
+
+    def setUp(self) -> None:
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        self.workspace = Path(workspace.name)
+        # Sized against the default digit limit, not whatever PYTHONINTMAXSTRDIGITS set.
+        self.addCleanup(sys.set_int_max_str_digits, sys.get_int_max_str_digits())
+        sys.set_int_max_str_digits(sys.int_info.default_max_str_digits)
+
+    def write(self, name: str, text: str) -> Path:
+        path = self.workspace / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def loop(self, name: str) -> Path:
+        link = self.workspace / name
+        link.symlink_to(link)
+        return link
+
+    def report_with(
+        self,
+        *,
+        artifact: Path | None = None,
+        evaluations: Path | None = None,
+        ubuntu: Path | None = None,
+    ):
+        """Run the fixture report with its artifacts, evaluations or Ubuntu checklist swapped."""
+
+        argv = list(REPORT_ARGUMENTS)
+        if ubuntu is not None:
+            argv[2] = str(ubuntu)
+        if artifact is not None:
+            argv[2:5] = [str(artifact)]
+        if evaluations is not None:
+            argv[argv.index("--evaluations") + 1] = str(evaluations)
+        return run(argv)
+
+    def test_validate_quotes_a_duplicate_key(self) -> None:
+        path = self.write("report.json", f'{{"{FORGED_KEY}": 1, "{FORGED_KEY}": 2}}')
+
+        code, out, err = run(["validate", str(path), "--schema", "vulnerability-detail"])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(forged_lines(err), [])
+        self.assertNotIn("\x1b", err)
+        self.assertEqual(
+            err,
+            "error: report_malformed: duplicate JSON object key is prohibited: "
+            f"'a\\nerror: forged: injected\\x1b[2J' [{path}]\n",
+        )
+
+    def test_evaluations_quote_a_duplicate_key(self) -> None:
+        evaluations = self.write("evaluations.json", f'{{"{FORGED_KEY}": 1, "{FORGED_KEY}": 2}}')
+
+        code, out, err = self.report_with(evaluations=evaluations)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(forged_lines(err), [])
+        self.assertEqual(
+            err,
+            "error: invalid_input: duplicate JSON object key is prohibited: "
+            "'a\\nerror: forged: injected\\x1b[2J'\n",
+        )
+
+    def test_validate_refuses_an_integer_past_the_digit_limit(self) -> None:
+        limit = sys.int_info.default_max_str_digits
+        path = self.write("report.json", '{"n": ' + "9" * 5000 + "}")
+
+        code, out, err = run(["validate", str(path), "--schema", "vulnerability-detail"])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(
+            err,
+            f"error: report_malformed: report contains an integer longer than {limit} digits "
+            f"[{path}]\n",
+        )
+
+    def test_evaluations_refuse_an_integer_past_the_digit_limit_as_input(self) -> None:
+        limit = sys.int_info.default_max_str_digits
+        evaluations = self.write("evaluations.json", '{"n": ' + "9" * 5000 + "}")
+
+        code, out, err = self.report_with(evaluations=evaluations)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(
+            err,
+            "error: invalid_input: evaluations file contains an integer longer than "
+            f"{limit} digits\n",
+        )
+
+    def test_an_artifact_that_is_a_symlink_loop_is_an_artifact_read_failure(self) -> None:
+        loop = self.loop("loop.ckl")
+
+        code, out, err = self.report_with(artifact=loop)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertTrue(err.startswith("error: artifact_read_failed: "), err)
+        self.assertEqual(len(err.splitlines()), 1)
+
+    def test_a_clock_flag_outside_the_supported_years_is_refused_coded(self) -> None:
+        # Year 1 used to overflow in the compiler and end the run in a traceback.
+        for flag in ("--as-of", "--from", "--to", "--detected-at"):
+            for value in ("0001-01-01T00:00:00Z", "9999-12-31T23:59:59Z"):
+                with self.subTest(flag=flag, value=value):
+                    argv = list(REPORT_ARGUMENTS)
+                    argv[argv.index(flag) + 1] = value
+                    code, out, err = run(argv)
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertEqual(
+                        err,
+                        f"error: invalid_input: {flag} must fall in the years 1970 through 9000 "
+                        f"UTC, got '{value}'\n",
+                    )
+
+    def test_a_long_clock_flag_is_refused_without_being_echoed(self) -> None:
+        argv = list(REPORT_ARGUMENTS)
+        argv[argv.index("--as-of") + 1] = "2" * 100_000
+
+        code, out, err = run(argv)
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err, "error: invalid_input: --as-of must be at most 64 characters, got 100000\n"
+        )
+
+    def test_ingest_refuses_an_unsupported_as_of_and_creates_no_store(self) -> None:
+        database = self.workspace / "history.db"
+
+        code, out, err = run(
+            [
+                "ingest",
+                str(FIXTURES / "ubuntu-host.cklb"),
+                "--db",
+                str(database),
+                "--as-of",
+                "2026-08-21T12:00:00+05:30:15",
+            ]
+        )
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err,
+            "error: invalid_input: --as-of must have a UTC offset in whole minutes, got "
+            "'2026-08-21T12:00:00+05:30:15'\n",
+        )
+        self.assertFalse(database.exists())
+
+    def test_a_checklist_clock_no_report_can_compute_with_is_read_as_absent(self) -> None:
+        # Year 9999 used to ingest and then overflow the deadline arithmetic in every report.
+        document = json.loads((FIXTURES / "ubuntu-host.cklb").read_text(encoding="utf-8"))
+        document["completed_at"] = "9999-12-31T23:59:59Z"
+        artifact = self.write("ubuntu-host.cklb", json.dumps(document))
+
+        code, out, err = self.report_with(ubuntu=artifact)
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("warning: source_timestamp_missing:", err)
+        self.assertNotIn("9999", out)
+
+    def test_a_symlink_loop_is_refused_alike_where_resolve_raises(self) -> None:
+        # Python 3.11's Path.resolve raises RuntimeError on a loop, where 3.13 and later
+        # return the path; the overwrite check must not depend on which one runs it.
+        real = Path.resolve
+
+        def resolve(path: Path, strict: bool = False) -> Path:
+            if path.name.startswith("loop"):
+                raise RuntimeError(f"Symlink loop from {str(path)!r}")
+            return real(path, strict=strict)
+
+        artifact = self.loop("loop.ckl")
+        evaluations = self.loop("loop-evaluations.json")
+        with patch.object(Path, "resolve", resolve):
+            artifact_run = self.report_with(artifact=artifact)
+            evaluations_run = self.report_with(evaluations=evaluations)
+
+        code, out, err = artifact_run
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("error: artifact_read_failed: "), err)
+        code, out, err = evaluations_run
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(
+            err.startswith("error: invalid_input: evaluations file cannot be read"), err
         )
 
 

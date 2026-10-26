@@ -872,3 +872,23 @@ identifiers and the parser version in its provenance, verified by mapping every 
 version 1 identifiers onto version 2, and no fixture carries a failed profile without controls.
 Why: a failed detection process must be eligible to become an observation and a case whether or
 not something else in the same document succeeded.
+
+## Amendment 2026-10-25: the GHSA pattern, and the CKLB and XCCDF clock guards
+
+The shared GHSA pattern now matches GitHub's format exactly (ADR 0011, amendment of this date):
+three groups of four from `23456789cfghjmpqrvwx`, with no fourth group joined by a hyphen. The id,
+title, `tags.cve` and `tags.cwe` texts this record reads for identifiers yield fewer GHSA ids under
+the same parser version, and a control whose 64 CCIs fill the list is cut, and says a CVE may be
+missing, only when something real follows them. A store an earlier build wrote that re-ingests such
+a file says `already_recorded` and keeps its old `source_identifiers`, so that store's `report --db`
+can differ from a fresh stateless report for the same file. No fixture or golden carries such a
+token; every golden is byte-identical.
+
+The open risk that named "the missing clock guards in `common.parse_timestamp` for CKLB and XCCDF"
+is closed: both readers now read through `parse_clock`, the guard this adapter uses. A present clock
+outside it counts as absent and is named by the WARNING `source_timestamp_invalid` at its key, in
+the words this adapter uses, and the reader goes on to its next clock key (CKLB) or to `start-time`
+(XCCDF), as it always did for an unparsable one. A store an earlier build wrote that re-ingests such
+a file says `already_recorded` and keeps its old clock, so that store's `report --db` can differ
+from a fresh stateless report for the same file; where that old clock is one no report can compute
+with, it is refused where it overflows, as `clock_out_of_range` (ADR 0008, amendment of this date).

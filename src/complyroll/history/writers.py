@@ -60,8 +60,10 @@ from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
 from complyroll.reports.vdt import (
     ReportDiagnostic,
+    clock_problem,
     coverage_diagnostics,
     derive_report_coverage,
+    observation_clock_message,
     system_record_kind,
 )
 from complyroll.store import EventRecord
@@ -723,6 +725,7 @@ def _correlate_cases(
         existing = repository.read_stream(stream_id)
         if existing:
             fold_case_records(repository, group.tracking_id, existing)
+        _require_linkable_clocks(group, existing)
         streams.append((group, stream_id, existing))
 
     for group, stream_id, existing in streams:
@@ -1312,6 +1315,32 @@ def _case_created_payload(group: VulnerabilityGroup, now: datetime) -> dict[str,
         "description": description,
         "createdAt": iso_utc(now),
     }
+
+
+def _require_linkable_clocks(group: VulnerabilityGroup, existing: Sequence[EventRecord]) -> None:
+    """Refuse a group whose next link would carry a source time with no UTC instant.
+
+    A link stores its observation's clock in UTC, so such a clock, which only an earlier
+    build could record, ended the run in a traceback. It is refused before the first append,
+    by the predicate `store verify` names it with (CL-54). Skipping an observation already
+    linked changes nothing: its link stored the clock in UTC, so it had a UTC instant.
+    """
+
+    linked = {
+        record.payload.get("observationId")
+        for record in existing
+        if record.event_type == CASE_OBSERVATION_LINKED
+    }
+    for observation in group.observations:
+        if observation.observation_id in linked or observation.observed_at is None:
+            continue
+        problem = clock_problem(observation.observed_at)
+        if problem is not None:
+            raise HistoryError(
+                observation_clock_message(
+                    observation.observation_id, observation.observed_at, problem
+                )
+            )
 
 
 def _link_payload(observation: Observation) -> dict[str, Any]:

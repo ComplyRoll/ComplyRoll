@@ -76,6 +76,7 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    "clock_out_of_range",
     "coverage_identity_breach",
     "coverage_incomplete",
     "coverage_overfull",
@@ -368,6 +369,17 @@ class HistoryEntry:
 def rehydrate_observations(repository: EventRepository) -> tuple[Observation, ...]:
     """Read every current `observation.recorded` payload back into an `Observation`.
 
+    The observations `rehydrate_observation_records` reads, without their sequences.
+    """
+
+    return tuple(observation for _, observation in rehydrate_observation_records(repository))
+
+
+def rehydrate_observation_records(
+    repository: EventRepository,
+) -> tuple[tuple[int, Observation], ...]:
+    """Read every current `observation.recorded` payload back, each with its sequence.
+
     Order is the order the events were recorded, which is the order the parsers produced
     them, so correlation sees exactly what the stateless path sees.
 
@@ -390,14 +402,14 @@ def rehydrate_observations(repository: EventRepository) -> tuple[Observation, ..
         ),
         key=lambda event: event.sequence,
     )
-    observations: list[Observation] = []
+    observations: list[tuple[int, Observation]] = []
     for record in events:
         # `_read_artifact_streams` has already validated the payload against the contract,
         # and that validation reads every `observation.recorded` back through this same
         # reader, so this call is building the object rather than re-checking it. It stays
         # wrapped because the wrapper is what turns a reader's refusal into history's.
         try:
-            observations.append(Observation.from_canonical_dict(record.payload))
+            observations.append((record.sequence, Observation.from_canonical_dict(record.payload)))
         except (TypeError, ValueError) as exc:
             raise HistoryError(
                 f"event {record.sequence} is not a readable observation: {exc}"
@@ -641,6 +653,16 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       is skipped when it cannot fold, and the faults found are reported alone (ADR 0008
       amendment 2026-10-14, second).
 
+    One more fault is checked under the same conditions, for history an earlier build wrote:
+
+    - `clock_out_of_range`: a clock some reader cannot compute with, by
+      `reports.vdt.clock_problem`, the predicate the readers refuse it with. It is an
+      observation whose source time has no UTC instant (every reader that converts it
+      refuses it), at the observation, or a group's detection time whose VER-TFR-EVU
+      deadline overflows under either class, at the earliest observation or the
+      attestation that gives it, with the report's message (ADR 0008 amendment
+      2026-10-25).
+
     Faults are ordered by sequence and then by code, so one damaged file always describes
     itself the same way. A store-level failure (an unreadable file, a hole in history) is
     still raised: this walk is for a log the store has already called intact.
@@ -768,11 +790,17 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     if any(fault.code not in _ORDER_CHECKED_BESIDE for fault in faults):
         return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
     # Imported here because `history.order` imports this module.
-    from .order import evaluation_order_faults
+    from .order import clock_faults, evaluation_order_faults
 
     if not faults:
-        return evaluation_order_faults(repository)
+        return tuple(
+            sorted(
+                (*clock_faults(repository), *evaluation_order_faults(repository)),
+                key=lambda fault: (fault.sequence, fault.code),
+            )
+        )
     try:
+        faults.extend(clock_faults(repository))
         faults.extend(evaluation_order_faults(repository))
     except ValueError:
         # A case stream can fail its fold in a way no fault above names: a `HistoryError`,

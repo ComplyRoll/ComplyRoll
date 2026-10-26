@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import sys
 import tempfile
+import unicodedata
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +21,7 @@ from complyroll.adapters import (
     IngestLimits,
     IngestResult,
     SarifAdapter,
+    categories,
     common,
     hdf,
     ingest_stig_artifact,
@@ -263,6 +267,292 @@ class StigAdapterTests(unittest.TestCase):
         self.assertFalse(result.successful)
         self.assertIsNotNone(result.artifact)
         self.assertEqual(result.errors[0].code, "unsupported_artifact")
+
+
+#: Clocks `parse_clock` refuses: outside the years 1970 through 9000 UTC (year 1 east also
+#: overflows the UTC conversion), an offset with seconds, and an hour 24 that is not 24:00.
+REFUSED_STIG_CLOCKS = (
+    "0001-01-01T00:00:00+01:00",
+    "0001-01-01T00:00:00Z",
+    "1969-12-31T23:59:59Z",
+    "9001-01-01T00:00:00Z",
+    "9999-12-31T23:59:59Z",
+    "2026-08-03T09:00:00+00:01:30",
+    "2026-08-03T24:30:00Z",
+)
+
+
+#: Present clocks the readers refuse and name: year 1, year 9500 and an offset with seconds.
+WARNED_STIG_CLOCKS = (
+    "0001-01-01T00:00:00Z",
+    "9500-01-01T00:00:00Z",
+    "2026-08-03T09:00:00+00:01:30",
+)
+#: The warning text SARIF, HDF and CycloneDX give a refused clock, which STIG now shares.
+INVALID_CLOCK_MESSAGE = (
+    "clock value is not an aware timestamp with a whole-minute offset in the years 1970 to 9000 "
+    "UTC; ignored"
+)
+
+
+def cklb_with(**clocks: str) -> bytes:
+    """Return the Ubuntu checklist with the given top-level clock keys set."""
+
+    document = json.loads((FIXTURES / "ubuntu-host.cklb").read_text(encoding="utf-8"))
+    document.update(clocks)
+    return json.dumps(document).encode("utf-8")
+
+
+def xccdf_with(**attributes: str) -> bytes:
+    """Return a one-rule XCCDF TestResult carrying the given attributes."""
+
+    spelled = " ".join(f'{name.replace("_", "-")}="{value}"' for name, value in attributes.items())
+    return f"""<TestResult xmlns="http://checklists.nist.gov/xccdf/1.2" id="clocked" {spelled}>
+      <target>synthetic-host</target>
+      <rule-result idref="synthetic_rule_one" severity="low"><result>fail</result></rule-result>
+    </TestResult>""".encode()
+
+
+class StigClockGuardTests(unittest.TestCase):
+    """CKLB and XCCDF read their clocks through `parse_clock`, as the JSON adapters do.
+
+    The unguarded parser kept year 1 and year 9999, which then overflowed every report.
+    A refused clock counts as absent, as an unparsable one always has, so the next key is
+    read and, when none is left, the reading says its time is missing.
+    """
+
+    def read(self, name: str, content: bytes) -> IngestResult:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / name
+            path.write_bytes(content)
+            return ingest_stig_artifact(path, ingested_at=FIRST_INGEST)
+
+    def assert_untimed(self, result: IngestResult) -> None:
+        self.assertTrue(result.successful)
+        self.assertEqual({item.observed_at for item in result.observations}, {None})
+        self.assertIn("source_timestamp_missing", {item.code for item in result.warnings})
+
+    def test_a_cklb_clock_parse_clock_refuses_is_absent(self) -> None:
+        for clock in REFUSED_STIG_CLOCKS:
+            with self.subTest(clock=clock):
+                self.assert_untimed(self.read("host.cklb", cklb_with(completed_at=clock)))
+
+    def test_a_refused_cklb_clock_falls_through_to_the_next_key(self) -> None:
+        content = cklb_with(completed_at="9999-12-31T23:59:59Z", scan_time="2026-08-03T09:00:00Z")
+
+        result = self.read("host.cklb", content)
+
+        self.assertEqual(
+            {item.observed_at for item in result.observations},
+            {datetime(2026, 8, 3, 9, tzinfo=UTC)},
+        )
+
+    def invalid_clock_warnings(self, result: IngestResult) -> list[tuple[str, str | None]]:
+        return [
+            (item.message, item.location)
+            for item in result.warnings
+            if item.code == "source_timestamp_invalid"
+        ]
+
+    def test_a_refused_cklb_clock_is_named_whether_or_not_a_fallback_reads(self) -> None:
+        # The fallback is kept, but the clock it replaces is never dropped silently.
+        for clock in WARNED_STIG_CLOCKS:
+            for fallback in (None, "2026-08-03T09:00:00Z"):
+                with self.subTest(clock=clock, fallback=fallback):
+                    clocks = {"completed_at": clock}
+                    if fallback is not None:
+                        clocks["scan_time"] = fallback
+                    result = self.read("host.cklb", cklb_with(**clocks))
+                    self.assertEqual(
+                        self.invalid_clock_warnings(result),
+                        [(INVALID_CLOCK_MESSAGE, "completed_at")],
+                    )
+                    codes = {item.code for item in result.warnings}
+                    self.assertEqual("source_timestamp_missing" in codes, fallback is None)
+                    expected = None if fallback is None else datetime(2026, 8, 3, 9, tzinfo=UTC)
+                    self.assertEqual({item.observed_at for item in result.observations}, {expected})
+
+    def test_a_refused_xccdf_clock_is_named_whether_or_not_a_fallback_reads(self) -> None:
+        for clock in WARNED_STIG_CLOCKS:
+            for fallback in (None, "2026-08-03T08:00:00Z"):
+                with self.subTest(clock=clock, fallback=fallback):
+                    attributes = {"end_time": clock}
+                    if fallback is not None:
+                        attributes["start_time"] = fallback
+                    result = self.read("host.xml", xccdf_with(**attributes))
+                    self.assertEqual(
+                        self.invalid_clock_warnings(result),
+                        [(INVALID_CLOCK_MESSAGE, "TestResult[0]@end-time")],
+                    )
+                    codes = {item.code for item in result.warnings}
+                    self.assertEqual("source_timestamp_missing" in codes, fallback is None)
+
+    def test_both_refused_xccdf_clocks_are_named(self) -> None:
+        content = xccdf_with(end_time="9500-01-01T00:00:00Z", start_time="0001-01-01T00:00:00Z")
+
+        result = self.read("host.xml", content)
+
+        self.assertEqual(
+            self.invalid_clock_warnings(result),
+            [
+                (INVALID_CLOCK_MESSAGE, "TestResult[0]@end-time"),
+                (INVALID_CLOCK_MESSAGE, "TestResult[0]@start-time"),
+            ],
+        )
+
+    def test_an_empty_or_non_string_cklb_clock_is_named_and_the_fallback_read(self) -> None:
+        # Present but not a clock is refused like any other refused clock (EvidenceParse._clock).
+        for value in ("", 20260803, ["2026-08-03T09:00:00Z"]):
+            with self.subTest(value=value):
+                document = json.loads(cklb_with(scan_time="2026-08-03T09:00:00Z"))
+                document["completed_at"] = value
+                result = self.read("host.cklb", json.dumps(document).encode("utf-8"))
+                self.assertEqual(
+                    self.invalid_clock_warnings(result), [(INVALID_CLOCK_MESSAGE, "completed_at")]
+                )
+                self.assertEqual(
+                    {item.observed_at for item in result.observations},
+                    {datetime(2026, 8, 3, 9, tzinfo=UTC)},
+                )
+
+    def test_an_explicit_null_cklb_clock_is_absent_and_silent(self) -> None:
+        document = json.loads(cklb_with(scan_time="2026-08-03T09:00:00Z"))
+        document["completed_at"] = None
+
+        result = self.read("host.cklb", json.dumps(document).encode("utf-8"))
+
+        self.assertEqual(self.invalid_clock_warnings(result), [])
+        self.assertEqual(
+            {item.observed_at for item in result.observations},
+            {datetime(2026, 8, 3, 9, tzinfo=UTC)},
+        )
+
+    def test_a_valid_xccdf_end_time_leaves_the_start_time_unread(self) -> None:
+        content = xccdf_with(end_time="2026-08-03T09:00:00Z", start_time="9500-01-01T00:00:00Z")
+
+        result = self.read("host.xml", content)
+
+        self.assertEqual(self.invalid_clock_warnings(result), [])
+
+    def test_a_refused_clock_names_its_own_test_result(self) -> None:
+        content = b"""<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="two">
+          <TestResult id="first" end-time="2026-08-03T09:00:00Z">
+            <target>first-host</target>
+            <rule-result idref="rule_one" severity="low"><result>fail</result></rule-result>
+          </TestResult>
+          <TestResult id="second" end-time="9500-01-01T00:00:00Z">
+            <target>second-host</target>
+            <rule-result idref="rule_one" severity="low"><result>fail</result></rule-result>
+          </TestResult>
+        </Benchmark>"""
+
+        result = self.read("host.xml", content)
+
+        self.assertEqual(
+            self.invalid_clock_warnings(result), [(INVALID_CLOCK_MESSAGE, "TestResult[1]@end-time")]
+        )
+
+    def test_a_valid_clock_reads_no_warning_and_later_keys_are_not_read(self) -> None:
+        content = cklb_with(completed_at="2026-08-03T09:00:00Z", scan_time="9500-01-01T00:00:00Z")
+
+        result = self.read("host.cklb", content)
+
+        self.assertEqual(self.invalid_clock_warnings(result), [])
+
+    def test_the_end_of_day_clock_is_the_next_midnight_on_every_interpreter(self) -> None:
+        result = self.read("host.cklb", cklb_with(completed_at="2026-08-31T24:00:00Z"))
+
+        self.assertEqual(
+            {item.observed_at for item in result.observations}, {datetime(2026, 9, 1, tzinfo=UTC)}
+        )
+
+    def test_an_xccdf_clock_parse_clock_refuses_is_absent(self) -> None:
+        for clock in REFUSED_STIG_CLOCKS:
+            with self.subTest(clock=clock):
+                self.assert_untimed(self.read("host.xml", xccdf_with(end_time=clock)))
+
+    def test_a_refused_xccdf_end_time_falls_back_to_the_start_time(self) -> None:
+        content = xccdf_with(end_time="9999-12-31T23:59:59Z", start_time="2026-08-03T08:00:00Z")
+
+        result = self.read("host.xml", content)
+
+        self.assertEqual(
+            [item.observed_at for item in result.observations],
+            [datetime(2026, 8, 3, 8, tzinfo=UTC)],
+        )
+
+
+#: The code points Unicode 15.0.0 made format controls, unassigned in 3.11's 14.0.0 database.
+EGYPTIAN_FORMAT_CONTROLS = tuple(chr(code) for code in range(0x13439, 0x13440))
+#: Where an interpreter's database may disagree with the frozen 16.0.0 table, by its version.
+#: Any other disagreement is a newer database's drift, to be read and decided, not absorbed.
+KNOWN_CATEGORY_DELTAS = {"14.0.0": frozenset(ord(char) for char in EGYPTIAN_FORMAT_CONTROLS)}
+
+
+class FrozenCategoryTableTests(unittest.TestCase):
+    """Identity and evidence checks read one frozen Unicode 16.0.0 table (CL-65)."""
+
+    def test_the_table_is_unicode_16_and_its_ranges_are_ordered_and_maximal(self) -> None:
+        self.assertEqual(categories.UNICODE_VERSION, "16.0.0")
+        self.assertEqual(sum(last - first + 1 for first, last, _ in categories.RANGES), 2285)
+        for (_, last, category), (first, _, following) in itertools.pairwise(categories.RANGES):
+            self.assertLess(last, first)
+            self.assertFalse(last + 1 == first and category == following)
+
+    def test_the_table_agrees_with_this_interpreter_outside_the_known_delta(self) -> None:
+        delta = KNOWN_CATEGORY_DELTAS.get(unicodedata.unidata_version, frozenset())
+        frozen = {
+            code: category
+            for first, last, category in categories.RANGES
+            for code in range(first, last + 1)
+        }
+        database = {
+            code: category
+            for first, last, category in categories.database_ranges()
+            for code in range(first, last + 1)
+        }
+        disagreeing = {
+            code
+            for code in frozen.keys() | database.keys()
+            if frozen.get(code) != database.get(code)
+        }
+        self.assertEqual(disagreeing, set(delta))
+        if unicodedata.unidata_version == categories.UNICODE_VERSION:
+            self.assertEqual(categories.database_ranges(), categories.RANGES)
+            self.assertEqual(
+                categories.render_ranges(categories.RANGES),
+                categories.render_ranges(categories.database_ranges()),
+            )
+
+    def test_the_lookup_answers_at_every_range_edge(self) -> None:
+        for first, last, category in categories.RANGES:
+            with self.subTest(first=f"U+{first:04X}"):
+                self.assertEqual(categories.prohibited_category(chr(first)), category)
+                self.assertEqual(categories.prohibited_category(chr(last)), category)
+                for outside in (first - 1, last + 1):
+                    if 0 <= outside <= sys.maxunicode and not any(
+                        start <= outside <= end for start, end, _ in categories.RANGES
+                    ):
+                        self.assertIsNone(categories.prohibited_category(chr(outside)))
+
+    def test_the_seven_format_controls_are_refused_on_every_interpreter(self) -> None:
+        for char in EGYPTIAN_FORMAT_CONTROLS:
+            with self.subTest(code=f"U+{ord(char):04X}"):
+                self.assertEqual(
+                    common.identity_problem(f"host{char}", 512),
+                    f"contains prohibited code point U+{ord(char):04X}",
+                )
+                self.assertEqual(common.sanitize(f"a{char}b"), ("ab", True))
+
+    def test_no_answer_reads_the_interpreter_database(self) -> None:
+        # Stands in for an interpreter that calls every code point unassigned.
+        with mock.patch("unicodedata.category", return_value="Cn"):
+            self.assertEqual(
+                common.identity_problem("host\U00013439", 512),
+                "contains prohibited code point U+13439",
+            )
+            self.assertIsNone(common.identity_problem("host-\u00e9", 512))
+            self.assertEqual(common.sanitize("a\u2028b\x1b\u200bc\td"), ("a\nbc\td", True))
 
 
 class ArfAdapterTests(unittest.TestCase):
@@ -979,7 +1269,7 @@ class CommonHelperMoveTests(unittest.TestCase):
     def test_the_stig_adapters_use_the_shared_helpers(self) -> None:
         self.assertIs(stig.text_of, common.text_of)
         self.assertIs(stig.unique, common.unique)
-        self.assertIs(stig.parse_timestamp, common.parse_timestamp)
+        self.assertIs(stig.parse_clock, common.parse_clock)
         self.assertIs(stig.make_observation, common.make_observation)
         self.assertIs(stig.missing_time_diagnostic, common.missing_time_diagnostic)
 

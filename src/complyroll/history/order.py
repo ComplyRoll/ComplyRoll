@@ -25,14 +25,32 @@ from datetime import datetime
 from complyroll.adapters import DiagnosticLevel
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import EventRepository
+from complyroll.policy import (
+    CertificationClass,
+    CertificationProfile,
+    load_bundled_rule_source_snapshot,
+    select_policy,
+)
 from complyroll.reports.vdt import (
+    CLOCK_OUT_OF_RANGE,
     DetectionAttestation,
     ReportDiagnostic,
+    clock_problem,
+    detection_clock,
+    detection_clock_message,
     evaluation_order_diagnostic,
+    observation_clock_message,
     resolve_detection_time,
 )
 
-from .fold import CaseState, HistoryError, HistoryFault, fold_all_cases, rehydrate_observations
+from .fold import (
+    CaseState,
+    HistoryError,
+    HistoryFault,
+    fold_all_cases,
+    rehydrate_observation_records,
+    rehydrate_observations,
+)
 
 # *--- Types ---*
 
@@ -83,9 +101,10 @@ def case_order_diagnostic(
     Detection resolves exactly as the compiler resolves it, so an attestation never
     overrides a known source timestamp. A group with no resolvable detection time
     returns None; the report refuses it as `detection_time_missing`, not as an ordering
-    error. When `sources` is given, a detection time resolved from any other source
-    returns None, which lets `cases attest-detection` refuse only what its own
-    attestation decides.
+    error, and so does one whose detection time has no UTC instant, which the report
+    refuses as `clock_out_of_range`. When `sources` is given, a detection time resolved
+    from any other source returns None, which lets `cases attest-detection` refuse only
+    what its own attestation decides.
     """
 
     if case.tracking_id != group.tracking_id:
@@ -97,6 +116,9 @@ def case_order_diagnostic(
         if attested_at is None
         else DetectionAttestation(by_tracking_id={case.tracking_id: attested_at})
     )
+    clock = detection_clock(group, attestation)
+    if clock is not None and clock_problem(clock) is not None:
+        return None
     detected_at, detected_source = resolve_detection_time(group, attestation)
     if detected_at is None:
         return None
@@ -152,9 +174,68 @@ def evaluation_order_faults(repository: EventRepository) -> tuple[HistoryFault, 
     return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
 
 
+def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
+    """Return every clock in history some reader refuses as `clock_out_of_range`, as faults.
+
+    One predicate, `reports.vdt.clock_problem`, decides both sides. An observation whose
+    source time has no UTC instant is a fault at its own sequence: the report, coverage and
+    `cases correlate` each convert it. A group's detection time, resolved with the cases'
+    recorded attestations as a report from the store resolves it, is a fault when its
+    VER-TFR-EVU deadline overflows under either class of the pinned rules, at the earliest
+    observation that gives it or at the attestation, with the report's message; a group
+    whose clock already failed its conversion is named once, by its observations.
+    """
+
+    records = rehydrate_observation_records(repository)
+    faults: list[HistoryFault] = []
+    sequences: dict[str, int] = {}
+    for sequence, observation in records:
+        sequences.setdefault(observation.observation_id, sequence)
+        if observation.observed_at is None:
+            continue
+        problem = clock_problem(observation.observed_at)
+        if problem is not None:
+            message = observation_clock_message(
+                observation.observation_id, observation.observed_at, problem
+            )
+            faults.append(HistoryFault(sequence=sequence, code=CLOCK_OUT_OF_RANGE, message=message))
+    snapshot = load_bundled_rule_source_snapshot()
+    policies = tuple(
+        select_policy(snapshot, CertificationProfile(certification_class=value))
+        for value in CertificationClass
+    )
+    attested = {
+        case.tracking_id: case.attestation
+        for case in fold_all_cases(repository)
+        if case.attestation is not None
+    }
+    attestation = DetectionAttestation(
+        by_tracking_id={key: record.detected_at for key, record in attested.items()}
+    )
+    for group in group_open_observations([observation for _, observation in records]):
+        clock = detection_clock(group, attestation)
+        if clock is None or clock_problem(clock) is not None:
+            continue
+        problem = clock_problem(clock, policies)
+        if problem is None:
+            continue
+        if group.earliest_observed_at is None:
+            sequence = attested[group.tracking_id].sequence
+        else:
+            sequence = min(
+                sequences[observation.observation_id]
+                for observation in group.observations
+                if observation.observed_at == clock
+            )
+        message = detection_clock_message(group.tracking_id, clock, problem)
+        faults.append(HistoryFault(sequence=sequence, code=CLOCK_OUT_OF_RANGE, message=message))
+    return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
+
+
 __all__ = [
     "EvaluationOrderError",
     "case_order_diagnostic",
+    "clock_faults",
     "current_groups",
     "evaluation_order_faults",
 ]

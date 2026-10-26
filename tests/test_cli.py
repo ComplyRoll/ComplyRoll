@@ -1611,6 +1611,8 @@ COVERED_AUDIT_CODES = {
     "artifact_overfull",
     "artifact_stream_mismatch",
     "case_tracking_id_mismatch",
+    # Its `store verify` command tests live in `UnusableStoredClockTests` below.
+    "clock_out_of_range",
     # Its library tests live in `tests/test_replay.py`, beside the report's refusal.
     "disposition_without_evaluation",
     # The five coverage codes' `store verify` command tests live in
@@ -8296,6 +8298,193 @@ class PersistedTimedCoverageGoldenTests(PersistedStoreTestCase):
         self.assertEqual(
             markdown_path.read_bytes(), (GOLDEN / "vdt-coverage-timed.md").read_bytes()
         )
+
+
+class UnusableStoredClockTests(PersistedStoreTestCase):
+    """A store an earlier build wrote can hold a clock no report can compute with (CL-54).
+
+    0.3.0a0 read CKLB and XCCDF clocks unguarded, so a store can hold year 1 or year 9999.
+    The readers refuse exactly the clocks whose use overflows, each with a code and no
+    traceback, and `store verify` names every one of them with the same predicate. Clocks
+    that reported before still report, byte for byte.
+    """
+
+    #: Year 1 east and year 9999 west: the conversion to UTC overflows, in every reader.
+    CONVERSION = ("0001-01-01T00:00:00+01:00", "9999-12-31T23:00:00-01:00")
+    #: The VER-TFR-EVU deadline overflows: 5 days under Class C, 7 under Class B.
+    DEADLINE_BOTH = "9999-12-31T23:59:59Z"
+    DEADLINE_B = "9999-12-26T12:00:00Z"
+    #: Outside the years a current build reads, and still reported today.
+    REPORTED = (
+        "0001-01-01T00:00:00Z",
+        "1969-12-31T23:59:59Z",
+        "9001-01-01T00:00:00Z",
+        "9990-01-01T00:00:00Z",
+    )
+    KINDS = ("vdt", "avi", "historical")
+
+    def checklist(self, clock: str, name: str = "ubuntu-host.cklb") -> Path:
+        document = json.loads((FIXTURES / "ubuntu-host.cklb").read_text(encoding="utf-8"))
+        document["completed_at"] = clock
+        path = self.workspace / name
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def ingest_clock(self, clock: str, name: str = "ubuntu-host.cklb") -> Path:
+        """Ingest the Ubuntu checklist at `clock` the way 0.3.0a0 read it, unguarded."""
+
+        path = self.checklist(clock, name)
+        with unguarded_stig_clocks():
+            self.succeeds(["ingest", str(path), "--db", str(self.database), "--as-of", INGESTED_AT])
+        return path
+
+    def report_argv(
+        self, kind: str, certification_class: str = "C", *, inventory: bool = False
+    ) -> list[str]:
+        argv = ["report", kind, "--db", str(self.database), "--class", certification_class]
+        argv += ["--package-uri", "https://example.test/cpo", "--as-of", INGESTED_AT]
+        if kind != "historical":
+            argv += ["--from", "2026-08-01T00:00:00Z", "--to", "2026-08-31T23:59:59Z"]
+        if inventory:
+            argv += ["--inventory", str(EXAMPLE_INVENTORY)]
+        return argv
+
+    def assert_clock_refusal(self, argv: Sequence[str], clock: str) -> list[str]:
+        """Assert one run is refused with `clock_out_of_range` lines only; return messages."""
+
+        code, out, err = run(argv)
+        self.assertEqual((code, out), (1, ""), err)
+        lines = err.splitlines()
+        self.assertTrue(lines)
+        prefix = "error: clock_out_of_range: "
+        for line in lines:
+            self.assertTrue(line.startswith(prefix), line)
+            self.assertIn(clock, line)
+        return [line[len(prefix) :].rsplit(" [", 1)[0] for line in lines]
+
+    def verify_faults(self) -> list[str]:
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual((code, out), (1, ""), err)
+        faults = [line for line in err.splitlines() if ": clock_out_of_range: " in line]
+        self.assertTrue(faults, err)
+        return [line.split(": clock_out_of_range: ", 1)[1] for line in faults]
+
+    def test_a_clock_whose_utc_conversion_overflows_is_refused_by_every_report(self) -> None:
+        for clock in self.CONVERSION:
+            with self.subTest(clock=clock):
+                self.setUp()
+                self.ingest_clock(clock)
+                for kind in self.KINDS:
+                    for inventory in (False, True):
+                        messages = self.assert_clock_refusal(
+                            self.report_argv(kind, inventory=inventory), clock
+                        )
+                        # Coverage converts all six observations; a report, each case's first.
+                        self.assertEqual(len(messages), 6 if inventory else 3)
+
+    def test_the_conversion_message_names_the_case_and_the_clock(self) -> None:
+        self.ingest_clock(self.CONVERSION[0])
+
+        code, _, err = run(self.report_argv("vdt"))
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            err.splitlines()[0],
+            "error: clock_out_of_range: case-9bed0d8f88355393 has detection time "
+            "0001-01-01T00:00:00+01:00 in history, which has no UTC instant inside the years "
+            "1 to 9999, so no report can compute with it [V-260469]",
+        )
+
+    def test_a_detection_time_whose_deadline_overflows_is_refused_under_its_class(self) -> None:
+        self.ingest_clock(self.DEADLINE_BOTH)
+        for kind in self.KINDS:
+            for certification_class in ("B", "C"):
+                self.assert_clock_refusal(self.report_argv(kind, certification_class), "9999")
+
+    def test_a_deadline_only_one_class_overflows_is_refused_only_under_it(self) -> None:
+        self.ingest_clock(self.DEADLINE_B)
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                messages = self.assert_clock_refusal(self.report_argv(kind, "B"), "9999")
+                self.assertIn("VER-TFR-EVU deadline under Class B", messages[0])
+                self.succeeds(self.report_argv(kind, "C"))
+
+    def test_correlate_refuses_a_conversion_overflow_and_appends_nothing(self) -> None:
+        for clock in self.CONVERSION:
+            with self.subTest(clock=clock):
+                self.setUp()
+                self.ingest_clock(clock)
+                before = self.latest_sequence()
+
+                code, out, err = run(["cases", "correlate", "--db", str(self.database)])
+
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(len(err.splitlines()), 1)
+                self.assertTrue(err.startswith("error: history_invalid: observation obs-"), err)
+                self.assertIn(f"has source time {clock} in history", err)
+                self.assertEqual(self.latest_sequence(), before)
+
+    def test_correlate_links_a_clock_only_a_deadline_overflows(self) -> None:
+        self.ingest_clock(self.DEADLINE_BOTH)
+
+        self.correlate()
+
+    def test_cases_coverage_refuses_a_conversion_overflow_and_appends_nothing(self) -> None:
+        self.ingest_clock(self.CONVERSION[0])
+        before = self.latest_sequence()
+
+        argv = ["cases", "coverage", "--db", str(self.database), "--class", "C"]
+        argv += ["--as-of", INGESTED_AT, "--inventory", str(EXAMPLE_INVENTORY)]
+        self.assert_clock_refusal(argv, self.CONVERSION[0])
+        self.assertEqual(self.latest_sequence(), before)
+
+    def test_store_verify_names_each_clock_in_the_words_a_reader_refuses_it_with(self) -> None:
+        for clock, argv in (
+            (self.CONVERSION[0], lambda: self.report_argv("vdt", inventory=True)),
+            (self.CONVERSION[1], lambda: self.report_argv("vdt", inventory=True)),
+            (self.DEADLINE_BOTH, lambda: self.report_argv("vdt", "B")),
+            (self.DEADLINE_B, lambda: self.report_argv("vdt", "B")),
+        ):
+            with self.subTest(clock=clock):
+                self.setUp()
+                self.ingest_clock(clock)
+                refused = self.assert_clock_refusal(argv(), clock[:4])
+                self.assertEqual(self.verify_faults(), refused)
+
+    def test_clocks_that_reported_before_still_report_and_verify(self) -> None:
+        for clock in self.REPORTED:
+            with self.subTest(clock=clock):
+                self.setUp()
+                path = self.ingest_clock(clock)
+                self.succeeds(["store", "verify", "--db", str(self.database)])
+                for kind in self.KINDS:
+                    for certification_class in ("B", "C"):
+                        argv = self.report_argv(kind, certification_class, inventory=True)
+                        persisted, _ = self.succeeds(argv)
+                        stateless = [*argv[:2], str(path), *argv[4:]]
+                        stateless += ["--detected-at", ATTESTED_AT]
+                        with unguarded_stig_clocks():
+                            direct, _ = self.succeeds(stateless)
+                        self.assertEqual(persisted, direct)
+                self.correlate()
+                self.succeeds(["store", "verify", "--db", str(self.database)])
+
+    def test_an_evaluated_case_that_gains_such_a_clock_is_a_fault_not_a_traceback(self) -> None:
+        # The order check resolves the group's detection time, which converted the clock.
+        self.ingest_clock("2026-08-03T09:00:00Z", "timed.cklb")
+        self.correlate()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = payload["evaluations"][:1]
+        evaluations = self.workspace / "ubuntu-evaluation.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        self.evaluate(evaluations)
+        self.ingest_clock(self.CONVERSION[0], "year-one.cklb")
+
+        faults = self.verify_faults()
+
+        self.assertEqual(len(faults), 6)
+        self.assert_clock_refusal(self.report_argv("vdt"), self.CONVERSION[0])
+        self.evaluate(evaluations)
 
 
 #: A duplicated key that would print as its own `error:` line, and clear the screen, if it

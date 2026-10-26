@@ -8300,6 +8300,141 @@ class PersistedTimedCoverageGoldenTests(PersistedStoreTestCase):
         )
 
 
+def run_on_encoding(argv: Sequence[str], encoding: str) -> tuple[int, bytes, bytes]:
+    """Run one CLI invocation on byte streams that encode as a terminal set to `encoding` does.
+
+    `run` captures text, so it can never fail to encode; a real stdout under
+    `PYTHONIOENCODING=ascii` is a strict wrapper like these.
+    """
+
+    out_bytes = io.BytesIO()
+    err_bytes = io.BytesIO()
+    out = io.TextIOWrapper(out_bytes, encoding=encoding, errors="strict", write_through=True)
+    err = io.TextIOWrapper(err_bytes, encoding=encoding, errors="strict", write_through=True)
+    with redirect_stdout(out), redirect_stderr(err):
+        code = main(list(argv))
+    return code, out_bytes.getvalue(), err_bytes.getvalue()
+
+
+#: Text that would forge a diagnostic line, move the cursor and clear the screen if a terminal
+#: received it raw: a newline, a carriage return, a line separator and ANSI escapes.
+FORGING_TEXT = "x\nerror: forged: injected\r\u2028\x1b[2J\x9b"
+#: The same text as text output prints it, every control spelled as an escape.
+FORGING_SHOWN = "x\\nerror: forged: injected\\r\\u2028\\x1b[2J\\x9b"
+
+
+class TerminalTextTests(PersistedStoreTestCase):
+    """Text output escapes control characters, so no input forges a line (CL-50, CL-51).
+
+    Every line the CLI prints goes through one choke point that spells C0 and C1 controls,
+    DEL, U+2028 and U+2029 as escapes; JSON output already escapes them and is unchanged.
+    A stream that cannot encode a character writes it as a backslash escape rather than
+    ending the run, and JSON written to such a stream spells it as a JSON escape.
+    """
+
+    def assert_unforged(self, text: str) -> None:
+        for line in text.splitlines():
+            self.assertFalse(line.startswith("error: forged"), line)
+        self.assertNotIn("\x1b", text)
+        self.assertNotIn("\r", text)
+        self.assertNotIn("\u2028", text)
+        self.assertNotIn("\x9b", text)
+
+    def test_a_file_name_forges_no_line_on_the_stateless_path(self) -> None:
+        artifact = self.workspace / f"{FORGING_TEXT}.cklb"
+        artifact.write_text("{not json", encoding="utf-8")
+        argv = list(REPORT_ARGUMENTS)
+        argv[2:5] = [str(artifact)]
+
+        code, out, err = run(argv)
+
+        self.assertEqual((code, out), (1, ""))
+        self.assert_unforged(err)
+        self.assertEqual(len(err.splitlines()), 1)
+        self.assertIn(f"[{FORGING_SHOWN}.cklb]", err)
+
+    def test_an_ingest_summary_names_a_file_with_its_controls_escaped(self) -> None:
+        artifact = self.workspace / f"{FORGING_TEXT}.cklb"
+        artifact.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
+
+        code, out, err = run(["ingest", str(artifact), "--db", str(self.database)])
+
+        self.assertEqual(code, 0, err)
+        self.assert_unforged(out + err)
+        self.assertEqual(out, f"{FORGING_SHOWN}.cklb: recorded 6 observation(s)\n")
+
+    def test_stored_text_forges_no_line_in_cases_history(self) -> None:
+        self.ingest_fixtures()
+        self.correlate()
+        self.attest_missing()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        for entry in payload["evaluations"]:
+            entry["evaluator"] = FORGING_TEXT
+        evaluations = self.workspace / "evaluations.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        self.evaluate(evaluations, actor=FORGING_TEXT)
+
+        listing, err = self.succeeds(["cases", "history", WINDOWS_CASE, "--db", str(self.database)])
+
+        self.assert_unforged(listing + err)
+        evaluated = [line for line in listing.splitlines() if "\tcase.evaluated\t" in line]
+        self.assertEqual(len(evaluated), 1)
+        fields = evaluated[0].split("\t")
+        self.assertEqual(fields[3], FORGING_SHOWN)
+        self.assertTrue(fields[4].endswith(f" by {FORGING_SHOWN}"), fields[4])
+
+    def test_a_tab_stays_a_tab(self) -> None:
+        # `cases history` separates its fields with tabs; a tab moves no line.
+        self.ingest_fixtures()
+        self.correlate()
+
+        listing, _ = self.succeeds(["cases", "history", WINDOWS_CASE, "--db", str(self.database)])
+
+        self.assertTrue(all(line.count("\t") == 4 for line in listing.splitlines()))
+
+    def test_json_on_stdout_is_unchanged(self) -> None:
+        code, out, _ = run_on_encoding(REPORT_ARGUMENTS, "utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out, (GOLDEN / "vdt-fixtures.json").read_bytes())
+
+    def test_json_on_an_ascii_stdout_is_the_same_document(self) -> None:
+        code, out, err = run_on_encoding(REPORT_ARGUMENTS, "ascii")
+
+        self.assertEqual(code, 0, err)
+        golden = (GOLDEN / "vdt-fixtures.json").read_text(encoding="utf-8")
+        self.assertIn("\u00ae", golden)
+        self.assertEqual(json.loads(out.decode("ascii")), json.loads(golden))
+        self.assertEqual(out.decode("ascii"), golden.replace("\u00ae", "\\u00ae"))
+
+    def test_ingest_on_an_ascii_stdout_reports_the_write_it_committed(self) -> None:
+        artifact = self.workspace / "caf\u00e9-host.cklb"
+        artifact.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
+        argv = ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
+
+        code, out, err = run_on_encoding(argv, "ascii")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, b"caf\\xe9-host.cklb: recorded 6 observation(s)\n")
+        self.assertIn(b"warning: source_timestamp_missing: ", err)
+        self.assertIn(b"[caf\\xe9-host.cklb]", err)
+        code, out, _ = run_on_encoding(argv, "utf-8")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "caf\u00e9-host.cklb: already_recorded\n".encode())
+
+    def test_a_diagnostic_on_an_ascii_stderr_does_not_end_the_run(self) -> None:
+        artifact = self.workspace / "caf\u00e9.cklb"
+        artifact.write_text("{not json", encoding="utf-8")
+        argv = list(REPORT_ARGUMENTS)
+        argv[2:5] = [str(artifact)]
+
+        code, out, err = run_on_encoding(argv, "ascii")
+
+        self.assertEqual((code, out), (1, b""))
+        self.assertTrue(err.startswith(b"error: artifact_parse_failed: "), err)
+        self.assertIn(b"[caf\\xe9.cklb]", err)
+
+
 class UnusableStoredClockTests(PersistedStoreTestCase):
     """A store an earlier build wrote can hold a clock no report can compute with (CL-54).
 

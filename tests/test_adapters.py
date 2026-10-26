@@ -400,6 +400,58 @@ class StigClockGuardTests(unittest.TestCase):
             ],
         )
 
+    def test_an_empty_or_non_string_cklb_clock_is_named_and_the_fallback_read(self) -> None:
+        # Present but not a clock is refused like any other refused clock (EvidenceParse._clock).
+        for value in ("", 20260803, ["2026-08-03T09:00:00Z"]):
+            with self.subTest(value=value):
+                document = json.loads(cklb_with(scan_time="2026-08-03T09:00:00Z"))
+                document["completed_at"] = value
+                result = self.read("host.cklb", json.dumps(document).encode("utf-8"))
+                self.assertEqual(
+                    self.invalid_clock_warnings(result), [(INVALID_CLOCK_MESSAGE, "completed_at")]
+                )
+                self.assertEqual(
+                    {item.observed_at for item in result.observations},
+                    {datetime(2026, 8, 3, 9, tzinfo=UTC)},
+                )
+
+    def test_an_explicit_null_cklb_clock_is_absent_and_silent(self) -> None:
+        document = json.loads(cklb_with(scan_time="2026-08-03T09:00:00Z"))
+        document["completed_at"] = None
+
+        result = self.read("host.cklb", json.dumps(document).encode("utf-8"))
+
+        self.assertEqual(self.invalid_clock_warnings(result), [])
+        self.assertEqual(
+            {item.observed_at for item in result.observations},
+            {datetime(2026, 8, 3, 9, tzinfo=UTC)},
+        )
+
+    def test_a_valid_xccdf_end_time_leaves_the_start_time_unread(self) -> None:
+        content = xccdf_with(end_time="2026-08-03T09:00:00Z", start_time="9500-01-01T00:00:00Z")
+
+        result = self.read("host.xml", content)
+
+        self.assertEqual(self.invalid_clock_warnings(result), [])
+
+    def test_a_refused_clock_names_its_own_test_result(self) -> None:
+        content = b"""<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="two">
+          <TestResult id="first" end-time="2026-08-03T09:00:00Z">
+            <target>first-host</target>
+            <rule-result idref="rule_one" severity="low"><result>fail</result></rule-result>
+          </TestResult>
+          <TestResult id="second" end-time="9500-01-01T00:00:00Z">
+            <target>second-host</target>
+            <rule-result idref="rule_one" severity="low"><result>fail</result></rule-result>
+          </TestResult>
+        </Benchmark>"""
+
+        result = self.read("host.xml", content)
+
+        self.assertEqual(
+            self.invalid_clock_warnings(result), [(INVALID_CLOCK_MESSAGE, "TestResult[1]@end-time")]
+        )
+
     def test_a_valid_clock_reads_no_warning_and_later_keys_are_not_read(self) -> None:
         content = cklb_with(completed_at="2026-08-03T09:00:00Z", scan_time="9500-01-01T00:00:00Z")
 

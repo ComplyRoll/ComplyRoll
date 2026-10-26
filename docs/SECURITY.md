@@ -297,12 +297,13 @@ those three match, and a test pins it.
   characters escaped by the text output rule above, so none can forge a line. Treat any output
   read from an untrusted store as untrusted text.
 - A clock an earlier build stored that no report can compute with is refused where it would
-  overflow: a source clock whose UTC instant falls outside the years 1 to 9999, a detection time
-  whose VER-TFR-EVU deadline would, and an evaluation `completedAt` whose VDR-TFR-PVR or
-  VER-TFR-MAV deadline would. Each is `clock_out_of_range` from a report or `cases coverage` and
-  `history_invalid` from `cases correlate`, and `store verify` names it with the same predicate
-  (ADR 0008 amendment 2026-10-25). A clock that computes, year 1 with no offset among them, is
-  never refused.
+  overflow. A source clock whose UTC instant falls outside the years 1 to 9999 is
+  `clock_out_of_range` from a report or `cases coverage` and `history_invalid` from `cases
+  correlate`. A detection time whose VER-TFR-EVU deadline overflows, or an evaluation
+  `completedAt` whose VDR-TFR-PVR or VER-TFR-MAV deadline does, is `clock_out_of_range` from a
+  report only, since no other command computes a deadline. `store verify` names all three with
+  the same predicate (ADR 0008 amendment 2026-10-25). A clock that computes, year 1 with no
+  offset among them, is never refused.
 - A projection checkpoint must hold a non-negative integer count and a time with a timezone. The
   library's checkpoint reader and its compare-and-swap refuse any other row as
   `EventIntegrityError`, and `store verify` reports it as `projection_checkpoint_invalid`. No

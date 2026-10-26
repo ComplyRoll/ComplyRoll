@@ -8750,6 +8750,44 @@ class UnusableStoredClockTests(PersistedStoreTestCase):
         self.assertIn(f"error: sequence {sequence}: clock_out_of_range: {refused}\n", err)
         self.assertIn("faults: 1 domain fault(s) in", err)
 
+    def evaluate_again(self, completed_at: str) -> int:
+        """Record a second Ubuntu evaluation, read unguarded; return its event's sequence."""
+
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = payload["evaluations"][:1]
+        payload["evaluations"][0]["completedAt"] = completed_at
+        payload["evaluations"][0]["pain"] = 4
+        evaluations = self.workspace / "second-evaluation.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        with patch("complyroll.reports.evaluations.parse_clock", parse_timestamp):
+            self.evaluate(evaluations)
+        evaluated = [item for item in self.records() if item.event_type == "case.evaluated"]
+        self.assertEqual(len(evaluated), 2)
+        return evaluated[-1].sequence
+
+    def test_only_the_current_evaluation_decides_a_late_clock(self) -> None:
+        # A report reads a case's latest evaluation, so verify must read that one too.
+        with self.subTest(order="late, then in range"):
+            self.evaluate_completed_at("9999-06-23T00:00:00Z")
+            self.evaluate_again("2026-08-05T12:00:00Z")
+            self.succeeds(["store", "verify", "--db", str(self.database)])
+            for kind in self.KINDS:
+                for certification_class in ("B", "C"):
+                    self.succeeds(self.report_argv(kind, certification_class))
+        with self.subTest(order="in range, then late"):
+            self.setUp()
+            self.evaluate_completed_at("2026-08-05T12:00:00Z")
+            sequence = self.evaluate_again("9999-06-23T00:00:00Z")
+            code, out, err = run(["store", "verify", "--db", str(self.database)])
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn(f"error: sequence {sequence}: clock_out_of_range: ", err)
+            self.assertIn("faults: 1 domain fault(s) in", err)
+            for kind in self.KINDS:
+                for certification_class in ("B", "C"):
+                    self.assert_clock_refusal(
+                        self.report_argv(kind, certification_class), "9999-06-23"
+                    )
+
     def test_an_evaluation_whose_deadlines_fit_still_reports_and_verifies(self) -> None:
         self.evaluate_completed_at("9999-06-22T00:00:00Z")
 

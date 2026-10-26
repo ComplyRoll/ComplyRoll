@@ -25,8 +25,9 @@ All notable project changes will be documented here.
   9999 with a negative one); a detection time, from a source clock or an attestation, whose
   VER-TFR-EVU deadline would; and an evaluation `completedAt` whose VDR-TFR-PVR or VER-TFR-MAV
   deadline would (on or after 9999-06-23, which the 0.3.0a0 `cases evaluate` accepted). A report
-  refuses the record, and `cases coverage` the observation, as the ERROR `clock_out_of_range`,
-  naming the case or observation and the stored clock; `cases correlate` refuses a link as
+  refuses the record as the ERROR `clock_out_of_range`, naming the case or observation and the
+  stored clock, for any of the three. Only the first reaches the other commands: `cases coverage`
+  refuses the observation as `clock_out_of_range`, and `cases correlate` refuses a link as
   `history_invalid` with nothing appended. `store verify`, which passed such a store, reports each
   one as the audit fault `clock_out_of_range` through the same predicate, under either class, at the
   observation, attestation or evaluation event. Clocks that computed before, year 1 with no offset,

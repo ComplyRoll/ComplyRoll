@@ -13,7 +13,6 @@ import heapq
 import json
 import re
 import reprlib
-import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -23,6 +22,7 @@ from typing import Any
 from complyroll.models import Observation, ObservationDisposition, ResourceRef, SourceSeverity
 
 from .base import ArtifactProvenance, DiagnosticLevel, IngestDiagnostic
+from .categories import prohibited_category
 from .safeio import IngestLimits, InputLimitError
 
 # *--- Configuration ---*
@@ -57,7 +57,6 @@ EVIDENCE_TRUNCATED_SUMMARY = (
     "evidence text was cut at its cap; the truncated metadata key names the members"
 )
 
-_PROHIBITED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 _LINE_BREAK_CATEGORIES = frozenset({"Zl", "Zp"})
 _KEPT_CONTROLS = frozenset({"\t", "\n"})
 
@@ -65,12 +64,15 @@ _KEPT_CONTROLS = frozenset({"\t", "\n"})
 # Letters and digits are ASCII only: \d also matches other scripts' digits, and a case-blind
 # letter class also matches U+0130, U+0131, U+017F, and U+212A, so either would let a lookalike
 # become a placeholder or an identifier. A CVE sequence number has 4 to 19 digits, the bound
-# of the cveId pattern in the CVE record format.
+# of the cveId pattern in the CVE record format. A GHSA id is exactly three groups of four from
+# GitHub's alphabet, 23456789cfghjmpqrvwx; a fourth group joined by a hyphen makes the token no id
+# rather than leaving its first three behind (CL-55).
 CVE = re.compile(
     r"(?<![A-Za-z0-9])CVE-([0-9]{4})-([0-9]{4,19})(?![A-Za-z0-9])", re.IGNORECASE | re.ASCII
 )
 GHSA = re.compile(
-    r"(?<![A-Za-z0-9])GHSA(?:-[A-Za-z0-9]{4}){3}(?![A-Za-z0-9])", re.IGNORECASE | re.ASCII
+    r"(?<![A-Za-z0-9])GHSA(?:-[2-9cfghjmpqrvwx]{4}){3}(?![A-Za-z0-9]|-[A-Za-z0-9])",
+    re.IGNORECASE | re.ASCII,
 )
 CWE = re.compile(r"(?<![A-Za-z0-9])CWE-([0-9]{1,5})(?![A-Za-z0-9])", re.IGNORECASE | re.ASCII)
 # The spec's end-of-day clock, 24:00 with zero seconds, and any hour 24 fromisoformat reads:
@@ -208,6 +210,7 @@ def parse_timestamp(value: object) -> datetime | None:
 
 # SECURITY: Identity inputs are refused, never repaired. A control, format, surrogate, or
 # line-separator code point, or an over-cap length, fails the artifact closed (decision 10).
+# The categories are the frozen Unicode 16.0.0 table, never the interpreter's (CL-65).
 def identity_problem(value: str, cap: int) -> str | None:
     """Describe why text cannot be an identity input, or None when it can."""
     if len(value) > cap:
@@ -215,7 +218,7 @@ def identity_problem(value: str, cap: int) -> str | None:
     if value.isascii() and value.isprintable():
         return None
     for char in value:
-        if unicodedata.category(char) in _PROHIBITED_CATEGORIES:
+        if prohibited_category(char) is not None:
             return f"contains prohibited code point U+{ord(char):04X}"
     return None
 
@@ -227,11 +230,11 @@ def sanitize(text: str) -> tuple[str, bool]:
     kept: list[str] = []
     changed = False
     for char in text:
-        category = unicodedata.category(char)
+        category = prohibited_category(char)
         if category in _LINE_BREAK_CATEGORIES:
             kept.append("\n")
             changed = True
-        elif category in _PROHIBITED_CATEGORIES and char not in _KEPT_CONTROLS:
+        elif category is not None and char not in _KEPT_CONTROLS:
             changed = True
         else:
             kept.append(char)

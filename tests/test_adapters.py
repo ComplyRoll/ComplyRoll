@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import tempfile
+import unicodedata
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +20,7 @@ from complyroll.adapters import (
     IngestLimits,
     IngestResult,
     SarifAdapter,
+    categories,
     common,
     hdf,
     ingest_stig_artifact,
@@ -351,6 +354,68 @@ class StigClockGuardTests(unittest.TestCase):
             [item.observed_at for item in result.observations],
             [datetime(2026, 8, 3, 8, tzinfo=UTC)],
         )
+
+
+#: The code points Unicode 15.0.0 made format controls, unassigned in 3.11's 14.0.0 database.
+EGYPTIAN_FORMAT_CONTROLS = tuple(chr(code) for code in range(0x13439, 0x13440))
+#: Where an interpreter's database may disagree with the frozen 16.0.0 table, by its version.
+#: Any other disagreement is a newer database's drift, to be read and decided, not absorbed.
+KNOWN_CATEGORY_DELTAS = {"14.0.0": frozenset(ord(char) for char in EGYPTIAN_FORMAT_CONTROLS)}
+
+
+class FrozenCategoryTableTests(unittest.TestCase):
+    """Identity and evidence checks read one frozen Unicode 16.0.0 table (CL-65)."""
+
+    def test_the_table_is_unicode_16_and_its_ranges_are_ordered_and_maximal(self) -> None:
+        self.assertEqual(categories.UNICODE_VERSION, "16.0.0")
+        self.assertEqual(sum(last - first + 1 for first, last, _ in categories.RANGES), 2285)
+        for (_, last, category), (first, _, following) in itertools.pairwise(categories.RANGES):
+            self.assertLess(last, first)
+            self.assertFalse(last + 1 == first and category == following)
+
+    def test_the_table_agrees_with_this_interpreter_outside_the_known_delta(self) -> None:
+        delta = KNOWN_CATEGORY_DELTAS.get(unicodedata.unidata_version, frozenset())
+        frozen = {
+            code: category
+            for first, last, category in categories.RANGES
+            for code in range(first, last + 1)
+        }
+        database = {
+            code: category
+            for first, last, category in categories.database_ranges()
+            for code in range(first, last + 1)
+        }
+        disagreeing = {
+            code
+            for code in frozen.keys() | database.keys()
+            if frozen.get(code) != database.get(code)
+        }
+        self.assertEqual(disagreeing, set(delta))
+        if unicodedata.unidata_version == categories.UNICODE_VERSION:
+            self.assertEqual(categories.database_ranges(), categories.RANGES)
+            self.assertEqual(
+                categories.render_ranges(categories.RANGES),
+                categories.render_ranges(categories.database_ranges()),
+            )
+
+    def test_the_seven_format_controls_are_refused_on_every_interpreter(self) -> None:
+        for char in EGYPTIAN_FORMAT_CONTROLS:
+            with self.subTest(code=f"U+{ord(char):04X}"):
+                self.assertEqual(
+                    common.identity_problem(f"host{char}", 512),
+                    f"contains prohibited code point U+{ord(char):04X}",
+                )
+                self.assertEqual(common.sanitize(f"a{char}b"), ("ab", True))
+
+    def test_no_answer_reads_the_interpreter_database(self) -> None:
+        # Stands in for an interpreter that calls every code point unassigned.
+        with mock.patch("unicodedata.category", return_value="Cn"):
+            self.assertEqual(
+                common.identity_problem("host\U00013439", 512),
+                "contains prohibited code point U+13439",
+            )
+            self.assertIsNone(common.identity_problem("host-\u00e9", 512))
+            self.assertEqual(common.sanitize("a\u2028b\x1b\u200bc\td"), ("a\nbc\td", True))
 
 
 class ArfAdapterTests(unittest.TestCase):

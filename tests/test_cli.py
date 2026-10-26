@@ -36,6 +36,7 @@ from complyroll.adapters import (
     classify_ingest,
     ingest_stig_artifact,
 )
+from complyroll.adapters import common as adapters_common
 from complyroll.adapters.common import parse_timestamp
 from complyroll.adapters.hdf import HDF_PARSER_VERSION
 from complyroll.adapters.sarif import SARIF_PARSER_VERSION
@@ -8433,6 +8434,43 @@ class TerminalTextTests(PersistedStoreTestCase):
         self.assertEqual((code, out), (1, b""))
         self.assertTrue(err.startswith(b"error: artifact_parse_failed: "), err)
         self.assertIn(b"[caf\\xe9.cklb]", err)
+
+
+class FrozenCategoryStoreTests(PersistedStoreTestCase):
+    """A store 0.3.0a0 wrote on 3.11 can hold an identity the frozen table refuses (CL-65).
+
+    3.11's Unicode 14.0.0 database called U+13439 to U+1343F unassigned, so 0.3.0a0 on 3.11
+    accepted them in an identity. No reader or `store verify` calls `identity_problem`, so
+    such a store still reads and verifies; only reading the same bytes again refuses them.
+    """
+
+    def test_a_stored_identity_holding_one_of_the_seven_still_reads_and_verifies(self) -> None:
+        uri = "src/egyptian\U00013439.py"
+        artifact = self.workspace / "egyptian.sarif"
+        artifact.write_text(json.dumps(make_log(make_run([make_result(uri=uri)]))), "utf-8")
+        argv = ["ingest", str(artifact), "--db", str(self.database), "--as-of", INGESTED_AT]
+        real = adapters_common.prohibited_category
+
+        # 0.3.0a0 on 3.11: the code point read as unassigned, so the identity was accepted.
+        def unassigned(char: str) -> str | None:
+            return None if char == "\U00013439" else real(char)
+
+        with patch.object(adapters_common, "prohibited_category", unassigned):
+            self.succeeds(argv)
+
+        self.succeeds(["store", "verify", "--db", str(self.database)])
+        self.correlate()
+        self.attest_missing()
+        listing, _ = self.succeeds(["cases", "list", "--db", str(self.database)])
+        self.assertEqual(len(listing.splitlines()), 2)
+        out, _ = self.report()
+        self.assertIn('"resourceId": "src/egyptian\U00013439.py"', out)
+        self.succeeds(["store", "verify", "--db", str(self.database)])
+
+        code, out, err = run(argv)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("error: identity_input_invalid: ", err)
+        self.assertIn("contains prohibited code point U+13439", err)
 
 
 class UnusableStoredClockTests(PersistedStoreTestCase):

@@ -665,7 +665,7 @@ class KevMatchingTests(unittest.TestCase):
 
     def test_matches_sort_by_due_date_then_cve_id(self) -> None:
         found = self.catalog.matches(
-            ["CVE-2099-0003", "CWE-22", "CVE-2099-0002", "GHSA-aaaa-bbbb-cccc", "CVE-2099-0001"],
+            ["CVE-2099-0003", "CWE-22", "CVE-2099-0002", "GHSA-cfgh-jmpq-rvwx", "CVE-2099-0001"],
             on_or_before=date(2026, 9, 15),
         )
         self.assertEqual(
@@ -855,7 +855,7 @@ class KevMatchIncompleteUnitTests(unittest.TestCase):
 
     def test_a_cut_list_ending_in_cwes_kept_every_cve(self) -> None:
         self.assert_missing(False, self.CUT, self.CVES_AND_CWES)
-        self.assert_missing(False, self.CUT, ("GHSA-aaaa-bbbb-cccc",))
+        self.assert_missing(False, self.CUT, ("GHSA-cfgh-jmpq-rvwx",))
 
     def test_an_empty_cut_list_may_be_missing_one(self) -> None:
         self.assert_missing(True, self.CUT, ())

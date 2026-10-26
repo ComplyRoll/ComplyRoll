@@ -19,7 +19,6 @@ import subprocess
 import sys
 import tempfile
 import traceback
-import unicodedata
 import unittest
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -59,6 +58,7 @@ from complyroll.adapters.base import (
     IngestResult,
     ParsedDocument,
 )
+from complyroll.adapters.categories import prohibited_category
 from complyroll.adapters.common import (
     MAX_METADATA_VALUE_CHARS,
     MAX_OBSERVATION_JSON_BYTES,
@@ -122,9 +122,6 @@ GOOD_RULE: dict[str, Any] = {
     "severity": "high",
     "rule_title": "synthetic rule",
 }
-
-# Code points diagnostic_text removes or maps to a newline.
-PROHIBITED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 
 # Emitters that pass a level through rather than choose one. Diagnostics.emit re-renders the
 # levels its add calls chose, and failure_diagnostics can only lower a level.
@@ -236,7 +233,7 @@ def prohibited(text: str) -> list[str]:
     return [
         f"U+{ord(char):04X}"
         for char in text
-        if unicodedata.category(char) in PROHIBITED_CATEGORIES and char not in "\t\n"
+        if prohibited_category(char) is not None and char not in "\t\n"
     ]
 
 

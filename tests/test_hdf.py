@@ -2447,12 +2447,12 @@ class HdfIdentifierTests(unittest.TestCase):
         observation = observe(
             make_result("failed"),
             control_id="CVE-2099-0001",
-            title="Synthetic flaw also tracked as ghsa-ABCD-efgh-2345",
+            title="Synthetic flaw also tracked as ghsa-CFGH-jmpq-2345",
             tags={"cve": ["cve-2099-0002"], "cwe": ["CWE-079", "CWE-20"]},
         )
         self.assertEqual(
             observation.source_identifiers,
-            ("CVE-2099-0001", "CVE-2099-0002", "CWE-20", "CWE-79", "GHSA-abcd-efgh-2345"),
+            ("CVE-2099-0001", "CVE-2099-0002", "CWE-20", "CWE-79", "GHSA-cfgh-jmpq-2345"),
         )
 
     def test_the_description_and_results_are_never_mined(self) -> None:
@@ -2527,7 +2527,7 @@ class HdfIdentifierTests(unittest.TestCase):
     def test_sixty_four_ccis_and_no_cve_still_say_a_cve_may_be_missing(self) -> None:
         # The cut item sorts after every CVE, so the kept list cannot show whether one was cut.
         ccis = [f"CCI-9000{index:02d}" for index in range(MAX_LIST_ITEMS)]
-        for tags in ({"cwe": ["CWE-79"]}, {"cve": ["GHSA-abcd-efgh-2345"]}):
+        for tags in ({"cwe": ["CWE-79"]}, {"cve": ["GHSA-cfgh-jmpq-2345"]}):
             with self.subTest(tags=tags):
                 observation = observe(make_result("failed"), tags={"cci": ccis, **tags})
                 self.assertEqual(observation.source_identifiers, tuple(ccis))

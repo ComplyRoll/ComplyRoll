@@ -2141,7 +2141,7 @@ class SarifRuleResolutionTests(unittest.TestCase):
     def test_identifiers_are_gathered_from_rule_id_taxa_properties_and_relationships(self) -> None:
         rules = [
             {
-                "id": "GHSA-abcd-1234-wxyz",
+                "id": "GHSA-cfgh-2345-wxrv",
                 "properties": {"tags": ["external/cwe/cwe-089", "CWE-20"]},
                 "relationships": [{"target": {"id": "CWE-79"}}],
             }
@@ -2151,7 +2151,7 @@ class SarifRuleResolutionTests(unittest.TestCase):
                 make_run(
                     [
                         make_result(
-                            rule_id="GHSA-abcd-1234-wxyz",
+                            rule_id="GHSA-cfgh-2345-wxrv",
                             ruleIndex=0,
                             taxa=[{"id": "CVE-2024-99999"}],
                         )
@@ -2162,14 +2162,42 @@ class SarifRuleResolutionTests(unittest.TestCase):
         )
         self.assertEqual(
             only_observation(output).source_identifiers,
-            ("CVE-2024-99999", "CWE-20", "CWE-79", "CWE-89", "GHSA-abcd-1234-wxyz"),
+            ("CVE-2024-99999", "CWE-20", "CWE-79", "CWE-89", "GHSA-cfgh-2345-wxrv"),
         )
 
     def test_mixed_case_ghsa_is_normalized_to_a_lowercase_body(self) -> None:
-        output = ingest_document(make_log(make_run([make_result(rule_id="ghsa-AbCd-12Ef-WXYZ")])))
+        output = ingest_document(make_log(make_run([make_result(rule_id="ghsa-CfGh-23Jm-WXRV")])))
         item = only_observation(output)
-        self.assertEqual(item.source_identifiers, ("GHSA-abcd-12ef-wxyz",))
-        self.assertEqual(item.source_record_id, "ghsa-AbCd-12Ef-WXYZ")
+        self.assertEqual(item.source_identifiers, ("GHSA-cfgh-23jm-wxrv",))
+        self.assertEqual(item.source_record_id, "ghsa-CfGh-23Jm-WXRV")
+
+    def test_a_ghsa_id_is_matched_only_in_its_exact_format(self) -> None:
+        # GitHub's ids are three groups of four from 23456789cfghjmpqrvwx. A longer chain
+        # used to yield its first three groups, and any letter or digit used to pass (CL-55).
+        refused = {
+            "an over-long chain": "GHSA-cfgh-jmpq-rvwx-2345",
+            "a letter outside the alphabet": "GHSA-abcd-jmpq-rvwx",
+            "a digit outside the alphabet": "GHSA-cfgh-jmpq-rvw1",
+            "a short group": "GHSA-cfg-jmpq-rvwx",
+            "a long group": "GHSA-cfgh-jmpq-rvwx2",
+            "two groups": "GHSA-cfgh-jmpq",
+        }
+        for label, tag in refused.items():
+            with self.subTest(label=label):
+                result = make_result(properties={"tags": [tag]})
+                item = only_observation(ingest_document(make_log(make_run([result]))))
+                self.assertEqual(item.source_identifiers, ())
+        kept = {
+            "the exact format": "GHSA-cfgh-jmpq-rvwx",
+            "upper case": "GHSA-CFGH-JMPQ-RVWX",
+            "a trailing hyphen": "GHSA-cfgh-jmpq-rvwx-",
+            "a trailing full stop": "GHSA-cfgh-jmpq-rvwx.",
+        }
+        for label, tag in kept.items():
+            with self.subTest(label=label):
+                result = make_result(properties={"tags": [tag]})
+                item = only_observation(ingest_document(make_log(make_run([result]))))
+                self.assertEqual(item.source_identifiers, ("GHSA-cfgh-jmpq-rvwx",))
 
     def test_identifier_digits_are_ascii_and_a_cve_number_has_four_to_nineteen(self) -> None:
         # The CVE record format's cveId pattern allows 4 to 19 sequence digits; a longer run,
@@ -2196,9 +2224,9 @@ class SarifRuleResolutionTests(unittest.TestCase):
         # A case-blind Unicode letter class also matches these four; with ASCII letters only,
         # none of them is read as, or folded into, an identifier letter.
         lookalikes = ("\u0130", "\u0131", "\u017f", "\u212a")
-        tags = ["GH\u017fA-abcd-efgh-ijkm", "gh\u017fa-abcd-efgh-ijkm"]
-        tags += [f"GHSA-{letter}aaa-bbbb-cccc" for letter in lookalikes]
-        tags += [f"GHSA-aaaa-bbbb-ccc{letter}" for letter in lookalikes]
+        tags = ["GH\u017fA-cfgh-jmpq-rvwx", "gh\u017fa-cfgh-jmpq-rvwx"]
+        tags += [f"GHSA-{letter}fgh-jmpq-rvwx" for letter in lookalikes]
+        tags += [f"GHSA-cfgh-jmpq-rvw{letter}" for letter in lookalikes]
         for tag in tags:
             with self.subTest(tag=tag):
                 result = make_result(properties={"tags": [tag]})
@@ -3621,7 +3649,7 @@ class SarifFoldTests(unittest.TestCase):
                 line=2,
                 suppressions=[{"kind": "inSource"}],
                 taxa=[{"id": "CWE-079"}],
-                properties={"tags": ["GHSA-abcd-12ef-wxyz"]},
+                properties={"tags": ["GHSA-cfgh-23jm-wxrv"]},
             ),
         ]
         item = only_observation(ingest_document(make_log(make_run(results))))
@@ -3629,7 +3657,7 @@ class SarifFoldTests(unittest.TestCase):
         self.assertEqual(fields["suppressed"], "true")
         self.assertEqual(fields["suppression_kinds"], '["inSource"]')
         self.assertEqual(fields["taxa"], '["CWE-079"]')
-        self.assertEqual(item.source_identifiers, ("CWE-79", "GHSA-abcd-12ef-wxyz"))
+        self.assertEqual(item.source_identifiers, ("CWE-79", "GHSA-cfgh-23jm-wxrv"))
 
     def test_multi_location_result_yields_one_observation_per_uri(self) -> None:
         result = make_result(line=1, text="first")

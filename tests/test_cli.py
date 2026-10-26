@@ -8408,6 +8408,20 @@ class TerminalTextTests(PersistedStoreTestCase):
         self.assertEqual(json.loads(out.decode("ascii")), json.loads(golden))
         self.assertEqual(out.decode("ascii"), golden.replace("\u00ae", "\\u00ae"))
 
+    def test_an_astral_character_on_an_ascii_stdout_is_a_json_surrogate_pair(self) -> None:
+        # The artifact's name reaches the report; U+1F600 has no single four-digit escape.
+        artifact = self.workspace / "host-\U0001f600.cklb"
+        artifact.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
+        argv = list(REPORT_ARGUMENTS)
+        argv[2] = str(artifact)
+
+        code, ascii_out, err = run_on_encoding(argv, "ascii")
+        _, utf8_out, _ = run_on_encoding(argv, "utf-8")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn(b'"host-\\ud83d\\ude00.cklb"', ascii_out)
+        self.assertEqual(json.loads(ascii_out.decode("ascii")), json.loads(utf8_out))
+
     def test_ingest_on_an_ascii_stdout_reports_the_write_it_committed(self) -> None:
         artifact = self.workspace / "caf\u00e9-host.cklb"
         artifact.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
@@ -8641,6 +8655,29 @@ class UnusableStoredClockTests(PersistedStoreTestCase):
                         self.assertEqual(persisted, direct)
                 self.correlate()
                 self.succeeds(["store", "verify", "--db", str(self.database)])
+
+    def test_verify_names_such_a_clock_beside_a_fault_no_reader_refuses(self) -> None:
+        # The clock check runs beside the three content-neutral faults, as the order check does.
+        self.ingest_clock(self.CONVERSION[0])
+
+        def unrun(connection: sqlite3.Connection) -> None:
+            (stored,) = connection.execute(
+                "SELECT metadata_json FROM events WHERE sequence = 1"
+            ).fetchone()
+            metadata = {**json.loads(stored), "runId": "run-not-a-uuid"}
+            connection.execute(
+                "UPDATE events SET metadata_json = ? WHERE sequence = 1",
+                (self.canonical(metadata),),
+            )
+
+        self.update(unrun)
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("error: sequence 1: event_metadata_invalid: ", err)
+        self.assertEqual(err.count(": clock_out_of_range: "), 6)
+        self.assertIn("faults: 7 domain fault(s) in", err)
 
     def test_an_evaluated_case_that_gains_such_a_clock_is_a_fault_not_a_traceback(self) -> None:
         # The order check resolves the group's detection time, which converted the clock.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import sys
 import tempfile
 import unicodedata
 import unittest
@@ -397,6 +398,17 @@ class FrozenCategoryTableTests(unittest.TestCase):
                 categories.render_ranges(categories.RANGES),
                 categories.render_ranges(categories.database_ranges()),
             )
+
+    def test_the_lookup_answers_at_every_range_edge(self) -> None:
+        for first, last, category in categories.RANGES:
+            with self.subTest(first=f"U+{first:04X}"):
+                self.assertEqual(categories.prohibited_category(chr(first)), category)
+                self.assertEqual(categories.prohibited_category(chr(last)), category)
+                for outside in (first - 1, last + 1):
+                    if 0 <= outside <= sys.maxunicode and not any(
+                        start <= outside <= end for start, end, _ in categories.RANGES
+                    ):
+                        self.assertIsNone(categories.prohibited_category(chr(outside)))
 
     def test_the_seven_format_controls_are_refused_on_every_interpreter(self) -> None:
         for char in EGYPTIAN_FORMAT_CONTROLS:

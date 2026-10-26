@@ -139,7 +139,8 @@ The standard-library ingestion layer currently enforces:
   spec's 24:00 read as the next midnight on every interpreter and any other hour 24 refused, and
   the years 1970 through 9000 UTC. Anything else is refused as `invalid_input` before anything is
   read, where a year 1 or year 9999 clock used to overflow in the compiler. CKLB and XCCDF clocks
-  are read through the same guard, and one outside it counts as absent
+  are read through the same guard: a present clock outside it counts as absent and is named by
+  the WARNING `source_timestamp_invalid` at its key, and the next clock key is read
 - The evaluations file, the report `validate` reads, the rule source and the schema bundle name
   a duplicate key as a quoted repr cut at 200 characters, so a key cannot forge a line, and refuse
   an integer past the interpreter's digit limit as their own error: `invalid_input` for the
@@ -148,14 +149,18 @@ The standard-library ingestion layer currently enforces:
 - An input path that is a symbolic-link loop is refused by the read that meets it, as
   `artifact_read_failed` for an artifact, on every interpreter. The input-overwrite check follows
   links with `os.path.realpath`, which returns a loop's path where 3.11's `Path.resolve` raised
-- Every line a command prints as text passes through one function that spells C0 and C1 control
-  characters, DEL, U+2028 and U+2029 as escapes (`\n`, `\r`, `\x1b`, `\u2028`), so no file name,
-  stored text or message that quotes either can forge a line or drive a terminal. A tab is kept,
-  and a backslash is not escaped, so the two characters `\n` and an escaped newline print alike.
-  JSON output already escapes these characters and is unchanged. A stream that cannot encode a
-  character, as under `PYTHONIOENCODING=ascii`, writes it as a backslash escape, and JSON on
-  stdout spells it as a JSON `\u` escape, so no output ends a run; `ingest` used to exit 1 after
-  its store write had committed. UTF-8 output is byte for byte what it was
+- Every line the `complyroll` command prints as text passes through one function that spells C0
+  and C1 control characters, DEL, U+2028 and U+2029 as escapes (`\n`, `\r`, `\x1b`, `\u2028`), so
+  no file name, stored text or message that quotes either can forge a line or drive a terminal
+  through it. A tab is kept, and a backslash is not escaped, so the two characters `\n` and an
+  escaped newline print alike. JSON output already escapes these characters and is unchanged. A
+  stream that cannot encode a character, as under `PYTHONIOENCODING=ascii`, writes it as a
+  backslash escape, and JSON on stdout spells it as a JSON `\u` escape, so no `complyroll` output
+  ends a run; `ingest` used to exit 1 after its store write had committed. UTF-8 output is byte
+  for byte what it was. Three paths are not covered: argparse's own usage errors, which echo an
+  unrecognized argument as typed; the `stigroll` command, which prints file names raw and still
+  ends on a stream that cannot encode one; and Markdown report files, which carry stored text as
+  written. Treat each of them as untrusted text
 
 Callers may lower these limits for their environment. Raising them is an explicit caller decision.
 Compatibility CSV output neutralizes formula-leading cells, and Markdown table output escapes raw
@@ -174,8 +179,8 @@ with other results, and a result's own lists are cut once however many resources
 Placeholders, location links, and CVE, GHSA, and CWE identifiers take ASCII letters and digits
 only, so another script's digits, or a letter that only folds to an ASCII one, never become one.
 A GHSA id is exactly three groups of four from GitHub's alphabet (`23456789cfghjmpqrvwx`), so a
-longer hyphenated chain names no id rather than its first three groups,
-and a `security-severity` string must be an ASCII decimal, so `0_9` or another script's digits
+longer hyphenated chain names no id rather than its first three groups.
+A `security-severity` string must be an ASCII decimal, so `0_9` or another script's digits
 never set a severity. A clock outside the years 1970 to 9000 UTC is ignored with a warning, and an
 integer `security-severity` outside 0 to 10 is invalid, both checked before any arithmetic that
 could overflow on them; a region line or column above 2**31 - 1 is absent, so a region's text stays
@@ -198,9 +203,11 @@ an inventory or an empty BOM (K1, K2) that refusal is a format refusal, never a 
 purl is parsed by a function that never raises; a malformed escape or non-UTF-8 bytes make it a weak
 key with a warning, and a decoded `/` can never add a path segment. Case folding is ASCII only, so a
 package key does not depend on the interpreter's Unicode database. Neither does an identity check or
-evidence sanitizing in any adapter: each reads the frozen Unicode 16.0.0 category table in
-`adapters/categories.py`, so 3.11, whose database calls U+13439 to U+1343F unassigned, refuses them
-as 3.14 does. Purls, BOM-Links, external
+evidence sanitizing: every caller of `identity_problem` and `sanitize` (the SARIF, HDF and CycloneDX
+adapters, the KEV and inventory readers, and the detection-failure and duplicate-artifact
+diagnostics) reads the frozen Unicode 16.0.0 category table in `adapters/categories.py`, so 3.11,
+whose database calls U+13439 to U+1343F unassigned, refuses them as 3.14 does. The CKLB, CKL and
+XCCDF readers make no identity check. Purls, BOM-Links, external
 references, and every other URL in a document are text: nothing is opened, resolved, or fetched, and
 no other document is joined. A standalone VEX document is refused, and an embedded analysis is
 recorded as metadata that never changes a disposition, so a supplier's statement cannot close a
@@ -289,11 +296,13 @@ those three match, and a test pins it.
   and the actor and evaluator `cases history` prints are quoted as stored, with their control
   characters escaped by the text output rule above, so none can forge a line. Treat any output
   read from an untrusted store as untrusted text.
-- A clock an earlier build stored that no report can compute with, because its UTC instant falls
-  outside the years 1 to 9999 or its VER-TFR-EVU deadline would, is refused where it would
-  overflow, as `clock_out_of_range` from a report or `cases coverage` and `history_invalid` from
-  `cases correlate`, and `store verify` names it with the same predicate (ADR 0008 amendment
-  2026-10-25). A clock that computes, year 1 with no offset among them, is never refused.
+- A clock an earlier build stored that no report can compute with is refused where it would
+  overflow: a source clock whose UTC instant falls outside the years 1 to 9999, a detection time
+  whose VER-TFR-EVU deadline would, and an evaluation `completedAt` whose VDR-TFR-PVR or
+  VER-TFR-MAV deadline would. Each is `clock_out_of_range` from a report or `cases coverage` and
+  `history_invalid` from `cases correlate`, and `store verify` names it with the same predicate
+  (ADR 0008 amendment 2026-10-25). A clock that computes, year 1 with no offset among them, is
+  never refused.
 - A projection checkpoint must hold a non-negative integer count and a time with a timezone. The
   library's checkpoint reader and its compare-and-swap refuse any other row as
   `EventIntegrityError`, and `store verify` reports it as `projection_checkpoint_invalid`. No

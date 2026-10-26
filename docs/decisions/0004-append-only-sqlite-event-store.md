@@ -377,10 +377,12 @@ opens, verifies and reports as before.
 ## Amendment 2026-10-25: text output escapes control characters
 
 The 2026-10-21 amendment left three routes printing stored text unescaped: a payload key in a
-contract issue's JSON pointer, a key in a `metadata_breaches` message, and the actor `cases
-history` prints. Every line the command line prints as text now goes through one function that
-spells C0 and C1 controls, DEL, U+2028 and U+2029 as escapes, so none of them, and no file name
-or other stored text, can forge a line or drive a terminal. A tab is kept. The messages
-themselves are unchanged, so a library caller still receives the stored text; JSON output already
-escaped these characters and is unchanged. Output read from an untrusted store is still untrusted
-text: it is quoted as stored, only no longer able to move the cursor.
+contract issue's JSON pointer, a key in a `metadata_breaches` message, and the actor `cases history`
+prints. Every line the `complyroll` command prints as text now goes through one function that spells
+C0 and C1 controls, DEL, U+2028 and U+2029 as escapes, so none of them, and no file name or other
+stored text it prints, can forge a line or drive a terminal. A tab is kept. Three paths are not
+covered: argparse's own usage errors, the `stigroll` command, and Markdown report files, which carry
+stored text as written. The messages themselves are unchanged, so a library caller still receives
+the stored text; JSON output already escaped these characters and is unchanged. Output read from an
+untrusted store is still untrusted text: it is quoted as stored, only no longer able to move the
+cursor.

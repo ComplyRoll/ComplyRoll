@@ -282,6 +282,19 @@ REFUSED_STIG_CLOCKS = (
 )
 
 
+#: Present clocks the readers refuse and name: year 1, year 9500 and an offset with seconds.
+WARNED_STIG_CLOCKS = (
+    "0001-01-01T00:00:00Z",
+    "9500-01-01T00:00:00Z",
+    "2026-08-03T09:00:00+00:01:30",
+)
+#: The warning text SARIF, HDF and CycloneDX give a refused clock, which STIG now shares.
+INVALID_CLOCK_MESSAGE = (
+    "clock value is not an aware timestamp with a whole-minute offset in the years 1970 to 9000 "
+    "UTC; ignored"
+)
+
+
 def cklb_with(**clocks: str) -> bytes:
     """Return the Ubuntu checklist with the given top-level clock keys set."""
 
@@ -333,6 +346,66 @@ class StigClockGuardTests(unittest.TestCase):
             {item.observed_at for item in result.observations},
             {datetime(2026, 8, 3, 9, tzinfo=UTC)},
         )
+
+    def invalid_clock_warnings(self, result: IngestResult) -> list[tuple[str, str | None]]:
+        return [
+            (item.message, item.location)
+            for item in result.warnings
+            if item.code == "source_timestamp_invalid"
+        ]
+
+    def test_a_refused_cklb_clock_is_named_whether_or_not_a_fallback_reads(self) -> None:
+        # The fallback is kept, but the clock it replaces is never dropped silently.
+        for clock in WARNED_STIG_CLOCKS:
+            for fallback in (None, "2026-08-03T09:00:00Z"):
+                with self.subTest(clock=clock, fallback=fallback):
+                    clocks = {"completed_at": clock}
+                    if fallback is not None:
+                        clocks["scan_time"] = fallback
+                    result = self.read("host.cklb", cklb_with(**clocks))
+                    self.assertEqual(
+                        self.invalid_clock_warnings(result),
+                        [(INVALID_CLOCK_MESSAGE, "completed_at")],
+                    )
+                    codes = {item.code for item in result.warnings}
+                    self.assertEqual("source_timestamp_missing" in codes, fallback is None)
+                    expected = None if fallback is None else datetime(2026, 8, 3, 9, tzinfo=UTC)
+                    self.assertEqual({item.observed_at for item in result.observations}, {expected})
+
+    def test_a_refused_xccdf_clock_is_named_whether_or_not_a_fallback_reads(self) -> None:
+        for clock in WARNED_STIG_CLOCKS:
+            for fallback in (None, "2026-08-03T08:00:00Z"):
+                with self.subTest(clock=clock, fallback=fallback):
+                    attributes = {"end_time": clock}
+                    if fallback is not None:
+                        attributes["start_time"] = fallback
+                    result = self.read("host.xml", xccdf_with(**attributes))
+                    self.assertEqual(
+                        self.invalid_clock_warnings(result),
+                        [(INVALID_CLOCK_MESSAGE, "TestResult[0]@end-time")],
+                    )
+                    codes = {item.code for item in result.warnings}
+                    self.assertEqual("source_timestamp_missing" in codes, fallback is None)
+
+    def test_both_refused_xccdf_clocks_are_named(self) -> None:
+        content = xccdf_with(end_time="9500-01-01T00:00:00Z", start_time="0001-01-01T00:00:00Z")
+
+        result = self.read("host.xml", content)
+
+        self.assertEqual(
+            self.invalid_clock_warnings(result),
+            [
+                (INVALID_CLOCK_MESSAGE, "TestResult[0]@end-time"),
+                (INVALID_CLOCK_MESSAGE, "TestResult[0]@start-time"),
+            ],
+        )
+
+    def test_a_valid_clock_reads_no_warning_and_later_keys_are_not_read(self) -> None:
+        content = cklb_with(completed_at="2026-08-03T09:00:00Z", scan_time="9500-01-01T00:00:00Z")
+
+        result = self.read("host.cklb", content)
+
+        self.assertEqual(self.invalid_clock_warnings(result), [])
 
     def test_the_end_of_day_clock_is_the_next_midnight_on_every_interpreter(self) -> None:
         result = self.read("host.cklb", cklb_with(completed_at="2026-08-31T24:00:00Z"))

@@ -53,6 +53,11 @@ SEVERITY_RANK = {
 EVIDENCE_SANITIZED_SUMMARY = (
     "control, format, or separator characters were removed from evidence text"
 )
+# The warning every reader gives a present source clock that `parse_clock` refuses.
+INVALID_CLOCK_SUMMARY = (
+    "clock value is not an aware timestamp with a whole-minute offset in the years "
+    f"{MIN_CLOCK_YEAR} to {MAX_CLOCK_YEAR} UTC; ignored"
+)
 EVIDENCE_TRUNCATED_SUMMARY = (
     "evidence text was cut at its cap; the truncated metadata key names the members"
 )
@@ -580,10 +585,6 @@ class EvidenceParse:
         parsed = parse_clock(value)
         if parsed is None:
             self.diagnostics.add(
-                DiagnosticLevel.WARNING,
-                "source_timestamp_invalid",
-                "clock value is not an aware timestamp with a whole-minute offset in the years "
-                f"{MIN_CLOCK_YEAR} to {MAX_CLOCK_YEAR} UTC; ignored",
-                path,
+                DiagnosticLevel.WARNING, "source_timestamp_invalid", INVALID_CLOCK_SUMMARY, path
             )
         return parsed

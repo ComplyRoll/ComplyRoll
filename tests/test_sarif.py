@@ -2181,6 +2181,7 @@ class SarifRuleResolutionTests(unittest.TestCase):
             "a short group": "GHSA-cfg-jmpq-rvwx",
             "a long group": "GHSA-cfgh-jmpq-rvwx2",
             "two groups": "GHSA-cfgh-jmpq",
+            "a letter run into the prefix": "XGHSA-29mw-wpgm-hmr9",
         }
         for label, tag in refused.items():
             with self.subTest(label=label):

@@ -28,6 +28,7 @@ from .base import (
     ParsedDocument,
 )
 from .common import (
+    INVALID_CLOCK_SUMMARY,
     make_observation,
     missing_time_diagnostic,
     parse_clock,
@@ -151,10 +152,10 @@ class CklbAdapter:
             )
 
         # SECURITY: A clock outside the years every report can compute with counts as absent,
-        # as an unparsable one does, so the next key is read (CL-54).
+        # as an unparsable one does, so the next key is read, and the refusal is named (CL-54).
         observed_at = None
         for timestamp_key in ("completed_at", "scan_time", "scan_date", "updated_at"):
-            observed_at = parse_clock(data.get(timestamp_key))
+            observed_at = _read_clock(data.get(timestamp_key), timestamp_key, diagnostics)
             if observed_at:
                 break
         if observed_at is None:
@@ -396,6 +397,20 @@ class CklAdapter:
         return AdapterOutput(tuple(observations), tuple(diagnostics))
 
 
+def _read_clock(value: object, path: str, diagnostics: list[IngestDiagnostic]) -> datetime | None:
+    """Parse one present source clock, warning at `path` when `parse_clock` refuses it."""
+    if value is None:
+        return None
+    parsed = parse_clock(value)
+    if parsed is None:
+        diagnostics.append(
+            IngestDiagnostic(
+                DiagnosticLevel.WARNING, "source_timestamp_invalid", INVALID_CLOCK_SUMMARY, path
+            )
+        )
+    return parsed
+
+
 def _find_text(root: ET.Element, names: set[str]) -> str:
     for element in root.iter():
         if localname(element.tag) in names and text_of(element.text):
@@ -436,7 +451,7 @@ class XccdfAdapter:
         timestamp_missing = False
 
         benchmark_id = root.get("id", "")
-        for container in containers:
+        for index, container in enumerate(containers):
             host = _find_text(container, {"target", "fqdn"})
             if not host:
                 host = Path(artifact.name).stem
@@ -448,9 +463,10 @@ class XccdfAdapter:
                         artifact.name,
                     )
                 )
-            observed_at = parse_clock(container.get("end-time")) or parse_clock(
-                container.get("start-time")
-            )
+            path = f"{localname(container.tag)}[{index}]"
+            observed_at = _read_clock(
+                container.get("end-time"), f"{path}@end-time", diagnostics
+            ) or _read_clock(container.get("start-time"), f"{path}@start-time", diagnostics)
             if observed_at is None:
                 timestamp_missing = True
 

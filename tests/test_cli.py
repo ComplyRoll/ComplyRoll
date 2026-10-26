@@ -8384,6 +8384,17 @@ class TerminalTextTests(PersistedStoreTestCase):
         self.assertEqual(fields[3], FORGING_SHOWN)
         self.assertTrue(fields[4].endswith(f" by {FORGING_SHOWN}"), fields[4])
 
+    def test_a_nul_is_spelled_as_an_escape(self) -> None:
+        # A NUL can reach a stored actor in process, where no argv or file name can carry one.
+        self.ingest_fixtures()
+        self.correlate(actor="a\x00b")
+
+        listing, _ = self.succeeds(["cases", "history", WINDOWS_CASE, "--db", str(self.database)])
+
+        self.assertNotIn("\x00", listing)
+        first = listing.splitlines()[0].split("\t")
+        self.assertEqual(first[3], "a\\x00b")
+
     def test_a_tab_stays_a_tab(self) -> None:
         # `cases history` separates its fields with tabs; a tab moves no line.
         self.ingest_fixtures()
@@ -8678,6 +8689,74 @@ class UnusableStoredClockTests(PersistedStoreTestCase):
         self.assertIn("error: sequence 1: event_metadata_invalid: ", err)
         self.assertEqual(err.count(": clock_out_of_range: "), 6)
         self.assertIn("faults: 7 domain fault(s) in", err)
+
+    def evaluate_completed_at(self, completed_at: str, **fields: Any) -> int:
+        """Record the Ubuntu evaluation completed at `completed_at`, read unguarded as 0.3.0a0 did.
+
+        Returns the sequence of the `case.evaluated` event it appended.
+        """
+
+        self.ingest_fixtures()
+        self.correlate()
+        self.attest_missing()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"] = payload["evaluations"][:1]
+        payload["evaluations"][0]["completedAt"] = completed_at
+        payload["evaluations"][0].update(fields)
+        evaluations = self.workspace / "late-evaluation.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        with patch("complyroll.reports.evaluations.parse_clock", parse_timestamp):
+            self.evaluate(evaluations)
+        (record,) = [item for item in self.records() if item.event_type == "case.evaluated"]
+        return record.sequence
+
+    def test_an_evaluation_whose_deadlines_overflow_is_refused_by_every_report(self) -> None:
+        # VER-TFR-MAV runs 192 days from completedAt in both classes; 9999-06-23 leaves no room.
+        self.evaluate_completed_at("9999-06-23T00:00:00Z")
+        for kind in self.KINDS:
+            for certification_class in ("B", "C"):
+                for inventory in (False, True):
+                    argv = self.report_argv(kind, certification_class, inventory=inventory)
+                    (message,) = self.assert_clock_refusal(argv, "9999-06-23")
+                    self.assertEqual(
+                        message,
+                        f"{UBUNTU_CASE} has an evaluation completed 9999-06-23T00:00:00+00:00 in "
+                        "history, which leaves no room for its VER-TFR-MAV deadline under Class "
+                        f"{certification_class} before the end of year 9999, so no report can "
+                        "compute with it",
+                    )
+
+    def test_a_response_target_that_overflows_first_is_named(self) -> None:
+        # PAIN 2, neither reachable nor exploitable: VDR-TFR-PVR runs 192 days in both classes,
+        # as long as VER-TFR-MAV, and the response target is checked first.
+        self.evaluate_completed_at(
+            "9999-06-23T00:00:00Z", pain=2, isInternetReachable=False, isLikelyExploitable=False
+        )
+        for certification_class in ("B", "C"):
+            (message,) = self.assert_clock_refusal(
+                self.report_argv("vdt", certification_class), "9999-06-23"
+            )
+            self.assertIn(
+                f"its VDR-TFR-PVR deadline under Class {certification_class} before", message
+            )
+
+    def test_store_verify_names_such_an_evaluation_at_its_event(self) -> None:
+        sequence = self.evaluate_completed_at("9999-06-23T00:00:00Z")
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        (refused,) = self.assert_clock_refusal(self.report_argv("vdt", "B"), "9999-06-23")
+        self.assertIn(f"error: sequence {sequence}: clock_out_of_range: {refused}\n", err)
+        self.assertIn("faults: 1 domain fault(s) in", err)
+
+    def test_an_evaluation_whose_deadlines_fit_still_reports_and_verifies(self) -> None:
+        self.evaluate_completed_at("9999-06-22T00:00:00Z")
+
+        self.succeeds(["store", "verify", "--db", str(self.database)])
+        for kind in self.KINDS:
+            for certification_class in ("B", "C"):
+                self.succeeds(self.report_argv(kind, certification_class, inventory=True))
 
     def test_an_evaluated_case_that_gains_such_a_clock_is_a_fault_not_a_traceback(self) -> None:
         # The order check resolves the group's detection time, which converted the clock.

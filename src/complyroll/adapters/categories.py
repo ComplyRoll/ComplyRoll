@@ -11,8 +11,10 @@ controls (Cf) from it, so the same identity was accepted on 3.11 and refused on 
 table is what `identity_problem` and `sanitize` read instead (CL-65).
 
 Regenerate on an interpreter whose `unicodedata.unidata_version` is `UNICODE_VERSION`, or after
-changing the version, with `python -m complyroll.adapters.categories`, and paste the printed
-`RANGES` over the one below; `tests/test_adapters.py` holds the table to `unicodedata`.
+changing the version, with `python -W ignore::RuntimeWarning -m complyroll.adapters.categories`,
+and paste the printed `RANGES` over the one below. Without `-W`, runpy warns that the package
+already imported the module; the output is the same. `tests/test_adapters.py` holds the table to
+`unicodedata`.
 """
 
 # *--- Imports ---*

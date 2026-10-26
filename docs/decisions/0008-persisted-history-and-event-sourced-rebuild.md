@@ -563,40 +563,54 @@ writer refuses no new shape except the marking append of ADR 0004, and no golden
 
 ## Amendment 2026-10-25: clocks no report can compute with
 
-0.3.0a0 read CKLB and XCCDF clocks with an unguarded parser, so a store it wrote can hold a
-source time in any year. Such a store verified clean, and then some readers ended in an
-`OverflowError` traceback. The CKLB and XCCDF readers now read through `parse_clock` (the
-CHANGELOG has it), so no current build writes such a clock; this amendment is about history an
-earlier build left.
+0.3.0a0 read CKLB and XCCDF clocks, and every clock typed on the command line (`--as-of`,
+`--detected-at`, and an evaluations file's `completedAt`), with unguarded parsers, so a store an
+earlier build wrote can hold a clock in any year. Such a store verified clean, and then some
+readers ended in an `OverflowError` traceback. The current readers hold every one of those clocks
+to the years 1970 through 9000 UTC (the CHANGELOG has them), so no current build writes such a
+clock; this amendment is about history an earlier build left.
 
-Exactly the uses that overflow are refused, by one predicate, `reports.vdt.clock_problem`, which
-the readers and `store verify` share:
+Every use a reader makes of a stored clock that can overflow is refused, and nothing else, by
+one predicate, `reports.vdt.clock_problem`, which the readers and `store verify` share. The uses
+were found by probing stores written with each clock source an earlier build left unguarded
+(source clocks, attestations, evaluation `completedAt`, pain reduction and projection instants,
+and coverage gaps recorded at a late `--as-of`) through every reader: the three reports with and
+without `--inventory` under both classes, `cases correlate`, `cases coverage`, `cases evaluate`,
+`cases list` and `store verify`. Three uses overflow:
 
-- **The conversion to UTC.** A clock whose UTC instant falls outside the years 1 to 9999, such
-  as year 1 with a positive offset or year 9999 with a negative one. A report refuses the record
-  whose detection time it is, and with `--inventory` coverage refuses every observation carrying
-  one; both are the ERROR `clock_out_of_range`, raised as `ReportCompileError`. `cases coverage`
-  refuses it the same way, and `cases correlate` refuses the link that would store it as
-  `history_invalid`, with nothing appended. The order check of `cases evaluate` and
+- **The conversion to UTC.** A source clock whose UTC instant falls outside the years 1 to 9999,
+  such as year 1 with a positive offset or year 9999 with a negative one. A report refuses the
+  record whose detection time it is, and with `--inventory` coverage refuses every observation
+  carrying one; both are the ERROR `clock_out_of_range`, raised as `ReportCompileError`. `cases
+  coverage` refuses it the same way, and `cases correlate` refuses the link that would store it
+  as `history_invalid`, with nothing appended. The order check of `cases evaluate` and
   `attest-detection` passes such a group by, as it passes one with no detection time; the report
-  refuses it.
-- **The evaluation deadline.** A detection time whose VER-TFR-EVU deadline overflows: 5 days
-  under Class C and 7 under Class B in the pinned rules, so a detection time late in 9999-12 is
-  refused under one class and not the other. A report refuses it under its own class, as
-  `clock_out_of_range`.
+  refuses it. Attestations and evaluation instants are stored in UTC, so only a source clock
+  reaches this.
+- **The detection deadline.** A detection time, from a source clock or an attestation, whose
+  VER-TFR-EVU deadline overflows: 5 days under Class C and 7 under Class B in the pinned rules, so
+  a detection time late in 9999-12 is refused under one class and not the other.
+- **The evaluation deadlines.** An evaluation `completedAt` whose VDR-TFR-PVR response target or
+  VER-TFR-MAV threshold overflows. MAV runs 192 days in both classes and is always computed, so a
+  `completedAt` on or after 9999-06-23 is refused under both; PVR is never longer. The report
+  refuses the record whose evaluation it is, under its own class.
 
-A clock that computes is never refused: year 1 with no offset, 1969, 9001 and 9990 report
-exactly as before, byte for byte.
+Each refusal is the ERROR `clock_out_of_range` in a report. Pain reduction and projection
+instants are only compared and printed, and a coverage window never runs from an anchor later
+than the run's `--as-of`, so none of them is refused. A clock that computes is never refused:
+year 1 with no offset, 1969, 9001 and 9990 as source clocks, and a `completedAt` of 9999-06-22,
+report exactly as before, byte for byte.
 
 `store verify` reports each as the audit fault `clock_out_of_range`, which `AUDIT_FAULT_CODES`
 gains, beside `evaluation_before_detection` and under the same conditions. An observation whose
 source time has no UTC instant is a fault at its own sequence. A group's detection time, resolved
 with the recorded attestations as a report from the store resolves it, is a fault when its
 deadline overflows under either class, at the earliest observation or the attestation that gives
-it. Verify does not know which class a report will use, so it names every clock some report
-would refuse. It loads the same pinned rules the report does, and since the evaluation deadline
-is in days in every class, the calendar zone cannot change the answer. Each fault carries the
-reader's message.
+it. The current evaluation of that group's case is a fault, at the event that recorded it, when
+its deadlines overflow under either class. Verify does not know which class a report will use, so
+it names every clock some report would refuse. It loads the same pinned rules the report does,
+and since every one of these timeframes is in days in every class, the calendar zone cannot
+change the answer. Each fault carries the reader's message.
 
 An append-only store has no repair for such a clock. Refusing it in the event contract instead
 was rejected: every command, `cases list` included, would then refuse the whole store, including

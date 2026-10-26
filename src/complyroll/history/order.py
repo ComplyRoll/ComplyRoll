@@ -38,6 +38,7 @@ from complyroll.reports.vdt import (
     clock_problem,
     detection_clock,
     detection_clock_message,
+    evaluation_clock_message,
     evaluation_order_diagnostic,
     observation_clock_message,
     resolve_detection_time,
@@ -183,7 +184,10 @@ def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
     recorded attestations as a report from the store resolves it, is a fault when its
     VER-TFR-EVU deadline overflows under either class of the pinned rules, at the earliest
     observation that gives it or at the attestation, with the report's message; a group
-    whose clock already failed its conversion is named once, by its observations.
+    whose clock already failed its conversion is named once, by its observations. The case
+    of such a group that carries a current evaluation is a fault, at that evaluation's event,
+    when the evaluation's VDR-TFR-PVR or VER-TFR-MAV deadline overflows under either class:
+    the report computes both from its `completedAt`.
     """
 
     records = rehydrate_observation_records(repository)
@@ -204,9 +208,10 @@ def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
         select_policy(snapshot, CertificationProfile(certification_class=value))
         for value in CertificationClass
     )
+    cases = {case.tracking_id: case for case in fold_all_cases(repository)}
     attested = {
-        case.tracking_id: case.attestation
-        for case in fold_all_cases(repository)
+        tracking_id: case.attestation
+        for tracking_id, case in cases.items()
         if case.attestation is not None
     }
     attestation = DetectionAttestation(
@@ -216,6 +221,17 @@ def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
         clock = detection_clock(group, attestation)
         if clock is None or clock_problem(clock) is not None:
             continue
+        case = cases.get(group.tracking_id)
+        evaluation = None if case is None else case.current_evaluation
+        if evaluation is not None:
+            late = clock_problem(evaluation.completed_at, policies, evaluation=evaluation)
+            if late is not None:
+                message = evaluation_clock_message(group.tracking_id, evaluation.completed_at, late)
+                faults.append(
+                    HistoryFault(
+                        sequence=evaluation.sequence, code=CLOCK_OUT_OF_RANGE, message=message
+                    )
+                )
         problem = clock_problem(clock, policies)
         if problem is None:
             continue

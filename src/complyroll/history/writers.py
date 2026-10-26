@@ -1322,7 +1322,8 @@ def _require_linkable_clocks(group: VulnerabilityGroup, existing: Sequence[Event
 
     A link stores its observation's clock in UTC, so such a clock, which only an earlier
     build could record, ended the run in a traceback. It is refused before the first append,
-    by the predicate `store verify` names it with (CL-54).
+    by the predicate `store verify` names it with (CL-54). Skipping an observation already
+    linked changes nothing: its link stored the clock in UTC, so it had a UTC instant.
     """
 
     linked = {

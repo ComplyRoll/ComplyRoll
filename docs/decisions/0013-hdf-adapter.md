@@ -885,6 +885,10 @@ can differ from a fresh stateless report for the same file. No fixture or golden
 token; every golden is byte-identical.
 
 The open risk that named "the missing clock guards in `common.parse_timestamp` for CKLB and XCCDF"
-is closed: both readers now read through `parse_clock`, the guard this adapter uses, and a clock
-outside it counts as absent. A store an earlier build wrote with such a clock is refused where it
-overflows, as `clock_out_of_range` (ADR 0008, amendment of this date).
+is closed: both readers now read through `parse_clock`, the guard this adapter uses. A present clock
+outside it counts as absent and is named by the WARNING `source_timestamp_invalid` at its key, in
+the words this adapter uses, and the reader goes on to its next clock key (CKLB) or to `start-time`
+(XCCDF), as it always did for an unparsable one. A store an earlier build wrote that re-ingests such
+a file says `already_recorded` and keeps its old clock, so that store's `report --db` can differ
+from a fresh stateless report for the same file; where that old clock is one no report can compute
+with, it is refused where it overflows, as `clock_out_of_range` (ADR 0008, amendment of this date).

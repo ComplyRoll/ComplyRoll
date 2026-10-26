@@ -502,11 +502,15 @@ a token; every golden is byte-identical.
 The follow-up "a frozen Unicode category table shared by every adapter's identity check" is built.
 `identity_problem` and `sanitize` read the Unicode 16.0.0 table in `adapters/categories.py`, not
 `unicodedata.category`, so the paragraph above that says they differ between interpreters no longer
-holds: `chr(0x13439)` is a format control on every supported interpreter. The seven code points
-U+13439 to U+1343F were unassigned in 3.11's 14.0.0 database, so 0.3.0a0 on 3.11 accepted them in an
-identity and kept them in evidence text. A current build refuses them in an identity and strips them
-from evidence on 3.11 too. A stored identity that holds one still reads and verifies, since neither
-path calls `identity_problem`; reading the same bytes again refuses it. The table names its version
-in `UNICODE_VERSION`, is regenerated with `python -m complyroll.adapters.categories` on an
-interpreter of that version, and a test fails when the running interpreter's database disagrees with
-it outside the known 14.0.0 delta.
+holds: `chr(0x13439)` is a format control on every supported interpreter. Their callers are this
+adapter, the SARIF and HDF adapters, the KEV and inventory readers, and the detection-failure and
+duplicate-artifact diagnostics; the CKLB, CKL and XCCDF readers call neither, so they make no
+identity check on any interpreter. The seven code points U+13439 to U+1343F were unassigned in
+3.11's 14.0.0 database, so earlier builds on 3.11 accepted them in an identity and kept them in
+evidence text. A current build refuses them in an identity and strips them from evidence on 3.11
+too. A stored identity that holds one still reads and verifies, since neither path calls
+`identity_problem`; reading the same bytes again refuses it. The table names its version in
+`UNICODE_VERSION`, is regenerated with `python -W ignore::RuntimeWarning -m
+complyroll.adapters.categories` on an interpreter of that version (without `-W`, runpy warns that
+the package already imported the module; the output is the same), and a test fails when the running
+interpreter's database disagrees with it outside the known 14.0.0 delta.

@@ -11,19 +11,27 @@ All notable project changes will be documented here.
   offset, or year 9999, every report of it then ended in an `OverflowError` traceback, on the
   stateless path and from a store. They now read through `parse_clock`, as the SARIF, HDF and
   CycloneDX readers do: such a clock, an offset carrying seconds, or an hour 24 other than 24:00
-  counts as absent, as an unparsable one always has, so the next clock key is read and otherwise the
-  reading says its source time is missing. The spec's 24:00 reads as the next midnight on every
-  interpreter, where only 3.14 read it. An offset carrying seconds was refused at append as
-  `event_contract_invalid` and now reads as absent.
-- A store an earlier build wrote with such a clock no longer ends a reader in an `OverflowError`
-  traceback. A clock whose UTC instant falls outside the years 1 to 9999 (year 1 with a positive
-  offset, year 9999 with a negative one), or a detection time whose VER-TFR-EVU deadline would, is
-  refused where it would overflow: a report and `cases coverage` refuse it as the ERROR
-  `clock_out_of_range`, naming the case or observation and the stored clock, and `cases
-  correlate` as `history_invalid` with nothing appended. `store verify`, which passed such a
-  store, reports each one as the audit fault `clock_out_of_range` through the same predicate,
-  under either class. Clocks that computed before, year 1 with no offset, 1969, 9001 and 9990
-  among them, report byte for byte as they did (ADR 0008 amendment 2026-10-25).
+  counts as absent, as an unparsable one always has, and each present clock refused this way is
+  named by the WARNING `source_timestamp_invalid` at its key (`completed_at`,
+  `TestResult[0]@end-time`), in the words those readers use. The next clock key is still read, and
+  otherwise the reading says its source time is missing. The spec's 24:00 reads as the next midnight
+  on every interpreter, where only 3.14 read it. An offset carrying seconds was refused at append as
+  `event_contract_invalid` and now reads as absent, with the warning. A store an earlier build wrote
+  that re-ingests such a file says `already_recorded` and keeps its old clock, so that store's
+  `report --db` can differ from a fresh stateless report for that file. No fixture or golden moved.
+- A store an earlier build wrote with a clock no report can compute with no longer ends a reader in
+  an `OverflowError` traceback. Three uses overflow, and each is refused where it would: a source
+  clock whose UTC instant falls outside the years 1 to 9999 (year 1 with a positive offset, year
+  9999 with a negative one); a detection time, from a source clock or an attestation, whose
+  VER-TFR-EVU deadline would; and an evaluation `completedAt` whose VDR-TFR-PVR or VER-TFR-MAV
+  deadline would (on or after 9999-06-23, which the 0.3.0a0 `cases evaluate` accepted). A report
+  refuses the record, and `cases coverage` the observation, as the ERROR `clock_out_of_range`,
+  naming the case or observation and the stored clock; `cases correlate` refuses a link as
+  `history_invalid` with nothing appended. `store verify`, which passed such a store, reports each
+  one as the audit fault `clock_out_of_range` through the same predicate, under either class, at the
+  observation, attestation or evaluation event. Clocks that computed before, year 1 with no offset,
+  1969, 9001 and 9990 as source clocks and a `completedAt` of 9999-06-22 among them, report byte for
+  byte as they did (ADR 0008 amendment 2026-10-25).
 - The CLI clock flags (`--as-of`, `--from`, `--to`, `--detected-at`) and the instants of an
   evaluations file are read with the adapters' clock guard. A value over 64 characters is refused
   without being echoed, where the whole value was quoted; an offset carrying seconds and an
@@ -34,18 +42,19 @@ All notable project changes will be documented here.
   text on: an impossible date reads "must be an RFC 3339 timestamp" where it read "must be a real
   RFC 3339 instant".
 - A newline, carriage return, line separator or ANSI escape in a file name or in stored text no
-  longer forges a line in text output. Every line a command prints, on stdout or stderr, passes
-  through one function that spells C0 and C1 controls, DEL, U+2028 and U+2029 as escapes; a tab
-  is kept. This covers the diagnostics, the `ingest` summary, `validate`'s issue lines, `store
-  verify`, and the actor and evaluator `cases history` prints, which a forged `error:` line used
-  to reach both on the stateless path and from a store. JSON output already escaped them and is
-  unchanged, and no golden moved.
+  longer forges a line in the `complyroll` command's text output. Every line it prints, on stdout or
+  stderr, passes through one function that spells C0 and C1 controls, DEL, U+2028 and U+2029 as
+  escapes; a tab is kept. This covers the diagnostics, the `ingest` summary, `validate`'s issue
+  lines, `store verify`, and the actor and evaluator `cases history` prints, which a forged `error:`
+  line used to reach both on the stateless path and from a store. JSON output already escaped them
+  and is unchanged, and no golden moved. Three paths are not covered: argparse's own usage errors,
+  the `stigroll` command, and Markdown report files, which carry stored text as written.
 - A stdout or stderr that cannot encode a character, as under `PYTHONIOENCODING=ascii`, no longer
-  ends the run. `report vdt` to stdout crashed on the registered sign (U+00AE), and `ingest`
-  crashed printing a non-ASCII file name after its store write had committed, so a saved write
-  exited 1. A strict stream now writes such a character as a backslash escape, and a report on
+  ends a `complyroll` run. `report vdt` to stdout crashed on the registered sign (U+00AE), and
+  `ingest` crashed printing a non-ASCII file name after its store write had committed, so a saved
+  write exited 1. A strict stream now writes such a character as a backslash escape, and a report on
   stdout spells it as a JSON `\u` escape, so it is the same document. UTF-8 output is byte for byte
-  what it was.
+  what it was. The `stigroll` command is not covered and still ends on such a stream.
 - A duplicate key in an evaluations file, in a report `validate` reads, in the rule source and in
   a schema document is now quoted as a repr cut at 200 characters, where it was echoed raw, so a
   newline in the key forged a stderr line and a long key flooded one.
@@ -66,12 +75,14 @@ All notable project changes will be documented here.
   stateless report for that file. No fixture or golden moved (ADR 0011, 0013 and 0016 amendments
   2026-10-25).
 - Identity checks and evidence sanitizing no longer depend on the interpreter's Unicode database.
-  They read a frozen Unicode 16.0.0 category table (`adapters/categories.py`), shared by every
-  adapter and by the KEV and inventory readers. U+13439 to U+1343F, unassigned in 3.11's 14.0.0
-  database and format controls from 15.0.0, are now refused in an identity on 3.11 as on 3.14, on
-  re-ingest and in a stateless report, and `sanitize` strips them from evidence text on 3.11,
-  where 0.3.0a0 on 3.11 accepted and kept them. A store holding one still reads and verifies,
-  since neither path checks identities (ADR 0016 amendment 2026-10-25).
+  They read a frozen Unicode 16.0.0 category table (`adapters/categories.py`), which every caller of
+  `identity_problem` and `sanitize` shares: the SARIF, HDF and CycloneDX adapters, the KEV and
+  inventory readers, and the detection-failure and duplicate-artifact diagnostics. The CKLB, CKL and
+  XCCDF readers call neither. U+13439 to U+1343F, unassigned in 3.11's 14.0.0 database and format
+  controls from 15.0.0, are now refused in an identity on 3.11 as on 3.14, on re-ingest and in a
+  stateless report, and `sanitize` strips them from evidence text on 3.11, where earlier builds on
+  3.11 accepted and kept them. A store holding one still reads and verifies, since neither path
+  checks identities (ADR 0016 amendment 2026-10-25).
 - `FailureClassification` now refuses an execution failure whose codes lack
   `execution_unsuccessful`, an empty code set, a `side_record` that is not a bool and a clock with
   no UTC offset. No adapter builds any of them.

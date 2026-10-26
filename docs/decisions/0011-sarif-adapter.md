@@ -738,3 +738,21 @@ for every CVE; ADR 0016 and `docs/FEDRAMP_2026_MAPPING.md` advise ingesting one 
 per tool per target. ADR 0016 also takes this record's driver-in-context rule for its tool, and
 names two departures from this record: a CycloneDX document with findings still yields an
 observation of its subject, and that observation never counts toward a withheld reading.
+
+## Amendment 2026-10-25: a GHSA id is matched in its exact format
+
+Decision 5's GHSA pattern took any four ASCII letters or digits per group and ended on a letter or
+digit boundary, so `GHSA-cfgh-jmpq-rvwx-2345` named `GHSA-cfgh-jmpq-rvwx`, its first three groups,
+and `GHSA-abcd-1234-wxyz` named an id GitHub never issues. The shared pattern in
+`adapters/common.py` now matches GitHub's format exactly: three groups of four characters from
+`23456789cfghjmpqrvwx`, case-blind and ASCII only as before, and a token that goes on with a hyphen
+and a letter or digit names no id. A trailing hyphen or full stop still ends the token.
+
+This narrows the `source_identifiers` the SARIF adapter reads, under the same parser version, as the
+2026-09-29 amendment's CVE and CWE change did. The HDF and CycloneDX adapters share the pattern (ADR
+0013 and ADR 0016, amendments of this date). An extracted id feeds no observation identifier,
+tracking identifier, artifact digest or correlation key, only the stored list, a case's union of it,
+and the KEV reader's `cve_may_be_missing`. A store an earlier build wrote that re-ingests such a
+file says `already_recorded` and keeps its old `source_identifiers`, so that store's `report --db`
+can differ from a fresh stateless report for the same file. No fixture or golden carries such a
+token; every golden is byte-identical.

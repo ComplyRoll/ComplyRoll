@@ -50,6 +50,18 @@ Outside the table: exit 1 with a traceback for an uncaught `ValueError` or `Type
 stdout is closed at interpreter flush, 130 on SIGINT, and a `BrokenPipeError` raised inside an
 action, which reads as `store_unavailable`.
 
+Every clock flag (`--as-of`, `--from`, `--to`, `--detected-at`) takes at most 64 characters, a
+whole-minute UTC offset and an instant in the years 1970 through 9000 UTC; anything else is
+`invalid_input`. The spec's `T24:00` reads as the next midnight on every interpreter.
+
+Text output escapes control characters: every line a command prints, on stdout or stderr, spells
+a newline, carriage return, U+2028, U+2029, DEL and every other C0 or C1 control as an escape
+(`\n`, `\r`, `\u2028`, `\x1b`), so a file name or stored text cannot forge a line. A tab is
+kept, since `cases history` separates its fields with tabs. JSON output is unchanged. A stream
+that cannot encode a character writes it as a backslash escape, and a report written to such a
+stdout spells it as a JSON `\u` escape, so the same document is written and the run does not end
+on it.
+
 An event past one of the store's caps (1 MiB of JSON, 64 levels of nesting, or 100,000 values in
 its payload or its metadata) is a refusal, `event_too_large` with exit 1, and the run appends
 nothing. An evaluations file whose rationale runs past 1 MiB reaches it through `cases evaluate`,
@@ -268,7 +280,7 @@ run with exit 1 and append nothing:
 | No `--inventory` | `invalid_option`: `cases coverage needs --inventory: a coverage gap is a window of an inventory entry's clock` |
 | A second `--inventory` | `invalid_option`: `cases coverage takes one --inventory file, not 2` |
 | An inventory the reader refuses | `invalid_input` |
-| An `--as-of` that does not parse | `invalid_input` |
+| An `--as-of` that does not parse, or names an instant outside the years 1970 through 9000 UTC | `invalid_input` |
 | An unknown `--calendar-tz` | `invalid_option` |
 | A rules dataset without all five coverage rules | `coverage_rule_unavailable` |
 | A store that does not exist | `store_missing`; no store is created |

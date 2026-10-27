@@ -46,6 +46,7 @@ from complyroll.events import (
     HELD_FAILURE_SCHEMA_VERSION,
     EventMetadata,
     EventRepository,
+    case_stream_id,
     failure_hold_orphan_message,
     failure_stream_id,
 )
@@ -2913,7 +2914,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             undated("windows-host.ckl"),
             undated("openscap-results.xml"),
             "warning: execution_unsuccessful: invocation reports executionSuccessful false; its "
-            "results are still read (1 occurrence: runs[1].invocations[0]) "
+            "results are read unless the run is refused (1 occurrence: runs[1].invocations[0]) "
             "[failed-invocation.sarif]",
             "info: run_clean: run reports no results (1 occurrence: runs[1]) "
             "[failed-invocation.sarif]",
@@ -8383,6 +8384,34 @@ class TerminalTextTests(PersistedStoreTestCase):
         fields = evaluated[0].split("\t")
         self.assertEqual(fields[3], FORGING_SHOWN)
         self.assertTrue(fields[4].endswith(f" by {FORGING_SHOWN}"), fields[4])
+
+    def test_a_gap_context_key_forges_no_line_in_cases_list(self) -> None:
+        # The context key column is text output like any other, escaped as it prints (CL-60).
+        tracking_id = "case-00000000000000ee"
+        with SQLiteEventStore(self.database) as store:
+            EventRepository(store).append(
+                case_stream_id(tracking_id),
+                "case.created",
+                {
+                    "trackingId": tracking_id,
+                    "sourceType": "complyroll.coverage",
+                    "sourceRecordId": "coverage-gap",
+                    "contextKey": f"VDR-TFR-MVX:job:{FORGING_TEXT}",
+                    "title": "A gap whose job name carries controls",
+                    "description": "Written around the writers.",
+                    "createdAt": INGESTED_AT,
+                },
+                occurred_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                metadata=EventMetadata(actor="tester"),
+                expected_version=0,
+            )
+
+        listing, err = self.succeeds(["cases", "list", "--db", str(self.database)])
+
+        self.assert_unforged(listing + err)
+        self.assertEqual(len(listing.splitlines()), 2)
+        self.assertTrue(listing.splitlines()[0].endswith("CONTEXT KEY"))
+        self.assertTrue(listing.splitlines()[1].endswith(f"VDR-TFR-MVX:job:{FORGING_SHOWN}"))
 
     def test_a_nul_is_spelled_as_an_escape(self) -> None:
         # A NUL can reach a stored actor in process, where no argv or file name can carry one.

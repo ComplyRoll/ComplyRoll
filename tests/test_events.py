@@ -2134,6 +2134,17 @@ class TimestampTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     parse_utc(bad)
 
+    def test_parse_utc_refuses_an_instant_with_no_utc_value_as_a_value_error(self) -> None:
+        # The pattern accepts these offsets, and the UTC conversion leaves years 1 to 9999,
+        # which raised OverflowError past every reader's ValueError handling (CL5B-D-01).
+        for bad in ("0001-01-01T00:30:00+01:00", "9999-12-31T23:30:00-01:00"):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError) as caught:
+                    parse_utc(bad)
+                self.assertNotIsInstance(caught.exception, OverflowError)
+                self.assertEqual(str(caught.exception), f"timestamp is out of range, got {bad!r}")
+        self.assertEqual(parse_utc("0001-01-01T01:00:00+01:00").year, 1)
+
 
 class CanonicalDigestTests(unittest.TestCase):
     def test_digest_is_key_order_independent(self) -> None:

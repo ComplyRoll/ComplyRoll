@@ -307,8 +307,8 @@ class UnflaggedExecutionFailureTests(unittest.TestCase):
                 self.assertEqual(out, "")
                 self.assertIn(
                     "warning: execution_unsuccessful: invocation reports executionSuccessful "
-                    "false; its results are still read (1 occurrence: runs[1].invocations[0]) "
-                    "[failed-invocation.sarif]",
+                    "false; its results are read unless the run is refused (1 occurrence: "
+                    "runs[1].invocations[0]) [failed-invocation.sarif]",
                     err.splitlines(),
                 )
                 self.assertNotIn("detection_failure_recorded", err)

@@ -38,6 +38,7 @@ from complyroll.events import (
     MAX_BATCH_EVENTS,
     OBSERVATION_ID_KEY,
     UNDISPOSED_STATUSES,
+    EventContractError,
     EventMetadata,
     EventRepository,
     PendingEvent,
@@ -55,7 +56,7 @@ from complyroll.events import (
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.policy import CertificationProfile
 from complyroll.reports.coverage import CoverageResult
-from complyroll.reports.evaluations import EvaluationInput, EvaluationSet
+from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, record_label
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
 from complyroll.reports.vdt import (
@@ -194,6 +195,10 @@ class AttestationOutcome:
     attested: tuple[str, ...]
     skipped: tuple[str, ...]
     not_applicable: tuple[str, ...] = ()
+    #: Each not-applicable case as a report names it (`CaseState.label`), in the same order,
+    #: read from the stream this call already read; a stream that does not fold is named by
+    #: its tracking id, since the case gains no event and `store verify` names the damage.
+    not_applicable_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -834,6 +839,7 @@ def _attest_detection(
     attested: list[str] = []
     skipped: list[str] = []
     not_applicable: list[str] = []
+    labels: list[str] = []
     pending: list[tuple[str, tuple[EventRecord, ...]]] = []
 
     for tracking_id in _unique(tracking_ids):
@@ -843,6 +849,7 @@ def _attest_detection(
             raise CaseNotFoundError(f"no case stream exists for {tracking_id!r}")
         if _any_link_is_timestamped(existing):
             not_applicable.append(tracking_id)
+            labels.append(_not_applicable_label(repository, tracking_id, existing))
             continue
         latest = _latest_payload(existing, DETECTION_ATTESTED)
         if latest is not None and content_digest(DETECTION_ATTESTED, latest) == wanted:
@@ -869,7 +876,24 @@ def _attest_detection(
         attested=tuple(attested),
         skipped=tuple(skipped),
         not_applicable=tuple(not_applicable),
+        not_applicable_labels=tuple(labels),
     )
+
+
+def _not_applicable_label(
+    repository: EventRepository, tracking_id: str, records: Sequence[EventRecord]
+) -> str:
+    """Name a case no attestation applies to as a report names it, from its read stream.
+
+    Before this label the command only read such a stream raw, so a stream that does not
+    fold is named by its tracking id rather than refused: refusing would add a refusal, and
+    one raised after the commit would report a saved write as a failure (CL5B-01).
+    """
+
+    try:
+        return fold_case_records(repository, tracking_id, records).label
+    except (HistoryError, EventContractError):
+        return tracking_id
 
 
 def apply_evaluations(
@@ -1069,7 +1093,7 @@ def _match_cases(
             named = ", ".join(case.tracking_id for case in candidates)
             problems.append(
                 f"{entry.location}: {entry.match.describe()} matches {len(candidates)} "
-                f"cases ({named}); {entry.match.ambiguity_remedy()}"
+                f"cases ({named}); {entry.match.ambiguity_remedy(candidates)}"
             )
             continue
         case = candidates[0]
@@ -1158,8 +1182,10 @@ def _require_evaluation_order(
         if entry is None or case is None:
             continue
         attested_at = None if case.attestation is None else case.attestation.detected_at
+        # After the write the case carries the entry's override, or keeps the recorded one.
+        label = record_label(case.tracking_id, entry.tracking_id or case.provider_tracking_id)
         diagnostic = case_order_diagnostic(
-            case, group, completed_at=entry.completed_at, attested_at=attested_at
+            case, group, completed_at=entry.completed_at, attested_at=attested_at, label=label
         )
         if diagnostic is None:
             continue

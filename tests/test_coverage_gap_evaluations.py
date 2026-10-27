@@ -16,6 +16,7 @@ import unittest
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 from test_coverage import derive, host, inventory_of, observation, policy
@@ -60,11 +61,13 @@ from complyroll.reports import (
     project_vdt,
 )
 from complyroll.reports import vdt as vdt_module
+from complyroll.reports.evaluations import EvaluationMatch
 from complyroll.reports.gaps import (
     COVERAGE_GAP_RECORD_ID,
     COVERAGE_GAP_SOURCE_TYPE,
     coverage_gap_observations,
 )
+from complyroll.store.sqlite import shown
 
 # *--- Fixtures ---*
 
@@ -390,12 +393,26 @@ class GapEvaluationTests(unittest.TestCase):
         )
 
     def test_two_gaps_matched_without_a_context_key_are_ambiguous(self) -> None:
-        # Ambiguity is checked before the lone-record refusal, so both gaps are named.
+        # Ambiguity is checked before the lone-record refusal, so both gaps are named, and
+        # the remedy gives each one's value of every key the entry left out, in id order.
         pair = gaps("lab-gap-01", "lab-gap-02")
         named = ", ".join(tracking_ids(*pair))
+        first, second = "case-22632c82f0839171", "case-ddfb80698607b6ff"
+        self.assertEqual(sorted(tracking_ids(*pair)), [first, second])
+        key = "contextKey='VDR-TFR-MVX:resource:host:lab-gap-0{}'"
+        kind = f"sourceType='{COVERAGE_GAP_SOURCE_TYPE}'"
         for label, source_type, remedy in (
-            ("sourceType given", True, "add contextKey"),
-            ("neither given", False, "add contextKey or sourceType"),
+            (
+                "sourceType given",
+                True,
+                f"add contextKey ({first} has {key.format(2)}, {second} has {key.format(1)})",
+            ),
+            (
+                "neither given",
+                False,
+                f"add contextKey or sourceType ({first} has {key.format(2)} and {kind}, "
+                f"{second} has {key.format(1)} and {kind})",
+            ),
         ):
             with self.subTest(label):
                 evaluations = evaluations_with(
@@ -417,6 +434,68 @@ class GapEvaluationTests(unittest.TestCase):
                         )
                     ],
                 )
+
+    def test_both_paths_give_an_ambiguity_one_remedy(self) -> None:
+        pair = gaps("lab-gap-01", "lab-gap-02")
+        evaluations = evaluations_with(gap_match(pair[0], context_key=False))
+        cases = [case_of(group_of(item)) for item in reversed(pair)]
+
+        with self.assertRaises(ReportCompileError) as stateless:
+            compile_with(pair, evaluations)
+        with self.assertRaises(EvaluationMatchError) as persisted:
+            history_writers._match_cases(evaluations, cases)
+
+        (diagnostic,) = stateless.exception.diagnostics
+        (problem,) = persisted.exception.problems
+        remedy = diagnostic.message.partition("); ")[2]
+        self.assertTrue(remedy.startswith("add contextKey (case-"), remedy)
+        self.assertEqual(problem.partition("); ")[2], remedy)
+
+    def test_an_ambiguity_names_ten_candidates_and_counts_the_rest(self) -> None:
+        # Ten is named whole, eleven and twelve name ten and count the rest (CL5B-03).
+        for count, suffix in ((10, ""), (11, ", and 1 more"), (12, ", and 2 more")):
+            with self.subTest(candidates=count):
+                names = [f"lab-gap-{index:02d}" for index in range(1, count + 1)]
+                matched = gaps(*names)
+                evaluations = evaluations_with(gap_match(matched[0], context_key=False))
+                by_id = dict(zip(tracking_ids(*matched), matched, strict=True))
+                listed = ", ".join(
+                    f"{tracking_id} has contextKey={by_id[tracking_id].context_key!r}"
+                    for tracking_id in sorted(by_id)[:10]
+                )
+
+                with self.assertRaises(ReportCompileError) as caught:
+                    compile_with(matched, evaluations)
+
+                (diagnostic,) = caught.exception.diagnostics
+                self.assertTrue(
+                    diagnostic.message.endswith(f"); add contextKey ({listed}{suffix})"),
+                    diagnostic.message,
+                )
+                # The tracking id list before the remedy is unchanged and unbounded.
+                self.assertIn(
+                    f"matches {count} vulnerabilities ({', '.join(by_id)}); ", diagnostic.message
+                )
+
+    def test_an_ambiguity_quotes_each_value_within_the_bound(self) -> None:
+        # A value comes from an artifact, so it is quoted and cut as stored text is.
+        long_key = "k" * 500
+        forged = "a\nerror: forged"
+        candidates = [
+            SimpleNamespace(tracking_id="case-2", source_type="cklb", context_key=forged),
+            SimpleNamespace(tracking_id="case-1", source_type="cklb", context_key=long_key),
+        ]
+        match = EvaluationMatch(source_record_id="V-1", source_type="cklb")
+
+        remedy = match.ambiguity_remedy(candidates)
+
+        self.assertEqual(
+            remedy,
+            f"add contextKey (case-1 has contextKey={shown(long_key)}, case-2 has "
+            f"contextKey={shown(forged)})",
+        )
+        self.assertNotIn("\n", remedy)
+        self.assertLess(len(remedy), len(long_key))
 
     def test_every_reserved_type_requires_the_triple(self) -> None:
         # A reserved type with no kind name of its own is still refused, as a system record.
@@ -514,7 +593,7 @@ class GapHostileRecordTests(unittest.TestCase):
         (diagnostic,) = caught.exception.diagnostics
         self.assertEqual(diagnostic.code, "evaluation_ambiguous")
         self.assertIn("matches 2 vulnerabilities", diagnostic.message)
-        self.assertTrue(diagnostic.message.endswith("); add sourceType"))
+        self.assertIn("); add sourceType (", diagnostic.message)
 
 
 # *--- Stateless Order ---*
@@ -680,7 +759,7 @@ class PersistedGapEvaluationTests(unittest.TestCase):
 
         (problem,) = caught.exception.problems
         self.assertIn("matches 2 cases", problem)
-        self.assertTrue(problem.endswith("); add contextKey"))
+        self.assertIn("); add contextKey (", problem)
 
     def test_another_reserved_type_case_is_named_a_system_record(self) -> None:
         other = system_observation()

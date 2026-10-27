@@ -377,7 +377,9 @@ with it (ADR 0007 Decision 8). The report level carries the generator name and v
 (`generator`), the parser versions (`parserVersions`), the rules dataset and schema commits and
 digests (`rulesSource`, `schemaSource`), and the compile diagnostics (`diagnostics`). Each
 vulnerability carries every computed deadline with its rule and force (`deadlines`, each with
-`ruleId`, `ruleName`, and `force`), the grouped observation ids and affected resources
+`ruleId`, `ruleName`, and `force`; a deadline's `satisfied` says that what stops its clock is
+recorded, not that it was recorded by `dueAt`, and no field reports lateness, ADR 0007 amendment
+2026-10-26), the grouped observation ids and affected resources
 (`observationIds`, `resources`), the detection-time source (`detectedAtSource`: `artifact`,
 `artifact-partial`, `attestation`, or `system` for a detection process failure or a coverage
 gap), and the evaluator and rationale (`evaluator`, `rationale`). The KEV keys,

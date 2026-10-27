@@ -52,7 +52,7 @@ from complyroll.events import (
     tracking_id_from_stream,
 )
 from complyroll.models import CaseStatus, Observation, PainRating
-from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction
+from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
@@ -329,6 +329,17 @@ class CaseState:
         """Return the operator's override when one was recorded, else the correlation id."""
 
         return self.provider_tracking_id or self.tracking_id
+
+    @property
+    def label(self) -> str:
+        """Return the case as a report from the store names its record in a diagnostic.
+
+        The override reaches that report only through the case's current evaluation, so a
+        case with none is named by its tracking id alone (ADR 0007 amendment 2026-10-26).
+        """
+
+        override = None if self.current_evaluation is None else self.provider_tracking_id
+        return record_label(self.tracking_id, override)
 
     @property
     def observation_ids(self) -> tuple[str, ...]:

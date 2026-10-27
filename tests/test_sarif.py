@@ -1690,8 +1690,8 @@ class SarifSpecCornerTests(unittest.TestCase):
         unsuccessful = only_diagnostic(self.result, "execution_unsuccessful")
         self.assertEqual(
             unsuccessful.message,
-            "invocation reports executionSuccessful false; its results are still read "
-            "(1 occurrence: runs[1].invocations[0])",
+            "invocation reports executionSuccessful false; its results are read unless the run "
+            "is refused (1 occurrence: runs[1].invocations[0])",
         )
         unknown = only_diagnostic(self.result, "results_unknown")
         self.assertEqual(
@@ -4541,9 +4541,34 @@ class SarifRunDiagnosticTests(unittest.TestCase):
         self.assertIs(unsuccessful.level, DiagnosticLevel.WARNING)
         self.assertEqual(
             unsuccessful.message,
-            "invocation reports executionSuccessful false; its results are still read "
-            "(1 occurrence: runs[0].invocations[0])",
+            "invocation reports executionSuccessful false; its results are read unless the run "
+            "is refused (1 occurrence: runs[0].invocations[0])",
         )
+
+    def test_failed_invocation_in_a_refused_run_reads_no_results(self) -> None:
+        # The invocations are read before the driver and automation id checks (ADR 0014
+        # amendment 2026-10-14, second), so the warning names a run whose results are never
+        # read; its text must not say they are.
+        shapes: dict[str, tuple[dict[str, Any], str]] = {
+            "blank driver name": ({"tool": {"driver": {"name": ""}}}, "invalid_run"),
+            "refused automation id": (
+                {"automationDetails": {"id": "nightly/\u0007run"}},
+                "identity_input_invalid",
+            ),
+        }
+        for shape, (override, code) in shapes.items():
+            with self.subTest(shape=shape):
+                run = make_run([make_result()], invocations=[{"executionSuccessful": False}])
+                run.update(override)
+                output = ingest_document(make_log(run))
+                self.assertEqual(output.observations, ())
+                self.assertIn(code, diagnostic_codes(output))
+                unsuccessful = only_diagnostic(output, "execution_unsuccessful")
+                self.assertEqual(
+                    unsuccessful.message,
+                    "invocation reports executionSuccessful false; its results are read unless "
+                    "the run is refused (1 occurrence: runs[0].invocations[0])",
+                )
 
     def test_external_property_files_are_never_opened(self) -> None:
         references = {

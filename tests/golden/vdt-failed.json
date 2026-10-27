@@ -693,7 +693,7 @@
         "code": "execution_unsuccessful",
         "level": "warning",
         "location": "failed-invocation.sarif",
-        "message": "invocation reports executionSuccessful false; its results are still read (1 occurrence: runs[1].invocations[0])"
+        "message": "invocation reports executionSuccessful false; its results are read unless the run is refused (1 occurrence: runs[1].invocations[0])"
       },
       {
         "code": "invalid_rules",

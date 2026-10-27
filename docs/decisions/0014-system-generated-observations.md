@@ -1092,3 +1092,22 @@ its exit statuses into one table.
 Why: flipping the default would change existing callers three ways, from exit 1 to a written
 report with exit 3, from 0 to 3, and on `ingest` from 0 to 1 for a failure a superseded stream
 holds, and would need a negation flag.
+
+## Amendment 2026-10-26: the failed-invocation warning and the ambiguity remedy
+
+The 2026-10-14 (second) amendment noted that ADR 0011 Decision 13's "its results are still read"
+does not hold for a run refused at its driver. It does not hold for a run refused at its
+automation id or another identity check either, since those checks also follow the invocations.
+The warning now reads "its results are read unless the run is refused" (ADR 0011 amendment
+2026-10-26).
+
+Decision 10's `evaluation_ambiguous` named the keys an entry leaves out but not the value each
+candidate has for them, so an operator could not tell which value to add.
+`EvaluationMatch.ambiguity_remedy` now follows the keys with each candidate's values, as
+`add contextKey (case-a has contextKey='...', case-b has contextKey='...')`, and with
+`and sourceType='...'` after each context key when both are missing. The candidates are named in
+tracking id order, so the report and `cases evaluate` end in the same remedy, although each lists
+the tracking ids before it in its own order, which is unchanged. The first ten are named and the
+rest counted as `and K more`, the bound a contract error puts on its issue list, and each value
+comes from an artifact, so it is quoted and cut as stored text is (`store.sqlite.shown`). Two
+transcripts in `examples/README.md` move by that text.

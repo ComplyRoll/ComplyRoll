@@ -761,3 +761,13 @@ verification inside a window, not a finding that the resource has a vulnerabilit
 README reorganization, and none is reformatted by ADR 0017 (its Decision 11).
 Why: the reasons Decision 30 gave still hold, and the report tells a failure from a gap per
 record, so a second status would add surface without adding information.
+
+## Amendment (2026-10-26): where the context key is printed
+
+Decision 21 says no report prints the context key. Two outputs now do. `evaluation_ambiguous`
+gives each candidate's context key when the entry leaves the key out (ADR 0014 amendment
+2026-10-26), so an entry without `contextKey` that matches several gaps names the keys to choose
+from. `cases list` adds a last column, `CONTEXT KEY`, once the store holds a coverage gap case:
+the gap's context key, and `-` for every other case. A listing with no gap case keeps its seven
+columns byte for byte, and the column is text output, escaped as every line is (ADR 0004
+amendment 2026-10-25). No report document carries the key, and no golden moved.

@@ -774,6 +774,34 @@ class CoverageCommandTests(PersistedStoreTestCase):
         listing = help_text(["cases"])
         self.assertIn("coverage", listing)
 
+    def test_cases_list_names_each_gap_case_context_key(self) -> None:
+        # No report document carries a gap's context key, which an evaluation entry must
+        # state (ADR 0015 Decision 23), so the listing adds it as a last column once a gap case
+        # is listed, "-" for every other case; nothing else in the listing moves.
+        self.populate()
+        before, _ = self.succeeds(["cases", "list", "--db", str(self.database)])
+        self.assertEqual(self.coverage(*COVERAGE_OPTIONS)[0], 3)
+        self.correlate()
+
+        after, err = self.succeeds(["cases", "list", "--db", str(self.database)])
+
+        self.assertEqual(err, "")
+        header, *rows = after.splitlines()
+        self.assertEqual(header.split(), [*before.splitlines()[0].split(), "CONTEXT", "KEY"])
+        cases = {case.tracking_id: case for case in fold_all_cases_of(self.database)}
+        gap_keys = {}
+        for row in rows:
+            *cells, key = row.split()
+            case = cases[cells[0]]
+            if case.source_type == COVERAGE_GAP_SOURCE_TYPE:
+                gap_keys[case.tracking_id] = key
+                self.assertEqual(key, case.context_key)
+            else:
+                self.assertEqual(key, "-")
+                self.assertIn(cells, [line.split() for line in before.splitlines()[1:]])
+        self.assertEqual(len(gap_keys), 7)
+        self.assertIn(RHEL_MVX_KEY, gap_keys.values())
+
     def test_an_older_build_refuses_the_store_cases_coverage_marked(self) -> None:
         self.populate()
         self.assertEqual(self.coverage(*COVERAGE_OPTIONS)[0], 3)
@@ -786,6 +814,11 @@ class CoverageCommandTests(PersistedStoreTestCase):
 
     def coverage_events(self) -> list[Any]:
         return [record for record in self.records() if record.stream_id.startswith("coverage/")]
+
+
+def fold_all_cases_of(database: Path) -> list[Any]:
+    with SQLiteEventStore(database) as store:
+        return list(fold_all_cases(EventRepository(store)))
 
 
 def stored_gaps_of(database: Path) -> list[Observation]:

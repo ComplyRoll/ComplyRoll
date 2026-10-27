@@ -756,3 +756,16 @@ and the KEV reader's `cve_may_be_missing`. A store an earlier build wrote that r
 file says `already_recorded` and keeps its old `source_identifiers`, so that store's `report --db`
 can differ from a fresh stateless report for the same file. No fixture or golden carries such a
 token; every golden is byte-identical.
+
+## Amendment 2026-10-26: the failed-invocation warning says when results are read
+
+Decision 13 says a run whose invocation reports `executionSuccessful: false` is WARNING
+`execution_unsuccessful` and its results are still read, and the warning said so. ADR 0014's
+amendment 2026-10-14 (second) reads a run's invocations before its driver and identity checks, so
+the warning also names a run refused at its driver, its automation id or another identity check,
+whose results are never read. The warning now reads "invocation reports executionSuccessful
+false; its results are read unless the run is refused". The code, level and location, the parser
+version and every observation are unchanged. The `vdt-failed` and `historical-failed` goldens,
+JSON and Markdown, and one transcript in `examples/README.md` move by that text alone. A store an
+earlier build wrote keeps the old text in the diagnostics it stored, so its `report --db` still
+prints it, and re-ingesting the same file says `already_recorded`.

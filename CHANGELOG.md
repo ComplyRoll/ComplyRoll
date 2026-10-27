@@ -6,6 +6,15 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- The SARIF warning `execution_unsuccessful` said a failed invocation's "results are still read",
+  which was false for a run refused at its driver, its automation id or another identity check:
+  its invocations are read before those checks, and its results never are. It now reads
+  "invocation reports executionSuccessful false; its results are read unless the run is refused".
+  The code, level, location, parser version and every observation are unchanged. The
+  `vdt-failed` and `historical-failed` goldens, JSON and Markdown, and one transcript in
+  `examples/README.md` move by that text alone. A store an earlier build wrote keeps the old text
+  in the diagnostics it stored, so its `report --db` still prints it, and re-ingesting the same
+  file says `already_recorded` (ADR 0011 and ADR 0014 amendments 2026-10-26).
 - A CKLB or XCCDF clock outside the years 1970 through 9000 UTC no longer ingests. The two readers
   used `parse_timestamp`, which kept any year, so the file read cleanly; with year 1 and a positive
   offset, or year 9999, every report of it then ended in an `OverflowError` traceback, on the
@@ -617,6 +626,26 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- A diagnostic about a record whose evaluation overrides `trackingId` names it by both ids,
+  `<override> (<correlation id>)`, for example `ACME-123 (case-1f3e011db93cc89e)`. Some named only
+  the correlation id, which the report does not show, and others only the override, which history
+  is not keyed by. The form reaches the report diagnostics (`detection_time_missing`,
+  `detection_time_partial`, `evaluation_before_detection`, `evaluation_before_partial_detection`,
+  `clock_out_of_range`, `closed_without_disposition`, `acceptance_rationale_missing`,
+  `kev_match_incomplete`, `excluded_by_period`, `accepted_excluded`, `coverage_gap_contradicted`,
+  `coverage_gap_unmatched`, `stale_case`), the same refusals from `cases evaluate` and `cases
+  attest-detection`, the `store verify` faults `evaluation_before_detection` and
+  `clock_out_of_range`, and the `attestation_not_applicable` warning. A record without an override
+  keeps its text byte for byte, and no golden moved (ADR 0007 amendment 2026-10-26).
+- `evaluation_ambiguous` gives, after the keys to add, each candidate's value of every one of them,
+  in tracking id order: `add contextKey (case-... has contextKey='...', ...)`. The first ten are
+  named and the rest counted, and each value is quoted and cut as stored text is. The report and
+  `cases evaluate` end in the same text. Two transcripts in `examples/README.md` move by it (ADR
+  0014 amendment 2026-10-26).
+- `cases list` adds a last column, `CONTEXT KEY`, once the store holds a coverage gap case: the
+  gap's context key, which an evaluation entry must state and no other output printed, and `-`
+  for every other case. A listing with no gap case is byte for byte as before (ADR 0015 amendment
+  2026-10-26).
 - `store verify` rejects every shape below. The readers refuse the stored JSON and timestamp
   shapes as `store_integrity` and the record shapes as `history_invalid`, as a report already
   refused a disposition with no evaluation (ADR 0004 and ADR 0008 amendments 2026-10-21). No

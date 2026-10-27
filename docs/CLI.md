@@ -210,14 +210,16 @@ window closed. No attestation was needed."
 
 An evaluation closes a gap as it closes any record, matched on all three keys. The context key is
 `<rule>:job:<job>` when the entry names a job, else `<rule>:resource:<type>:<id>`, which a sample
-group spells `<rule>:resource:logical:sample-group/<name>`. No report prints it, so build it from
-the window's rule and context and the entry's `job`:
+group spells `<rule>:resource:logical:sample-group/<name>`. No report document carries it, so build
+it from the window's rule and context and the entry's `job`, or read it from the last column of
+`cases list`, which a listing adds once the store holds a gap case:
 
 ```json
 {"sourceRecordId": "coverage-gap", "sourceType": "complyroll.coverage", "contextKey": "VDR-TFR-MVX:resource:host:lab-rhel-01"}
 ```
 
-An entry without `contextKey` is refused as `evaluation_ambiguous`, or as
+An entry without `contextKey` is refused as `evaluation_ambiguous`, whose message gives each
+matching case's context key (the first ten, in tracking id order), or as
 `evaluation_context_key_required` when it matches a single gap. An entry without `sourceType` that
 matches a single gap is refused as `evaluation_context_key_required` too, and the message ends by
 naming each key to add. An evaluation completed before the window closed is refused as
@@ -252,7 +254,9 @@ complyroll cases list --db STORE
 complyroll cases history TRACKING_ID --db STORE
 ```
 
-`cases list` folds only the case streams, so it still lists the cases of a store that
+`cases list` prints one row per case. Once the store holds a coverage gap case it adds a last
+column, `CONTEXT KEY`, with the gap's context key, and `-` for every other case; a listing with no
+gap case is unchanged. It folds only the case streams, so it still lists the cases of a store that
 `store verify` rejects for damage elsewhere, such as a damaged artifact stream or an orphaned
 hold. Run `store verify` to check the whole store. `cases attest-detection` reads an artifact
 stream only when a case it attests carries an evaluation, so it can attest on a store whose

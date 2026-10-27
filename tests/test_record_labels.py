@@ -533,15 +533,15 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
         self.assertTrue(stale.message.startswith(f"{ORPHAN_CASE} is recorded"))
         self.assertEqual(labels[ORPHAN_CASE], ORPHAN_CASE)
 
-    def partial_case(self) -> str:
-        """Ingest a partly timestamped banner result, which no attestation applies to."""
+    def partial_case(self, rule: str = BANNER_RULE) -> str:
+        """Ingest a partly timestamped result of one rule, which no attestation applies to."""
 
-        path = self.directory / "partial.xml"
+        path = self.directory / f"partial-{rule}.xml"
         path.write_text(
             xccdf(
-                "partial",
+                f"partial-{rule}",
                 [("lab-timed", "2026-08-03T09:00:00Z"), ("lab-untimed", None)],
-                BANNER_RULE,
+                rule,
             ),
             encoding="utf-8",
         )
@@ -550,7 +550,7 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
         (case,) = [
             item.tracking_id
             for item in fold_all_cases(self.repository)
-            if item.source_record_id == BANNER_RULE
+            if item.source_record_id == rule
         ]
         return case
 
@@ -611,6 +611,32 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
             err.splitlines(),
         )
 
+    def test_not_applicable_warnings_keep_the_selection_order(self) -> None:
+        # Two not-applicable cases, selected against their id order, warn in selection order
+        # (CL5B-D-02); the renamed one is named by both ids, the other by its own.
+        banner = self.partial_case()
+        self.evaluate(
+            self.banner_evaluation(trackingId=OVERRIDE, completedAt="2026-08-04T00:00:00Z")
+        )
+        sshd = self.partial_case("sshd_disable_root_login")
+        first, second = sorted((banner, sshd), reverse=True)
+        named = {banner: f"{OVERRIDE} ({banner})", sshd: sshd}
+
+        code, out, err = self.attest_cli(first, second)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            err.splitlines(),
+            [
+                f"warning: attestation_not_applicable: {named[case]} carries a source timestamp"
+                for case in (first, second)
+            ],
+        )
+        self.assertEqual(
+            out,
+            "attested 0 case(s), skipped 0 unchanged case(s), 2 not applicable case(s)\n",
+        )
+
     def test_a_damaged_unrelated_stream_leaves_the_attestation_reported(self) -> None:
         # The labels come from the streams the attestation already read, so a case stream
         # it never selected cannot turn a committed write into a failure (CL5B-01).
@@ -635,6 +661,75 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
             out,
             "attested 1 case(s), skipped 0 unchanged case(s), 1 not applicable case(s)\n",
         )
+
+    def link_out_of_range(self, tracking_id: str) -> None:
+        """Append a link whose observedAt matches the contract and has no UTC instant."""
+
+        stream_id = case_stream_id(tracking_id)
+        records = self.repository.read_stream(stream_id)
+        (linked,) = [item for item in records if item.event_type == "case.observation_linked"][:1]
+        self.repository.store.append(
+            stream_id,
+            [
+                NewEvent(
+                    event_type="case.observation_linked",
+                    occurred_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                    payload={**linked.payload, "observedAt": "0001-01-01T00:30:00+01:00"},
+                    metadata={"actor": "tester"},
+                )
+            ],
+            expected_version=len(records),
+        )
+
+    def test_an_out_of_range_link_leaves_the_attestation_as_base_made_it(self) -> None:
+        # The link reads as a source timestamp, so the case is not applicable, and its stream
+        # no longer folds; the attestable case is still attested (CL5B-D-01).
+        case = self.partial_case()
+        attestable = self.rule_case("sshd_disable_root_login")
+        self.link_out_of_range(case)
+        before = self.sequence
+
+        code, out, err = self.attest_cli(case, attestable)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            err.splitlines(),
+            [f"warning: attestation_not_applicable: {case} carries a source timestamp"],
+        )
+        self.assertEqual(
+            out,
+            "attested 1 case(s), skipped 0 unchanged case(s), 1 not applicable case(s)\n",
+        )
+        self.assertEqual(self.sequence, before + 1)
+
+    def test_an_out_of_range_link_is_a_coded_refusal_and_a_verify_fault(self) -> None:
+        case = self.partial_case()
+        self.rule_case("sshd_disable_root_login")
+        self.link_out_of_range(case)
+        before = self.sequence
+
+        swept = run(
+            [
+                "cases",
+                "attest-detection",
+                "--db",
+                str(self.database),
+                "--all-missing",
+                "--detected-at",
+                "2026-08-01T00:00:00Z",
+                "--rationale",
+                "Attested from the change record.",
+            ]
+        )
+        verified = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(swept[:2], (1, ""))
+        self.assertTrue(swept[2].startswith("error: event_contract_invalid: "), swept[2])
+        self.assertIn("timestamp is out of range, got '0001-01-01T00:30:00+01:00'", swept[2])
+        self.assertEqual(self.sequence, before)
+        self.assertEqual(verified[0], 1, verified[2])
+        self.assertNotIn("Traceback", verified[1] + verified[2])
+        self.assertIn("payload_contract_invalid", verified[1] + verified[2])
 
     def test_a_damaged_not_applicable_stream_is_named_by_its_tracking_id(self) -> None:
         # The case gains no event, so a stream `store verify` rejects is named by the id the

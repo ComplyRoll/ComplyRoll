@@ -6,6 +6,14 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- A stored instant whose offset puts it outside the years `datetime` holds, such as an
+  `observedAt` of `0001-01-01T00:30:00+01:00` on a case link, matched the contract pattern and
+  then ended `store verify`, every report from the store and most `cases` commands in an
+  `OverflowError` traceback. `parse_utc` now refuses it as a malformed instant ("timestamp is out
+  of range, got ..."), so `store verify` names it as the existing fault `payload_contract_invalid`
+  at its sequence, the readers refuse it as `event_contract_invalid`, and `cases
+  attest-detection` warns and attests as before. Only a store another build wrote or one edited
+  by hand holds such an instant, and every instant that converted before reads as before.
 - The SARIF warning `execution_unsuccessful` said a failed invocation's "results are still read",
   which was false for a run refused at its driver, its automation id or another identity check:
   its invocations are read before those checks, and its results never are. It now reads

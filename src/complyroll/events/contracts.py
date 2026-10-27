@@ -812,7 +812,12 @@ def parse_utc(value: str) -> datetime:
         raise ValueError(f"timestamp must be RFC 3339, got {shown(value)}") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"timestamp must include a UTC offset, got {shown(value)}")
-    return parsed.astimezone(UTC)
+    # An offset can carry a year-1 or year-9999 instant out of the years `datetime` holds,
+    # whose OverflowError is not a ValueError and passed every reader's refusal.
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError as exc:
+        raise ValueError(f"timestamp is out of range, got {shown(value)}") from exc
 
 
 def _require_digest(value: str, field_name: str) -> str:

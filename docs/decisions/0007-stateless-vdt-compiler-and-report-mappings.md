@@ -480,8 +480,9 @@ met by its `dueAt`. No field reports lateness. For `VER-TFR-EVU` a reader can co
 `evaluationCompletedAt` with that deadline's `dueAt`. The report dates an acceptance at the
 evaluation's `completedAt` (`docs/FEDRAMP_2026_MAPPING.md`, `docs/DATA_MODEL.md`), the instant the
 `VDR-TFR-PVR` and `VER-TFR-MAV` clocks run from, so by the report's own instants an acceptance can
-never read late, and it carries no instant for a disposition. When either was actually decided,
-such as a later disposition event's `recordedAt`, never reaches the report, so it cannot show
+never read late, and it carries no instant for a disposition. The report carries no instant for
+when a disposition or an acceptance was decided. A disposition event's `recordedAt` is only when
+`cases evaluate` wrote it, and it does not reach the report either. So the report cannot show
 whether `VDR-TFR-PVR` or `VER-TFR-MAV` was met in time.
 Why: the flag says whether the clock still runs, the fact `overdueStatus` is computed from and the
 Markdown Next due column reads, and a lateness value would change it for every reader.

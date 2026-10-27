@@ -186,7 +186,7 @@ def _select_accepted(
                 ReportDiagnostic(
                     level=DiagnosticLevel.INFO,
                     code="excluded_by_period",
-                    message=f"{record.tracking_id} {reason}",
+                    message=f"{record.label} {reason}",
                     location=record.source_record_id,
                 )
             )

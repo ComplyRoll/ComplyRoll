@@ -94,6 +94,7 @@ def case_order_diagnostic(
     completed_at: datetime,
     attested_at: datetime | None,
     sources: Collection[str] | None = None,
+    label: str | None = None,
 ) -> ReportDiagnostic | None:
     """Order one case's evaluation against its current group's detection time.
 
@@ -105,7 +106,8 @@ def case_order_diagnostic(
     error, and so does one whose detection time has no UTC instant, which the report
     refuses as `clock_out_of_range`. When `sources` is given, a detection time resolved
     from any other source returns None, which lets `cases attest-detection` refuse only
-    what its own attestation decides.
+    what its own attestation decides. `label` names the record as the report will once the
+    write lands; by default it is the case's own `label`.
     """
 
     if case.tracking_id != group.tracking_id:
@@ -126,7 +128,7 @@ def case_order_diagnostic(
     if sources is not None and detected_source not in sources:
         return None
     return evaluation_order_diagnostic(
-        tracking_id=group.tracking_id,
+        tracking_id=case.label if label is None else label,
         location=group.source_record_id,
         detected_at=detected_at,
         detected_source=detected_source,
@@ -223,10 +225,11 @@ def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
             continue
         case = cases.get(group.tracking_id)
         evaluation = None if case is None else case.current_evaluation
+        label = group.tracking_id if case is None else case.label
         if evaluation is not None:
             late = clock_problem(evaluation.completed_at, policies, evaluation=evaluation)
             if late is not None:
-                message = evaluation_clock_message(group.tracking_id, evaluation.completed_at, late)
+                message = evaluation_clock_message(label, evaluation.completed_at, late)
                 faults.append(
                     HistoryFault(
                         sequence=evaluation.sequence, code=CLOCK_OUT_OF_RANGE, message=message
@@ -243,7 +246,7 @@ def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
                 for observation in group.observations
                 if observation.observed_at == clock
             )
-        message = detection_clock_message(group.tracking_id, clock, problem)
+        message = detection_clock_message(label, clock, problem)
         faults.append(HistoryFault(sequence=sequence, code=CLOCK_OUT_OF_RANGE, message=message))
     return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
 

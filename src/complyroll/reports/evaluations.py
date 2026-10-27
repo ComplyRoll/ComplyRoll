@@ -75,6 +75,21 @@ class ReportInputError(ValueError):
     """An operator-supplied report input is malformed or exceeds a bound."""
 
 
+def record_label(tracking_id: str, override: str | None) -> str:
+    """Name a record in a diagnostic, as `<override> (<correlation id>)` once it is renamed.
+
+    A reader finds a record in the report by its published id and its case in history by
+    the correlation id, so every diagnostic about a record an evaluation renames names
+    both, through this one helper, on the stateless and persisted paths alike (ADR 0007
+    amendment 2026-10-26). A record without an override, or with one equal to its
+    correlation id, is named by that id alone, as before.
+    """
+
+    if override is None or override == tracking_id:
+        return tracking_id
+    return f"{override} ({tracking_id})"
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationMatch:
     """Selects the vulnerabilities an evaluation applies to."""

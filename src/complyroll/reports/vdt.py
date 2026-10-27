@@ -84,7 +84,7 @@ from .coverage import (
     derive_coverage,
     verifying_evidence,
 )
-from .evaluations import EvaluationInput, EvaluationSet, ReportInputError
+from .evaluations import EvaluationInput, EvaluationSet, ReportInputError, record_label
 from .gaps import COVERAGE_GAP_SOURCE_TYPE, coverage_gap_observation, coverage_gap_observations
 from .inventory import Inventory
 from .kev import KEV_STALE_AFTER, KevCatalog, KevClock, KevStatus, cve_may_be_missing, kev_clock
@@ -392,6 +392,13 @@ class CompiledVulnerability:
     @property
     def is_evaluated(self) -> bool:
         return self.evaluation is not None
+
+    @property
+    def label(self) -> str:
+        """Return the record as a diagnostic names it: `<override> (<correlation id>)` once
+        an evaluation renames it, else its tracking id (ADR 0007 amendment 2026-10-26)."""
+
+        return record_label(self.original_tracking_id or self.tracking_id, self.tracking_id)
 
     @property
     def has_disposition(self) -> bool:
@@ -792,14 +799,21 @@ def compile_record_set(
         raise ValueError("a gap-aware compile needs an inventory")
 
     compiled: list[CompiledVulnerability] = []
-    missing_detection: list[str] = []
+    # Each record with no detection time, as (correlation id, label), named in id order.
+    missing_detection: list[tuple[str, str]] = []
     errors: list[ReportDiagnostic] = []
     kev_incomplete: list[CompiledVulnerability] = []
     detection_failures: list[CompiledDetectionFailure] = []
-    # Each coverage gap observation's id, to the published id of the record carrying it.
+    # Each coverage gap observation's id, to the published id of the record carrying it,
+    # and to the record as a diagnostic names it.
     gap_tracking: dict[str, str] = {}
+    gap_labels: dict[str, str] = {}
 
     for group in groups:
+        evaluation = evaluations_by_tracking_id.get(group.tracking_id)
+        label = record_label(
+            group.tracking_id, None if evaluation is None else evaluation.tracking_id
+        )
         clock = detection_clock(group, attestation)
         problem = None if clock is None else clock_problem(clock, (policy,))
         if clock is not None and problem is not None:
@@ -807,14 +821,14 @@ def compile_record_set(
                 ReportDiagnostic(
                     level=DiagnosticLevel.ERROR,
                     code=CLOCK_OUT_OF_RANGE,
-                    message=detection_clock_message(group.tracking_id, clock, problem),
+                    message=detection_clock_message(label, clock, problem),
                     location=group.source_record_id,
                 )
             )
             continue
         detected_at, detected_source = resolve_detection_time(group, attestation)
         if detected_at is None:
-            missing_detection.append(group.tracking_id)
+            missing_detection.append((group.tracking_id, label))
             continue
         if detected_source == "artifact-partial":
             diagnostics.append(
@@ -822,7 +836,7 @@ def compile_record_set(
                     level=DiagnosticLevel.WARNING,
                     code="detection_time_partial",
                     message=(
-                        f"{group.tracking_id} groups "
+                        f"{label} groups "
                         f"{len(group.untimestamped_observation_ids)} observation(s) that "
                         "declare no source timestamp; the earliest known timestamp is the "
                         "detection time"
@@ -830,14 +844,13 @@ def compile_record_set(
                     location=group.source_record_id,
                 )
             )
-        evaluation = evaluations_by_tracking_id.get(group.tracking_id)
         # The order check runs before the record is built, so a record refused for both
         # reasons names its ordering error before `closed_without_disposition`. Every
         # record's errors are collected and the loop moves on, so one run names them all.
         record_errors: list[ReportDiagnostic] = []
         if evaluation is not None:
             order = evaluation_order_diagnostic(
-                tracking_id=group.tracking_id,
+                tracking_id=label,
                 location=group.source_record_id,
                 detected_at=detected_at,
                 detected_source=detected_source,
@@ -854,9 +867,7 @@ def compile_record_set(
                     ReportDiagnostic(
                         level=DiagnosticLevel.ERROR,
                         code=CLOCK_OUT_OF_RANGE,
-                        message=evaluation_clock_message(
-                            group.tracking_id, evaluation.completed_at, problem
-                        ),
+                        message=evaluation_clock_message(label, evaluation.completed_at, problem),
                         location=group.source_record_id,
                     )
                 )
@@ -887,12 +898,14 @@ def compile_record_set(
             if item.origin is ObservationOrigin.SYSTEM
             and item.source_type == DETECTION_FAILURE_SOURCE_TYPE
         )
-        gap_tracking.update(
-            (item.observation_id, record.tracking_id)
+        gaps = [
+            item.observation_id
             for item in group.observations
             if item.origin is ObservationOrigin.SYSTEM
             and item.source_type == COVERAGE_GAP_SOURCE_TYPE
-        )
+        ]
+        gap_tracking.update((gap_id, record.tracking_id) for gap_id in gaps)
+        gap_labels.update((gap_id, record.label) for gap_id in gaps)
         if kev_rule is not None and any(cve_may_be_missing(item) for item in group.observations):
             kev_incomplete.append(record)
 
@@ -904,7 +917,7 @@ def compile_record_set(
                 code="detection_time_missing",
                 message=(
                     "no source timestamp and no --detected-at attestation for: "
-                    + ", ".join(sorted(missing_detection))
+                    + ", ".join(label for _, label in sorted(missing_detection))
                 ),
             ),
         )
@@ -921,7 +934,7 @@ def compile_record_set(
         window_ids = _window_gap_ids(coverage, options)
         gap_records = {window: gap_tracking.get(gap_id) for window, gap_id in window_ids.items()}
         diagnostics.extend(
-            _coverage_gap_divergences(coverage, window_ids, gap_tracking, observations)
+            _coverage_gap_divergences(coverage, window_ids, gap_tracking, gap_labels, observations)
         )
     return CompiledRecordSet(
         records=tuple(compiled),
@@ -1560,7 +1573,8 @@ def evaluation_order_diagnostic(
     none may have detected it earlier, so it gets the WARNING
     `evaluation_before_partial_detection` and the record is published. Only
     `completedAt` is ordered: a reduction or a projection starts no clock. For a
-    `system` detection time, the record's `source_type` chooses the remedy.
+    `system` detection time, the record's `source_type` chooses the remedy. `tracking_id`
+    is the record as a diagnostic names it, from `record_label`.
     """
 
     completed = completed_at.astimezone(UTC)
@@ -1893,7 +1907,7 @@ def _kev_diagnostics(
                 level=DiagnosticLevel.WARNING,
                 code="kev_match_incomplete",
                 message=(
-                    f"{record.tracking_id} groups an observation whose source identifiers "
+                    f"{record.label} groups an observation whose source identifiers "
                     "were cut at the adapter's limit, and a CVE may be among those dropped, "
                     "so a CISA KEV entry for it cannot be matched"
                 ),
@@ -2022,6 +2036,7 @@ def _coverage_gap_divergences(
     coverage: CoverageResult,
     window_ids: Mapping[CoverageWindow, str],
     gap_tracking: Mapping[str, str],
+    gap_labels: Mapping[str, str],
     observations: Sequence[Observation],
 ) -> list[ReportDiagnostic]:
     """Name each window no gap record carries, then each gap record no window derives.
@@ -2086,7 +2101,7 @@ def _coverage_gap_divergences(
         notes.append(
             _underived_gap(
                 item,
-                tracking_id,
+                gap_labels[item.observation_id],
                 disproof[item.observation_id],
                 standing=standing,
                 shared=bool(siblings),
@@ -2124,7 +2139,7 @@ def _disproving_evidence(
 
 def _underived_gap(
     gap: Observation,
-    tracking_id: str,
+    label: str,
     evidence: CoverageEvidence | None,
     *,
     standing: Sequence[tuple[Observation, bool]],
@@ -2143,7 +2158,7 @@ def _underived_gap(
     closed_at = gap.observed_at
     if closed_at is None:  # pragma: no cover - a gap is always observed at its window close
         raise ValueError(f"coverage gap {gap.observation_id} has no window close")
-    described = f"{tracking_id} carries the recorded gap of {_gap_window(gap)}"
+    described = f"{label} carries the recorded gap of {_gap_window(gap)}"
     others = ", and ".join(
         f"{_gap_window(other)}, which this run "
         + ("still derives" if still_derived else "neither derives nor disproves")
@@ -2283,7 +2298,7 @@ def _require_acceptance_rationales(records: Sequence[CompiledVulnerability]) -> 
             level=DiagnosticLevel.ERROR,
             code="acceptance_rationale_missing",
             message=(
-                f"{record.tracking_id} is accepted but its evaluation records no "
+                f"{record.label} is accepted but its evaluation records no "
                 "acceptance rationale, which the accepted vulnerability report requires"
             ),
             location=record.source_record_id,
@@ -2337,7 +2352,7 @@ def _select_for_period(
                     ReportDiagnostic(
                         level=DiagnosticLevel.INFO,
                         code="excluded_by_period",
-                        message=f"{record.tracking_id} {reason}",
+                        message=f"{record.label} {reason}",
                         location=record.source_record_id,
                     )
                 )
@@ -2355,7 +2370,7 @@ def _select_for_period(
                     level=DiagnosticLevel.INFO,
                     code="accepted_excluded",
                     message=(
-                        f"{record.tracking_id} is an accepted vulnerability and belongs in "
+                        f"{record.label} is an accepted vulnerability and belongs in "
                         "the VER-RPT-AVI report, not the Vulnerability Detail Report"
                     ),
                     location=record.source_record_id,
@@ -2372,7 +2387,7 @@ def _select_for_period(
                 ReportDiagnostic(
                     level=DiagnosticLevel.INFO,
                     code="excluded_by_period",
-                    message=f"{record.tracking_id} {reason}",
+                    message=f"{record.label} {reason}",
                     location=record.source_record_id,
                 )
             )
@@ -2459,8 +2474,8 @@ def _build_record(
                     level=DiagnosticLevel.ERROR,
                     code="closed_without_disposition",
                     message=(
-                        f"{group.tracking_id} is closed with no recorded disposition; "
-                        "supply closedDisposition"
+                        f"{record_label(group.tracking_id, evaluation.tracking_id)} is closed "
+                        "with no recorded disposition; supply closedDisposition"
                     ),
                     location=evaluation.location,
                 ),

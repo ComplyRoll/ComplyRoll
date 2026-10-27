@@ -55,7 +55,7 @@ from complyroll.events import (
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.policy import CertificationProfile
 from complyroll.reports.coverage import CoverageResult
-from complyroll.reports.evaluations import EvaluationInput, EvaluationSet
+from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, record_label
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
 from complyroll.reports.vdt import (
@@ -1158,8 +1158,10 @@ def _require_evaluation_order(
         if entry is None or case is None:
             continue
         attested_at = None if case.attestation is None else case.attestation.detected_at
+        # After the write the case carries the entry's override, or keeps the recorded one.
+        label = record_label(case.tracking_id, entry.tracking_id or case.provider_tracking_id)
         diagnostic = case_order_diagnostic(
-            case, group, completed_at=entry.completed_at, attested_at=attested_at
+            case, group, completed_at=entry.completed_at, attested_at=attested_at, label=label
         )
         if diagnostic is None:
             continue

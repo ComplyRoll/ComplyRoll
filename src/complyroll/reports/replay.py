@@ -313,7 +313,7 @@ def _stale_cases(
             level=DiagnosticLevel.INFO,
             code="stale_case",
             message=(
-                f"{case.tracking_id} is recorded in history but no open observation "
+                f"{case.label} is recorded in history but no open observation "
                 "group matches it, so it is not in this report"
             ),
             location=case.stream_id,

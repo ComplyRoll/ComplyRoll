@@ -914,9 +914,16 @@ def _run_cases_attest(args: argparse.Namespace) -> int:
                 metadata=metadata,
                 now=_now(),
             )
+            # Named as a report names the record, so a renamed case shows both ids.
+            labels = (
+                {case.tracking_id: case.label for case in fold_all_cases(repository)}
+                if outcome.not_applicable
+                else {}
+            )
         for tracking_id in outcome.not_applicable:
             _say(
-                f"warning: attestation_not_applicable: {tracking_id} carries a source timestamp",
+                f"warning: attestation_not_applicable: {labels[tracking_id]} carries a source "
+                "timestamp",
                 file=stderr,
             )
         if args.all_missing:

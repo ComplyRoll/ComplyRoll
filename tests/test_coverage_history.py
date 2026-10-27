@@ -775,9 +775,9 @@ class CoverageCommandTests(PersistedStoreTestCase):
         self.assertIn("coverage", listing)
 
     def test_cases_list_names_each_gap_case_context_key(self) -> None:
-        # No other output prints a gap's context key, which an evaluation entry must state
-        # (ADR 0015 Decision 23), so the listing adds it as a last column once a gap case is
-        # listed, "-" for every other case; nothing else in the listing moves.
+        # No report document carries a gap's context key, which an evaluation entry must
+        # state (ADR 0015 Decision 23), so the listing adds it as a last column once a gap case
+        # is listed, "-" for every other case; nothing else in the listing moves.
         self.populate()
         before, _ = self.succeeds(["cases", "list", "--db", str(self.database)])
         self.assertEqual(self.coverage(*COVERAGE_OPTIONS)[0], 3)

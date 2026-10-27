@@ -452,25 +452,30 @@ class GapEvaluationTests(unittest.TestCase):
         self.assertEqual(problem.partition("); ")[2], remedy)
 
     def test_an_ambiguity_names_ten_candidates_and_counts_the_rest(self) -> None:
-        names = [f"lab-gap-{index:02d}" for index in range(1, 13)]
-        twelve = gaps(*names)
-        evaluations = evaluations_with(gap_match(twelve[0], context_key=False))
-        by_id = dict(zip(tracking_ids(*twelve), twelve, strict=True))
-        listed = ", ".join(
-            f"{tracking_id} has contextKey={by_id[tracking_id].context_key!r}"
-            for tracking_id in sorted(by_id)[:10]
-        )
+        # Ten is named whole, eleven and twelve name ten and count the rest (CL5B-03).
+        for count, suffix in ((10, ""), (11, ", and 1 more"), (12, ", and 2 more")):
+            with self.subTest(candidates=count):
+                names = [f"lab-gap-{index:02d}" for index in range(1, count + 1)]
+                matched = gaps(*names)
+                evaluations = evaluations_with(gap_match(matched[0], context_key=False))
+                by_id = dict(zip(tracking_ids(*matched), matched, strict=True))
+                listed = ", ".join(
+                    f"{tracking_id} has contextKey={by_id[tracking_id].context_key!r}"
+                    for tracking_id in sorted(by_id)[:10]
+                )
 
-        with self.assertRaises(ReportCompileError) as caught:
-            compile_with(twelve, evaluations)
+                with self.assertRaises(ReportCompileError) as caught:
+                    compile_with(matched, evaluations)
 
-        (diagnostic,) = caught.exception.diagnostics
-        self.assertTrue(
-            diagnostic.message.endswith(f"); add contextKey ({listed}, and 2 more)"),
-            diagnostic.message,
-        )
-        # The tracking id list before the remedy is unchanged and unbounded.
-        self.assertIn(f"matches 12 vulnerabilities ({', '.join(by_id)}); ", diagnostic.message)
+                (diagnostic,) = caught.exception.diagnostics
+                self.assertTrue(
+                    diagnostic.message.endswith(f"); add contextKey ({listed}{suffix})"),
+                    diagnostic.message,
+                )
+                # The tracking id list before the remedy is unchanged and unbounded.
+                self.assertIn(
+                    f"matches {count} vulnerabilities ({', '.join(by_id)}); ", diagnostic.message
+                )
 
     def test_an_ambiguity_quotes_each_value_within_the_bound(self) -> None:
         # A value comes from an artifact, so it is quoted and cut as stored text is.

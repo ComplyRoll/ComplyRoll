@@ -38,6 +38,7 @@ from complyroll.events import (
     MAX_BATCH_EVENTS,
     OBSERVATION_ID_KEY,
     UNDISPOSED_STATUSES,
+    EventContractError,
     EventMetadata,
     EventRepository,
     PendingEvent,
@@ -194,6 +195,10 @@ class AttestationOutcome:
     attested: tuple[str, ...]
     skipped: tuple[str, ...]
     not_applicable: tuple[str, ...] = ()
+    #: Each not-applicable case as a report names it (`CaseState.label`), in the same order,
+    #: read from the stream this call already read; a stream that does not fold is named by
+    #: its tracking id, since the case gains no event and `store verify` names the damage.
+    not_applicable_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -834,6 +839,7 @@ def _attest_detection(
     attested: list[str] = []
     skipped: list[str] = []
     not_applicable: list[str] = []
+    labels: list[str] = []
     pending: list[tuple[str, tuple[EventRecord, ...]]] = []
 
     for tracking_id in _unique(tracking_ids):
@@ -843,6 +849,7 @@ def _attest_detection(
             raise CaseNotFoundError(f"no case stream exists for {tracking_id!r}")
         if _any_link_is_timestamped(existing):
             not_applicable.append(tracking_id)
+            labels.append(_not_applicable_label(repository, tracking_id, existing))
             continue
         latest = _latest_payload(existing, DETECTION_ATTESTED)
         if latest is not None and content_digest(DETECTION_ATTESTED, latest) == wanted:
@@ -869,7 +876,24 @@ def _attest_detection(
         attested=tuple(attested),
         skipped=tuple(skipped),
         not_applicable=tuple(not_applicable),
+        not_applicable_labels=tuple(labels),
     )
+
+
+def _not_applicable_label(
+    repository: EventRepository, tracking_id: str, records: Sequence[EventRecord]
+) -> str:
+    """Name a case no attestation applies to as a report names it, from its read stream.
+
+    Before this label the command only read such a stream raw, so a stream that does not
+    fold is named by its tracking id rather than refused: refusing would add a refusal, and
+    one raised after the commit would report a saved write as a failure (CL5B-01).
+    """
+
+    try:
+        return fold_case_records(repository, tracking_id, records).label
+    except (HistoryError, EventContractError):
+        return tracking_id
 
 
 def apply_evaluations(

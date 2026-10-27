@@ -59,6 +59,7 @@ from test_reports import (
 )
 
 from complyroll.correlation import group_open_observations
+from complyroll.events import case_stream_id
 from complyroll.history import (
     CASE_CREATED,
     CASE_EVALUATED,
@@ -82,6 +83,7 @@ from complyroll.reports import (
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.evaluations import record_label
 from complyroll.reports.replay import compile_record_set_from_history
+from complyroll.store import NewEvent
 
 # *--- Fixtures ---*
 
@@ -412,6 +414,30 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
         (fault,) = evaluation_order_faults(self.repository)
         self.assertEqual(fault.message, refusal.diagnostics[0].message)
 
+    def test_evaluate_names_a_new_override_over_a_recorded_one(self) -> None:
+        # The entry renames a case already renamed: the write leaves the entry's override,
+        # so the refusal names that one, as the report from the store does after it (CL5B-04).
+        case = self.untimed_case()
+        self.identify_around(case)
+        self.evaluate_around(self.banner_evaluation(), case)
+        self.attest([case], datetime(2026, 8, 1, tzinfo=UTC))
+        self.append_around(
+            case,
+            DETECTION_ATTESTED,
+            {
+                "detectedAt": "2026-08-05T00:00:00Z",
+                "rationale": "Re-attested around the writer.",
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+        )
+        renamed = self.banner_evaluation(trackingId="NEW-1")
+
+        refusal = self.refused(lambda: self.evaluate(renamed))
+
+        self.assertTrue(refusal.diagnostics[0].message.startswith(f"NEW-1 ({case}) was "))
+        self.append_around(case, CASE_IDENTIFIED, {"providerTrackingId": "NEW-1"})
+        self.assertEqual(self.report_refusal(), rendered(refusal.diagnostics))
+
     def test_evaluate_names_a_retained_override_as_the_report_will(self) -> None:
         # The entry states no trackingId, so the recorded override stands (ADR 0008), and the
         # refusal names the case as the report from the store would after the write.
@@ -507,7 +533,9 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
         self.assertTrue(stale.message.startswith(f"{ORPHAN_CASE} is recorded"))
         self.assertEqual(labels[ORPHAN_CASE], ORPHAN_CASE)
 
-    def test_attestation_not_applicable_names_the_case_by_both_ids(self) -> None:
+    def partial_case(self) -> str:
+        """Ingest a partly timestamped banner result, which no attestation applies to."""
+
         path = self.directory / "partial.xml"
         path.write_text(
             xccdf(
@@ -519,19 +547,49 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
         )
         self.ingest(path)
         self.correlate()
-        case = self.only_case()
-        self.evaluate(
-            self.banner_evaluation(trackingId=OVERRIDE, completedAt="2026-08-04T00:00:00Z")
+        (case,) = [
+            item.tracking_id
+            for item in fold_all_cases(self.repository)
+            if item.source_record_id == BANNER_RULE
+        ]
+        return case
+
+    def rule_case(self, rule: str) -> str:
+        self.ingest(self.artifact(rule, [("lab-untimed", None)], rule=rule))
+        self.correlate()
+        (case,) = [
+            item.tracking_id
+            for item in fold_all_cases(self.repository)
+            if item.source_record_id == rule
+        ]
+        return case
+
+    def damage(self, tracking_id: str) -> None:
+        """Append an event no contract publishes, so the case stream no longer folds."""
+
+        stream_id = case_stream_id(tracking_id)
+        self.repository.store.append(
+            stream_id,
+            [
+                NewEvent(
+                    event_type="case.bogus",
+                    occurred_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                    payload={},
+                    metadata={"actor": "tester"},
+                )
+            ],
+            expected_version=len(self.repository.read_stream(stream_id)),
         )
 
-        code, _, err = run(
+    def attest_cli(self, *cases: str) -> tuple[int, str, str]:
+        selection = [argument for case in cases for argument in ("--case", case)]
+        return run(
             [
                 "cases",
                 "attest-detection",
                 "--db",
                 str(self.database),
-                "--case",
-                case,
+                *selection,
                 "--detected-at",
                 "2026-08-01T00:00:00Z",
                 "--rationale",
@@ -539,8 +597,62 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
             ]
         )
 
+    def test_attestation_not_applicable_names_the_case_by_both_ids(self) -> None:
+        case = self.partial_case()
+        self.evaluate(
+            self.banner_evaluation(trackingId=OVERRIDE, completedAt="2026-08-04T00:00:00Z")
+        )
+
+        code, _, err = self.attest_cli(case)
+
         self.assertEqual(code, 0, err)
         self.assertIn(
             f"warning: attestation_not_applicable: {OVERRIDE} ({case}) carries a source timestamp",
             err.splitlines(),
+        )
+
+    def test_a_damaged_unrelated_stream_leaves_the_attestation_reported(self) -> None:
+        # The labels come from the streams the attestation already read, so a case stream
+        # it never selected cannot turn a committed write into a failure (CL5B-01).
+        case = self.partial_case()
+        self.evaluate(
+            self.banner_evaluation(trackingId=OVERRIDE, completedAt="2026-08-04T00:00:00Z")
+        )
+        attestable = self.rule_case("sshd_disable_root_login")
+        self.damage(self.rule_case("audit_rules_immutable"))
+
+        code, out, err = self.attest_cli(case, attestable)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            err.splitlines(),
+            [
+                f"warning: attestation_not_applicable: {OVERRIDE} ({case}) carries a source "
+                "timestamp"
+            ],
+        )
+        self.assertEqual(
+            out,
+            "attested 1 case(s), skipped 0 unchanged case(s), 1 not applicable case(s)\n",
+        )
+
+    def test_a_damaged_not_applicable_stream_is_named_by_its_tracking_id(self) -> None:
+        # The case gains no event, so a stream `store verify` rejects is named by the id the
+        # command was given rather than refused (CL5B-01).
+        case = self.partial_case()
+        self.evaluate(
+            self.banner_evaluation(trackingId=OVERRIDE, completedAt="2026-08-04T00:00:00Z")
+        )
+        self.damage(case)
+
+        code, out, err = self.attest_cli(case)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            err.splitlines(),
+            [f"warning: attestation_not_applicable: {case} carries a source timestamp"],
+        )
+        self.assertEqual(
+            out,
+            "attested 0 case(s), skipped 0 unchanged case(s), 1 not applicable case(s)\n",
         )

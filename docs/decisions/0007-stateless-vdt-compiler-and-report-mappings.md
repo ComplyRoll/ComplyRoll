@@ -462,7 +462,9 @@ On the persisted path a case's override reaches a report only through its curren
 `CaseState.label` names a case the same way. `cases evaluate` names a record by the override the
 write would leave, the entry's or the recorded one, `cases attest-detection` by the recorded one,
 and the `store verify` faults `evaluation_before_detection` and `clock_out_of_range` keep the
-report's words. `stale_case` and the `attestation_not_applicable` warning follow. Unchanged:
+report's words. `stale_case` and the `attestation_not_applicable` warning follow. The warning's
+label is read from the stream the attestation already read, before its write commits; a case gains
+no event there, so a stream that does not fold is named by its tracking id, not refused. Unchanged:
 `tracking_id_collision`, which names both already; `evaluation_duplicate` and
 `evaluation_ambiguous`, where no one entry's override applies; and the `cases evaluate` notices
 `identification_retained`, `disposition_retained` and `reduction_retained`, which name the file
@@ -475,8 +477,11 @@ Each deadline's `satisfied` keeps the meaning Decision 7 and the 2026-08-22 amen
 stops the clock is recorded, an evaluation for `VER-TFR-EVU` and a disposition or an acceptance
 for `VDR-TFR-PVR` and `VER-TFR-MAV`, whenever it was recorded. It does not mean the deadline was
 met by its `dueAt`. No field reports lateness. For `VER-TFR-EVU` a reader can compare
-`evaluationCompletedAt` with that deadline's `dueAt`; the report carries no instant at which a
-disposition or an acceptance was made, so it cannot show whether `VDR-TFR-PVR` or `VER-TFR-MAV`
-was met in time.
+`evaluationCompletedAt` with that deadline's `dueAt`. The report dates an acceptance at the
+evaluation's `completedAt` (`docs/FEDRAMP_2026_MAPPING.md`, `docs/DATA_MODEL.md`), the instant the
+`VDR-TFR-PVR` and `VER-TFR-MAV` clocks run from, so by the report's own instants an acceptance can
+never read late, and it carries no instant for a disposition. When either was actually decided,
+such as a later disposition event's `recordedAt`, never reaches the report, so it cannot show
+whether `VDR-TFR-PVR` or `VER-TFR-MAV` was met in time.
 Why: the flag says whether the clock still runs, the fact `overdueStatus` is computed from and the
 Markdown Next due column reads, and a lateness value would change it for every reader.

@@ -1158,7 +1158,8 @@ class _ArtifactParse(EvidenceParse):
                 self.diagnostics.add(
                     DiagnosticLevel.WARNING,
                     "execution_unsuccessful",
-                    "invocation reports executionSuccessful false; its results are still read",
+                    "invocation reports executionSuccessful false; its results are read unless "
+                    "the run is refused",
                     f"{path}.invocations[{position}]",
                 )
             elif flag is not True:

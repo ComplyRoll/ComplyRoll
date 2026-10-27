@@ -2913,7 +2913,7 @@ class PersistedFailedImportTests(PersistedStoreTestCase):
             undated("windows-host.ckl"),
             undated("openscap-results.xml"),
             "warning: execution_unsuccessful: invocation reports executionSuccessful false; its "
-            "results are still read (1 occurrence: runs[1].invocations[0]) "
+            "results are read unless the run is refused (1 occurrence: runs[1].invocations[0]) "
             "[failed-invocation.sarif]",
             "info: run_clean: run reports no results (1 occurrence: runs[1]) "
             "[failed-invocation.sarif]",

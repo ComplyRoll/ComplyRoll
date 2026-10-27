@@ -948,7 +948,7 @@ warning: artifact_parse_failed: Unterminated string starting at: line 18 column 
 warning: detection_failure_recorded: recorded a detection process failure of class content for source artifact sha256:f51e7b7624956be0f40545639b3ee63ab7b5a27cb647ad2a3435df6bc6dcc372 (VDR-CSO-FAV) [failed-invalid-rules.cklb]
 warning: detection_failure_recorded: recorded a detection process failure of class execution for source artifact sha256:59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9 (VDR-CSO-FAV) [failed-invocation.sarif]
 warning: detection_failure_recorded: recorded a detection process failure of class parse for source artifact sha256:a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8 (VDR-CSO-FAV) [failed-truncated.sarif]
-warning: execution_unsuccessful: invocation reports executionSuccessful false; its results are still read (1 occurrence: runs[1].invocations[0]) [failed-invocation.sarif]
+warning: execution_unsuccessful: invocation reports executionSuccessful false; its results are read unless the run is refused (1 occurrence: runs[1].invocations[0]) [failed-invocation.sarif]
 warning: invalid_rules: STIG entry has no rules array [stigs[0].rules]
 warning: no_observations: CKLB contains no usable rules [failed-invalid-rules.cklb]
 ```

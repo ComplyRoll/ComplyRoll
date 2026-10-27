@@ -261,6 +261,9 @@ class StatelessRecordLabelTests(unittest.TestCase):
             "vdt excluded_by_period": lambda extra: compile_fixtures(
                 evaluations=evaluations_from(**disposed, **extra), **september
             ),
+            "vdt-accepted excluded_by_period": lambda extra: compile_fixtures(
+                evaluations=evaluations_from(**ACCEPTANCE, **extra), **september
+            ),
             "avi excluded_by_period": lambda extra: compile_fixtures(
                 kind="avi", evaluations=evaluations_from(**ACCEPTANCE, **extra), **september
             ),

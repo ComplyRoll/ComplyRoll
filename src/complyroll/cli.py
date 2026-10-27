@@ -70,6 +70,7 @@ from .reports import (
     load_kev_catalog,
     parse_rfc3339,
 )
+from .reports.gaps import COVERAGE_GAP_SOURCE_TYPE
 from .schemas import (
     MAX_REPORT_BYTES,
     ReportDocumentError,
@@ -121,6 +122,9 @@ CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
     ("PAIN", False),
     ("DISPOSITION", False),
 )
+#: The column a listing adds once it lists a coverage gap case: the gap's context key, which
+#: an evaluation entry must state and no other output prints ("-" for every other case).
+GAP_CONTEXT_COLUMN: tuple[str, bool] = ("CONTEXT KEY", False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1486,24 +1490,30 @@ def _cases_missing_detection(cases: Sequence[CaseState]) -> tuple[str, ...]:
 
 
 def _case_table(cases: Sequence[CaseState]) -> tuple[str, ...]:
-    """Render the case listing, header first, sized to its widest cell per column."""
+    """Render the case listing, header first, sized to its widest cell per column.
 
-    rows = [_case_row(case) for case in cases]
+    A listing with no coverage gap case keeps `CASE_COLUMNS` alone, byte for byte; one with
+    a gap case adds `GAP_CONTEXT_COLUMN` last (ADR 0015 amendment 2026-10-26).
+    """
+
+    gaps_listed = any(case.source_type == COVERAGE_GAP_SOURCE_TYPE for case in cases)
+    columns = (*CASE_COLUMNS, GAP_CONTEXT_COLUMN) if gaps_listed else CASE_COLUMNS
+    rows = [_case_row(case, gaps_listed) for case in cases]
     widths = [
         max([len(header), *(len(row[index]) for row in rows)])
-        for index, (header, _) in enumerate(CASE_COLUMNS)
+        for index, (header, _) in enumerate(columns)
     ]
-    headers = tuple(header for header, _ in CASE_COLUMNS)
-    return tuple(_case_line(values, widths) for values in (headers, *rows))
+    headers = tuple(header for header, _ in columns)
+    return tuple(_case_line(values, widths, columns) for values in (headers, *rows))
 
 
-def _case_row(case: CaseState) -> tuple[str, ...]:
-    """Return one case's cells, in `CASE_COLUMNS` order."""
+def _case_row(case: CaseState, gaps_listed: bool) -> tuple[str, ...]:
+    """Return one case's cells, in `CASE_COLUMNS` order, then its gap context key if listed."""
 
     resources = {(link.resource_type, link.resource_id) for link in case.links}
     evaluation = case.current_evaluation
     disposition = case.disposition
-    return (
+    cells = (
         case.tracking_id,
         case.provider_tracking_id or "-",
         case.source_record_id,
@@ -1512,12 +1522,18 @@ def _case_row(case: CaseState) -> tuple[str, ...]:
         "-" if evaluation is None else str(int(evaluation.pain)),
         "active" if disposition is None else disposition.status.value,
     )
+    if not gaps_listed:
+        return cells
+    is_gap = case.source_type == COVERAGE_GAP_SOURCE_TYPE
+    return (*cells, case.context_key if is_gap else "-")
 
 
-def _case_line(values: Sequence[str], widths: Sequence[int]) -> str:
+def _case_line(
+    values: Sequence[str], widths: Sequence[int], columns: Sequence[tuple[str, bool]]
+) -> str:
     cells = [
         value.rjust(width) if numeric else value.ljust(width)
-        for value, width, (_, numeric) in zip(values, widths, CASE_COLUMNS, strict=True)
+        for value, width, (_, numeric) in zip(values, widths, columns, strict=True)
     ]
     return "  ".join(cells).rstrip()
 

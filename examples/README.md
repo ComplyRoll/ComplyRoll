@@ -638,8 +638,9 @@ reached it, so the entry's disposition is `remediated`. It matches on all three 
 {"sourceRecordId": "coverage-gap", "sourceType": "complyroll.coverage", "contextKey": "VDR-TFR-MVX:resource:host:lab-rhel-01"}
 ```
 
-The report itself does not print the context key. It is the rule, then `job:` and the entry's job
-when the entry names one, else `resource:` and the clock's pair. lab-win-01's shared case is
+The report itself does not print the context key; `cases list` does, in a last column, once the
+store holds a gap case. It is the rule, then `job:` and the entry's job when the entry names one,
+else `resource:` and the clock's pair. lab-win-01's shared case is
 `VDR-TFR-MVX:job:weekly-stig-checklist`, and the sample group's is
 `VDR-TFR-PSD:resource:logical:sample-group/ir-runbooks`. Every gap shares the record id and the
 source type, so the same entry without `contextKey` names all seven cases, each with its context

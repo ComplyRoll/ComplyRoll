@@ -638,15 +638,15 @@ reached it, so the entry's disposition is `remediated`. It matches on all three 
 {"sourceRecordId": "coverage-gap", "sourceType": "complyroll.coverage", "contextKey": "VDR-TFR-MVX:resource:host:lab-rhel-01"}
 ```
 
-No report prints the context key. It is the rule, then `job:` and the entry's job when the entry
-names one, else `resource:` and the clock's pair. lab-win-01's shared case is
+The report itself does not print the context key. It is the rule, then `job:` and the entry's job
+when the entry names one, else `resource:` and the clock's pair. lab-win-01's shared case is
 `VDR-TFR-MVX:job:weekly-stig-checklist`, and the sample group's is
 `VDR-TFR-PSD:resource:logical:sample-group/ir-runbooks`. Every gap shares the record id and the
-source type, so the same entry without `contextKey` names all seven cases, and the run stops with
-exit 1 and writes nothing:
+source type, so the same entry without `contextKey` names all seven cases, each with its context
+key, and the run stops with exit 1 and writes nothing:
 
 ```text
-error: evaluation_ambiguous: sourceRecordId='coverage-gap', sourceType='complyroll.coverage' matches 7 vulnerabilities (case-656d627b62275ba8, case-56e1eee78e97395f, case-fe51d8e4d9c79b36, case-9c9bf88832065e17, case-987c96e87614506a, case-23ec0644fabe50d3, case-a971b430300440cf); add contextKey [evaluations[2]]
+error: evaluation_ambiguous: sourceRecordId='coverage-gap', sourceType='complyroll.coverage' matches 7 vulnerabilities (case-656d627b62275ba8, case-56e1eee78e97395f, case-fe51d8e4d9c79b36, case-9c9bf88832065e17, case-987c96e87614506a, case-23ec0644fabe50d3, case-a971b430300440cf); add contextKey (case-23ec0644fabe50d3 has contextKey='VDR-TFR-PDD:resource:host:lab-rhel-01', case-56e1eee78e97395f has contextKey='VDR-TFR-MVX:resource:host:lab-rhel-01', case-656d627b62275ba8 has contextKey='VDR-TFR-MVX:job:weekly-stig-checklist', case-987c96e87614506a has contextKey='VDR-TFR-PDD:job:weekly-stig-checklist', case-9c9bf88832065e17 has contextKey='VDR-TFR-PCD:job:weekly-stig-checklist', case-a971b430300440cf has contextKey='VDR-TFR-PSD:resource:logical:sample-group/ir-runbooks', case-fe51d8e4d9c79b36 has contextKey='VDR-TFR-NMV:resource:logical:backup-restore-procedure') [evaluations[2]]
 ```
 
 Run the command above with `--evaluations examples/evaluations-coverage.json` in place of
@@ -895,7 +895,7 @@ the same entry without `contextKey` names all three failures, and the run stops 
 writes nothing:
 
 ```text
-error: evaluation_ambiguous: sourceRecordId='detection-process-failure', sourceType='complyroll.detection-process' matches 3 vulnerabilities (case-f03af85468885cad, case-d3bb8e4fb3b61a5f, case-088261de64a0133c); add contextKey [evaluations[2]]
+error: evaluation_ambiguous: sourceRecordId='detection-process-failure', sourceType='complyroll.detection-process' matches 3 vulnerabilities (case-f03af85468885cad, case-d3bb8e4fb3b61a5f, case-088261de64a0133c); add contextKey (case-088261de64a0133c has contextKey='sha256:f51e7b7624956be0f40545639b3ee63ab7b5a27cb647ad2a3435df6bc6dcc372', case-d3bb8e4fb3b61a5f has contextKey='sha256:a8aca932d8fc140bdc97cb5a8006bd860754666b94297ef63a152cd2419c90c8', case-f03af85468885cad has contextKey='sha256:59e5a0bee03780b92cd21e2da90d4c8ead7eb94a70f3d904fa141a55620691e9') [evaluations[2]]
 ```
 
 A run holding a single failure refuses that entry too, with `evaluation_context_key_required`, so

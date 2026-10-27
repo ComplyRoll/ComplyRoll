@@ -4265,7 +4265,7 @@ class FailureHistoryTests(WriterFixture):
 
                 (problem,) = caught.exception.problems
                 self.assertIn(f"matches {count} cases", problem)
-                self.assertTrue(problem.endswith(f"); {remedy}"))
+                self.assertIn(f"); {remedy} (", problem)
 
 
 class FailureSupersessionTests(WriterFixture):

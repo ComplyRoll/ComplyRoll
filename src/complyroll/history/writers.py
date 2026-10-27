@@ -1069,7 +1069,7 @@ def _match_cases(
             named = ", ".join(case.tracking_id for case in candidates)
             problems.append(
                 f"{entry.location}: {entry.match.describe()} matches {len(candidates)} "
-                f"cases ({named}); {entry.match.ambiguity_remedy()}"
+                f"cases ({named}); {entry.match.ambiguity_remedy(candidates)}"
             )
             continue
         case = candidates[0]

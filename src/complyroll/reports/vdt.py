@@ -1314,7 +1314,7 @@ def _match_evaluations(
                     code="evaluation_ambiguous",
                     message=(
                         f"{entry.match.describe()} matches {len(candidates)} vulnerabilities "
-                        f"({named}); {entry.match.ambiguity_remedy()}"
+                        f"({named}); {entry.match.ambiguity_remedy(candidates)}"
                     ),
                     location=entry.location,
                 )

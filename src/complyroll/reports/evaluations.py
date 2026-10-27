@@ -12,11 +12,11 @@ from __future__ import annotations
 import json
 import re
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from complyroll.adapters.common import (
     END_OF_DAY,
@@ -33,6 +33,9 @@ MAX_EVALUATIONS_BYTES = 8 * 1024 * 1024
 MAX_TIMESTAMP_CHARS = 64
 MAX_EVALUATIONS_DEPTH = 64
 MAX_EVALUATIONS_VALUES = 200_000
+#: How many candidates an ambiguity remedy names before it counts the rest, the bound a
+#: contract error puts on its issue list (`events.repository.MAX_RENDERED_ISSUES`).
+MAX_NAMED_CANDIDATES = 10
 # json.loads decodes the escape of a lone surrogate, such as "\\ud800", into text that
 # no UTF-8 encoder will accept.
 _LONE_SURROGATE = re.compile("[\\ud800-\\udfff]")
@@ -75,6 +78,19 @@ class ReportInputError(ValueError):
     """An operator-supplied report input is malformed or exceeds a bound."""
 
 
+class MatchCandidate(Protocol):
+    """A record or case one evaluation entry may match: its tracking id and match keys."""
+
+    @property
+    def tracking_id(self) -> str: ...
+
+    @property
+    def source_type(self) -> str: ...
+
+    @property
+    def context_key(self) -> str: ...
+
+
 def record_label(tracking_id: str, override: str | None) -> str:
     """Name a record in a diagnostic, as `<override> (<correlation id>)` once it is renamed.
 
@@ -106,15 +122,28 @@ class EvaluationMatch:
             parts.append(f"contextKey={self.context_key!r}")
         return ", ".join(parts)
 
-    def ambiguity_remedy(self) -> str:
-        """Name the match keys this entry leaves out, for a match that selects several records.
+    def ambiguity_remedy(self, candidates: Sequence[MatchCandidate]) -> str:
+        """Name the match keys this entry leaves out, and each candidate's value of them.
 
-        `reports.vdt` and `history.writers` both end an ambiguity with it. Records and cases
-        are keyed by the full triple, so an entry stating all three keys selects at most one
-        and at least one key is always missing here.
+        `reports.vdt` and `history.writers` both end an ambiguity with it, so the two paths
+        print one text. Records and cases are keyed by the full triple, so an entry stating
+        all three keys selects at most one and at least one key is always missing here. The
+        candidates are named in tracking id order, the first `MAX_NAMED_CANDIDATES` of them
+        with the rest counted, and each value is quoted and cut as stored text is, since it
+        comes from an artifact.
         """
 
-        return f"add {' or '.join(self._missing_keys())}"
+        missing = self._missing_keys()
+        ordered = sorted(candidates, key=lambda item: item.tracking_id)
+        named = []
+        for candidate in ordered[:MAX_NAMED_CANDIDATES]:
+            values = {"contextKey": candidate.context_key, "sourceType": candidate.source_type}
+            stated = " and ".join(f"{key}={shown(values[key])}" for key in missing)
+            named.append(f"{candidate.tracking_id} has {stated}")
+        listed = ", ".join(named)
+        if len(ordered) > MAX_NAMED_CANDIDATES:
+            listed = f"{listed}, and {len(ordered) - MAX_NAMED_CANDIDATES} more"
+        return f"add {' or '.join(missing)} ({listed})"
 
     def context_key_required(self, tracking_id: str, *, kind: str) -> str:
         """Explain why this match, short of the full triple, cannot select a system record.

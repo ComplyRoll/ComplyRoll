@@ -3991,7 +3991,7 @@ class DetectionFailureEvaluationTests(unittest.TestCase):
                 (diagnostic,) = caught.exception.diagnostics
                 self.assertEqual(diagnostic.code, "evaluation_ambiguous")
                 self.assertIn(f"matches {count} vulnerabilities", diagnostic.message)
-                self.assertTrue(diagnostic.message.endswith(f"); {remedy}"))
+                self.assertIn(f"); {remedy} (", diagnostic.message)
 
     def test_an_override_renames_the_listed_tracking_id(self) -> None:
         evaluations = evaluations_from(

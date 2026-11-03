@@ -80,9 +80,10 @@ from .coverage import (
     CoverageResult,
     CoverageStatus,
     CoverageWindow,
+    FiledEvidence,
     ResourceCoverage,
     derive_coverage,
-    verifying_evidence,
+    file_evidence,
 )
 from .evaluations import EvaluationInput, EvaluationSet, ReportInputError, record_label
 from .gaps import COVERAGE_GAP_SOURCE_TYPE, coverage_gap_observation, coverage_gap_observations
@@ -2123,11 +2124,12 @@ def _coverage_gap_divergences(
         ),
         key=_gap_order,
     )
-    disproof = {
-        item.observation_id: _disproving_evidence(item, observations, coverage)
-        for item in recorded
-        if item.observation_id not in derived
-    }
+    underived = [item for item in recorded if item.observation_id not in derived]
+    disproof: dict[str, CoverageEvidence | None] = {}
+    if underived:
+        # One filing serves every underived gap; refiling per gap was O(gaps x observations).
+        filed = file_evidence(observations, coverage.inventory, coverage.as_of)
+        disproof = {item.observation_id: _disproving_evidence(item, filed) for item in underived}
     # Each case's recorded gaps, in window order, so siblings are found once per case.
     cases: dict[str, list[Observation]] = {}
     for item in recorded:
@@ -2155,9 +2157,7 @@ def _coverage_gap_divergences(
     return notes
 
 
-def _disproving_evidence(
-    gap: Observation, observations: Sequence[Observation], coverage: CoverageResult
-) -> CoverageEvidence | None:
+def _disproving_evidence(gap: Observation, filed: FiledEvidence) -> CoverageEvidence | None:
     """Return the earliest verification inside a recorded gap's window, or None.
 
     The window is (anchorAt, windowClosedAt] from the record's own metadata, which the
@@ -2173,9 +2173,7 @@ def _disproving_evidence(
     return next(
         (
             item
-            for item in verifying_evidence(
-                observations, coverage.inventory, coverage.as_of, rule_id=rule, subject=gap.resource
-            )
+            for item in filed.verifying(rule_id=rule, subject=gap.resource)
             if item.at is not None and anchor_at < item.at <= closed_at
         ),
         None,

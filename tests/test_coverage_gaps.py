@@ -44,6 +44,8 @@ from complyroll.reports.coverage import (
     PSD_RULE,
     CoverageResult,
     CoverageWindow,
+    file_evidence,
+    verifying_evidence,
 )
 from complyroll.reports.gaps import (
     COVERAGE_GAP_DESCRIPTION,
@@ -590,6 +592,40 @@ class GapBatchTests(unittest.TestCase):
         result = fleet_result(SINCE + timedelta(days=1))
         self.assertEqual(result.windows, ())
         self.assertEqual(coverage_gap_observations(result, ingested_at=INGESTED_AT), ())
+
+
+# *--- Filed Evidence ---*
+
+
+class FiledEvidenceTests(unittest.TestCase):
+    """One filing answers every clock as `verifying_evidence` answers each (CL-73)."""
+
+    def test_every_clock_reads_from_one_filing_what_a_fresh_filing_gives(self) -> None:
+        evidence = [
+            observation("lab-01", SINCE + timedelta(days=1)),
+            observation("lab-01", SINCE + timedelta(days=2), record="R-2"),
+            observation("web-02", SINCE + timedelta(days=3)),
+            observation("lab-02", SINCE + timedelta(days=4), ObservationDisposition.ERROR),
+            observation("unlisted", SINCE + timedelta(days=5)),
+        ]
+        inventory = fleet()
+        result = derive(evidence, inventory, AS_OF_LATE)
+        filed = file_evidence(evidence, inventory, AS_OF_LATE)
+        keys = {clock.key for resource in result.resources for clock in resource.clocks}
+        read = {}
+        for key in sorted(keys, key=lambda item: item.sort_key):
+            with self.subTest(rule=key.rule_id, subject=key.subject):
+                fresh = verifying_evidence(
+                    evidence, inventory, AS_OF_LATE, rule_id=key.rule_id, subject=key.subject
+                )
+                self.assertEqual(filed.verifying(rule_id=key.rule_id, subject=key.subject), fresh)
+                read[(key.rule_id, key.subject.resource_id)] = [item.reference for item in fresh]
+        # The group's clock reads its member's pass, and lab-01's clocks read both of its own.
+        self.assertEqual(read[(PSD_RULE, f"sample-group/{GROUP}")], [evidence[2].observation_id])
+        self.assertEqual(
+            read[(MVX_RULE, "lab-01")], [evidence[0].observation_id, evidence[1].observation_id]
+        )
+        self.assertEqual(read[(MVX_RULE, "lab-02")], [])
 
 
 # *--- Input ---*

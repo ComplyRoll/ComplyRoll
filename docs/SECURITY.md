@@ -306,6 +306,13 @@ those three match, and a test pins it.
   report only, since no other command computes a deadline. `store verify` names all three with
   the same predicate (ADR 0008 amendment 2026-10-25). A clock that computes, year 1 with no
   offset among them, is never refused.
+- A failure or coverage stream's observation names its clock in its identity, so one whose clock
+  has no UTC instant cannot be read at all. `Observation` and the repository refuse it, every
+  command that reads the stream refuses it as `history_invalid`, and `store verify` names it as
+  `clock_out_of_range` at its sequence (ADR 0008 amendment 2026-11-02). No command writes one.
+- The repository validates a contract's `integer` as a JSON integer. JSON Schema alone admits
+  `1.0`, which every fold refuses, so the repository refuses it and `store verify` names it as
+  `payload_contract_invalid` at its sequence (the same amendment).
 - A projection checkpoint must hold a non-negative integer count and a time with a timezone. The
   library's checkpoint reader and its compare-and-swap refuse any other row as
   `EventIntegrityError`, and `store verify` reports it as `projection_checkpoint_invalid`. No
@@ -322,7 +329,10 @@ those three match, and a test pins it.
   (`case_stream_mismatch`), and a case that records a disposition and no evaluation
   (`disposition_without_evaluation`). Every report from the store, `cases list`,
   `cases evaluate` and `cases attest-detection` refuse the first two as `history_invalid`, and
-  every report refuses the third.
+  every report refuses the third. One path does not refuse: `cases attest-detection --case` on a
+  stream of the second kind that carries a source timestamp warns `attestation_not_applicable`,
+  appends nothing for that case and exits 0, since the attestation would change nothing and the
+  command names the case by the id it was given. `--all-missing` refuses such a stream.
 - Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
 - A failure stream (ADR 0014) is appended in the same transaction that marks the store schema
   version 2, so the marker and the failure commit or roll back together. A hold, a failure stream

@@ -561,6 +561,16 @@ def failure_batch(
     )
 
 
+#: Every `integer` property of every contract. `_PAIN` is three of them and `_COUNT` the rest.
+INTEGER_FIELDS: dict[str, tuple[str, ...]] = {
+    "artifact.ingested": ("/sizeBytes", "/observationCount"),
+    "case.evaluated": ("/pain", "/projectedNextReduction/targetRating"),
+    "case.pain_reduced": ("/rating",),
+    "failure.recorded": ("/sizeBytes",),
+    "failure.held": ("/sizeBytes",),
+}
+
+
 def object_subschemas(schema: dict[str, Any], pointer: str) -> list[tuple[str, dict[str, Any]]]:
     """Return every object subschema inside one contract, with a readable pointer."""
 
@@ -892,6 +902,74 @@ class PayloadValidationTests(unittest.TestCase):
                     with self.assertRaises(EventContractError) as caught:
                         self.repository.validate_payload(event_type, broken)
                     self.assertIn(f"/{field_name}", str(caught.exception))
+
+    def integer_pointers(self, schema: dict[str, Any], prefix: str = "") -> list[str]:
+        """Return the JSON pointer of every `integer` property in one contract."""
+
+        found: list[str] = []
+        for name, subschema in schema.get("properties", {}).items():
+            pointer = f"{prefix}/{name}"
+            if subschema.get("type") == "integer":
+                found.append(pointer)
+            found.extend(self.integer_pointers(subschema, pointer))
+        return found
+
+    def test_the_integer_fields_are_the_ones_the_next_tests_name(self) -> None:
+        found = {
+            event_type: self.integer_pointers(schema)
+            for (event_type, _), schema in EVENT_CONTRACTS.items()
+        }
+        self.assertEqual(
+            {event_type: tuple(fields) for event_type, fields in found.items() if fields},
+            INTEGER_FIELDS,
+        )
+
+    def test_a_number_with_a_fraction_part_is_not_a_contract_integer(self) -> None:
+        # JSON Schema's `integer` admits 1.0 and every fold refuses it, so such a store passed
+        # the contract and then stopped `store verify` outside its audit (CL6A-D-02).
+        for event_type, pointers in INTEGER_FIELDS.items():
+            for pointer in pointers:
+                for value in (1.0, 3.0, 5.0):
+                    with self.subTest(event_type=event_type, pointer=pointer, value=value):
+                        broken = with_value(GOOD_PAYLOADS[event_type], pointer, value)
+                        with self.assertRaises(EventContractError) as caught:
+                            self.repository.validate_payload(event_type, broken)
+                        self.assertEqual(
+                            [
+                                (issue.instance_pointer, issue.validator, issue.message)
+                                for issue in caught.exception.issues
+                            ],
+                            [(pointer, "type", f"{value} is not of type 'integer'")],
+                        )
+
+    def test_a_boolean_is_still_not_a_contract_integer(self) -> None:
+        # `_count` refuses a boolean, so the contract keeps refusing it too.
+        for event_type, pointers in INTEGER_FIELDS.items():
+            for pointer in pointers:
+                for value in (True, False):
+                    with self.subTest(event_type=event_type, pointer=pointer, value=value):
+                        broken = with_value(GOOD_PAYLOADS[event_type], pointer, value)
+                        with self.assertRaises(EventContractError):
+                            self.repository.validate_payload(event_type, broken)
+
+    def test_a_json_integer_still_passes_every_integer_field(self) -> None:
+        for event_type, pointers in INTEGER_FIELDS.items():
+            for pointer in pointers:
+                for value in (1, 5):
+                    with self.subTest(event_type=event_type, pointer=pointer, value=value):
+                        self.repository.validate_payload(
+                            event_type, with_value(GOOD_PAYLOADS[event_type], pointer, value)
+                        )
+
+    def test_a_count_of_zero_stays_a_count_and_zero_point_zero_does_not(self) -> None:
+        payload = GOOD_PAYLOADS["artifact.ingested"]
+        self.repository.validate_payload(
+            "artifact.ingested", with_value(payload, "/observationCount", 0)
+        )
+        with self.assertRaises(EventContractError):
+            self.repository.validate_payload(
+                "artifact.ingested", with_value(payload, "/observationCount", 0.0)
+            )
 
     def test_projected_reduction_rating_is_bounded_too(self) -> None:
         for rating in (0, 6):

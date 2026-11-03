@@ -8,6 +8,7 @@ from complyroll.models import (
     RESERVED_SOURCE_TYPE_PREFIX,
     EvidenceArtifact,
     Observation,
+    ObservationClockError,
     ObservationDisposition,
     ObservationOrigin,
     ResourceRef,
@@ -351,6 +352,55 @@ class WrongTypeInputTests(unittest.TestCase):
             with self.subTest(field=field_name):
                 with self.assertRaises(TypeError):
                     sample_observation(**{**base, field_name: value})
+
+
+class SystemClockTests(unittest.TestCase):
+    """A system observation's identity is its UTC instant, so it has to have one (CL6A-D-01)."""
+
+    NO_INSTANT = (
+        datetime(1, 1, 1, 0, 30, tzinfo=timezone(timedelta(hours=1))),
+        datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone(-timedelta(hours=23, minutes=59))),
+    )
+    LAST_INSTANTS = (
+        datetime(1, 1, 1, 1, 0, tzinfo=timezone(timedelta(hours=1))),
+        datetime(9999, 12, 31, 22, 59, 59, tzinfo=timezone(-timedelta(hours=1))),
+    )
+
+    def test_a_clock_with_no_utc_instant_is_refused_as_a_value_error(self) -> None:
+        for clock in self.NO_INSTANT:
+            with self.subTest(clock=clock.isoformat()):
+                with self.assertRaises(ObservationClockError) as caught:
+                    system_observation(observed_at=clock)
+                self.assertIsInstance(caught.exception, ValueError)
+                self.assertEqual(caught.exception.clock, clock)
+                self.assertEqual(
+                    str(caught.exception),
+                    f"source time {clock.isoformat()} has no UTC instant inside the years 1 to "
+                    "9999, so a system observation has no identity",
+                )
+
+    def test_the_canonical_reader_refuses_it_before_the_fingerprint(self) -> None:
+        for clock in self.NO_INSTANT:
+            with self.subTest(clock=clock.isoformat()):
+                payload = system_observation().to_canonical_dict()
+                payload["observed_at"] = clock.isoformat()
+                with self.assertRaises(ObservationClockError):
+                    Observation.from_canonical_dict(payload)
+
+    def test_an_artifact_observation_still_holds_such_a_clock(self) -> None:
+        # Its identity does not name its clock, so it reads, and `clock_problem` names it.
+        for clock in self.NO_INSTANT:
+            with self.subTest(clock=clock.isoformat()):
+                observation = sample_observation(observed_at=clock)
+                rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+                self.assertEqual(rebuilt.observed_at, clock)
+
+    def test_the_last_clocks_with_a_utc_instant_still_read(self) -> None:
+        for clock in self.LAST_INSTANTS:
+            with self.subTest(clock=clock.isoformat()):
+                observation = system_observation(observed_at=clock)
+                rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+                self.assertEqual(rebuilt.fingerprint, observation.fingerprint)
 
 
 class CanonicalRoundTripTests(unittest.TestCase):

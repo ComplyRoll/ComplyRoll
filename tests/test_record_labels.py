@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from test_cli import EXAMPLES
 from test_coverage import host, inventory_of, observation
 from test_coverage_gap_evaluations import (
     EXPECTED_SINCE,
@@ -33,6 +34,7 @@ from test_coverage_gap_evaluations import (
     gaps,
     tracking_ids,
 )
+from test_coverage_streams import coverage_events, gap_record
 from test_evaluation_order import (
     BANNER_RULE,
     EARLY,
@@ -45,6 +47,7 @@ from test_evaluation_order import (
     run,
     xccdf,
 )
+from test_events import failure_batch, failure_head, system_record
 from test_kev import HDF_CCIS, fixture_catalog, hdf_control_artifact, kev_report
 from test_reports import (
     ACCEPTANCE,
@@ -59,13 +62,24 @@ from test_reports import (
 )
 
 from complyroll.correlation import group_open_observations
-from complyroll.events import case_stream_id
+from complyroll.events import (
+    COVERAGE_STREAM_SCHEMA_VERSION,
+    FAILURE_STREAM_SCHEMA_VERSION,
+    EventContractError,
+    case_stream_id,
+    coverage_stream_id_of,
+    failure_stream_id,
+)
 from complyroll.history import (
     CASE_CREATED,
     CASE_EVALUATED,
     CASE_IDENTIFIED,
     DETECTION_ATTESTED,
+    HistoryError,
+    HistoryFault,
+    audit_history,
     fold_all_cases,
+    rehydrate_observations,
 )
 from complyroll.history import writers as history_writers
 from complyroll.history.order import clock_faults, evaluation_order_faults
@@ -86,6 +100,12 @@ from complyroll.reports.replay import compile_record_set_from_history
 from complyroll.store import NewEvent
 
 # *--- Fixtures ---*
+
+#: Clocks the contract pattern admits whose UTC instant falls outside the years 1 to 9999.
+NO_INSTANT = ("0001-01-01T00:30:00+01:00", "9999-12-31T23:59:59-23:59")
+FAILED_DIGEST = "a" * 64
+#: The two kinds of stream whose observation names its clock in its identity.
+SYSTEM_STREAMS = ("failure", "coverage")
 
 #: The record `evaluations_from` matches (V-260470 in the CKLB fixture), by correlation id.
 CASE = "case-1f3e011db93cc89e"
@@ -730,6 +750,186 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
         self.assertEqual(verified[0], 1, verified[2])
         self.assertNotIn("Traceback", verified[1] + verified[2])
         self.assertIn("payload_contract_invalid", verified[1] + verified[2])
+
+    def system_stream(self, kind: str) -> tuple[str, int, list[tuple[str, dict[str, Any]]]]:
+        """Return one failure or coverage stream's id, schema and two healthy events."""
+
+        if kind == "failure":
+            head, record = failure_batch(failure_head(FAILED_DIGEST), system_record(FAILED_DIGEST))
+            stream_id = failure_stream_id(FAILED_DIGEST, "complyroll.sarif", "1")
+            events = [(item.event_type, dict(item.payload)) for item in (head, record)]
+            return stream_id, FAILURE_STREAM_SCHEMA_VERSION, events
+        gap = gap_record()
+        return coverage_stream_id_of(gap), COVERAGE_STREAM_SCHEMA_VERSION, coverage_events(gap)
+
+    def stage_no_instant(
+        self, kind: str, clock: str, *, name: str | None = None
+    ) -> tuple[int, str]:
+        """Stage one stream whose observation has `clock`, past the repository (CL6A-D-01)."""
+
+        self.open_store(name or f"{kind}-{clock[:4]}.db")
+        stream_id, schema, events = self.system_stream(kind)
+        head, (event_type, record) = events
+        for version, (stored_type, payload) in enumerate(
+            (head, (event_type, {**record, "observed_at": clock}))
+        ):
+            (appended,) = self.repository.store.append(
+                stream_id,
+                [
+                    NewEvent(
+                        event_type=stored_type,
+                        occurred_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                        payload=payload,
+                        metadata=self.metadata.to_dict(),
+                    )
+                ],
+                expected_version=version,
+                requires_schema=schema,
+            )
+        return appended.sequence, str(record["observation_id"])
+
+    def no_instant_message(self, observation_id: str, clock: str) -> str:
+        return (
+            f"observation {observation_id} has source time {clock} in history, which has no UTC "
+            "instant inside the years 1 to 9999, so no report can compute with it"
+        )
+
+    def test_a_system_observation_with_no_utc_instant_is_a_verify_fault(self) -> None:
+        # The same value on an artifact stream's observation was named; this one ended
+        # `store verify` in an OverflowError traceback (CL6A-D-01).
+        for kind in SYSTEM_STREAMS:
+            for clock in NO_INSTANT:
+                with self.subTest(kind=kind, clock=clock):
+                    sequence, observation_id = self.stage_no_instant(kind, clock)
+                    message = self.no_instant_message(observation_id, clock)
+
+                    self.assertEqual(
+                        audit_history(self.repository),
+                        (HistoryFault(sequence, "clock_out_of_range", message),),
+                    )
+                    code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+                    self.assertEqual((code, out), (1, ""), err)
+                    lines = err.splitlines()
+                    self.assertEqual(
+                        lines[0], f"error: sequence {sequence}: clock_out_of_range: {message}"
+                    )
+                    self.assertTrue(lines[1].startswith("faults: 1 domain fault(s) in "), err)
+                    self.assertEqual(len(lines), 2)
+
+    def test_it_is_named_beside_a_fault_no_reader_refuses(self) -> None:
+        for kind in SYSTEM_STREAMS:
+            with self.subTest(kind=kind):
+                sequence, observation_id = self.stage_no_instant(kind, NO_INSTANT[0])
+                (bad,) = self.repository.store.append(
+                    case_stream_id(ORPHAN_CASE),
+                    [
+                        NewEvent(
+                            event_type=CASE_CREATED,
+                            occurred_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                            payload=orphan_created(ORPHAN_CASE),
+                            metadata={"actor": "tester"},
+                        )
+                    ],
+                    expected_version=0,
+                )
+
+                faults = audit_history(self.repository)
+
+                self.assertEqual(
+                    [(fault.sequence, fault.code) for fault in faults],
+                    [(sequence, "clock_out_of_range"), (bad.sequence, "event_metadata_invalid")],
+                )
+
+    def test_it_is_a_coded_refusal_from_every_reader_that_reads_it(self) -> None:
+        period = (
+            "--class",
+            "C",
+            "--package-uri",
+            "https://example.test/cpo",
+            "--as-of",
+            "2026-08-21T12:00:00Z",
+        )
+        dates = ("--from", "2026-08-01T00:00:00Z", "--to", "2026-08-31T23:59:59Z")
+        for kind in SYSTEM_STREAMS:
+            clock = NO_INSTANT[0]
+            with self.subTest(kind=kind):
+                sequence, _ = self.stage_no_instant(kind, clock)
+                db = str(self.database)
+                refusal = (
+                    f"error: history_invalid: event {sequence} is not a readable observation: "
+                    "observation.recorded version 1 payload is not readable: <root>: reader: "
+                    f"source time {clock} has no UTC instant inside the years 1 to 9999, so a "
+                    "system observation has no identity\n"
+                )
+                inventory = self.directory / "inventory.json"
+                inventory.write_text(
+                    (EXAMPLES / "inventory.json").read_text(encoding="utf-8"), encoding="utf-8"
+                )
+                for argv in (
+                    ["report", "vdt", "--db", db, *period, *dates],
+                    ["report", "avi", "--db", db, *period, *dates],
+                    ["report", "historical", "--db", db, *period],
+                    ["cases", "correlate", "--db", db],
+                    [
+                        "cases",
+                        "coverage",
+                        "--db",
+                        db,
+                        "--inventory",
+                        str(inventory),
+                        "--class",
+                        "C",
+                        "--as-of",
+                        "2026-08-21T12:00:00Z",
+                    ],
+                ):
+                    with self.subTest(argv=argv[:2]):
+                        self.assertEqual(run(argv), (1, "", refusal))
+                with self.assertRaises(HistoryError):
+                    rehydrate_observations(self.repository)
+                # `cases list` folds case streams alone. It passes this store and verify
+                # rejects it, and the store rule does not ask the converse.
+                self.assertEqual(run(["cases", "list", "--db", db])[0], 0)
+
+    def test_the_repository_refuses_it_with_its_contract_error(self) -> None:
+        for kind in SYSTEM_STREAMS:
+            for clock in NO_INSTANT:
+                with self.subTest(kind=kind, clock=clock):
+                    self.open_store(f"append-{kind}-{clock[:4]}.db")
+                    stream_id, _, events = self.system_stream(kind)
+                    _, (event_type, record) = events
+                    payload = {**record, "observed_at": clock}
+
+                    with self.assertRaises(EventContractError):
+                        self.repository.validate_payload(event_type, payload)
+                    with self.assertRaises(EventContractError) as caught:
+                        self.repository.append(
+                            stream_id,
+                            event_type,
+                            payload,
+                            occurred_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                            metadata=self.metadata,
+                            expected_version=0,
+                        )
+
+                    self.assertIn(f"source time {clock} has no UTC instant", str(caught.exception))
+                    self.assertEqual(self.sequence, 0)
+
+    def test_the_last_clocks_with_a_utc_instant_are_not_named(self) -> None:
+        # The control: the same stream at an instant that converts verifies clean.
+        self.open_store("last-instant.db")
+        stream_id = failure_stream_id(FAILED_DIGEST, "complyroll.sarif", "1")
+        late = datetime(9000, 1, 1, tzinfo=UTC)
+        self.repository.append_batch(
+            stream_id,
+            failure_batch(
+                failure_head(FAILED_DIGEST), system_record(FAILED_DIGEST, observed_at=late)
+            ),
+            expected_version=0,
+        )
+
+        self.assertEqual(audit_history(self.repository), ())
 
     def test_a_damaged_not_applicable_stream_is_named_by_its_tracking_id(self) -> None:
         # The case gains no event, so a stream `store verify` rejects is named by the id the

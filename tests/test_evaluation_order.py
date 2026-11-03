@@ -769,20 +769,20 @@ class WriterOrderTests(HistoryOrderFixture):
 
         self.assertEqual(outcome.evaluations_appended, 1)
         self.assertEqual(
-            outcome.warnings,
-            (
-                f"evaluation_before_partial_detection: {case} was evaluated at {EARLY}, before "
-                f"its earliest known detection time {TIMED_AT} (source artifact-partial); an "
-                "observation that declares no source timestamp may have detected it earlier, "
+            [item.render() for item in outcome.warnings],
+            [
+                f"warning: evaluation_before_partial_detection: {case} was evaluated at {EARLY}, "
+                f"before its earliest known detection time {TIMED_AT} (source artifact-partial); "
+                "an observation that declares no source timestamp may have detected it earlier, "
                 f"so the record is published [{BANNER_RULE}]",
-            ),
+            ],
         )
         (warning,) = [
             item
             for item in self.report().diagnostics
             if item.code == "evaluation_before_partial_detection"
         ]
-        self.assertEqual(f"warning: {outcome.warnings[0]}", warning.render())
+        self.assertEqual(outcome.warnings[0], warning)
 
     def test_evaluate_reads_the_current_group_and_not_the_links(self) -> None:
         # The case is linked to the untimed result and attested at 08-01. A timed result
@@ -802,10 +802,12 @@ class WriterOrderTests(HistoryOrderFixture):
 
         self.assertEqual(outcome.evaluations_appended, 1)
         self.assertEqual(
-            [item.split(":", 1)[0] for item in outcome.warnings],
+            [item.code for item in outcome.warnings],
             ["evaluation_before_partial_detection"],
         )
-        self.assertIn(f"detection time {TIMED_AT} (source artifact-partial)", outcome.warnings[0])
+        self.assertIn(
+            f"detection time {TIMED_AT} (source artifact-partial)", outcome.warnings[0].message
+        )
 
         # A case no open group matches is in no report, so neither writer orders it, even
         # with an attestation after its evaluation.

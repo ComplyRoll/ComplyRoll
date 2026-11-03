@@ -649,11 +649,68 @@ and a first event that does not belong on a case stream at all is also `event_st
 at the same sequence; the two describe different facts. A stream whose id names no tracking id stays
 `case_tracking_id_mismatch` alone, as that amendment decided.
 
-With this, every shape the case fold refuses has a named fault. A stream whose id names no tracking
-id, or a `case.created` naming another, is `case_tracking_id_mismatch`; a first event other than
-`case.created`, or a later `case.created`, is `case_stream_mismatch`; any other event that does not
-belong on a case stream is `event_stream_mismatch`, and also `payload_contract_invalid` when its
-type is unpublished; a payload its contract refuses is `payload_contract_invalid`, and the fold
-reads no field its contract does not already hold. `case_stream_mismatch` is not a fault the order
-check runs beside, so a store that carries it is not folded. The readers and writers refuse exactly
-what they refused before, and no golden changes.
+With this, each refusal in the case fold's own code has a named fault. A stream whose id names no
+tracking id, or a `case.created` naming another, is `case_tracking_id_mismatch`; a first event other
+than `case.created`, or a later `case.created`, is `case_stream_mismatch`; any other event that does
+not belong on a case stream is `event_stream_mismatch`, and also `payload_contract_invalid` when its
+type is unpublished; a payload its contract refuses is `payload_contract_invalid`. Whether a field
+read in the fold asks more of a value than the contract does is a claim about values, and it was
+false for an integer until the 2026-11-02 amendment. What is shown for it is a sweep, not a proof:
+`test_history.FoldContractSweepTests` reads every field of every event a case, artifact or failure
+fold reads, against a bank of values, and no fold refuses a value its contract passes except a
+tracking id another stream names, which is `case_tracking_id_mismatch`. `case_stream_mismatch` is
+not a fault the order check runs beside, so a store that carries it is not folded. The readers and
+writers refuse exactly what they refused before, and no golden changes.
+
+## Amendment 2026-11-02: a system observation's clock, and a JSON integer
+
+Two more shapes broke the rule of the 2026-10-21 amendment, both found by a differential probe of
+`store verify` against the readers. Neither is a shape any command writes.
+
+**A system observation's clock.** The 2026-10-25 amendment names an observation whose source time
+has no UTC instant, and on an artifact stream it does. A failure or coverage stream's observation is
+a system observation, whose identity converts that clock to UTC (ADR 0002, amendment 2026-08-21), so
+computing its fingerprint while validating the payload raised `OverflowError`. That is not a
+`ValueError`, so it passed every refusal: `store verify`, each report from the store, `cases
+correlate`, `cases coverage`, `cases evaluate` and `EventRepository.append` ended in a traceback.
+
+A system observation with such a clock has no identity, so `Observation` refuses it, as
+`ObservationClockError`, a `ValueError`. The repository refuses the payload as `EventContractError`.
+`store verify` names it as the existing fault `clock_out_of_range`, in the words an artifact
+observation's clock carries, at its own sequence. That fault comes from the contract check rather
+than from the walk the 2026-10-25 amendment gates, because the record cannot be built to ask
+`clock_problem`, and the walk's order and clock checks do not run beside it, for the same reason.
+The readers refuse it as `history_invalid`, "event N is not a readable observation", where an
+artifact observation's clock is `clock_out_of_range`: they refuse a record they cannot read, not one
+they read and cannot compute with. A command that does not read the stream, such as `cases list`,
+still passes such a store, and verify rejects it; the rule does not ask the converse.
+
+No command writes the shape. `--as-of` on `ingest`, a report and `cases coverage` is refused as
+`invalid_input`, an invocation clock in a failed reading is read by `parse_clock` and refused as
+`source_timestamp_invalid`, and a gap's clock is computed in UTC. 0.3.0a0 has no failure or coverage
+stream. So only a store written around the repository holds it. An `ingested_at` with no UTC instant
+was probed on each stream kind: no reader converts it and verify passes it, so it is not a gap.
+
+**A JSON integer.** A contract's `integer` is JSON Schema's, which admits `1.0`. Every fold reads
+such a field through `_count`, which requires a JSON integer. So `pain`, `targetRating` or `rating`
+as `1.0`, `sizeBytes` or `observationCount` as `3.0`, passed the contract, and
+`EventRepository.append` stored them. Then alone, `store verify` stopped outside its audit with
+`history_invalid` and no fault (a failure head's `sizeBytes` as `failure_stream_mismatch`); beside
+`event_metadata_invalid` it named that fault and passed over this one, as the 2026-10-26 amendment
+describes for a second creation.
+
+The repository now validates each contract with `integer` meaning what the folds read: an `int` that
+is not a `bool`. The bool stays refused, as both sides already refused it. Such a value is
+`payload_contract_invalid` at its sequence, alone and beside any other fault, and
+`EventRepository.append` refuses it. A reader that reads the field still refuses it, in the
+contract's words rather than `_count`'s. The contract documents do not change, and this needs no new
+event version: no reader has read such a value, and no command writes one (`cases evaluate` refuses
+a fractional rating as `invalid_input`, on 0.3.0a0 as well, and the two counts are computed). A
+validator reading the documents by themselves still passes `1.0`, since JSON Schema has no way to
+refuse it.
+
+Each stream kind's shape was probed through `store verify`, the reports, `cases list`, `cases
+correlate`, `cases coverage`, `cases evaluate` and `cases attest-detection` before and after this
+change. No command that succeeded on such a store before now refuses it, and verify had already
+rejected every one. Stores written by 0.3.0a0 and by the base of this change verify and report byte
+for byte as before, and no golden changes.

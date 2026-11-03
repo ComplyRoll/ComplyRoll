@@ -12,7 +12,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum, IntEnum
-from typing import Any, TypeVar
+from typing import Any, Final, TypeVar
 
 
 class SourceSeverity(str, Enum):
@@ -299,6 +299,21 @@ class EvidenceArtifact:
         object.__setattr__(self, "sensitivity", _require_sensitivity(self.sensitivity))
 
 
+#: How a clock is worded when its conversion to UTC leaves the years `datetime` holds.
+NO_UTC_INSTANT: Final = "has no UTC instant inside the years 1 to 9999"
+
+
+class ObservationClockError(ValueError):
+    """A system observation's source time has no UTC instant, so it derives no identity."""
+
+    def __init__(self, clock: datetime) -> None:
+        self.clock = clock
+        super().__init__(
+            f"source time {clock.isoformat()} {NO_UTC_INSTANT}, so a system observation has no "
+            "identity"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Observation:
     observation_id: str
@@ -382,6 +397,13 @@ class Observation:
             if self.observed_at is None:
                 raise ValueError("system observations must declare observed_at")
             _require_text(self.context_key, "context_key")
+            # The identity recipe converts this clock, whose OverflowError is no ValueError and
+            # passed every reader's refusal. An artifact observation's identity does not name
+            # its clock, so that clock is left for `reports.vdt.clock_problem` to name.
+            try:
+                self.observed_at.astimezone(UTC)
+            except OverflowError as exc:
+                raise ObservationClockError(self.observed_at) from exc
 
         if len(set(self.source_identifiers)) != len(self.source_identifiers):
             raise ValueError("source_identifiers must not contain duplicates")

@@ -51,9 +51,16 @@ from complyroll.events import (
     parse_utc,
     tracking_id_from_stream,
 )
-from complyroll.models import CaseStatus, Observation, PainRating
+from complyroll.models import (
+    NO_UTC_INSTANT,
+    CaseStatus,
+    Observation,
+    ObservationClockError,
+    PainRating,
+)
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
+from complyroll.reports.vdt import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 
@@ -677,7 +684,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       refuses it), at the observation, or a group's detection time whose VER-TFR-EVU
       deadline overflows under either class, at the earliest observation or the
       attestation that gives it, with the report's message (ADR 0008 amendment
-      2026-10-25).
+      2026-10-25). A failure or coverage stream's observation is the exception. Its identity
+      names its clock, so one with no UTC instant cannot be read at all, and it carries this
+      code from the contract check at its own sequence, on any log (ADR 0008 amendment
+      2026-11-02).
 
     Faults are ordered by sequence and then by code, so one damaged file always describes
     itself the same way. A store-level failure (an unreadable file, a hole in history) is
@@ -2036,6 +2046,13 @@ def _contract_faults(
             record.event_type, record.payload, event_version=record.event_version
         )
     except EventContractError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, ObservationClockError):
+            # A reader cannot build this record to ask `clock_problem`, so it is named here.
+            message = observation_clock_message(
+                str(record.payload.get(OBSERVATION_ID_KEY)), cause.clock, NO_UTC_INSTANT
+            )
+            return (HistoryFault(record.sequence, CLOCK_OUT_OF_RANGE, message),)
         return (
             HistoryFault(
                 sequence=record.sequence,

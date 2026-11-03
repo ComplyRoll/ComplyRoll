@@ -775,10 +775,15 @@ amendment 2026-10-25). No report document carries the key, and no golden moved.
 ## Amendment (2026-10-27): the report diagnostic code registry
 
 The registry "Left for later (2026-10-16)" names is built. `REPORT_DIAGNOSTIC_CODES`, beside
-`ReportDiagnostic` in `complyroll.reports.vdt` and exported from `complyroll.reports`, is the
-closed set of codes a diagnostic line carries: every `ReportDiagnostic` a report or the CLI builds,
-the three coverage gap INFO codes above among them, and the two warnings the CLI writes as text.
-`tests/test_report_codes.py` reads `src/complyroll` and holds every site to the set, and the set to
-what is built, so a code cannot ship unlisted. An ingest diagnostic a report carries keeps its
-adapter's code, and audit faults stay in `AUDIT_FAULT_CODES`. There is no run-time check, so no
-new refusal; the docstring of the test names what its scan cannot see.
+`ReportDiagnostic` in `complyroll.reports.vdt` and exported from `complyroll.reports`, is the closed
+set of 60 codes a diagnostic line carries: every `ReportDiagnostic` a report, a history writer or
+the CLI builds, the three coverage gap INFO codes above and the three retained-fact warnings of
+`cases evaluate` among them, and the two warnings the CLI writes as text.
+`tests/test_report_codes.py` reads `src/complyroll` and holds every site its scan can read to the
+set, and the set to what the scan finds. A new code fails it when it is a literal at a
+`ReportDiagnostic`, a `replace(..., code=...)` or a text line, or reaches one through a name the
+scan can follow, and any indirection the scan cannot follow fails as unresolved until it is resolved
+or named. That is a check on the source, not a guarantee about every run: construction through
+`getattr`, `type(item)(...)` or `exec`, and a text line whose level is interpolated, pass unseen,
+and the docstring of the test lists these. An ingest diagnostic a report carries keeps its adapter's
+code, and audit faults stay in `AUDIT_FAULT_CODES`. There is no run-time check, so no new refusal.

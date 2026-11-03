@@ -959,7 +959,7 @@ def _run_cases_evaluate(args: argparse.Namespace) -> int:
         with _open_repository(database) as repository:
             outcome = apply_evaluations(repository, evaluations, metadata=metadata, now=_now())
         for warning in outcome.warnings:
-            _say(f"warning: {warning}", file=stderr)
+            _say(warning.render(), file=stderr)
         for label, appended, skipped in (
             ("evaluations", outcome.evaluations_appended, outcome.evaluations_skipped),
             ("pain reductions", outcome.reductions_appended, outcome.reductions_skipped),

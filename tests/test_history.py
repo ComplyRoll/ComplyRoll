@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from test_events import DIGEST, GOOD_PAYLOADS, with_value
 from test_replay import bad_rules, pure_execution_failure, record_hold
 from test_reports import TRUNCATED_SHA256, hostile_checklist, options
 
@@ -37,6 +38,7 @@ from complyroll.adapters import (
 from complyroll.adapters.sarif import SARIF_PARSER_VERSION
 from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.events import (
+    EVENT_CONTRACTS,
     FAILURE_HELD,
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
@@ -85,6 +87,7 @@ from complyroll.history import (
     correlate_cases,
     fold_all_cases,
     fold_case,
+    fold_case_records,
     reading_elsewhere,
     record_failure,
     record_ingest,
@@ -93,9 +96,12 @@ from complyroll.history import (
 )
 from complyroll.history import writers as history_writers
 from complyroll.history.fold import (
+    _ORDER_CHECKED_BESIDE,
     FailureRecord,
+    _artifact_record,
     _ArtifactStreamView,
     _failure_is_superseded,
+    _failure_record,
     _FailureStreamView,
     _is_numeric_version,
     _newest_stream,
@@ -110,6 +116,7 @@ from complyroll.reports import EvaluationSet, load_evaluations, parse_evaluation
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.replay import compile_record_set_from_history
 from complyroll.store import (
+    EventRecord,
     EventStoreBusyError,
     EventStoreError,
     NewEvent,
@@ -1196,9 +1203,9 @@ class RetainedFactTests(WriterFixture):
         self.evaluate()
 
     def warnings_for(self, payload: Mapping[str, Any]) -> tuple[str, ...]:
-        """Apply a mutated file and return the warnings it produced."""
+        """Apply a mutated file and return the lines its warnings print."""
 
-        return self.evaluate(evaluations_of(payload)).warnings
+        return tuple(item.render() for item in self.evaluate(evaluations_of(payload)).warnings)
 
     def test_dropping_a_pain_reduction_keeps_it_and_warns(self) -> None:
         payload = example_payload()
@@ -1208,7 +1215,7 @@ class RetainedFactTests(WriterFixture):
         case = fold_case(self.repository, WINDOWS_CASE)
 
         self.assertEqual(len(warnings), 1)
-        self.assertTrue(warnings[0].startswith("reduction_retained: "))
+        self.assertTrue(warnings[0].startswith("warning: reduction_retained: "))
         self.assertIn(WINDOWS_CASE, warnings[0])
         self.assertIn("PAIN 4 at 2026-08-12T16:00:00Z", warnings[0])
         # A dropped reduction is fixed by a new evaluations entry, not by a disposition.
@@ -1225,7 +1232,7 @@ class RetainedFactTests(WriterFixture):
         warnings = self.warnings_for(payload)
 
         self.assertEqual(len(warnings), 1)
-        self.assertTrue(warnings[0].startswith("reduction_retained: "))
+        self.assertTrue(warnings[0].startswith("warning: reduction_retained: "))
 
     def test_dropping_a_disposition_keeps_it_and_warns(self) -> None:
         payload = example_payload()
@@ -1237,7 +1244,7 @@ class RetainedFactTests(WriterFixture):
         assert disposition is not None
 
         self.assertEqual(len(warnings), 1)
-        self.assertTrue(warnings[0].startswith("disposition_retained: "))
+        self.assertTrue(warnings[0].startswith("warning: disposition_retained: "))
         self.assertIn(UBUNTU_CASE, warnings[0])
         self.assertIn("partially_mitigated", warnings[0])
         # This one really is fixed by a new disposition, so the wording differs from the
@@ -1254,7 +1261,7 @@ class RetainedFactTests(WriterFixture):
         case = fold_case(self.repository, UBUNTU_CASE)
 
         self.assertEqual(len(warnings), 1)
-        self.assertTrue(warnings[0].startswith("identification_retained: "))
+        self.assertTrue(warnings[0].startswith("warning: identification_retained: "))
         self.assertIn(UBUNTU_CASE, warnings[0])
         self.assertIn("PROV-7", warnings[0])
         self.assertEqual(case.provider_tracking_id, "PROV-7")
@@ -1369,6 +1376,55 @@ class FoldRefusalTests(WriterFixture):
             f"case {tracking_id!r} carries unexpected event 'case.created' at sequence "
             f"{recreated.sequence}",
         )
+
+    def test_an_integral_float_is_named_on_each_event_type_that_holds_a_number(self) -> None:
+        # Each passed the contract as `integer` and stopped a reader's `_count`, and beside
+        # `event_metadata_invalid` verify passed over it (CL6A-D-02).
+        artifact = artifact_stream_id(DIGEST, "complyroll.cklb", "1")
+        failure = failure_stream_id(DIGEST, "complyroll.sarif", "1")
+        healthy = EventMetadata(actor="tester").to_dict()
+        for event_type, stream_id, schema, change in (
+            ("artifact.ingested", artifact, 1, {"sizeBytes": 4096.0}),
+            ("artifact.ingested", artifact, 1, {"observationCount": 0.0}),
+            ("case.evaluated", case_stream_id(SPARE_CASE), 1, {"pain": 3.0}),
+            ("case.pain_reduced", case_stream_id(SPARE_CASE), 1, {"rating": 1.0}),
+            ("failure.recorded", failure, FAILURE_STREAM_SCHEMA_VERSION, {"sizeBytes": 1.0}),
+            ("failure.held", failure, HELD_FAILURE_SCHEMA_VERSION, {"sizeBytes": 1.0}),
+        ):
+            for metadata in (healthy, {**healthy, "runId": "run-not-a-uuid"}):
+                with self.subTest(event_type=event_type, change=change, metadata=metadata):
+                    store = SQLiteEventStore(":memory:")
+                    self.addCleanup(store.close)
+                    (record,) = store.append(
+                        stream_id,
+                        [
+                            NewEvent(
+                                event_type=event_type,
+                                occurred_at=INGESTED_AT,
+                                payload={**GOOD_PAYLOADS[event_type], **change},
+                                metadata=metadata,
+                            )
+                        ],
+                        expected_version=0,
+                        requires_schema=schema,
+                    )
+
+                    faults = audit_history(EventRepository(store))
+
+                    ((name, value),) = change.items()
+                    self.assertIn(
+                        HistoryFault(
+                            record.sequence,
+                            "payload_contract_invalid",
+                            f"{event_type} version 1 payload is invalid: /{name}: type: {value} is "
+                            "not of type 'integer'",
+                        ),
+                        faults,
+                    )
+                    self.assertEqual(
+                        any(fault.code == "event_metadata_invalid" for fault in faults),
+                        metadata is not healthy,
+                    )
 
     def mismatched_creation(self) -> None:
         """Stage a case stream whose creation event names a different case.
@@ -2613,6 +2669,118 @@ class DuplicateObservationTests(WriterFixture):
         )
 
 
+class FoldContractSweepTests(unittest.TestCase):
+    """The rule a fold reads a field by is one its contract already holds, over a value bank.
+
+    This is what the ADR 0008 amendment 2026-10-26 claims and no more: every field of every
+    event a fold reads as a record, against these values. `observation.recorded` reads through
+    its contract, so it has nothing to sweep, and a coverage head is compared to its gap record
+    by `coverage_record_disagreement` rather than read by a fold.
+    """
+
+    BANK: tuple[Any, ...] = (
+        None,
+        True,
+        False,
+        0,
+        1,
+        5,
+        6,
+        -1,
+        0.0,
+        1.0,
+        5.0,
+        1.5,
+        10**400,
+        "",
+        " ",
+        "x",
+        "closed",
+        "accepted",
+        "2026-08-21T12:00:00Z",
+        "2026-08-21T12:00:00+01:00",
+        "2026-02-30T12:00:00Z",
+        "2026-08-21T24:00:00Z",
+        "0001-01-01T00:30:00+01:00",
+        "9999-12-31T23:59:59-23:59",
+        "case-ffffffffffffffff",
+        [],
+        ["x"],
+        [1],
+        [""],
+        {},
+        {"a": 1},
+    )
+    #: What a fold refuses and a contract cannot tell: the tracking id another stream names,
+    #: which the audit names as `case_tracking_id_mismatch`.
+    NAMED_ELSEWHERE = {("case.created", "/trackingId", "case-ffffffffffffffff")}
+
+    def setUp(self) -> None:
+        store = SQLiteEventStore(":memory:")
+        self.addCleanup(store.close)
+        self.repository = EventRepository(store)
+        self.tracking_id = GOOD_PAYLOADS["case.created"]["trackingId"]
+
+    def record(self, event_type: str, payload: Mapping[str, Any], sequence: int = 1) -> EventRecord:
+        return EventRecord(
+            sequence=sequence,
+            event_id=f"event-{sequence}",
+            stream_id="stream",
+            stream_version=sequence,
+            event_type=event_type,
+            event_version=1,
+            occurred_at=INGESTED_AT,
+            recorded_at=INGESTED_AT,
+            payload=dict(payload),
+            metadata={},
+            payload_sha256="",
+        )
+
+    def fold(self, event_type: str, payload: Mapping[str, Any]) -> None:
+        """Read one payload as the fold of its stream kind reads it."""
+
+        if event_type == "artifact.ingested":
+            _artifact_record(self.repository, self.record(event_type, payload))
+        elif event_type in ("failure.recorded", "failure.held"):
+            _failure_record(self.repository, self.record(event_type, payload))
+        elif event_type == CASE_CREATED:
+            fold_case_records(self.repository, self.tracking_id, [self.record(event_type, payload)])
+        else:
+            created = self.record(CASE_CREATED, GOOD_PAYLOADS[CASE_CREATED])
+            read = self.record(event_type, payload, 2)
+            fold_case_records(self.repository, self.tracking_id, [created, read])
+
+    def pointers(self, schema: Mapping[str, Any], prefix: str = "") -> list[str]:
+        found: list[str] = []
+        for name, subschema in schema.get("properties", {}).items():
+            found.append(f"{prefix}/{name}")
+            found.extend(self.pointers(subschema, f"{prefix}/{name}"))
+        return found
+
+    def test_no_fold_refuses_a_value_its_contract_passes(self) -> None:
+        passed = 0
+        refused: set[tuple[str, str, Any]] = set()
+        for (event_type, _), schema in EVENT_CONTRACTS.items():
+            if event_type in ("observation.recorded", "coverage.recorded"):
+                continue
+            self.fold(event_type, GOOD_PAYLOADS[event_type])
+            for pointer in self.pointers(schema):
+                for value in self.BANK:
+                    payload = with_value(GOOD_PAYLOADS[event_type], pointer, value)
+                    try:
+                        self.repository.validate_payload(event_type, payload)
+                    except EventContractError:
+                        continue
+                    passed += 1
+                    try:
+                        self.fold(event_type, payload)
+                    except HistoryError:
+                        refused.add((event_type, pointer, value))
+        self.assertEqual(refused, self.NAMED_ELSEWHERE)
+        # The bank must keep reaching the fold, or the sweep says nothing.
+        self.assertGreater(passed, 300)
+
+
 class AuditHistoryTests(WriterFixture):
     """`audit_history` describes a damaged log rather than stopping at its first problem."""
 
@@ -2655,6 +2823,15 @@ class AuditHistoryTests(WriterFixture):
         self.evaluate()
 
         self.assertEqual(audit_history(self.repository), ())
+
+    def test_the_case_stream_fault_is_not_one_the_order_check_runs_beside(self) -> None:
+        # A store carrying it is not folded: the check would raise on it and be swallowed, so
+        # the ADR 0008 amendment 2026-10-26 keeps it outside this set (CL6A-D-07).
+        self.assertNotIn("case_stream_mismatch", _ORDER_CHECKED_BESIDE)
+        self.assertEqual(
+            _ORDER_CHECKED_BESIDE,
+            {"event_metadata_invalid", "failure_schema_unmarked", "coverage_schema_unmarked"},
+        )
 
     def test_the_published_codes_are_a_sorted_tuple(self) -> None:
         # Which codes are published is pinned whole in test_cli, against the codes its

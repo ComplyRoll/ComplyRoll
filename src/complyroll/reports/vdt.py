@@ -44,6 +44,7 @@ from complyroll.correlation import (
     group_open_observations,
 )
 from complyroll.models import (
+    NO_UTC_INSTANT,
     RESERVED_SOURCE_TYPE_PREFIX,
     CaseStatus,
     Observation,
@@ -147,13 +148,13 @@ class ReportDiagnostic:
         return value
 
 
-#: The codes a diagnostic line carries: every `ReportDiagnostic` a report or the CLI builds,
-#: and the two the CLI writes as text lines. A report prints its own in its JSON and on stderr,
-#: and the CLI prints its refusals in the same `level: code: message` form, so all of them are
-#: part of the contract. An ingest diagnostic a report carries keeps its adapter's code; audit
-#: faults are `AUDIT_FAULT_CODES`, and the store's integrity faults are the store's own.
-#: `tests/test_report_codes.py` holds every site in `src/complyroll` to this set, and the set
-#: to what is built.
+#: The codes a diagnostic line carries: every `ReportDiagnostic` a report, a history writer or
+#: the CLI builds, and the two the CLI writes as text lines. A report prints its own in its JSON
+#: and on stderr, and the CLI prints its refusals and a writer's warnings in the same
+#: `level: code: message` form, so all of them are part of the contract. An ingest diagnostic a
+#: report carries keeps its adapter's code; audit faults are `AUDIT_FAULT_CODES`, and the store's
+#: integrity faults are the store's own. `tests/test_report_codes.py` holds the sites its scan
+#: can see to this set, and the set to what the scan finds; its docstring says what it cannot see.
 REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "acceptance_rationale_missing",
     "accepted_excluded",
@@ -169,6 +170,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "coverage_rule_unavailable",
     "detection_time_missing",
     "detection_time_partial",
+    "disposition_retained",
     "disposition_without_evaluation",
     "drift_likelihood_unknown",
     "duplicate_artifact",
@@ -186,6 +188,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "failure_read_elsewhere",
     "failure_superseded",
     "history_invalid",
+    "identification_retained",
     "invalid_input",
     "invalid_option",
     "kev_catalog_after_as_of",
@@ -200,6 +203,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "output_rollback_failed",
     "output_write_failed",
     "payload_contracts_unchecked",
+    "reduction_retained",
     "report_malformed",
     "report_period_missing",
     "report_read_failed",
@@ -1501,7 +1505,7 @@ def clock_problem(
     try:
         instant = clock.astimezone(UTC)
     except OverflowError:
-        return "has no UTC instant inside the years 1 to 9999"
+        return NO_UTC_INSTANT
     for policy in policies:
         for rule_id, deadline in _clock_deadlines(policy, instant, evaluation):
             try:

@@ -6,6 +6,24 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- A failure or coverage stream's observation whose `observed_at` has no UTC instant, such as
+  `0001-01-01T00:30:00+01:00`, ended `store verify`, every report from the store, `cases correlate`,
+  `cases coverage`, `cases evaluate` and `EventRepository.append` in an `OverflowError` traceback,
+  because such an observation's identity converts that clock. An artifact stream's was already
+  named. `Observation` now refuses it as `ObservationClockError`, a `ValueError`: `store verify`
+  names it as the audit fault `clock_out_of_range` at its sequence, those readers refuse it as
+  `history_invalid`, and the repository refuses it as `EventContractError`. No command writes such
+  a record and 0.3.0a0 has no such stream, so only a store written around the repository holds one
+  (ADR 0008 amendment 2026-11-02).
+- The event contracts now refuse a JSON number written with a fraction or an exponent where they say
+  `integer`, even one equal to an integer: `pain`, `targetRating`, `rating`, `sizeBytes` and
+  `observationCount` as `1.0`. JSON Schema's `integer` admits it, so it passed its contract and
+  `EventRepository.append` stored it, and then every fold refused it. `store verify` stopped outside
+  its audit with `history_invalid`, or beside `event_metadata_invalid` named that fault alone. It is
+  now `payload_contract_invalid` at its sequence, alone and beside any other fault, and the
+  repository refuses it. A reader of the field still refuses it, now in the contract's words. No
+  command writes such a value, and a store holding one already failed `store verify`, so this stops
+  nothing that worked (the same amendment).
 - A case stream whose first event is not `case.created`, or that carries a second
   `case.created`, is now the `store verify` audit fault `case_stream_mismatch`, at the first event
   or at each later `case.created`, in the words every reader that folds the case refuses it with
@@ -334,6 +352,11 @@ All notable project changes will be documented here.
 
 ### Added
 
+- `complyroll.reports.REPORT_DIAGNOSTIC_CODES`, the closed set of 60 codes a diagnostic line
+  carries, as `AUDIT_FAULT_CODES` is for `store verify`. `tests/test_report_codes.py` reads the
+  source, holds every site its scan can read to the set and the set to what it finds, and lists
+  in its docstring what it cannot see. There is no run-time check, so no new refusal (ADR 0015
+  amendment 2026-10-27).
 - CycloneDX SBOM adapter (ADR 0016). `*.cdx.json` files, and bare `.json` files whose `bomFormat` is
   `CycloneDX`, are read as CycloneDX 1.4 to 1.7 JSON under parser `complyroll.cyclonedx` version 1
   and source type `cyclonedx`. A vulnerability becomes one OPEN observation per affected package, on
@@ -654,6 +677,9 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- `history.EvaluationOutcome.warnings` holds `ReportDiagnostic` objects rather than strings, so
+  `identification_retained`, `disposition_retained` and `reduction_retained` are held to the code
+  registry. What `cases evaluate` prints is unchanged, byte for byte.
 - A diagnostic about a record whose evaluation overrides `trackingId` names it by both ids,
   `<override> (<correlation id>)`, for example `ACME-123 (case-1f3e011db93cc89e)`. Some named only
   the correlation id, which the report does not show, and others only the override, which history

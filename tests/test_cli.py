@@ -5186,6 +5186,27 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
             code, out, err = reader()
             self.assertEqual((code, out, err), (1, "", f"error: history_invalid: {message}\n"))
 
+    def test_a_case_stream_not_opening_with_creation_is_named_once_at_its_first_event(
+        self,
+    ) -> None:
+        self.populate()
+        attested = {
+            "detectedAt": ATTESTED_AT,
+            "rationale": RATIONALE,
+            "attestedAt": "2026-08-21T12:00:00Z",
+        }
+        first = self.smuggle("detection.attested", attested, stream_id=SMUGGLED_CASE_STREAM)
+        second = self.smuggle(
+            "detection.attested", attested, stream_id=SMUGGLED_CASE_STREAM, expected_version=1
+        )
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertLess(first, second)
+        self.assertEqual(err.count("case_stream_mismatch"), 1)
+        self.assertIn(f"error: sequence {first}: case_stream_mismatch: ", err)
+
     def test_a_misplaced_first_event_is_named_for_its_stream_and_for_the_case(self) -> None:
         # Two facts about one event: it does not belong on a case stream, and the stream it
         # opens is a case that does not begin with `case.created` (ADR 0008, 2026-10-26).

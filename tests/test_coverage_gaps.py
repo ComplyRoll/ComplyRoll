@@ -601,9 +601,10 @@ class FiledEvidenceTests(unittest.TestCase):
     """One filing answers every clock as `verifying_evidence` answers each (CL-73)."""
 
     def test_every_clock_reads_from_one_filing_what_a_fresh_filing_gives(self) -> None:
+        # lab-01's later pass comes first, so the reading has to order what it filed.
         evidence = [
-            observation("lab-01", SINCE + timedelta(days=1)),
             observation("lab-01", SINCE + timedelta(days=2), record="R-2"),
+            observation("lab-01", SINCE + timedelta(days=1)),
             observation("web-02", SINCE + timedelta(days=3)),
             observation("lab-02", SINCE + timedelta(days=4), ObservationDisposition.ERROR),
             observation("unlisted", SINCE + timedelta(days=5)),
@@ -623,7 +624,7 @@ class FiledEvidenceTests(unittest.TestCase):
         # The group's clock reads its member's pass, and lab-01's clocks read both of its own.
         self.assertEqual(read[(PSD_RULE, f"sample-group/{GROUP}")], [evidence[2].observation_id])
         self.assertEqual(
-            read[(MVX_RULE, "lab-01")], [evidence[0].observation_id, evidence[1].observation_id]
+            read[(MVX_RULE, "lab-01")], [evidence[1].observation_id, evidence[0].observation_id]
         )
         self.assertEqual(read[(MVX_RULE, "lab-02")], [])
 

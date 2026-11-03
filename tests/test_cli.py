@@ -1612,6 +1612,7 @@ COVERED_AUDIT_CODES = {
     "artifact_incomplete",
     "artifact_overfull",
     "artifact_stream_mismatch",
+    "case_stream_mismatch",
     "case_tracking_id_mismatch",
     # Its `store verify` command tests live in `UnusableStoredClockTests` below.
     "clock_out_of_range",
@@ -5154,6 +5155,37 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
         self.assertIn("no published contract for event 'case.retracted'", err)
 
+    def test_a_case_stream_not_opening_with_creation_is_named_as_every_reader_refuses_it(
+        self,
+    ) -> None:
+        # CL-79: verify used to print the fold's `history_invalid` alone, and nothing at all
+        # beside a fault no reader refuses. It is now an audit fault, in the readers' words.
+        self.populate()
+        sequence = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=SMUGGLED_CASE_STREAM,
+        )
+        message = f"case {UNKNOWN_CASE!r} begins with 'detection.attested', not 'case.created'"
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        lines = err.splitlines()
+        self.assertEqual(lines[0], f"error: sequence {sequence}: case_stream_mismatch: {message}")
+        self.assertTrue(lines[1].startswith("faults: 1 domain fault(s) in "), err)
+        self.assertEqual(len(lines), 2)
+        for reader in (
+            self.report_from_history,
+            lambda: run(["cases", "list", "--db", str(self.database)]),
+        ):
+            code, out, err = reader()
+            self.assertEqual((code, out, err), (1, "", f"error: history_invalid: {message}\n"))
+
     def test_a_payload_its_own_contract_refuses_is_named_and_exits_one(self) -> None:
         self.populate()
         sequence = self.smuggle(
@@ -5168,7 +5200,9 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(out, "")
         self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
         self.assertIn("/rating", err)
-        self.assertIn("faults: 1 domain fault(s) in", err)
+        # It also opens its case stream, which every reader refuses (CL-79).
+        self.assertIn(f"error: sequence {sequence}: case_stream_mismatch:", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
 
     def case_stream(self, tracking_id: str) -> tuple[EventRecord, ...]:
         """Return one fixture case stream in the log, in stream order."""
@@ -6040,7 +6074,10 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(out, "")
         self.assertIn(f"error: sequence {sequence}: event_metadata_invalid:", err)
         self.assertIn("runId", err)
-        self.assertIn("faults: 1 domain fault(s) in", err)
+        # 961bc60 named the metadata alone and passed over the stream's opening event, which
+        # every reader refuses; the order check that raised on it ran only to be ignored.
+        self.assertIn(f"error: sequence {sequence}: case_stream_mismatch:", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
 
     def test_a_metadata_fault_beside_a_case_stream_naming_no_tracking_id_is_named(self) -> None:
         # A case stream whose id names no tracking id is a fault of its own, at its first

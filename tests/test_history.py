@@ -74,6 +74,7 @@ from complyroll.history import (
     EvaluationOutcome,
     FailureOutcome,
     HistoryError,
+    HistoryFault,
     IngestOutcome,
     apply_evaluations,
     artifact_history,
@@ -1318,6 +1319,32 @@ class FoldRefusalTests(WriterFixture):
             fold_case(self.repository, SPARE_CASE)
 
         self.assertIn("begins with 'detection.attested'", str(caught.exception))
+
+    def test_the_audit_names_a_case_stream_that_does_not_begin_with_creation(self) -> None:
+        # The fold refuses it, so the audit names it in the fold's words (CL-79).
+        stream_id = case_stream_id(SPARE_CASE)
+        self.append_raw(
+            stream_id,
+            DETECTION_ATTESTED,
+            {
+                "detectedAt": iso_utc(ATTESTED_AT),
+                "rationale": RATIONALE,
+                "attestedAt": iso_utc(INGESTED_AT),
+            },
+            expected_version=0,
+        )
+        (record,) = self.repository.read_stream(stream_id)
+        with self.assertRaises(HistoryError) as caught:
+            fold_case(self.repository, SPARE_CASE)
+
+        self.assertEqual(
+            audit_history(self.repository),
+            (HistoryFault(record.sequence, "case_stream_mismatch", str(caught.exception)),),
+        )
+        self.assertEqual(
+            str(caught.exception),
+            f"case {SPARE_CASE!r} begins with 'detection.attested', not 'case.created'",
+        )
 
     def mismatched_creation(self) -> None:
         """Stage a case stream whose creation event names a different case.

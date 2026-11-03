@@ -1597,10 +1597,11 @@ class CommandOrderTests(unittest.TestCase):
         self.assertNotIn("evaluation_before", err + out)
         self.assertIn(FAILURE_LATER_EVALUATED_AT, out)
 
-    def test_verify_folds_every_case_in_a_store_with_no_evaluation(self) -> None:
-        # The order check folds every case before it looks for an evaluation, so a case
-        # stream that is contract-valid but does not fold fails `store verify`, as a report
-        # from the store refuses it, although no case in the store is evaluated.
+    def test_verify_names_a_case_that_does_not_fold_in_a_store_with_no_evaluation(self) -> None:
+        # A case stream that is contract-valid but does not fold fails `store verify`, as a
+        # report from the store refuses it, although no case in the store is evaluated. The
+        # order check used to find it by folding every case and raising `history_invalid`;
+        # the audit now names it first, as `case_stream_mismatch` (CL-79).
         store = SQLiteEventStore(self.database)
         try:
             EventRepository(store).append(
@@ -1618,15 +1619,14 @@ class CommandOrderTests(unittest.TestCase):
         finally:
             store.close()
 
-        self.assertEqual(
-            verify_store(self.database),
-            (
-                1,
-                "",
-                f"error: history_invalid: case {UNFOLDED_CASE!r} begins with "
-                "'detection.attested', not 'case.created'\n",
-            ),
-        )
+        message = f"case {UNFOLDED_CASE!r} begins with 'detection.attested', not 'case.created'"
+        code, out, err = verify_store(self.database)
+        self.assertEqual((code, out), (1, ""))
+        fault, summary = err.splitlines()
+        self.assertRegex(fault, r"^error: sequence [0-9]+: case_stream_mismatch: ")
+        self.assertTrue(fault.endswith(f": {message}"), fault)
+        self.assertTrue(summary.startswith("faults: 1 domain fault(s) in "), summary)
+        self.assertEqual(report_vdt(self.database), (1, "", f"error: history_invalid: {message}\n"))
 
 
 if __name__ == "__main__":

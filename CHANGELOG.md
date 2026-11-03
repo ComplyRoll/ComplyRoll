@@ -8,22 +8,27 @@ All notable project changes will be documented here.
 
 - A failure or coverage stream's observation whose `observed_at` has no UTC instant, such as
   `0001-01-01T00:30:00+01:00`, ended `store verify`, every report from the store, `cases correlate`,
-  `cases coverage`, `cases evaluate` and `EventRepository.append` in an `OverflowError` traceback,
-  because such an observation's identity converts that clock. An artifact stream's was already
-  named. `Observation` now refuses it as `ObservationClockError`, a `ValueError`: `store verify`
-  names it as the audit fault `clock_out_of_range` at its sequence, those readers refuse it as
-  `history_invalid`, and the repository refuses it as `EventContractError`. No command writes such
-  a record and 0.3.0a0 has no such stream, so only a store written around the repository holds one
-  (ADR 0008 amendment 2026-11-02).
-- The event contracts now refuse a JSON number written with a fraction or an exponent where they say
-  `integer`, even one equal to an integer: `pain`, `targetRating`, `rating`, `sizeBytes` and
-  `observationCount` as `1.0`. JSON Schema's `integer` admits it, so it passed its contract and
+  `cases coverage`, `cases evaluate`, `cases attest-detection --case` on an evaluated case, `ingest
+  --record-failed-imports` of a failed file when the clock is on a failure stream, and
+  `EventRepository.append` in an `OverflowError` traceback, because such an observation's identity
+  converts that clock. An artifact stream's was already named. `Observation` now refuses it as
+  `ObservationClockError`, a `ValueError`: `store verify` names it as the audit fault
+  `clock_out_of_range` at its sequence, those readers refuse it as `history_invalid`, and the
+  repository refuses it as `EventContractError`. No command writes such a record and 0.3.0a0 has no
+  such stream, so only a store written around the repository holds one (ADR 0008 amendment
+  2026-11-02).
+- The event contracts now refuse a JSON number stored as `1.0` or `1e+22` where they say `integer`,
+  even one equal to an integer: `pain`, `targetRating`, `rating`, `sizeBytes` and
+  `observationCount`. JSON Schema's `integer` admits it, so it passed its contract and
   `EventRepository.append` stored it, and then every fold refused it. `store verify` stopped outside
   its audit with `history_invalid`, or beside `event_metadata_invalid` named that fault alone. It is
   now `payload_contract_invalid` at its sequence, alone and beside any other fault, and the
-  repository refuses it. A reader of the field still refuses it, now in the contract's words. No
-  command writes such a value, and a store holding one already failed `store verify`, so this stops
-  nothing that worked (the same amendment).
+  repository refuses it. Stored text in another spelling, such as `1e0`, is not the store's
+  canonical JSON and stays `payload_not_json`. A reader of the field still refuses it, in the
+  contract's words. For `pain`, `targetRating` and `rating` the reader's code changes from
+  `history_invalid` to `event_contract_invalid`; for `sizeBytes` and `observationCount` it stays
+  `history_invalid`. No command writes such a value, and a store holding one already failed `store
+  verify`, so this stops nothing that worked (the same amendment).
 - A case stream whose first event is not `case.created`, or that carries a second
   `case.created`, is now the `store verify` audit fault `case_stream_mismatch`, at the first event
   or at each later `case.created`, in the words every reader that folds the case refuses it with
@@ -352,11 +357,11 @@ All notable project changes will be documented here.
 
 ### Added
 
-- `complyroll.reports.REPORT_DIAGNOSTIC_CODES`, the closed set of 60 codes a diagnostic line
+- `complyroll.reports.REPORT_DIAGNOSTIC_CODES`, the closed set of 61 codes a diagnostic line
   carries, as `AUDIT_FAULT_CODES` is for `store verify`. `tests/test_report_codes.py` reads the
-  source, holds every site its scan can read to the set and the set to what it finds, and lists
-  in its docstring what it cannot see. There is no run-time check, so no new refusal (ADR 0015
-  amendment 2026-10-27).
+  source and holds every site its scan can read to the set and the set to what it finds. Its
+  docstring lists the shapes found that it cannot see, which is not a closed list. There is no
+  run-time check, so no new refusal (ADR 0015 amendment 2026-10-27).
 - CycloneDX SBOM adapter (ADR 0016). `*.cdx.json` files, and bare `.json` files whose `bomFormat` is
   `CycloneDX`, are read as CycloneDX 1.4 to 1.7 JSON under parser `complyroll.cyclonedx` version 1
   and source type `cyclonedx`. A vulnerability becomes one OPEN observation per affected package, on

@@ -248,7 +248,7 @@ def _rendered_issues(issues: Sequence[ContractIssue]) -> str:
 
 #: JSON Schema's `integer` admits 1.0 and every fold reads a JSON integer, so such a payload
 #: passed its contract and stopped the reader. Here `integer` means what the folds read: a number
-#: that parses to an `int`, which neither `1.0`, `1e0` nor `true` does (ADR 0008 amendment
+#: that parses to an `int`, which neither `1.0`, `1e+22` nor `true` does (ADR 0008 amendment
 #: 2026-11-02).
 _ContractValidator: Final = validators.extend(
     Draft202012Validator,

@@ -72,6 +72,7 @@ from complyroll.schemas import (
     load_bundled_schema_bundle,
     validate_bundled_report,
 )
+from complyroll.store.sqlite import bounded
 
 from .coverage import (
     COVERAGE_BASIS,
@@ -149,12 +150,14 @@ class ReportDiagnostic:
 
 
 #: The codes a diagnostic line carries: every `ReportDiagnostic` a report, a history writer or
-#: the CLI builds, and the two the CLI writes as text lines. A report prints its own in its JSON
-#: and on stderr, and the CLI prints its refusals and a writer's warnings in the same
-#: `level: code: message` form, so all of them are part of the contract. An ingest diagnostic a
-#: report carries keeps its adapter's code; audit faults are `AUDIT_FAULT_CODES`, and the store's
-#: integrity faults are the store's own. `tests/test_report_codes.py` holds the sites its scan
-#: can see to this set, and the set to what the scan finds; its docstring says what it cannot see.
+#: the CLI builds, every `IngestDiagnostic` a history writer builds, and the two the CLI writes as
+#: text lines. A report prints its own in its JSON and on stderr, and the CLI prints its refusals
+#: and a writer's warnings in the same `level: code: message` form, so all of them are part of the
+#: contract. A diagnostic an adapter mints keeps its own code when a report carries it, and a stored
+#: one read back keeps the code it was stored with; audit faults are `AUDIT_FAULT_CODES`, and the
+#: store's integrity faults are the store's own. `tests/test_report_codes.py` holds the sites its
+#: scan can see to this set, and the set to what the scan finds; its docstring lists what has been
+#: found that it cannot see, which is not a closed list.
 REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "acceptance_rationale_missing",
     "accepted_excluded",
@@ -185,6 +188,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "event_too_large",
     "excluded_by_period",
     "failure_held",
+    "failure_held_by_another_stream",
     "failure_read_elsewhere",
     "failure_superseded",
     "history_invalid",
@@ -1560,9 +1564,10 @@ def evaluation_clock_message(tracking_id: str, clock: datetime, problem: str) ->
 def observation_clock_message(observation_id: str, clock: datetime, problem: str) -> str:
     """Word one observation refused for its source time, wherever a reader converts it."""
 
+    # A system observation's id is its writer's to choose and is read before any check of it.
     return (
-        f"observation {observation_id} has source time {clock.isoformat()} in history, which "
-        f"{problem}, so no report can compute with it"
+        f"observation {bounded(observation_id)} has source time {clock.isoformat()} in history, "
+        f"which {problem}, so no report can compute with it"
     )
 
 

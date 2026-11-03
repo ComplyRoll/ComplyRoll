@@ -12,11 +12,13 @@ the source rather than at run time, so what follows is what a reader of the sour
 a proof about every run. `store verify` prints audit faults and the store's integrity faults from
 their own records (`fault.code`), so those codes are outside this set.
 
-What is held. Every `ReportDiagnostic` built in `src/complyroll`, by its name, an import alias or
-as an attribute (`vdt.ReportDiagnostic`), and every `replace(..., code=...)`, `dataclasses.replace`
-and `copy.replace` included, names a code in the set or fails. So does every string that opens a
-line in the `level: code: ` form (`warning: attestation_not_applicable: ...`). Every code in the
-set is built or written somewhere. A site's code resolves when it is:
+What is held. Every `ReportDiagnostic` built in `src/complyroll`, every `IngestDiagnostic` built
+outside `complyroll.adapters`, by its name, an import alias or as an attribute
+(`vdt.ReportDiagnostic`), and every `replace(..., code=...)`, `dataclasses.replace` and
+`copy.replace` included, names a code in the set or fails. So does every string that opens a line
+in the `level: code:` form (`warning: attestation_not_applicable: ...`), or ends just after it
+(`print("warning: unlisted:", message)`). Every code in the set is built or written somewhere. A
+site's code resolves when it is:
 
 - a string literal, or a module-level name bound to one and rebound by no `global` statement;
 - a local whose every binding in the function is a plain assignment of a literal;
@@ -31,19 +33,25 @@ a value, or that another module imports or reaches as an attribute. The construc
 value (`Maker = ReportDiagnostic`, `partial(ReportDiagnostic, ...)`, a subclass). A `replace` used
 as a value, or called with `**`. A constructor call with `*`, or that leaves its code to `**`. A
 string that opens a line with a level and leaves the rest open (`f"warning: {code}: ..."`,
-`"warning: "`, `"warning: %s: ..."`), unless its function is named below as writing free text. An
-ingest diagnostic a report carries keeps its adapter's code, so the sites that copy `item.code` are
-named below too.
+`"warning: "`, `"warning: %s: ..."`), unless its function is named below as writing free text. A
+diagnostic an adapter mints keeps its own code when a report carries it, and a stored one read back
+keeps the code it was stored with, so the sites that copy a code (`item.code`,
+`_text(entry, "code")`) are named below too.
 
-What still passes, because nothing here sees it. `getattr(vdt, "ReportDiagnostic")`, `globals()` and
+What still passes, because nothing here sees it. This is what has been found, not a closed list:
+a shape not named anywhere in this docstring may pass too. `getattr(vdt, "ReportDiagnostic")`,
+`vars(module)[...]`, `operator.attrgetter`, `globals()` and
 `exec`; `type(item)(...)` and `item.__class__(...)`; `object.__setattr__(item, "code", ...)`; a
 module-level name rebound with `setattr` or from another module; a line whose level is itself
 interpolated (`f"{level}: unlisted: ..."`, as `ReportDiagnostic.render` writes every line) or split
-so that no one string opens with the level (`"warn" + "ing: unlisted: ..."`); and a code outside
-the `[a-z][a-z0-9_]*` grammar in a text line, or a level spelled another way (`Warning: `), which
-do not match the form at all.
+so that no one string opens with the level (`"warn" + "ing: unlisted: ..."`,
+`print("warning:", "unlisted:", message)`); a code outside the `[a-z][a-z0-9_]*` grammar in a text
+line, or a level spelled another way (`Warning: `), which do not match the form at all; a
+module-level name rebound after its use or read from the environment; a class-body name that
+shadows a module name; `cls(...)` in a classmethod; a decorator that injects the argument; and a
+caller through a star import.
 
-What is over-counted. Any string constant that opens in the `level: code: ` form counts as a line
+What is over-counted. Any string constant that opens in the `level: code:` form counts as a line
 the source writes, wherever it stands and whether or not it is ever printed, because a line held
 in a name and printed later has to be seen. So an unlisted one fails even if nothing prints it, and
 an unused one can keep a listed code counted as built.
@@ -68,15 +76,21 @@ from complyroll.reports import REPORT_DIAGNOSTIC_CODES
 
 SOURCE = Path(__file__).parent.parent / "src" / "complyroll"
 CONSTRUCTOR = "ReportDiagnostic"
+#: Held everywhere but in an adapter, whose ingest codes a report carries as its adapter's.
+INGEST_CONSTRUCTOR = "IngestDiagnostic"
+ADAPTERS = "complyroll.adapters"
 REPLACERS = frozenset({"replace", "__replace__"})
-#: A diagnostic line written as text rather than built: `warning: <code>: ...`.
-TEXT_LINE = re.compile(r"^(?:error|warning|info): ([a-z][a-z0-9_]*): ")
+#: A diagnostic line written as text rather than built: `warning: <code>: ...`, or a string that
+#: ends after the code because the message is another argument.
+TEXT_LINE = re.compile(r"^(?:error|warning|info): ([a-z][a-z0-9_]*):(?: |$)")
 #: A string that opens a line with a level and leaves what follows it to be filled in.
 OPEN_LINE = re.compile(r"^(?:error|warning|info): (?:%|\{|$)")
-#: The functions that copy an ingest diagnostic's code into a report diagnostic.
+#: The functions that copy a code a diagnostic already carries: an ingest diagnostic's into a
+#: report diagnostic, and a stored diagnostic's as the fold reads it back.
 PASS_THROUGH = frozenset(
     {
         ("complyroll.cli", "_as_report_diagnostics"),
+        ("complyroll.history.fold", "_diagnostics"),
         ("complyroll.reports.replay", "_ingest_diagnostics"),
         ("complyroll.reports.vdt", "_collect_diagnostics"),
         ("complyroll.reports.vdt", "_record_detection_failure"),
@@ -118,13 +132,18 @@ def _module_name(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
-def _aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """Return the names the constructor and `dataclasses.replace` are bound to in a module."""
-    constructors, replacers = {CONSTRUCTOR}, set(REPLACERS)
-    for node in ast.walk(tree):
+def _is_adapter(name: str) -> bool:
+    return name == ADAPTERS or name.startswith(f"{ADAPTERS}.")
+
+
+def _aliases(module: Module) -> tuple[set[str], set[str]]:
+    """Return the names the constructors and `dataclasses.replace` are bound to in a module."""
+    classes = {CONSTRUCTOR} if _is_adapter(module.name) else {CONSTRUCTOR, INGEST_CONSTRUCTOR}
+    constructors, replacers = set(classes), set(REPLACERS)
+    for node in ast.walk(module.tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                if alias.name == CONSTRUCTOR:
+                if alias.name in classes:
                     constructors.add(alias.asname or alias.name)
                 if alias.name == "replace" and node.module in ("dataclasses", "copy"):
                     replacers.add(alias.asname or alias.name)
@@ -299,7 +318,7 @@ def _site(
         if isinstance(func, ast.Attribute)
         else ""
     )
-    if called in constructors or called == CONSTRUCTOR:
+    if called in constructors:
         return True, _argument_for(node, "code", 1)
     if called in replacers:
         if any(keyword.arg == "code" for keyword in node.keywords):
@@ -334,7 +353,7 @@ def _value_uses(module: Module, constructors: set[str], replacers: set[str]) -> 
     found: list[str] = []
     for node in ast.walk(module.tree):
         is_class = (isinstance(node, ast.Name) and node.id in constructors) or (
-            isinstance(node, ast.Attribute) and node.attr == CONSTRUCTOR
+            isinstance(node, ast.Attribute) and node.attr in constructors
         )
         is_replace = (isinstance(node, ast.Name) and node.id in imported) or (
             isinstance(node, ast.Attribute) and node.attr in REPLACERS
@@ -346,6 +365,16 @@ def _value_uses(module: Module, constructors: set[str], replacers: set[str]) -> 
         if is_class or is_replace:
             found.append(f"{module.label}:{node.lineno}")
     return found
+
+
+def _copies_a_code(argument: ast.expr | None) -> bool:
+    """Say whether a code expression copies one a diagnostic carries or a store holds."""
+    if isinstance(argument, ast.Attribute):
+        return argument.attr == "code"
+    if not isinstance(argument, ast.Call) or len(argument.args) != 2:
+        return False
+    key = argument.args[1]
+    return isinstance(key, ast.Constant) and key.value == "code"
 
 
 def _text_lines(module: Module) -> tuple[set[tuple[int, str]], set[tuple[str, str]], list[str]]:
@@ -390,7 +419,7 @@ def scan_modules(modules: Sequence[Module]) -> Scan:
     """Scan parsed modules together, since a parameter's callers can be in any of them."""
     result = Scan({}, set(), set(), [])
     for module in modules:
-        constructors, replacers = _aliases(module.tree)
+        constructors, replacers = _aliases(module)
         lines, free, opened = _text_lines(module)
         for line, code in lines:
             result.codes.setdefault(code, []).append(f"{module.label}:{line}")
@@ -405,11 +434,7 @@ def scan_modules(modules: Sequence[Module]) -> Scan:
                 continue
             site = f"{module.label}:{node.lineno}"
             function = _enclosing(node, module)
-            if (
-                isinstance(argument, ast.Attribute)
-                and argument.attr == "code"
-                and isinstance(function, ast.FunctionDef)
-            ):
+            if _copies_a_code(argument) and isinstance(function, ast.FunctionDef):
                 result.passed.add((module.name, function.name))
                 continue
             for value in _resolve(argument, node, module, modules):
@@ -459,7 +484,12 @@ class ReportDiagnosticCodeTests(unittest.TestCase):
     def test_the_writer_warnings_are_in_the_set(self) -> None:
         # The CLI used to prefix these with `f"warning: {warning}"`, so nothing saw them.
         codes = scan().codes
-        for code in ("identification_retained", "disposition_retained", "reduction_retained"):
+        for code in (
+            "identification_retained",
+            "disposition_retained",
+            "failure_held_by_another_stream",
+            "reduction_retained",
+        ):
             with self.subTest(code=code):
                 self.assertIn(code, REPORT_DIAGNOSTIC_CODES)
                 self.assertTrue(any("history/writers.py" in site for site in codes[code]))
@@ -700,6 +730,107 @@ class ScanReachTests(unittest.TestCase):
         # Held in a name and printed later it still has to be seen, so any constant counts.
         codes, _ = self.scan_text("NOT_PRINTED = 'warning: held_line: m'\n")
         self.assertEqual(set(codes), {"held_line"})
+
+    def test_a_line_that_ends_after_its_code_is_a_line(self) -> None:
+        # The message is the next argument, so the string never carries a space after the colon.
+        codes, _ = self.scan_text("print('warning: unlisted_line:', message)\n")
+        self.assertEqual(set(codes), {"unlisted_line"})
+
+    def test_every_level_opens_a_line(self) -> None:
+        for level in ("error", "warning", "info"):
+            with self.subTest(level=level):
+                codes, _ = self.scan_text(f"NOTE = '{level}: one_code: m'\n")
+                self.assertEqual(set(codes), {"one_code"})
+
+    def test_an_except_or_match_capture_does_not_resolve(self) -> None:
+        for binding in (
+            "try:\n        pass\n    except Exception as code:\n        pass",
+            "match thing:\n        case code:\n            pass",
+            "match thing:\n        case [*code]:\n            pass",
+        ):
+            with self.subTest(binding=binding):
+                _, unresolved = self.scan_text(
+                    "def f(thing):\n"
+                    "    code = 'listed'\n"
+                    f"    {binding}\n"
+                    "    ReportDiagnostic(level, code, 'm')\n"
+                )
+                self.assertTrue(unresolved)
+
+    def test_a_nested_definition_of_the_name_does_not_resolve(self) -> None:
+        for definition in ("def code(): pass", "class code: pass"):
+            with self.subTest(definition=definition):
+                _, unresolved = self.scan_text(
+                    "def f():\n"
+                    "    code = 'listed'\n"
+                    f"    {definition}\n"
+                    "    ReportDiagnostic(level, code, 'm')\n"
+                )
+                self.assertTrue(unresolved)
+
+    def test_a_match_rest_capture_does_not_resolve(self) -> None:
+        _, unresolved = self.scan_text(
+            "def f(thing):\n"
+            "    code = 'listed'\n"
+            "    match thing:\n"
+            "        case {**code}:\n"
+            "            pass\n"
+            "    ReportDiagnostic(level, code, 'm')\n"
+        )
+        self.assertTrue(unresolved)
+
+    def test_a_copy_replace_alias_is_a_site(self) -> None:
+        codes, _ = self.scan_text(
+            "from copy import replace as swap\ndef f(d):\n    swap(d, code='one')\n"
+        )
+        self.assertEqual(set(codes), {"one"})
+
+    def test_a_dunder_replace_is_a_site(self) -> None:
+        codes, _ = self.scan_text("def f(d):\n    d.__replace__(code='one')\n")
+        self.assertEqual(set(codes), {"one"})
+
+    def test_an_ingest_diagnostic_outside_the_adapters_is_held(self) -> None:
+        for source in (
+            "IngestDiagnostic(level, 'one', 'm')\n",
+            "from complyroll.adapters import IngestDiagnostic as Note\nNote(level, code='one')\n",
+            "adapters.IngestDiagnostic(level, code='one', message='m')\n",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(set(self.scan_text(source)[0]), {"one"})
+        self.assertTrue(self.scan_text("Maker = IngestDiagnostic\n")[1])
+
+    def test_an_ingest_diagnostic_in_an_adapter_keeps_its_own_code(self) -> None:
+        source = (
+            "IngestDiagnostic(level, 'adapter_code', 'm')\n"
+            "adapters.IngestDiagnostic(level, 'adapter_code', 'm')\n"
+            "Maker = IngestDiagnostic\n"
+        )
+        for name in ("complyroll.adapters", "complyroll.adapters.sarif"):
+            with self.subTest(name=name):
+                result = scan_modules([module_of(name, name, ast.parse(source), object())])
+                self.assertEqual((result.codes, result.unresolved), ({}, []))
+
+    def test_a_code_read_back_from_a_store_is_a_named_copy_not_a_new_code(self) -> None:
+        module = module_of(
+            "first",
+            "first",
+            ast.parse(
+                "def read(entry):\n"
+                "    return IngestDiagnostic(level, code=_text(entry, 'code'), message='m')\n"
+            ),
+            object(),
+        )
+        result = scan_modules([module])
+        self.assertEqual((result.codes, result.unresolved), ({}, []))
+        self.assertEqual(result.passed, {("first", "read")})
+
+    def test_a_code_read_any_other_way_does_not_resolve(self) -> None:
+        for expression in ("entry['code']", "_text(entry, 'other')", "_text(entry)"):
+            with self.subTest(expression=expression):
+                _, unresolved = self.scan_text(
+                    f"def read(entry):\n    return IngestDiagnostic(level, {expression}, 'm')\n"
+                )
+                self.assertTrue(unresolved)
 
     def test_a_module_name_rebound_by_a_global_statement_does_not_resolve(self) -> None:
         modules = [

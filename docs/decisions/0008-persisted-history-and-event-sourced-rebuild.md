@@ -672,7 +672,9 @@ has no UTC instant, and on an artifact stream it does. A failure or coverage str
 a system observation, whose identity converts that clock to UTC (ADR 0002, amendment 2026-08-21), so
 computing its fingerprint while validating the payload raised `OverflowError`. That is not a
 `ValueError`, so it passed every refusal: `store verify`, each report from the store, `cases
-correlate`, `cases coverage`, `cases evaluate` and `EventRepository.append` ended in a traceback.
+correlate`, `cases coverage`, `cases evaluate`, `cases attest-detection --case` on a case that
+carries an evaluation, `ingest --record-failed-imports` of a failed file when the clock is on a
+failure stream, and `EventRepository.append` ended in a traceback.
 
 A system observation with such a clock has no identity, so `Observation` refuses it, as
 `ObservationClockError`, a `ValueError`. The repository refuses the payload as `EventContractError`.
@@ -703,9 +705,13 @@ The repository now validates each contract with `integer` meaning what the folds
 is not a `bool`. The bool stays refused, as both sides already refused it. Such a value is
 `payload_contract_invalid` at its sequence, alone and beside any other fault, and
 `EventRepository.append` refuses it. A reader that reads the field still refuses it, in the
-contract's words rather than `_count`'s. The contract documents do not change, and this needs no new
-event version: no reader has read such a value, and no command writes one (`cases evaluate` refuses
-a fractional rating as `invalid_input`, on 0.3.0a0 as well, and the two counts are computed). A
+contract's words rather than `_count`'s. For `pain`, `targetRating` and `rating` the reader's code
+changes from `history_invalid` to `event_contract_invalid`, because the case fold validates an event
+before it reads it and the commands print that error by its own code. `sizeBytes` and
+`observationCount` keep `history_invalid`, "event N is not a readable ...", because the artifact and
+failure folds wrap that error. The contract documents do not change, and this needs no new event
+version: no reader has read such a value, and no command writes one (`cases evaluate` refuses a
+fractional rating as `invalid_input`, on 0.3.0a0 as well, and the two counts are computed). A
 validator reading the documents by themselves still passes `1.0`, since JSON Schema has no way to
 refuse it.
 

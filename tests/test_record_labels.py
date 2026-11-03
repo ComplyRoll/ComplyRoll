@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from test_cli import EXAMPLES
+from test_cli import EXAMPLES, FIXTURES
 from test_coverage import host, inventory_of, observation
 from test_coverage_gap_evaluations import (
     EXPECTED_SINCE,
@@ -763,15 +763,16 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
         return coverage_stream_id_of(gap), COVERAGE_STREAM_SCHEMA_VERSION, coverage_events(gap)
 
     def stage_no_instant(
-        self, kind: str, clock: str, *, name: str | None = None
+        self, kind: str, clock: str, *, keep_store: bool = False, **fields: str
     ) -> tuple[int, str]:
         """Stage one stream whose observation has `clock`, past the repository (CL6A-D-01)."""
 
-        self.open_store(name or f"{kind}-{clock[:4]}.db")
+        if not keep_store:
+            self.open_store(f"{kind}-{clock[:4]}.db")
         stream_id, schema, events = self.system_stream(kind)
         head, (event_type, record) = events
         for version, (stored_type, payload) in enumerate(
-            (head, (event_type, {**record, "observed_at": clock}))
+            (head, (event_type, {**record, "observed_at": clock, **fields}))
         ):
             (appended,) = self.repository.store.append(
                 stream_id,
@@ -786,7 +787,7 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
                 expected_version=version,
                 requires_schema=schema,
             )
-        return appended.sequence, str(record["observation_id"])
+        return appended.sequence, str(fields.get("observation_id", record["observation_id"]))
 
     def no_instant_message(self, observation_id: str, clock: str) -> str:
         return (
@@ -854,7 +855,20 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
         for kind in SYSTEM_STREAMS:
             clock = NO_INSTANT[0]
             with self.subTest(kind=kind):
-                sequence, _ = self.stage_no_instant(kind, clock)
+                # `cases evaluate` and `attest-detection --case` order an evaluated case, so
+                # the store holds one for them to rehydrate observations against.
+                self.open_store(f"readers-{kind}.db")
+                self.ingest(self.artifact("evaluated", [("lab-untimed", None)]))
+                self.correlate()
+                case = self.only_case()
+                self.attest([case], datetime(2026, 8, 1, tzinfo=UTC))
+                self.evaluate(self.banner_evaluation())
+                evaluations = self.directory / "evaluations.json"
+                evaluations.write_text(
+                    evaluation_json(match={"sourceRecordId": BANNER_RULE, "sourceType": "xccdf"}),
+                    encoding="utf-8",
+                )
+                sequence, _ = self.stage_no_instant(kind, clock, keep_store=True)
                 db = str(self.database)
                 refusal = (
                     f"error: history_invalid: event {sequence} is not a readable observation: "
@@ -883,6 +897,19 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
                         "--as-of",
                         "2026-08-21T12:00:00Z",
                     ],
+                    ["cases", "evaluate", "--db", db, "--evaluations", str(evaluations)],
+                    [
+                        "cases",
+                        "attest-detection",
+                        "--db",
+                        db,
+                        "--case",
+                        case,
+                        "--detected-at",
+                        "2026-08-02T00:00:00Z",
+                        "--rationale",
+                        "Attested from the change record.",
+                    ],
                 ):
                     with self.subTest(argv=argv[:2]):
                         self.assertEqual(run(argv), (1, "", refusal))
@@ -891,6 +918,49 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
                 # `cases list` folds case streams alone. It passes this store and verify
                 # rejects it, and the store rule does not ask the converse.
                 self.assertEqual(run(["cases", "list", "--db", db])[0], 0)
+                failed = [
+                    "ingest",
+                    str(FIXTURES / "failed-truncated.sarif"),
+                    "--record-failed-imports",
+                    "--db",
+                    db,
+                    "--as-of",
+                    "2026-08-21T12:00:00Z",
+                ]
+                code, out, err = run(failed)
+                # Recording a failed reading folds failure streams and no coverage stream.
+                if kind == "failure":
+                    self.assertEqual((code, out), (1, ""), err)
+                    self.assertTrue(err.startswith(refusal), err)
+                else:
+                    self.assertEqual(code, 3, err)
+
+    def test_a_long_system_id_is_cut_in_the_fault_and_a_derived_one_is_not(self) -> None:
+        # A system id is its writer's to choose and is read before the clock is refused, so a
+        # stored one of any length reached verify's output whole (CL6A-E-05).
+        clock = NO_INSTANT[0]
+        long_id = "o" * 400_000
+        sequence, _ = self.stage_no_instant("failure", clock, observation_id=long_id)
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err.splitlines()[0],
+            f"error: sequence {sequence}: clock_out_of_range: observation {'o' * 200}... (400000 "
+            f"characters) has source time {clock} in history, which has no UTC instant inside the "
+            "years 1 to 9999, so no report can compute with it",
+        )
+        for observation_id in (f"obs-{'a' * 64}", "o" * 200):
+            with self.subTest(length=len(observation_id)):
+                self.assertIn(
+                    f"observation {observation_id} has source time",
+                    vdt_module.observation_clock_message(
+                        observation_id,
+                        datetime(1, 1, 1, tzinfo=UTC),
+                        "has no UTC instant",
+                    ),
+                )
 
     def test_the_repository_refuses_it_with_its_contract_error(self) -> None:
         for kind in SYSTEM_STREAMS:

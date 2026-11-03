@@ -211,8 +211,7 @@ class EvaluationInput:
         """Return the recorded status, or None while the vulnerability is active.
 
         An evaluation that concludes false positive without an explicit
-        disposition carries that conclusion, mirroring
-        `VulnerabilityCase.with_evaluation`.
+        disposition carries that conclusion.
         """
 
         if self.disposition is not None:

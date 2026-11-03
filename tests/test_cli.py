@@ -1637,6 +1637,8 @@ COVERED_AUDIT_CODES = {
     "failure_schema_unmarked",
     "failure_stream_mismatch",
     "payload_contract_invalid",
+    # Its `store verify` command tests live in `tests/test_evaluation_order.py`.
+    "tracking_id_collision",
 }
 
 #: A source timestamp Python parses and RFC 3339 forbids: an offset carrying seconds.

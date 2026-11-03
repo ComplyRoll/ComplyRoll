@@ -18,11 +18,11 @@ reports describe it.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, TypeVar
 from urllib.parse import urlsplit
 
 from complyroll import __version__
@@ -72,7 +72,7 @@ from complyroll.schemas import (
     load_bundled_schema_bundle,
     validate_bundled_report,
 )
-from complyroll.store.sqlite import bounded
+from complyroll.store.sqlite import bounded, shown
 
 from .coverage import (
     COVERAGE_BASIS,
@@ -505,7 +505,7 @@ class CompiledVulnerability:
     def evaluation_location(self) -> str:
         """Return the evaluations-file location behind this record, if any."""
 
-        return self.evaluation.location if self.evaluation is not None else "no evaluation entry"
+        return evaluation_location(self.evaluation)
 
     @property
     def current_rating(self) -> PainRating | None:
@@ -1816,34 +1816,81 @@ def _attestation_groups(
     )
 
 
-def _require_unique_tracking_ids(records: Sequence[CompiledVulnerability]) -> None:
-    """Refuse a trackingId override that would merge two vulnerabilities.
+#: The ERROR a report raises, and the fault `store verify` reports, for two records one id
+#: would publish (ADR 0008 amendment 2026-11-03).
+TRACKING_ID_COLLISION = "tracking_id_collision"
+
+
+class TrackingIdClaim(Protocol):
+    """What the uniqueness rule reads of a record, compiled or about to be."""
+
+    @property
+    def tracking_id(self) -> str: ...
+
+    @property
+    def original_tracking_id(self) -> str: ...
+
+    @property
+    def evaluation_location(self) -> str: ...
+
+
+ClaimT = TypeVar("ClaimT", bound=TrackingIdClaim)
+
+
+def published_tracking_id(group: VulnerabilityGroup, evaluation: EvaluationInput | None) -> str:
+    """Return the id a report publishes a group under: the evaluation's override, else its own."""
+
+    if evaluation is not None and evaluation.tracking_id is not None:
+        return evaluation.tracking_id
+    return group.tracking_id
+
+
+def evaluation_location(evaluation: EvaluationInput | None) -> str:
+    """Return where the evaluation behind a record came from, as a diagnostic names it."""
+
+    return evaluation.location if evaluation is not None else "no evaluation entry"
+
+
+def tracking_id_collisions(claims: Iterable[ClaimT]) -> list[tuple[ClaimT, ClaimT]]:
+    """Return each claim on an id an earlier claim holds, beside that earlier claim.
 
     An override may rename one vulnerability; it may not collapse two into one
-    (ADR 0007 amendment).
+    (ADR 0007 amendment). A report and `store verify` both decide it here.
     """
 
-    claimed: dict[str, CompiledVulnerability] = {}
-    collisions: list[ReportDiagnostic] = []
-    for record in records:
-        previous = claimed.get(record.tracking_id)
-        if previous is None:
-            claimed[record.tracking_id] = record
-            continue
-        collisions.append(
-            ReportDiagnostic(
-                level=DiagnosticLevel.ERROR,
-                code="tracking_id_collision",
-                message=(
-                    f"effective tracking id {record.tracking_id!r} is claimed by "
-                    f"{previous.evaluation_location} (originally "
-                    f"{previous.original_tracking_id}) and {record.evaluation_location} "
-                    f"(originally {record.original_tracking_id}); an override may rename "
-                    "one vulnerability but may not merge two"
-                ),
-                location=record.evaluation_location,
-            )
+    claimed: dict[str, ClaimT] = {}
+    collisions: list[tuple[ClaimT, ClaimT]] = []
+    for claim in claims:
+        previous = claimed.setdefault(claim.tracking_id, claim)
+        if previous is not claim:
+            collisions.append((previous, claim))
+    return collisions
+
+
+def tracking_id_collision_message(previous: TrackingIdClaim, claim: TrackingIdClaim) -> str:
+    """Word one collision, as the report and `store verify` both print it."""
+
+    return (
+        f"effective tracking id {shown(claim.tracking_id)} is claimed by "
+        f"{previous.evaluation_location} (originally "
+        f"{previous.original_tracking_id}) and {claim.evaluation_location} "
+        f"(originally {claim.original_tracking_id}); an override may rename "
+        "one vulnerability but may not merge two"
+    )
+
+
+def _require_unique_tracking_ids(records: Sequence[CompiledVulnerability]) -> None:
+    """Refuse a trackingId override that would merge two vulnerabilities."""
+
+    collisions = [
+        ReportDiagnostic(
+            level=DiagnosticLevel.ERROR,
+            code=TRACKING_ID_COLLISION,
+            message=tracking_id_collision_message(previous, record),
+            location=record.evaluation_location,
         )
+        for previous, record in tracking_id_collisions(records)
+    ]
     if collisions:
         raise ReportCompileError(collisions)
 
@@ -2591,12 +2638,8 @@ def _build_record(
     if overdue_clauses:
         explanation = _explanation(overdue_clauses, policy, snapshot, options)
 
-    tracking_id = group.tracking_id
-    if evaluation is not None and evaluation.tracking_id is not None:
-        tracking_id = evaluation.tracking_id
-
     return CompiledVulnerability(
-        tracking_id=tracking_id,
+        tracking_id=published_tracking_id(group, evaluation),
         source_type=group.source_type,
         source_record_id=group.source_record_id,
         context_key=group.context_key,

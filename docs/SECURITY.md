@@ -306,6 +306,11 @@ those three match, and a test pins it.
   report only, since no other command computes a deadline. `store verify` names all three with
   the same predicate (ADR 0008 amendment 2026-10-25). A clock that computes, year 1 with no
   offset among them, is never refused.
+- `store verify` names two current groups a report would publish under one tracking id as
+  `tracking_id_collision`, by the report's own rule and in its words (ADR 0008 amendment
+  2026-11-03). `cases evaluate` refuses to write such a store, but a later `ingest` can leave one,
+  by bringing a group whose correlation id an override already names. Every report refuses it
+  either way, and a new override clears it.
 - A failure or coverage stream's observation names its clock in its identity, so one whose clock
   has no UTC instant cannot be read at all. `Observation` and the repository refuse it, every
   command that reads the stream refuses it as `history_invalid`, and `store verify` names it as

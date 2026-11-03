@@ -20,6 +20,7 @@ for an inversion that arrived around the writers, such as through `ingest`.
 from __future__ import annotations
 
 from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 
 from complyroll.adapters import DiagnosticLevel
@@ -31,17 +32,23 @@ from complyroll.policy import (
     load_bundled_rule_source_snapshot,
     select_policy,
 )
+from complyroll.reports.replay import case_evaluations
 from complyroll.reports.vdt import (
     CLOCK_OUT_OF_RANGE,
+    TRACKING_ID_COLLISION,
     DetectionAttestation,
     ReportDiagnostic,
     clock_problem,
     detection_clock,
     detection_clock_message,
     evaluation_clock_message,
+    evaluation_location,
     evaluation_order_diagnostic,
     observation_clock_message,
+    published_tracking_id,
     resolve_detection_time,
+    tracking_id_collision_message,
+    tracking_id_collisions,
 )
 
 from .fold import (
@@ -68,6 +75,16 @@ class EvaluationOrderError(HistoryError):
         self.diagnostics: tuple[ReportDiagnostic, ...] = tuple(diagnostics)
         summary = "; ".join(item.render() for item in self.diagnostics)
         super().__init__(f"evaluations would precede detection: {summary}")
+
+
+@dataclass(frozen=True, slots=True)
+class _GroupClaim:
+    """One current group's claim on a published id, and the event that recorded its override."""
+
+    tracking_id: str
+    original_tracking_id: str
+    evaluation_location: str
+    override_sequence: int | None
 
 
 # *--- Core Logic ---*
@@ -177,6 +194,48 @@ def evaluation_order_faults(repository: EventRepository) -> tuple[HistoryFault, 
     return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
 
 
+def tracking_id_collision_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
+    """Return every record one published id would merge with another, as faults.
+
+    The claimants are what a report compiles, read as it reads them. Each current group claims
+    its correlation id, including a group no case holds yet, or the override `case_evaluations`
+    gives it. So an override with no current evaluation claims nothing, which is why this does
+    not read `CaseState.effective_tracking_id`, the writer's view, and a stale case has no group
+    to claim with. `reports.vdt.tracking_id_collisions` decides and words it for both sides. A
+    fault sits at the latest event recording an override among its two claimants. The rule reads
+    no clock and no report option, so the fault holds at every as-of and under either class.
+    """
+
+    cases = fold_all_cases(repository)
+    evaluations = case_evaluations(cases)
+    if all(entry.tracking_id is None for entry in evaluations.values()):
+        return ()
+    sequences = {case.tracking_id: case.identified_sequence for case in cases}
+    claims: list[_GroupClaim] = []
+    for tracking_id, group in current_groups(repository).items():
+        evaluation = evaluations.get(tracking_id)
+        override = evaluation is not None and evaluation.tracking_id is not None
+        claims.append(
+            _GroupClaim(
+                tracking_id=published_tracking_id(group, evaluation),
+                original_tracking_id=tracking_id,
+                evaluation_location=evaluation_location(evaluation),
+                override_sequence=sequences[tracking_id] if override else None,
+            )
+        )
+    faults: list[HistoryFault] = []
+    for previous, claim in tracking_id_collisions(claims):
+        # Two groups never share a correlation id, so one of a pair always carries an override.
+        sequence = max(
+            item.override_sequence
+            for item in (previous, claim)
+            if item.override_sequence is not None
+        )
+        message = tracking_id_collision_message(previous, claim)
+        faults.append(HistoryFault(sequence, TRACKING_ID_COLLISION, message))
+    return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
+
+
 def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
     """Return every clock in history some reader refuses as `clock_out_of_range`, as faults.
 
@@ -257,4 +316,5 @@ __all__ = [
     "clock_faults",
     "current_groups",
     "evaluation_order_faults",
+    "tracking_id_collision_faults",
 ]

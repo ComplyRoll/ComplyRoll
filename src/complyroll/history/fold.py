@@ -101,6 +101,7 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "failure_schema_unmarked",
     "failure_stream_mismatch",
     "payload_contract_invalid",
+    "tracking_id_collision",
 )
 
 
@@ -689,6 +690,13 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       code from the contract check at its own sequence, on any log (ADR 0008 amendment
       2026-11-02).
 
+    A third is checked under those conditions, for what a report publishes:
+
+    - `tracking_id_collision`: two current groups a report would publish under one tracking
+      id, by the report's rule and in its words, at the latest event recording an override
+      among the two. `ingest` can leave this, by bringing a group whose correlation id an
+      override already names (ADR 0008 amendment 2026-11-03).
+
     Faults are ordered by sequence and then by code, so one damaged file always describes
     itself the same way. A store-level failure (an unreadable file, a hole in history) is
     still raised: this walk is for a log the store has already called intact.
@@ -823,18 +831,23 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     if any(fault.code not in _ORDER_CHECKED_BESIDE for fault in faults):
         return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
     # Imported here because `history.order` imports this module.
-    from .order import clock_faults, evaluation_order_faults
+    from .order import clock_faults, evaluation_order_faults, tracking_id_collision_faults
 
     if not faults:
         return tuple(
             sorted(
-                (*clock_faults(repository), *evaluation_order_faults(repository)),
+                (
+                    *clock_faults(repository),
+                    *evaluation_order_faults(repository),
+                    *tracking_id_collision_faults(repository),
+                ),
                 key=lambda fault: (fault.sequence, fault.code),
             )
         )
     try:
         faults.extend(clock_faults(repository))
         faults.extend(evaluation_order_faults(repository))
+        faults.extend(tracking_id_collision_faults(repository))
     except ValueError:
         # A case stream can fail its fold in a way no fault above names: a `HistoryError`,
         # an `EventContractError`, or a stream id that names no tracking id. The faults

@@ -136,7 +136,7 @@ def compile_record_set_from_history(
         artifacts=artifacts,
         observations=observations,
         ingest_diagnostics=diagnostics,
-        evaluations_by_tracking_id=_evaluations(cases),
+        evaluations_by_tracking_id=case_evaluations(cases),
         attestation=_attestation(cases),
         options=options,
         gap_aware=(
@@ -347,7 +347,7 @@ def disposition_without_evaluation_message(tracking_id: str, status: str) -> str
     )
 
 
-def _evaluations(cases: Sequence[CaseState]) -> dict[str, EvaluationInput]:
+def case_evaluations(cases: Sequence[CaseState]) -> dict[str, EvaluationInput]:
     """Rebuild the compiler's evaluation input from each case's folded state.
 
     `index` is the case's position in tracking-identifier order. It only ever surfaces
@@ -412,6 +412,7 @@ def _evaluations(cases: Sequence[CaseState]) -> dict[str, EvaluationInput]:
 
 
 __all__ = [
+    "case_evaluations",
     "compile_avi_report_from_history",
     "compile_historical_report_from_history",
     "compile_record_set_from_history",

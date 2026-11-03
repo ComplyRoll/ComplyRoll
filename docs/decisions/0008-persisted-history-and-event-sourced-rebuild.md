@@ -720,3 +720,54 @@ correlate`, `cases coverage`, `cases evaluate` and `cases attest-detection` befo
 change. No command that succeeded on such a store before now refuses it, and verify had already
 rejected every one. Stores written by 0.3.0a0 and by the base of this change verify and report byte
 for byte as before, and no golden changes.
+
+## Amendment 2026-11-03: a tracking identifier collision is a store fault
+
+The 2026-10-14 amendment leaves a tracking identifier collision to the report, "unlike" an inverted
+evaluation, on the premise that it cannot arrive through `ingest`. That premise is false, and
+"effective tracking ids are unique at write time" (2026-08-22) holds for `cases evaluate` alone.
+This amendment corrects the first and qualifies the second; both stay as written above.
+
+The route needs only the command line, on every build from 0.3.0a0. `cases evaluate` records an
+override that names a correlation id no case holds yet, which its check accepts because it compares
+the folded cases. A later `ingest` brings a group with that id. Once that group has a detection
+time, every report refuses the store as `tracking_id_collision`, at any `--as-of` and under either
+class, with or without a `cases correlate` in between, while `store verify` passed it. A store
+written around the writers reaches the same state, two evaluated cases sharing one override among
+them.
+
+`tracking_id_collision` joins `AUDIT_FAULT_CODES`, on the precedent of
+`evaluation_before_detection`, and is checked in the same two branches under the same conditions.
+`reports.vdt.tracking_id_collisions` decides it for both sides and `tracking_id_collision_message`
+words it, so the fault carries the report's message, `evaluations[N]` included, and the two cannot
+drift. The rule reads no clock and no report option. The claimants are what a report compiles, read
+as it reads them: each current group claims its correlation id, or the override
+`reports.replay.case_evaluations` gives it. That is not `CaseState.effective_tracking_id`, the
+writer's view, in two ways. An override reaches a report only through the case's current evaluation,
+so one with no current evaluation claims nothing. A group no case holds yet still claims its
+correlation id, which is the variant the writer's check misses. A stale case has no group, so it
+claims nothing either. The fault sits at the latest event recording an override among the two
+claimants, the event a new override answers.
+
+The fault can name a store before its report does. A group with no detection time is not compiled,
+so a report stops at `detection_time_missing` first and meets the collision after the attestation.
+The collision is already recorded by then, and attesting cannot clear it, so verify names it. The
+reverse holds wherever the check runs: on a log the check runs on, a report that refuses with this
+code has its message named by verify at the same store, and a table in
+`tests/test_evaluation_order.py` holds that across the stores it builds. Beside a walk fault no
+report refuses, such as `event_stream_mismatch`, the check does not run, as
+`evaluation_before_detection` does not. Verify then rejects the store under that fault while the
+report names the collision. Only a store written around the repository holds that pair, and the
+rule, that verify rejects what a reader refuses with a named fault, still holds.
+
+This also states the boundary of the 2026-10-21 rule, "anything a reader refuses, `store verify` now
+rejects with a named fault". The rule is about what a store records. A refusal asking for the
+workflow's next step that contradicts nothing recorded, such as `detection_time_missing`, is not a
+fault: the store is in a normal state, and `examples/README.md` shows that refusal as a step before
+attestation. Nor is a refusal of a run's own input, such as `evaluation_unmatched`.
+
+A store holding a collision verified clean before and now exits 1. Every report already refused it,
+so no report stops that worked. A new override clears both: `cases evaluate` with another
+`trackingId` records it, and the store then verifies and reports. An append-only store has no other
+repair. The message now quotes an override through `shown`, cut past 200 characters as other stored
+values are, on both sides; a shorter one prints as before. No golden changes.

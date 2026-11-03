@@ -31,6 +31,7 @@ from typing import Any
 from unittest import mock
 
 from test_reports import (
+    EXAMPLES,
     FAILED_EVALUATIONS,
     FIXTURES,
     TRUNCATED_CASE,
@@ -51,6 +52,7 @@ from complyroll.history import (
     AUDIT_FAULT_CODES,
     CASE_CREATED,
     CASE_EVALUATED,
+    CASE_IDENTIFIED,
     CASE_OBSERVATION_LINKED,
     DETECTION_ATTESTED,
     AttestationOutcome,
@@ -69,6 +71,7 @@ from complyroll.history import order as history_order
 from complyroll.history import writers as history_writers
 from complyroll.history.order import case_order_diagnostic, current_groups
 from complyroll.models import CaseStatus
+from complyroll.policy import CertificationClass
 from complyroll.reports import (
     EvaluationSet,
     ReportCompileError,
@@ -1629,6 +1632,438 @@ class CommandOrderTests(unittest.TestCase):
         self.assertTrue(fault.endswith(f": {message}"), fault)
         self.assertTrue(summary.startswith("faults: 1 domain fault(s) in "), summary)
         self.assertEqual(report_vdt(self.database), (1, "", f"error: history_invalid: {message}\n"))
+
+
+class TrackingIdCollisionFaultTests(HistoryOrderFixture):
+    """A store two records would publish under one tracking id is a fault (CL6A-E-01).
+
+    A report refuses it as `tracking_id_collision`, and `store verify` passed it on the premise
+    that no such store can arrive around `cases evaluate` (ADR 0008 amendment 2026-11-03). The
+    claimants are what a report reads: each current group, under the override its case's current
+    evaluation carries, else its correlation id.
+    """
+
+    COMPLETED_AT = "2026-08-11T12:00:00Z"
+
+    def timed(self, rule: str) -> Path:
+        return self.artifact(rule, [("lab-timed", TIMED_AT)], rule=rule)
+
+    def untimed(self, rule: str) -> Path:
+        return self.artifact(rule, [("lab-untimed", None)], rule=rule)
+
+    def tracking_id_of(self, path: Path) -> str:
+        (group,) = groups_of((path,))
+        return group.tracking_id
+
+    def evaluation_of(self, rule: str, **fields: object) -> EvaluationSet:
+        entry: dict[str, object] = {
+            "match": {"sourceRecordId": rule, "sourceType": "xccdf"},
+            "completedAt": self.COMPLETED_AT,
+        }
+        entry.update(fields)
+        return evaluations_for(entry)
+
+    def case_of(self, rule: str) -> str:
+        (case,) = [
+            item.tracking_id
+            for item in fold_all_cases(self.repository)
+            if item.source_record_id == rule
+        ]
+        return case
+
+    def identify(self, tracking_id: str, override: str) -> int:
+        """Record an override around the writers and return its event's sequence."""
+
+        self.append_around(tracking_id, CASE_IDENTIFIED, {"providerTrackingId": override})
+        return self.sequence
+
+    def evaluate_around_writers(self, rule: str) -> None:
+        self.evaluate_around(self.evaluation_of(rule), self.case_of(rule))
+
+    # *--- The stores the table reads ---*
+
+    def later_ingest_without_correlate(self) -> None:
+        # The override names a correlation id no case holds yet, which the writer accepts.
+        banner, sshd = self.timed(BANNER_RULE), self.timed(SSHD_RULE)
+        self.ingest(banner)
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=self.tracking_id_of(sshd)))
+        self.ingest(sshd)
+
+    def later_ingest_correlated(self) -> None:
+        self.later_ingest_without_correlate()
+        self.correlate()
+
+    def two_evaluated_cases_sharing_one_override(self) -> None:
+        self.ingest(self.timed(BANNER_RULE), self.timed(SSHD_RULE))
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-SHARED"))
+        self.evaluate_around_writers(SSHD_RULE)
+        self.identify(self.case_of(SSHD_RULE), "PROV-SHARED")
+
+    def override_onto_an_evaluated_natural_id(self) -> None:
+        banner, sshd = self.timed(BANNER_RULE), self.timed(SSHD_RULE)
+        self.ingest(banner)
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=self.tracking_id_of(sshd)))
+        self.ingest(sshd)
+        self.correlate()
+        self.evaluate_around_writers(SSHD_RULE)
+
+    def three_claimants(self) -> None:
+        self.ingest(self.timed(BANNER_RULE), self.timed(SSHD_RULE), self.timed("third_rule"))
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-SHARED"))
+        for rule in (SSHD_RULE, "third_rule"):
+            self.evaluate_around_writers(rule)
+            self.identify(self.case_of(rule), "PROV-SHARED")
+
+    def override_with_no_current_evaluation(self) -> None:
+        # `effective_tracking_id` would call this a collision. No report ever reads the override.
+        # The third case's override keeps the check from stopping at "no override to compare".
+        banner, sshd = self.timed(BANNER_RULE), self.timed(SSHD_RULE)
+        self.ingest(banner, sshd, self.timed("third_rule"))
+        self.correlate()
+        self.evaluate(self.evaluation_of("third_rule", trackingId="PROV-OTHER"))
+        self.identify(self.case_of(BANNER_RULE), self.tracking_id_of(sshd))
+
+    def stale_case_with_the_override(self) -> None:
+        # The stale case has no open group, so it publishes nothing to collide with.
+        sshd = self.timed(SSHD_RULE)
+        self.ingest(sshd)
+        self.correlate()
+        self.append_around(ORPHAN_CASE, CASE_CREATED, orphan_created(ORPHAN_CASE))
+        self.evaluate_around(self.evaluation_of(BANNER_RULE), ORPHAN_CASE)
+        self.identify(ORPHAN_CASE, self.tracking_id_of(sshd))
+
+    def distinct_overrides(self) -> None:
+        self.ingest(self.timed(BANNER_RULE), self.timed(SSHD_RULE))
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-ONE"))
+        self.evaluate(self.evaluation_of(SSHD_RULE, trackingId="PROV-TWO"))
+
+    def override_equal_to_its_own_id(self) -> None:
+        banner = self.timed(BANNER_RULE)
+        self.ingest(banner, self.timed(SSHD_RULE))
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=self.tracking_id_of(banner)))
+
+    def refused_collisions(self) -> set[str]:
+        """Return the messages a report refuses this store with, under either class."""
+
+        found: set[str] = set()
+        for certification_class in CertificationClass:
+            try:
+                compile_record_set_from_history(
+                    self.repository,
+                    options=options(detected_at=None, certification_class=certification_class),
+                )
+            except ReportCompileError as exc:
+                found.update(
+                    item.message for item in exc.diagnostics if item.code == "tracking_id_collision"
+                )
+        return found
+
+    def test_wherever_a_report_refuses_with_a_collision_verify_names_it(self) -> None:
+        for build, expected in (
+            (self.later_ingest_without_correlate, 1),
+            (self.later_ingest_correlated, 1),
+            (self.two_evaluated_cases_sharing_one_override, 1),
+            (self.override_onto_an_evaluated_natural_id, 1),
+            (self.three_claimants, 2),
+            (self.override_with_no_current_evaluation, 0),
+            (self.stale_case_with_the_override, 0),
+            (self.distinct_overrides, 0),
+            (self.override_equal_to_its_own_id, 0),
+        ):
+            with self.subTest(store=build.__name__):
+                self.open_store(f"{build.__name__}.db")
+                build()
+
+                refused = self.refused_collisions()
+                faults = audit_history(self.repository)
+
+                self.assertEqual(len(refused), expected)
+                self.assertEqual({fault.message for fault in faults}, refused)
+                self.assertEqual(
+                    {fault.code for fault in faults},
+                    {"tracking_id_collision"} if expected else set(),
+                )
+                code, _, err = verify_store(self.database)
+                self.assertEqual(code, 1 if expected else 0, err)
+                for message in refused:
+                    self.assertIn(f": tracking_id_collision: {message}\n", err)
+
+    def test_verify_prints_the_report_s_words_at_the_override_s_event(self) -> None:
+        self.later_ingest_without_correlate()
+        banner = self.case_of(BANNER_RULE)
+        (override,) = [
+            record.sequence
+            for record in self.repository.read_stream(case_stream_id(banner))
+            if record.event_type == CASE_IDENTIFIED
+        ]
+        sshd = self.tracking_id_of(self.timed(SSHD_RULE))
+        (report_line,) = self.report_refusal()
+        message = (
+            f"effective tracking id {sshd!r} is claimed by evaluations[0] (originally {banner}) "
+            f"and no evaluation entry (originally {sshd}); an override may rename one "
+            "vulnerability but may not merge two"
+        )
+
+        self.assertEqual(
+            report_line, f"error: tracking_id_collision: {message} [no evaluation entry]"
+        )
+        self.assertEqual(report_vdt(self.database), (1, "", f"{report_line}\n"))
+        self.assertEqual(
+            audit_history(self.repository),
+            (HistoryFault(override, "tracking_id_collision", message),),
+        )
+        self.assertEqual(
+            verify_store(self.database),
+            (
+                1,
+                "",
+                f"error: sequence {override}: tracking_id_collision: {message}\n"
+                f"faults: 1 domain fault(s) in {self.sequence} verified event(s)\n",
+            ),
+        )
+
+    def test_the_fault_is_at_the_latest_override_among_the_claimants(self) -> None:
+        self.two_evaluated_cases_sharing_one_override()
+        later = self.sequence
+
+        (fault,) = audit_history(self.repository)
+
+        self.assertEqual(fault.sequence, later)
+        # Another event on a claimant does not move it: an override answers the fault.
+        self.evaluate_around_writers(SSHD_RULE)
+        self.assertGreater(self.sequence, later)
+        (fault,) = audit_history(self.repository)
+        self.assertEqual(fault.sequence, later)
+        # A later override on the first claimant, naming the same id, moves it there.
+        latest = self.identify(self.case_of(BANNER_RULE), "PROV-SHARED")
+        (fault,) = audit_history(self.repository)
+        self.assertEqual(fault.sequence, latest)
+
+    def test_an_override_no_report_reads_does_not_move_the_fault(self) -> None:
+        # The second claimant claims its correlation id, so its unread override is no claim.
+        self.later_ingest_correlated()
+        (override,) = [
+            record.sequence
+            for record in self.repository.read_stream(case_stream_id(self.case_of(BANNER_RULE)))
+            if record.event_type == CASE_IDENTIFIED
+        ]
+        unread = self.identify(self.case_of(SSHD_RULE), "PROV-UNREAD")
+
+        (fault,) = audit_history(self.repository)
+
+        self.assertLess(override, unread)
+        self.assertEqual(fault.sequence, override)
+
+    def test_a_new_override_clears_the_fault_and_the_refusal(self) -> None:
+        self.later_ingest_correlated()
+        self.assertEqual(len(audit_history(self.repository)), 1)
+
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-RENAMED"))
+
+        self.assertEqual(audit_history(self.repository), ())
+        self.assertEqual(self.refused_collisions(), set())
+        self.assertEqual(verify_store(self.database)[0], 0)
+
+    def test_a_group_with_no_detection_time_counts_before_the_report_reaches_it(self) -> None:
+        # The report stops at the next step of the workflow, and the collision is already recorded.
+        banner, sshd = self.timed(BANNER_RULE), self.untimed(SSHD_RULE)
+        self.ingest(banner)
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=self.tracking_id_of(sshd)))
+        self.ingest(sshd)
+
+        (line,) = self.report_refusal()
+
+        self.assertTrue(line.startswith("error: detection_time_missing: "), line)
+        self.assertEqual(
+            [fault.code for fault in audit_history(self.repository)], ["tracking_id_collision"]
+        )
+
+    def test_detection_time_missing_alone_is_not_a_fault(self) -> None:
+        # It asks for the workflow's next step and contradicts nothing recorded.
+        self.ingest(self.untimed(BANNER_RULE))
+        self.correlate()
+
+        (line,) = self.report_refusal()
+
+        self.assertTrue(line.startswith("error: detection_time_missing: "), line)
+        self.assertEqual(audit_history(self.repository), ())
+
+    def test_it_is_named_beside_a_fault_no_reader_refuses(self) -> None:
+        self.later_ingest_without_correlate()
+        stream_id = case_stream_id(ORPHAN_CASE)
+        (bad,) = self.repository.store.append(
+            stream_id,
+            [
+                NewEvent(
+                    event_type=CASE_CREATED,
+                    occurred_at=WRITTEN_AT,
+                    payload=orphan_created(ORPHAN_CASE),
+                    metadata={"actor": "tester"},
+                )
+            ],
+            expected_version=0,
+        )
+
+        faults = audit_history(self.repository)
+
+        self.assertEqual(
+            sorted(fault.code for fault in faults),
+            ["event_metadata_invalid", "tracking_id_collision"],
+        )
+        self.assertIn(bad.sequence, [fault.sequence for fault in faults])
+
+    def test_it_is_not_looked_for_beside_a_fault_that_stops_the_fold(self) -> None:
+        self.later_ingest_without_correlate()
+        self.append_around(ORPHAN_CASE, CASE_IDENTIFIED, {"providerTrackingId": "PROV-ORPHAN"})
+
+        faults = audit_history(self.repository)
+
+        self.assertEqual({fault.code for fault in faults}, {"case_stream_mismatch"})
+
+    def test_beside_a_walk_fault_no_report_refuses_verify_rejects_under_that_fault(self) -> None:
+        # The gate `evaluation_before_detection` runs behind: the store is still rejected with
+        # a named fault, and the report names the collision. Only a hand-built store gets here.
+        self.later_ingest_without_correlate()
+        (head,) = [
+            record
+            for record in self.repository.read_all()
+            if record.event_type == ARTIFACT_INGESTED
+        ][:1]
+        self.repository.store.append(
+            head.stream_id,
+            [
+                NewEvent(
+                    event_type=CASE_IDENTIFIED,
+                    occurred_at=WRITTEN_AT,
+                    payload={"providerTrackingId": "PROV-MISPLACED"},
+                    metadata=self.metadata.to_dict(),
+                )
+            ],
+            expected_version=len(self.repository.read_stream(head.stream_id)),
+        )
+
+        faults = audit_history(self.repository)
+
+        self.assertEqual({fault.code for fault in faults}, {"event_stream_mismatch"})
+        self.assertEqual(len(self.refused_collisions()), 1)
+
+    def test_a_long_override_is_cut_in_both_places_alike(self) -> None:
+        sshd = self.timed(SSHD_RULE)
+        self.ingest(self.timed(BANNER_RULE), sshd)
+        self.correlate()
+        long_id = "P" * 5000
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=long_id))
+        self.evaluate_around_writers(SSHD_RULE)
+        self.identify(self.case_of(SSHD_RULE), long_id)
+
+        (fault,) = audit_history(self.repository)
+
+        self.assertEqual(self.refused_collisions(), {fault.message})
+        self.assertIn(f"{'P' * 199}... (5002 characters) is claimed by", fault.message)
+        self.assertLess(len(fault.message), 500)
+
+
+class TrackingIdCollisionCommandTests(unittest.TestCase):
+    """The collision through the command line alone, as an operator reaches it (CL6A-E-01)."""
+
+    AS_OF = "2026-08-21T12:00:00Z"
+    #: The correlation id the OpenSCAP fixture's banner finding gets.
+    BANNER_ID = "case-04efea8c137ae82f"
+    UBUNTU_ID = "case-1f3e011db93cc89e"
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.database = str(self.directory / "history.db")
+
+    def succeeds(self, *argv: str) -> None:
+        code, _, err = run(argv)
+        self.assertEqual(code, 0, msg=f"{list(argv)} exited {code}: {err}")
+
+    def evaluate(self, override: str) -> None:
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"][0]["trackingId"] = override
+        evaluations = self.directory / "evaluations.json"
+        evaluations.write_text(json.dumps(payload), encoding="utf-8")
+        self.succeeds("cases", "evaluate", "--db", self.database, "--evaluations", str(evaluations))
+
+    def ingest(self, *names: str) -> None:
+        paths = [str(FIXTURES / name) for name in names]
+        self.succeeds("ingest", *paths, "--db", self.database, "--as-of", self.AS_OF)
+
+    def correlate_and_attest(self) -> None:
+        self.succeeds("cases", "correlate", "--db", self.database)
+        self.succeeds(
+            "cases",
+            "attest-detection",
+            "--db",
+            self.database,
+            "--all-missing",
+            "--detected-at",
+            "2026-08-01T00:00:00Z",
+            "--rationale",
+            "Attested from the change record.",
+        )
+
+    def report(self, kind: str, as_of: str | None = None) -> tuple[int, str, str]:
+        period = ["--from", "2026-08-01T00:00:00Z", "--to", "2026-08-31T23:59:59Z"]
+        return run(
+            [
+                "report",
+                kind,
+                "--db",
+                self.database,
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--as-of",
+                as_of or self.AS_OF,
+                *([] if kind == "historical" else period),
+            ]
+        )
+
+    def test_a_later_ingest_brings_the_id_an_override_already_names(self) -> None:
+        self.ingest("ubuntu-host.cklb", "windows-host.ckl")
+        self.correlate_and_attest()
+        self.evaluate(self.BANNER_ID)
+        self.succeeds("store", "verify", "--db", self.database)
+
+        self.ingest("openscap-results.xml")
+        self.correlate_and_attest()
+
+        code, out, err = run(["store", "verify", "--db", self.database])
+
+        message = (
+            f"effective tracking id {self.BANNER_ID!r} is claimed by evaluations[1] (originally "
+            f"{self.UBUNTU_ID}) and no evaluation entry (originally {self.BANNER_ID}); an override "
+            "may rename one vulnerability but may not merge two"
+        )
+        self.assertEqual((code, out), (1, ""))
+        lines = err.splitlines()
+        self.assertRegex(lines[0], r"^error: sequence \d+: tracking_id_collision: ")
+        self.assertTrue(lines[0].endswith(f": tracking_id_collision: {message}"), err)
+        self.assertRegex(lines[1], r"^faults: 1 domain fault\(s\) in \d+ verified event\(s\)$")
+        self.assertEqual(len(lines), 2)
+        refusal = f"error: tracking_id_collision: {message} [no evaluation entry]\n"
+        for kind in ("vdt", "avi", "historical"):
+            with self.subTest(report=kind):
+                self.assertEqual(self.report(kind), (1, "", refusal))
+        # The rule reads no clock, and neither does the fault.
+        self.assertEqual(self.report("vdt", "2026-08-20T00:00:00Z"), (1, "", refusal))
+
+        self.evaluate("RENAMED-1")
+
+        self.succeeds("store", "verify", "--db", self.database)
+        self.assertEqual(self.report("vdt")[0], 0)
 
 
 if __name__ == "__main__":

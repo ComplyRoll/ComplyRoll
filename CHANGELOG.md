@@ -6,6 +6,15 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- A store two records would publish under one tracking id now fails `store verify`, as the audit
+  fault `tracking_id_collision`, in the report's words, at the latest event recording an override
+  among the two. Every report already refused such a store, and verify passed it. `cases evaluate`
+  refuses to write one, but it accepts an override naming a correlation id no case holds yet, and a
+  later `ingest` then brings a group with that id, with or without `cases correlate`. That route
+  needs only the command line, on every build from 0.3.0a0. A store holding a collision verified
+  clean before and now exits 1; `cases evaluate` with a new `trackingId` clears both the fault and
+  the refusal. The message now cuts an override past 200 characters, as other stored values are cut
+  (ADR 0008 amendment 2026-11-03).
 - A failure or coverage stream's observation whose `observed_at` has no UTC instant, such as
   `0001-01-01T00:30:00+01:00`, ended `store verify`, every report from the store, `cases correlate`,
   `cases coverage`, `cases evaluate`, `cases attest-detection --case` on an evaluated case, `ingest

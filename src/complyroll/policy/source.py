@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from complyroll.store.sqlite import shown
+from complyroll.jsonsource import parse_json_source
 
 MAX_RULE_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_RULE_SOURCE_DEPTH = 128
@@ -205,54 +204,10 @@ def _snapshot_from_bytes(
 
 
 def _parse_json_bounded(content: bytes) -> Any:
-    def reject_nonstandard_constant(value: str) -> None:
-        raise PolicySourceError(f"non-standard JSON constant is prohibited: {value}")
-
-    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                # SECURITY: The key is untrusted text bound for a terminal, so it is quoted and cut.
-                raise PolicySourceError(f"duplicate JSON object key is prohibited: {shown(key)}")
-            value[key] = item
-        return value
-
-    try:
-        value = json.loads(
-            content.decode("utf-8"),
-            parse_constant=reject_nonstandard_constant,
-            object_pairs_hook=reject_duplicate_keys,
-        )
-    except UnicodeDecodeError as exc:
-        raise PolicySourceError("rule source must be UTF-8 JSON") from exc
-    except json.JSONDecodeError as exc:
-        raise PolicySourceError(f"rule source contains malformed JSON: {exc}") from exc
-    except PolicySourceError:
-        # The hooks above raise it, and it is a ValueError too.
-        raise
-    except ValueError as exc:
-        # The one other ValueError json.loads raises: an integer past the digit limit.
-        limit = sys.get_int_max_str_digits()
-        message = f"rule source contains an integer longer than {limit} digits"
-        raise PolicySourceError(message) from exc
-    except RecursionError as exc:
-        raise PolicySourceError("rule source exceeds the safe JSON recursion limit") from exc
-
-    values_seen = 0
-    stack: list[tuple[Any, int]] = [(value, 1)]
-    while stack:
-        current, depth = stack.pop()
-        values_seen += 1
-        if values_seen > MAX_RULE_SOURCE_VALUES:
-            raise PolicySourceError(
-                f"rule source contains more than {MAX_RULE_SOURCE_VALUES} JSON values"
-            )
-        if depth > MAX_RULE_SOURCE_DEPTH:
-            raise PolicySourceError(
-                f"rule source exceeds {MAX_RULE_SOURCE_DEPTH} levels of JSON nesting"
-            )
-        if isinstance(current, dict):
-            stack.extend((item, depth + 1) for item in current.values())
-        elif isinstance(current, list):
-            stack.extend((item, depth + 1) for item in current)
-    return value
+    return parse_json_source(
+        content,
+        subject="rule source",
+        error=PolicySourceError,
+        max_values=MAX_RULE_SOURCE_VALUES,
+        max_depth=MAX_RULE_SOURCE_DEPTH,
+    )

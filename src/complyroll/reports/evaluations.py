@@ -9,9 +9,6 @@ other JSON ComplyRoll reads.
 
 from __future__ import annotations
 
-import json
-import re
-import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -25,6 +22,7 @@ from complyroll.adapters.common import (
     MIN_CLOCK_YEAR,
     parse_clock,
 )
+from complyroll.jsonsource import parse_json_source
 from complyroll.models import CaseStatus, PainRating
 from complyroll.store.sqlite import shown
 
@@ -36,9 +34,6 @@ MAX_EVALUATIONS_VALUES = 200_000
 #: How many candidates an ambiguity remedy names before it counts the rest, the bound a
 #: contract error puts on its issue list (`events.repository.MAX_RENDERED_ISSUES`).
 MAX_NAMED_CANDIDATES = 10
-# json.loads decodes the escape of a lone surrogate, such as "\\ud800", into text that
-# no UTF-8 encoder will accept.
-_LONE_SURROGATE = re.compile("[\\ud800-\\udfff]")
 
 #: Dispositions that may close a case, per ADR 0007 Decision 4 and its amendment.
 #: A case closed as accepted needs an acceptance rationale and is routed to VER-RPT-AVI.
@@ -564,70 +559,13 @@ def _parse_json_bounded(content: bytes) -> Any:
         raise ReportInputError(
             f"evaluations file is {len(content)} bytes; maximum is {MAX_EVALUATIONS_BYTES} bytes"
         )
-
-    def reject_nonstandard_constant(value: str) -> None:
-        raise ReportInputError(f"non-standard JSON constant is prohibited: {value}")
-
-    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                # SECURITY: The key is untrusted text bound for a terminal, so it is quoted and cut.
-                raise ReportInputError(f"duplicate JSON object key is prohibited: {shown(key)}")
-            value[key] = item
-        return value
-
-    try:
-        value = json.loads(
-            content.decode("utf-8"),
-            parse_constant=reject_nonstandard_constant,
-            object_pairs_hook=reject_duplicate_keys,
-        )
-    except UnicodeDecodeError as exc:
-        raise ReportInputError("evaluations file must be UTF-8 JSON") from exc
-    except json.JSONDecodeError as exc:
-        raise ReportInputError(f"evaluations file contains malformed JSON: {exc}") from exc
-    except ReportInputError:
-        # The hooks above raise it, and it is a ValueError too.
-        raise
-    except ValueError as exc:
-        # The one other ValueError json.loads raises: an integer past the digit limit.
-        limit = sys.get_int_max_str_digits()
-        message = f"evaluations file contains an integer longer than {limit} digits"
-        raise ReportInputError(message) from exc
-    except RecursionError as exc:
-        raise ReportInputError("evaluations file exceeds the safe JSON recursion limit") from exc
-
-    values_seen = 0
-    stack: list[tuple[Any, int]] = [(value, 1)]
-    while stack:
-        current, depth = stack.pop()
-        values_seen += 1
-        if values_seen > MAX_EVALUATIONS_VALUES:
-            raise ReportInputError(
-                f"evaluations file contains more than {MAX_EVALUATIONS_VALUES} JSON values"
-            )
-        if depth > MAX_EVALUATIONS_DEPTH:
-            raise ReportInputError(
-                f"evaluations file exceeds {MAX_EVALUATIONS_DEPTH} levels of JSON nesting"
-            )
-        # SECURITY: A lone surrogate survives json.loads and fails the report write as a
-        # traceback; refuse it at parse, as safeio does for artifacts.
-        if isinstance(current, str):
-            _reject_lone_surrogate(current, "string")
-        elif isinstance(current, dict):
-            for key, item in current.items():
-                _reject_lone_surrogate(key, "object key")
-                stack.append((item, depth + 1))
-        elif isinstance(current, list):
-            stack.extend((item, depth + 1) for item in current)
-    return value
-
-
-def _reject_lone_surrogate(text: str, kind: str) -> None:
-    found = _LONE_SURROGATE.search(text)
-    if found is not None:
-        raise ReportInputError(
-            f"evaluations file contains a lone surrogate code point in a JSON {kind}: "
-            f"U+{ord(found.group()):04X}"
-        )
+    # SECURITY: A lone surrogate survives json.loads and fails the report write as a
+    # traceback; refuse it at parse, as safeio does for artifacts.
+    return parse_json_source(
+        content,
+        subject="evaluations file",
+        error=ReportInputError,
+        max_values=MAX_EVALUATIONS_VALUES,
+        max_depth=MAX_EVALUATIONS_DEPTH,
+        reject_lone_surrogates=True,
+    )

@@ -730,11 +730,10 @@ This amendment corrects the first and qualifies the second; both stay as written
 
 The route needs only the command line, on every build from 0.3.0a0. `cases evaluate` records an
 override that names a correlation id no case holds yet, which its check accepts because it compares
-the folded cases. A later `ingest` brings a group with that id. Once that group has a detection
-time, every report refuses the store as `tracking_id_collision`, at any `--as-of` and under either
-class, with or without a `cases correlate` in between, while `store verify` passed it. A store
-written around the writers reaches the same state, two evaluated cases sharing one override among
-them.
+cases. A later `ingest` brings a group with that id. Once that group has a detection time, every
+report refuses the store as `tracking_id_collision`, at any `--as-of` and under either class, with
+or without a `cases correlate` in between, while `store verify` passed it. A store written around
+the writers reaches the same state, two evaluated cases sharing one override among them.
 
 A second route needs one file and no override. A correlation id is 64 bits of SHA-256, so two groups
 can share one, and a search on a laptop found a pair in under a minute:
@@ -751,16 +750,36 @@ case for the pair: `cases correlate` passes there, and every report still refuse
 words it, so the fault carries the report's message, `evaluations[N]` included, and the two cannot
 drift. The rule reads no clock and no report option. The claimants are what a report compiles, read
 as it reads them: each current group claims its correlation id, or the override
-`reports.replay.case_evaluations` gives it. That is not `CaseState.effective_tracking_id`, the
-writer's view, in two ways. An override reaches a report only through the case's current evaluation,
-so one with no current evaluation claims nothing. A group no case holds yet still claims its
-correlation id, which is the variant the writer's check misses. A stale case has no group, so it
-claims nothing either. Two groups under one correlation id each claim and share that id's
-evaluation, so the check walks the groups a report compiles and not `history.order.current_groups`,
-a mapping that keeps one of them. The fault sits at the latest event recording an override among the
-two claimants, the event a new override answers. A pair with no override sits at the latest
-`observation.recorded` among the pair's observations: the event that brought it, until a later scan
-of either rule moves it.
+`reports.replay.case_evaluations` gives it. An override reaches a report only through the case's
+current evaluation, so one with no current evaluation claims nothing. A stale case has no group, so
+it claims nothing either. A group no case holds yet still claims its correlation id, which is the
+variant the writer's check misses. Two groups under one correlation id each claim and share that
+id's evaluation, so the check walks the groups a report compiles and not
+`history.order.current_groups`, a mapping that keeps one of them. The fault sits at the latest event
+recording an override among the two claimants, the event a new override answers. A pair with no
+override sits at the latest `observation.recorded` among the pair's observations: the event that
+brought it, until a later scan of either rule moves it.
+
+`cases evaluate` now counts what a report would publish, which qualifies "every case's effective
+identifier ... across all cases" (2026-08-22). It counted every folded case, so once a claimant went
+stale it refused every file at `recorded history`, an entry about an unrelated case included, while
+`store verify` passed and every report succeeded. The command line alone reaches that: an override
+naming the id a detection failure will get, or that failure's own override onto a natural id
+arriving later, and then the same bytes read under their right name, which supersedes the failure
+and leaves its case stale. The writer was wrong, not verify, because a report publishes no record
+for that case. A case with no current group now claims nothing, whether the run touches it or not. A
+case the run touches claims the entry's `trackingId`, else the recorded override, else its
+correlation id. A case it does not touch claims its override only with a current evaluation, else
+its correlation id. A case holding an override no report reads, other than its own id, claims
+nothing, not its correlation id, because the writer never counted that id for it and counting it
+would refuse a run that used to pass.
+
+Every claim is one the old check counted, so this adds no refusal: anything it accepted is accepted
+now. It still misses what it missed, a group no case holds and the correlation id of such an unread
+case, and verify names what either leaves. A refusal located at `recorded history` now means two
+current records already claim one id, so a report refuses that store and verify rejects it. A
+refusal naming an entry is located at that entry, where it read `recorded history` when the entry's
+case came first in id order.
 
 The fault can name a store before its report does. A group with no detection time is not compiled,
 so a report stops at `detection_time_missing` first and meets the collision after the attestation.
@@ -777,7 +796,9 @@ This also states the boundary of the 2026-10-21 rule, "anything a reader refuses
 rejects with a named fault". The rule is about what a store records. A refusal asking for the
 workflow's next step that contradicts nothing recorded, such as `detection_time_missing`, is not a
 fault: the store is in a normal state, and `examples/README.md` shows that refusal as a step before
-attestation. Nor is a refusal of a run's own input, such as `evaluation_unmatched`.
+attestation. Nor is a refusal of a run's own input, such as `evaluation_unmatched` for an entry no
+case matches or an override that would merge two records. That code located at `recorded history` is
+no such refusal: it names the store's own collision, and verify rejects that store.
 
 A store holding a collision verified clean before and now exits 1. Every report already refused it,
 so no report stops that worked. Where an override made the collision and an entry can name a

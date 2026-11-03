@@ -201,10 +201,10 @@ def tracking_id_collision_faults(repository: EventRepository) -> tuple[HistoryFa
     The claimants are what a report compiles, read as it reads them. Each current group claims
     its correlation id, including a group no case holds yet, or the override `case_evaluations`
     gives it. So an override with no current evaluation claims nothing, which is why this does
-    not read `CaseState.effective_tracking_id`, the writer's view, and a stale case has no group
-    to claim with. A correlation id is 64 bits, so one file can hold two groups under one id; each
-    still claims, which is why this walks the groups and not `current_groups`, a mapping that keeps
-    one of them. `reports.vdt.tracking_id_collisions` decides and words it for both sides. A fault
+    not read `CaseState.effective_tracking_id`, and a stale case has no group to claim with. A
+    correlation id is 64 bits, so one file can hold two groups under one id; each still claims,
+    which is why this walks the groups and not `current_groups`, a mapping that keeps one of them.
+    `reports.vdt.tracking_id_collisions` decides and words it for both sides. A fault
     sits at the latest event recording an override among its two claimants, else at the latest
     observation among their observations: the event that brought it, until a later scan of either
     moves it. The rule reads no clock and no report option, so the fault holds at every as-of and

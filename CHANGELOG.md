@@ -22,6 +22,14 @@ All notable project changes will be documented here.
   without that file. A collision whose claimants hold a context key of only whitespace cannot be
   cleared by a new override either, once a twin under a real name makes each source record
   ambiguous, because no entry can then name them (the same amendment).
+- `cases evaluate` no longer refuses every file once one of two claimants of an id goes stale. It
+  counted every folded case, so an override naming a detection failure's id, or that failure's own
+  override, refused even an entry about an unrelated case at `recorded history` once the same bytes
+  were read under their right name, while `store verify` passed and every report succeeded. It now
+  counts what a report would publish, so a case with no current group claims nothing, and this adds
+  no refusal. A refusal at `recorded history` now means two current records already claim one id,
+  and verify rejects that store. A refusal naming an entry is located at that entry, where it could
+  read `recorded history` before (the same amendment).
 - A failure or coverage stream's observation whose `observed_at` has no UTC instant, such as
   `0001-01-01T00:30:00+01:00`, ended `store verify`, every report from the store, `cases correlate`,
   `cases coverage`, `cases evaluate`, `cases attest-detection --case` on an evaluated case, `ingest

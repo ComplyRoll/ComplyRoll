@@ -965,7 +965,7 @@ def _apply_evaluations(
     # The order check runs before the effective tracking id check, as the compiler orders
     # them, so a file refused for both prints the report's ordering lines.
     warnings = _require_evaluation_order(repository, cases, matched)
-    _require_unique_effective_ids(cases, matched)
+    _require_unique_effective_ids(repository, cases, matched)
     counters = dict.fromkeys(
         (
             "evaluations_appended",
@@ -1121,41 +1121,68 @@ def _match_cases(
 
 
 def _require_unique_effective_ids(
+    repository: EventRepository,
     cases: Sequence[CaseState],
     matched: Mapping[str, EvaluationInput],
 ) -> None:
-    """Refuse a run that would leave two cases sharing one effective tracking id.
+    """Refuse a run that would leave two cases published under one effective tracking id.
 
-    A case's effective id is the entry's `trackingId` when this run states one, else
-    the recorded `providerTrackingId`, else the correlation id. Every folded case
-    counts, including the ones this run does not touch, so an override recorded by an
-    earlier run still collides. `reports.vdt` refuses the same data, so accepting it
-    here would write history the report cannot compile.
+    A case counts for what a report would publish for it once this run is written. A case with
+    no current group publishes nothing, so it claims nothing, whether this run touches it or not.
+    A case this run touches claims the entry's `trackingId`, else the recorded
+    `providerTrackingId`, else its correlation id. A case it does not touch claims its override
+    only through a current evaluation, which is how an override reaches a report, else its
+    correlation id; a case holding an override no report reads, other than its own id, claims
+    nothing, because counting the correlation id it never claimed here would refuse a run that used
+    to pass.
+
+    So each claim is one `_stated_tracking_id` already gave, and this refuses no run it accepted
+    when it counted every folded case. It still sees no group a case does not hold, and `store
+    verify` names what that leaves (ADR 0008 amendment 2026-11-03). A line located at `recorded
+    history` means two current records already claim one id, so verify rejects that store too; a
+    line naming an entry is located at the entry.
     """
 
+    stated = {
+        case.tracking_id: _stated_tracking_id(case, matched.get(case.tracking_id)) for case in cases
+    }
+    # Every claim below is one of these, so with no duplicate here there is no group to read.
+    if len(set(stated.values())) == len(stated):
+        return
+    grouped = current_groups(repository)
     claimed: dict[str, tuple[CaseState, str]] = {}
     problems: list[str] = []
     for case in cases:
         entry = matched.get(case.tracking_id)
-        effective = case.effective_tracking_id
-        location = "recorded history"
-        if entry is not None:
-            location = entry.location
-            if entry.tracking_id is not None:
-                effective = entry.tracking_id
+        if case.tracking_id not in grouped:
+            continue
+        unread = case.current_evaluation is None and case.effective_tracking_id != case.tracking_id
+        if entry is None and unread:
+            continue
+        effective = stated[case.tracking_id]
+        location = "recorded history" if entry is None else entry.location
         previous = claimed.get(effective)
         if previous is None:
             claimed[effective] = (case, location)
             continue
         previous_case, previous_location = previous
+        where = previous_location if entry is None else location
         problems.append(
-            f"{location}: effective tracking id {shown(effective)} is claimed by "
+            f"{where}: effective tracking id {shown(effective)} is claimed by "
             f"{previous_location} (originally {previous_case.tracking_id}) and "
             f"{location} (originally {case.tracking_id}); an override may rename one "
             "case but may not merge two"
         )
     if problems:
         raise EvaluationMatchError(problems)
+
+
+def _stated_tracking_id(case: CaseState, entry: EvaluationInput | None) -> str:
+    """Return the entry's override when it states one, else the id the case already holds."""
+
+    if entry is not None and entry.tracking_id is not None:
+        return entry.tracking_id
+    return case.effective_tracking_id
 
 
 def _require_evaluation_order(

@@ -61,7 +61,7 @@ _DATE_RELEASED_PATTERN = (
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-9]{2}:[0-9]{2}"
     r"(\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])"
 )
-_DATE_RELEASED = re.compile(_DATE_RELEASED_PATTERN)
+DATE_RELEASED = re.compile(_DATE_RELEASED_PATTERN)
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 # The same 4-19 digit sequence bound the SARIF adapter extracts (ADR 0011 Decision 5).
 _CVE_ID = re.compile(r"CVE-[0-9]{4}-[0-9]{4,19}")
@@ -183,7 +183,7 @@ class KevClock:
         return {
             "cveId": self.bound.cve_id,
             "dueDate": self.bound.due_date.isoformat(),
-            "dueAt": _utc_text(self.due_at),
+            "dueAt": utc_text(self.due_at),
             "entries": [entry.to_dict() for entry in self.entries],
             "pastDue": self.past_due,
             "satisfied": self.satisfied,
@@ -276,9 +276,9 @@ def load_kev_catalog(path: Path) -> KevCatalog:
     try:
         content = read_bounded(location, KEV_LIMITS)
     except InputLimitError as exc:
-        raise ReportInputError(f"KEV catalog exceeds a limit: {_detail(exc)}") from exc
+        raise ReportInputError(f"KEV catalog exceeds a limit: {detail(exc)}") from exc
     except (OSError, ValueError) as exc:
-        raise ReportInputError(f"KEV catalog cannot be read: {_detail(exc)}") from exc
+        raise ReportInputError(f"KEV catalog cannot be read: {detail(exc)}") from exc
     return parse_kev_catalog(content, name=location.name)
 
 
@@ -305,9 +305,9 @@ def parse_kev_catalog(content: bytes, *, name: str) -> KevCatalog:
     try:
         value = parse_json_bounded(content, KEV_LIMITS)
     except InputLimitError as exc:
-        raise ReportInputError(f"KEV catalog exceeds a limit: {_detail(exc)}") from exc
+        raise ReportInputError(f"KEV catalog exceeds a limit: {detail(exc)}") from exc
     except (ValueError, RecursionError) as exc:
-        raise ReportInputError(f"KEV catalog must be the CISA JSON feed: {_detail(exc)}") from exc
+        raise ReportInputError(f"KEV catalog must be the CISA JSON feed: {detail(exc)}") from exc
     # NOTE: The year window keeps every date clear of overflow; this block is the backstop,
     # since OverflowError is not a ValueError and would otherwise escape as a traceback.
     try:
@@ -315,13 +315,13 @@ def parse_kev_catalog(content: bytes, *, name: str) -> KevCatalog:
     except ReportInputError:
         raise
     except (ValueError, RecursionError, OverflowError) as exc:
-        raise ReportInputError(f"KEV catalog is invalid: {_detail(exc)}") from exc
+        raise ReportInputError(f"KEV catalog is invalid: {detail(exc)}") from exc
 
 
 def _parse_catalog(value: Any, *, name: str, sha256: str, size_bytes: int) -> KevCatalog:
     if not isinstance(value, dict):
         raise ReportInputError(
-            f"KEV catalog must be the CISA JSON feed: the top level is {_json_type(value)}, "
+            f"KEV catalog must be the CISA JSON feed: the top level is {json_type(value)}, "
             "not an object"
         )
     catalog_version = _matching(
@@ -336,7 +336,7 @@ def _parse_catalog(value: Any, *, name: str, sha256: str, size_bytes: int) -> Ke
 
     raw_entries = value.get("vulnerabilities")
     if not isinstance(raw_entries, list):
-        raise _refusal("", f"vulnerabilities must be an array, got {_json_type(raw_entries)}")
+        raise _refusal("", f"vulnerabilities must be an array, got {json_type(raw_entries)}")
     if len(raw_entries) > MAX_KEV_ENTRIES:
         raise _refusal(
             "", f"vulnerabilities holds {len(raw_entries)} entries; maximum is {MAX_KEV_ENTRIES}"
@@ -372,7 +372,7 @@ def _parse_catalog(value: Any, *, name: str, sha256: str, size_bytes: int) -> Ke
 def _parse_entry(raw_entry: Any, index: int) -> KevEntry:
     where = f"vulnerabilities[{index}]"
     if not isinstance(raw_entry, dict):
-        raise _refusal(where, f"the entry must be an object, got {_json_type(raw_entry)}")
+        raise _refusal(where, f"the entry must be an object, got {json_type(raw_entry)}")
     cve_id = _matching(_string(raw_entry, "cveID", where), _CVE_ID, where, "cveID", "CVE-YYYY-NNNN")
     # A refusal names the cveID only once it has passed validation.
     where = f"{where} ({cve_id})"
@@ -394,13 +394,13 @@ def _string(raw: Mapping[str, Any], key: str, where: str) -> str:
         raise _refusal(where, f"{key} is required")
     value = raw[key]
     if not isinstance(value, str):
-        raise _refusal(where, f"{key} must be a JSON string, got {_json_type(value)}")
+        raise _refusal(where, f"{key} must be a JSON string, got {json_type(value)}")
     return value
 
 
 def _matching(value: str, pattern: re.Pattern[str], where: str, key: str, shape: str) -> str:
     if pattern.fullmatch(value) is None:
-        raise _refusal(where, f"{key} must be {shape}, got {_excerpt(value)}")
+        raise _refusal(where, f"{key} must be {shape}, got {excerpt(value)}")
     return value
 
 
@@ -420,7 +420,7 @@ def _date_released(value: str) -> datetime:
     # parse_rfc3339 quotes its whole input, so the length is checked before anything quotes it.
     if len(value) > MAX_DATE_RELEASED_CHARS:
         raise _refusal("", f"dateReleased must be at most {MAX_DATE_RELEASED_CHARS} characters")
-    _matching(value, _DATE_RELEASED, "", "dateReleased", "an RFC 3339 timestamp")
+    _matching(value, DATE_RELEASED, "", "dateReleased", "an RFC 3339 timestamp")
     # parse_rfc3339 refuses an impossible date and keeps the years 1970 through 9000 UTC, so
     # the conversion below cannot overflow.
     try:
@@ -435,10 +435,10 @@ def _count(raw: Mapping[str, Any]) -> int:
         raise _refusal("", "count is required")
     value = raw["count"]
     if isinstance(value, bool) or not isinstance(value, int):
-        raise _refusal("", f"count must be a JSON integer, got {_json_type(value)}")
+        raise _refusal("", f"count must be a JSON integer, got {json_type(value)}")
     # NOTE: A JSON integer has no size limit, so the value is bounded before it is echoed.
     if not 0 <= value <= MAX_KEV_ENTRIES:
-        raise _refusal("", f"count must be 0 to {MAX_KEV_ENTRIES}, got {_excerpt(str(value))}")
+        raise _refusal("", f"count must be 0 to {MAX_KEV_ENTRIES}, got {excerpt(str(value))}")
     return value
 
 
@@ -459,7 +459,7 @@ def _refusal(where: str, problem: str) -> ReportInputError:
     return ReportInputError(f"KEV catalog{location}: {problem}")
 
 
-def _excerpt(value: str) -> str:
+def excerpt(value: str) -> str:
     """Quote an unvalidated string as a repr cut to MAX_QUOTED_CHARS characters."""
     text = repr(value[:MAX_QUOTED_CHARS])
     if len(text) <= MAX_QUOTED_CHARS:
@@ -467,7 +467,7 @@ def _excerpt(value: str) -> str:
     return f"{text[: MAX_QUOTED_CHARS - 3]}..."
 
 
-def _detail(exc: BaseException) -> str:
+def detail(exc: BaseException) -> str:
     """Return an exception's text as cut, printable ASCII, since it may quote the input."""
     raw = str(exc)
     text = ascii(raw[:MAX_DETAIL_CHARS])[1:-1]
@@ -476,7 +476,8 @@ def _detail(exc: BaseException) -> str:
     return text
 
 
-def _json_type(value: object) -> str:
+def json_type(value: object) -> str:
+    """Name a parsed JSON value's type the way a refusal names it."""
     if value is None:
         return "null"
     if isinstance(value, bool):
@@ -496,14 +497,17 @@ def _year_window() -> str:
     return f"the years {MIN_CLOCK_YEAR} through {MAX_CLOCK_YEAR}"
 
 
-def _utc_text(value: datetime) -> str:
+def utc_text(value: datetime) -> str:
+    """Return an aware instant as UTC text with a Z suffix."""
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 __all__ = [
+    "DATE_RELEASED",
     "KEV_LIMITS",
     "KEV_STALE_AFTER",
     "KEV_STOPS",
+    "MAX_DATE_RELEASED_CHARS",
     "MAX_KEV_CATALOG_BYTES",
     "MAX_KEV_ENTRIES",
     "KevCatalog",
@@ -511,9 +515,13 @@ __all__ = [
     "KevEntry",
     "KevStatus",
     "cve_may_be_missing",
+    "detail",
     "due_instant",
+    "excerpt",
+    "json_type",
     "kev_clock",
     "load_kev_catalog",
     "parse_kev_catalog",
     "start_instant",
+    "utc_text",
 ]

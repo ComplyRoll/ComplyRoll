@@ -360,24 +360,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: CCI list not found: {args.cci_list}", file=sys.stderr)
             return 1
         mapping_result = load_cci_control_map(args.cci_list)
-        if not mapping_result.successful:
+        mapping = mapping_result.mapping
+        # A successful result always carries its mapping; the explicit test survives -O.
+        if not mapping_result.successful or mapping is None:
             for diagnostic in mapping_result.errors:
                 print(
                     f"error: could not parse {args.cci_list.name}: {diagnostic.message}",
                     file=sys.stderr,
                 )
             return 1
-        assert mapping_result.mapping is not None
         findings = [
             replace(
                 finding,
                 controls=tuple(
                     sorted(
-                        {
-                            control
-                            for cci in finding.ccis
-                            for control in mapping_result.mapping.controls_for(cci)
-                        }
+                        {control for cci in finding.ccis for control in mapping.controls_for(cci)}
                     )
                 ),
             )

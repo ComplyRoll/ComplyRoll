@@ -622,3 +622,201 @@ because it refuses the record for its detection time first.
 An append-only store has no repair for such a clock. Refusing it in the event contract instead
 was rejected: every command, `cases list` included, would then refuse the whole store, including
 the stores whose clocks report today. No golden changes.
+
+## Amendment 2026-10-26: a case stream that does not hold one case.created, first
+
+Every reader that folds a case refuses a case stream whose first event is not `case.created`, as
+`history_invalid` with "case ... begins with ..., not 'case.created'", and one that carries a second
+`case.created`, with "case ... carries unexpected event 'case.created' at sequence N". The audit had
+no fault for either. Alone, the evaluation order check met one by folding every case and raised, so
+`store verify` stopped with that `history_invalid` outside the audit and `audit_history` raised
+instead of reporting. Beside a fault no reader refuses (`event_metadata_invalid`,
+`failure_schema_unmarked`, `coverage_schema_unmarked`) the order check swallowed the error, and
+`store verify` named the other fault alone; beside any other fault the check did not run. Either way
+a store every reader refuses was rejected without the fault that refuses it, which the 2026-10-21
+amendment's rule forbids.
+
+The audit now reports both as `case_stream_mismatch`, which `AUDIT_FAULT_CODES` gains, with the
+readers' messages: a first event of another type, once per case stream at that event, and every
+`case.created` after the first, each at its own sequence. One code serves both because they break
+one rule, that a case stream holds exactly one `case.created` and holds it first; unlike a failure
+or coverage stream, a case stream has no count of events to be overfull against. The fold names only
+the first problem it meets, so a stream holding several carries one fault per problem in the audit
+and one refusal in a reader. `EventRepository.append` still accepts a second `case.created`; the
+rule asks `store verify` to name what a reader refuses, not the writer to refuse it, so that is left
+as it is. A second `case.created` naming another tracking id is also `case_tracking_id_mismatch`,
+and a first event that does not belong on a case stream at all is also `event_stream_mismatch`, each
+at the same sequence; the two describe different facts. A stream whose id names no tracking id stays
+`case_tracking_id_mismatch` alone, as that amendment decided.
+
+With this, each refusal in the case fold's own code has a named fault. A stream whose id names no
+tracking id, or a `case.created` naming another, is `case_tracking_id_mismatch`; a first event other
+than `case.created`, or a later `case.created`, is `case_stream_mismatch`; any other event that does
+not belong on a case stream is `event_stream_mismatch`, and also `payload_contract_invalid` when its
+type is unpublished; a payload its contract refuses is `payload_contract_invalid`. Whether a field
+read in the fold asks more of a value than the contract does is a claim about values, and it was
+false for an integer until the 2026-11-02 amendment. What is shown for it is a sweep, not a proof:
+`test_history.FoldContractSweepTests` reads every field of every event a case, artifact or failure
+fold reads, against a bank of values, and no fold refuses a value its contract passes except a
+tracking id another stream names, which is `case_tracking_id_mismatch`. `case_stream_mismatch` is
+not a fault the order check runs beside, so a store that carries it is not folded. The readers and
+writers refuse exactly what they refused before, and no golden changes.
+
+## Amendment 2026-11-02: a system observation's clock, and a JSON integer
+
+Two more shapes broke the rule of the 2026-10-21 amendment, both found by a differential probe of
+`store verify` against the readers. Neither is a shape any command writes.
+
+**A system observation's clock.** The 2026-10-25 amendment names an observation whose source time
+has no UTC instant, and on an artifact stream it does. A failure or coverage stream's observation is
+a system observation, whose identity converts that clock to UTC (ADR 0002, amendment 2026-08-21), so
+computing its fingerprint while validating the payload raised `OverflowError`. That is not a
+`ValueError`, so it passed every refusal: `store verify`, each report from the store, `cases
+correlate`, `cases coverage`, `cases evaluate`, `cases attest-detection --case` on a case that
+carries an evaluation, `ingest --record-failed-imports` of a failed file when the clock is on a
+failure stream, and `EventRepository.append` ended in a traceback.
+
+A system observation with such a clock has no identity, so `Observation` refuses it, as
+`ObservationClockError`, a `ValueError`. The repository refuses the payload as `EventContractError`.
+`store verify` names it as the existing fault `clock_out_of_range`, in the words an artifact
+observation's clock carries, at its own sequence. That fault comes from the contract check rather
+than from the walk the 2026-10-25 amendment gates, because the record cannot be built to ask
+`clock_problem`, and the walk's order and clock checks do not run beside it, for the same reason.
+The readers refuse it as `history_invalid`, "event N is not a readable observation", where an
+artifact observation's clock is `clock_out_of_range`: they refuse a record they cannot read, not one
+they read and cannot compute with. A command that does not read the stream, such as `cases list`,
+still passes such a store, and verify rejects it; the rule does not ask the converse.
+
+No command writes the shape. `--as-of` on `ingest`, a report and `cases coverage` is refused as
+`invalid_input`, an invocation clock in a failed reading is read by `parse_clock` and refused as
+`source_timestamp_invalid`, and a gap's clock is computed in UTC. 0.3.0a0 has no failure or coverage
+stream. So only a store written around the repository holds it. An `ingested_at` with no UTC instant
+was probed on each stream kind: no reader converts it and verify passes it, so it is not a gap.
+
+**A JSON integer.** A contract's `integer` is JSON Schema's, which admits `1.0`. Every fold reads
+such a field through `_count`, which requires a JSON integer. So `pain`, `targetRating` or `rating`
+as `1.0`, `sizeBytes` or `observationCount` as `3.0`, passed the contract, and
+`EventRepository.append` stored them. Then alone, `store verify` stopped outside its audit with
+`history_invalid` and no fault (a failure head's `sizeBytes` as `failure_stream_mismatch`); beside
+`event_metadata_invalid` it named that fault and passed over this one, as the 2026-10-26 amendment
+describes for a second creation.
+
+The repository now validates each contract with `integer` meaning what the folds read: an `int` that
+is not a `bool`. The bool stays refused, as both sides already refused it. Such a value is
+`payload_contract_invalid` at its sequence, alone and beside any other fault, and
+`EventRepository.append` refuses it. A reader that reads the field still refuses it, in the
+contract's words rather than `_count`'s. For `pain`, `targetRating` and `rating` the reader's code
+changes from `history_invalid` to `event_contract_invalid`, because the case fold validates an event
+before it reads it and the commands print that error by its own code. `sizeBytes` and
+`observationCount` keep `history_invalid`, "event N is not a readable ...", because the artifact and
+failure folds wrap that error. The contract documents do not change, and this needs no new event
+version: no reader has read such a value, and no command writes one (`cases evaluate` refuses a
+fractional rating as `invalid_input`, on 0.3.0a0 as well, and the two counts are computed). A
+validator reading the documents by themselves still passes `1.0`, since JSON Schema has no way to
+refuse it.
+
+Each stream kind's shape was probed through `store verify`, the reports, `cases list`, `cases
+correlate`, `cases coverage`, `cases evaluate` and `cases attest-detection` before and after this
+change. No command that succeeded on such a store before now refuses it, and verify had already
+rejected every one. Stores written by 0.3.0a0 and by the base of this change verify and report byte
+for byte as before, and no golden changes.
+
+## Amendment 2026-11-03: a tracking identifier collision is a store fault
+
+The 2026-10-14 amendment leaves a tracking identifier collision to the report, "unlike" an inverted
+evaluation, on the premise that it cannot arrive through `ingest`. That premise is false, and
+"effective tracking ids are unique at write time" (2026-08-22) holds for `cases evaluate` alone.
+This amendment corrects the first and qualifies the second; both stay as written above.
+
+The route needs only the command line, on every build from 0.3.0a0. `cases evaluate` records an
+override that names a correlation id no case holds yet, which its check accepts because it compares
+cases. A later `ingest` brings a group with that id. Once that group has a detection time, every
+report refuses the store as `tracking_id_collision`, at any `--as-of` and under either class, with
+or without a `cases correlate` in between, while `store verify` passed it. A store written around
+the writers reaches the same state, two evaluated cases sharing one override among them.
+
+A second route needs one file and no override. A correlation id is 64 bits of SHA-256, so two groups
+can share one, and a search on a laptop found a pair in under a minute:
+`["cklb","R44e0d066875d4bc4","S"]` and `["cklb","Re463e3245367e5c9","S"]` both give
+`case-8c2b3a84c332d647`. By accident the odds are about n^2/2^65, roughly 3e-8 at a million records,
+so this takes a crafted or adversary-influenced file, not bad luck. `ingest` accepts the file, and
+every report then refuses the store. `cases correlate` refuses it too, as `store_conflict`, because
+it opens one stream per group, so no later group gets a case. A store 0.3.0a0 correlated holds one
+case for the pair: `cases correlate` passes there, and every report still refuses.
+
+`tracking_id_collision` joins `AUDIT_FAULT_CODES`, on the precedent of
+`evaluation_before_detection`, and is checked in the same two branches under the same conditions.
+`reports.vdt.tracking_id_collisions` decides it for both sides and `tracking_id_collision_message`
+words it, so the fault carries the report's message, `evaluations[N]` included, and the two cannot
+drift. The rule reads no clock and no report option. The claimants are what a report compiles, read
+as it reads them: each current group claims its correlation id, or the override
+`reports.replay.case_evaluations` gives it. An override reaches a report only through the case's
+current evaluation, so one with no current evaluation claims nothing. A stale case has no group, so
+it claims nothing either. A group no case holds yet still claims its correlation id, which is the
+variant the writer's check misses. Two groups under one correlation id each claim and share that
+id's evaluation, so the check walks the groups a report compiles and not
+`history.order.current_groups`, a mapping that keeps one of them. The fault sits at the latest event
+recording an override among the two claimants, the event a new override answers. A pair with no
+override sits at the latest `observation.recorded` among the pair's observations: the event that
+brought it, until a later scan of either rule moves it.
+
+`cases evaluate` now counts what a report would publish, which qualifies "every case's effective
+identifier ... across all cases" (2026-08-22). It counted every folded case, so once a claimant went
+stale it refused every file at `recorded history`, an entry about an unrelated case included, while
+`store verify` passed and every report succeeded. The command line alone reaches that: an override
+naming the id a detection failure will get, or that failure's own override onto a natural id
+arriving later, and then the same bytes read under their right name, which supersedes the failure
+and leaves its case stale. The writer was wrong, not verify, because a report publishes no record
+for that case. A case with no current group now claims nothing, whether the run touches it or not. A
+case the run touches claims the entry's `trackingId`, else the recorded override, else its
+correlation id. A case it does not touch claims its override only with a current evaluation, else
+its correlation id. A case holding an override no report reads, other than its own id, claims
+nothing, not its correlation id, because the writer never counted that id for it and counting it
+would refuse a run that used to pass.
+
+Every claim is one the old check counted, so this adds no refusal: anything it accepted is accepted
+now. It still misses what it missed, a group no case holds and the correlation id of such an unread
+case, and verify names what either leaves. A refusal located at `recorded history` now means two
+current records already claim one id, so a report refuses that store and verify rejects it. A
+refusal naming an entry is located at that entry, where it read `recorded history` when the entry's
+case came first in id order.
+
+The fault can name a store before its report does. A group with no detection time is not compiled,
+so a report stops at `detection_time_missing` first and meets the collision after the attestation.
+The collision is already recorded by then, and attesting cannot clear it, so verify names it. The
+reverse holds wherever the check runs: on a log the check runs on, a report that refuses with this
+code has its message named by verify at the same store, and a table in
+`tests/test_evaluation_order.py` holds that across the stores it builds. Beside a walk fault no
+report refuses, such as `event_stream_mismatch`, the check does not run, as
+`evaluation_before_detection` does not. Verify then rejects the store under that fault while the
+report names the collision. Only a store written around the repository holds that pair, and the
+rule, that verify rejects what a reader refuses with a named fault, still holds.
+
+This also states the boundary of the 2026-10-21 rule, "anything a reader refuses, `store verify` now
+rejects with a named fault". The rule is about what a store records. A refusal asking for the
+workflow's next step that contradicts nothing recorded, such as `detection_time_missing`, is not a
+fault: the store is in a normal state, and `examples/README.md` shows that refusal as a step before
+attestation. Nor is a refusal of a run's own input, such as `evaluation_unmatched` for an entry no
+case matches or an override that would merge two records. That code located at `recorded history` is
+no such refusal: it names the store's own collision, and verify rejects that store.
+
+A store holding a collision verified clean before and now exits 1. Every report already refused it,
+so no report stops that worked. Where an override made the collision and an entry can name a
+claimant, a new override clears both: `cases evaluate` with another `trackingId` records it, and the
+store then verifies and reports. An append-only store has no other repair, and two collisions have
+no repair through the command line.
+
+Two groups under one correlation id share whatever override their case holds, and where `cases
+correlate` refused they have no case to name. So one crafted file holding two groups under one
+64-bit id stops every report and `cases correlate` from then on, verify names it, and the remedy is
+a new store rebuilt from sources without that file. A claimant whose stored context key is only
+whitespace, which an XCCDF `TestResult id=" "` under a benchmark with no id gives, cannot be named
+either: `contextKey` must be non-blank, so once a twin under a real name makes its source record
+ambiguous, no entry reaches it, and verify and every report refuse from then on. A CKLB file's blank
+STIG name is not that case: it is stored as `cklb`, which an entry can name. Refusing a second
+identity under a held id, widening the id, and reaching a whitespace context key are not decided
+here; each needs its own ruling.
+
+The message now quotes an override through `shown`, cut past 200 characters of the quoted form, as
+other stored values are, on both sides. A plain override of up to 198 characters prints as before,
+and one heavy in escapes is cut sooner. No golden changes.

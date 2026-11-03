@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import uuid4
 
-from jsonschema import Draft202012Validator, ValidationError
+from jsonschema import Draft202012Validator, ValidationError, validators
 
 from complyroll import __version__
 from complyroll.adapters.common import encode_list
@@ -244,6 +244,18 @@ def _rendered_issues(issues: Sequence[ContractIssue]) -> str:
     if len(issues) <= MAX_RENDERED_ISSUES:
         return rendered
     return f"{rendered}; and {len(issues) - MAX_RENDERED_ISSUES} more"
+
+
+#: JSON Schema's `integer` admits 1.0 and every fold reads a JSON integer, so such a payload
+#: passed its contract and stopped the reader. Here `integer` means what the folds read: a number
+#: that parses to an `int`, which neither `1.0`, `1e+22` nor `true` does (ADR 0008 amendment
+#: 2026-11-02).
+_ContractValidator: Final = validators.extend(
+    Draft202012Validator,
+    type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
+        "integer", lambda _, value: isinstance(value, int) and not isinstance(value, bool)
+    ),
+)
 
 
 class EventContractError(ValueError):
@@ -655,7 +667,7 @@ class EventRepository:
                 f"no published contract for event {event_type!r} version {event_version}; "
                 f"published contracts are: {published}"
             )
-        validator = Draft202012Validator(schema)
+        validator = _ContractValidator(schema)
         self._validators[key] = validator
         return validator
 

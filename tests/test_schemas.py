@@ -482,5 +482,155 @@ class JsonReaderRefusalTests(unittest.TestCase):
                 self.assertEqual(reader(content), {"n": int("9" * limit)})
 
 
+class JsonReaderBoundTests(unittest.TestCase):
+    """Each of the four readers keeps its own subject, error type and bounds (CL-70).
+
+    The four share one parser. These pin every refusal it words, byte for byte, with the
+    bounds each reader set, so sharing it changes no message, no bound and no error type.
+    """
+
+    #: Name, reader, error, value bound, depth bound, and whether a lone surrogate is refused.
+    READERS: tuple[tuple[str, Callable[[bytes], object], type[ValueError], int, int, bool], ...] = (
+        (
+            "evaluations file",
+            evaluations_module._parse_json_bounded,
+            ReportInputError,
+            evaluations_module.MAX_EVALUATIONS_VALUES,
+            evaluations_module.MAX_EVALUATIONS_DEPTH,
+            True,
+        ),
+        (
+            "report",
+            validation_module._parse_report_json,
+            ReportDocumentError,
+            validation_module.MAX_REPORT_VALUES,
+            validation_module.MAX_REPORT_DEPTH,
+            False,
+        ),
+        (
+            "rule source",
+            policy_source._parse_json_bounded,
+            PolicySourceError,
+            policy_source.MAX_RULE_SOURCE_VALUES,
+            policy_source.MAX_RULE_SOURCE_DEPTH,
+            False,
+        ),
+        (
+            "schema content",
+            schema_source._parse_json_bounded,
+            SchemaSourceError,
+            schema_source.MAX_SCHEMA_VALUES,
+            schema_source.MAX_SCHEMA_DEPTH,
+            False,
+        ),
+    )
+
+    def refusal(self, reader: Callable[[bytes], object], error: type[ValueError], content: bytes):
+        with self.assertRaises(error) as caught:
+            reader(content)
+        self.assertIs(type(caught.exception), error)
+        return str(caught.exception)
+
+    def test_the_bounds_are_the_readers_own(self) -> None:
+        self.assertEqual(
+            [(name, values, depth) for name, _, _, values, depth, _ in self.READERS],
+            [
+                ("evaluations file", 200_000, 64),
+                ("report", 500_000, 128),
+                ("rule source", 500_000, 128),
+                ("schema content", 100_000, 128),
+            ],
+        )
+
+    def test_a_nonstandard_constant_is_refused(self) -> None:
+        for name, reader, error, *_ in self.READERS:
+            for constant in ("NaN", "Infinity", "-Infinity"):
+                with self.subTest(reader=name, constant=constant):
+                    message = self.refusal(reader, error, b'{"n": ' + constant.encode() + b"}")
+                    expected = f"non-standard JSON constant is prohibited: {constant}"
+                    self.assertEqual(message, expected)
+
+    def test_text_that_is_not_utf8_is_refused(self) -> None:
+        for name, reader, error, *_ in self.READERS:
+            with self.subTest(reader=name):
+                message = self.refusal(reader, error, b'{"a": "\xff"}')
+                self.assertEqual(message, f"{name} must be UTF-8 JSON")
+
+    def test_malformed_json_carries_the_decoders_words(self) -> None:
+        for content in (b'{"a": }', b"[1, 2", b"", b"\xef\xbb\xbf{}"):
+            # A byte order mark is malformed here: these readers decode UTF-8, not utf-8-sig.
+            with self.assertRaises(json.JSONDecodeError) as decoded:
+                json.loads(content.decode("utf-8"))
+            for name, reader, error, *_ in self.READERS:
+                with self.subTest(reader=name, content=content):
+                    message = self.refusal(reader, error, content)
+                    expected = f"{name} contains malformed JSON: {decoded.exception}"
+                    self.assertEqual(message, expected)
+
+    def test_nesting_past_the_recursion_limit_is_refused(self) -> None:
+        content = b"[" * 200_000 + b"]" * 200_000
+        for name, reader, error, *_ in self.READERS:
+            with self.subTest(reader=name):
+                message = self.refusal(reader, error, content)
+                self.assertEqual(message, f"{name} exceeds the safe JSON recursion limit")
+
+    def test_values_past_the_bound_are_refused_and_at_it_read(self) -> None:
+        for name, reader, error, values, _depth, _surrogates in self.READERS:
+            # An array of n zeros is n + 1 values.
+            at_bound = b"[" + b",".join([b"0"] * (values - 1)) + b"]"
+            past = b"[" + b",".join([b"0"] * values) + b"]"
+            with self.subTest(reader=name):
+                self.assertEqual(len(reader(at_bound)), values - 1)  # type: ignore[arg-type]
+                message = self.refusal(reader, error, past)
+                self.assertEqual(message, f"{name} contains more than {values} JSON values")
+
+    def test_nesting_past_the_bound_is_refused_and_at_it_reads(self) -> None:
+        for name, reader, error, _values, depth, _surrogates in self.READERS:
+            with self.subTest(reader=name):
+                reader(b"[" * depth + b"]" * depth)
+                message = self.refusal(reader, error, b"[" * (depth + 1) + b"]" * (depth + 1))
+                self.assertEqual(message, f"{name} exceeds {depth} levels of JSON nesting")
+
+    def test_object_nesting_past_the_bound_is_refused_and_at_it_reads(self) -> None:
+        # Each object counts one level, and so does the object its key holds.
+        def nested(levels: int) -> bytes:
+            return b'{"a":' * (levels - 1) + b"{}" + b"}" * (levels - 1)
+
+        for name, reader, error, _values, depth, _surrogates in self.READERS:
+            with self.subTest(reader=name):
+                reader(nested(depth))
+                message = self.refusal(reader, error, nested(depth + 1))
+                self.assertEqual(message, f"{name} exceeds {depth} levels of JSON nesting")
+
+    def test_one_value_past_both_bounds_is_refused_for_the_value_bound(self) -> None:
+        # The walk pops the trailing zeros first, so the chain's deepest array is both the
+        # value past the value bound and the level past the depth bound; values are checked
+        # first.
+        for name, reader, error, values, depth, _surrogates in self.READERS:
+            chain = b"[" * depth + b"]" * depth
+            content = b"[" + chain + b",0" * (values - depth) + b"]"
+            with self.subTest(reader=name):
+                message = self.refusal(reader, error, content)
+                self.assertEqual(message, f"{name} contains more than {values} JSON values")
+
+    def test_a_lone_surrogate_is_refused_only_by_the_evaluations_reader(self) -> None:
+        # The other three read one as 961bc60 read it; sharing the parser keeps that.
+        for name, reader, error, _values, _depth, refuses in self.READERS:
+            for content, kind, code_point in (
+                (b'{"a": ["\\ud800"]}', "string", "D800"),
+                (b'{"\\udc00": 1}', "object key", "DC00"),
+            ):
+                with self.subTest(reader=name, kind=kind):
+                    if refuses:
+                        message = self.refusal(reader, error, content)
+                        self.assertEqual(
+                            message,
+                            f"{name} contains a lone surrogate code point in a JSON {kind}: "
+                            f"U+{code_point}",
+                        )
+                    else:
+                        self.assertEqual(reader(content), json.loads(content))
+
+
 if __name__ == "__main__":
     unittest.main()

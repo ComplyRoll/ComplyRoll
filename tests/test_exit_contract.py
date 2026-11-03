@@ -48,7 +48,8 @@ from test_coverage_gap_report import (
 from test_reports import FAILED_EVALUATIONS, FIXTURES, GOLDEN, REPORT_KINDS
 
 from complyroll import cli as cli_module
-from complyroll.adapters import DiagnosticLevel
+from complyroll import terminal as terminal_module
+from complyroll.adapters import CciMapResult, DiagnosticLevel
 from complyroll.cli import main
 from complyroll.compat import stigroll
 from complyroll.reports import ReportDiagnostic
@@ -516,6 +517,20 @@ class StigrollExitTests(unittest.TestCase):
                     self.assertEqual(out, "")
                     self.assertTrue(error_lines(err)[0].startswith(line), err)
 
+    def test_a_cci_result_with_no_mapping_and_no_error_still_says_why(self) -> None:
+        # No loader path returns this today; the guard's arm names the file rather than
+        # exiting 1 in silence (CL-66).
+        checklist = str(FIXTURES / "windows-host.ckl")
+        empty = CciMapResult(artifact=None, mapping=None, diagnostics=())
+        with tempfile.TemporaryDirectory() as directory:
+            cci_list = Path(directory) / "cci.xml"
+            cci_list.write_text("<cci_list/>", encoding="utf-8")
+            with patch.object(stigroll, "load_cci_control_map", return_value=empty):
+                code, out, err = run_stigroll([checklist, "--cci-list", str(cci_list)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "error: could not parse cci.xml: no mapping read\n")
+
     def test_an_output_write_failure_is_a_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as directory, self.assertRaises(OSError):
             run_stigroll([str(FIXTURES / "windows-host.ckl"), "-o", directory])
@@ -531,7 +546,10 @@ class UncontractedEdgeTests(unittest.TestCase):
         for command in ("version", "plan"):
             with (
                 self.subTest(command=command),
-                patch.object(cli_module, "print", create=True, side_effect=ValueError("simulated")),
+                # The CLI prints every line through `complyroll.terminal` (CL-80).
+                patch.object(
+                    terminal_module, "print", create=True, side_effect=ValueError("simulated")
+                ),
                 self.assertRaises(ValueError),
             ):
                 main([command])

@@ -771,3 +771,22 @@ from. `cases list` adds a last column, `CONTEXT KEY`, once the store holds a cov
 the gap's context key, and `-` for every other case. A listing with no gap case keeps its seven
 columns byte for byte, and the column is text output, escaped as every line is (ADR 0004
 amendment 2026-10-25). No report document carries the key, and no golden moved.
+
+## Amendment (2026-10-27): the report diagnostic code registry
+
+The registry "Left for later (2026-10-16)" names is built. `REPORT_DIAGNOSTIC_CODES`, beside
+`ReportDiagnostic` in `complyroll.reports.vdt` and exported from `complyroll.reports`, is the closed
+set of 61 codes a diagnostic line carries: every `ReportDiagnostic` a report, a history writer or
+the CLI builds, the three coverage gap INFO codes above and the three retained-fact warnings of
+`cases evaluate` among them, the `IngestDiagnostic` a history writer builds
+(`failure_held_by_another_stream`), and the two warnings the CLI writes as text.
+`tests/test_report_codes.py` reads `src/complyroll` and holds every site its scan can read to the
+set, and the set to what the scan finds. A new code fails it when it is a literal at one of those
+constructors, a `replace(..., code=...)` or a text line, or reaches one through a name the scan can
+follow, and an indirection the scan recognizes and cannot follow fails as unresolved until it is
+resolved or named. That is a check on the source, not a guarantee about every run. A shape the scan
+does not recognize passes unseen, as construction through `getattr`, `type(item)(...)` or `exec`
+does, and a text line whose level is interpolated. The docstring of the test lists the shapes that
+have been found, and that list is not closed. A diagnostic an adapter mints keeps its own code when
+a report carries it, a stored one read back keeps the code it was stored with, and audit faults stay
+in `AUDIT_FAULT_CODES`. There is no run-time check, so no new refusal.

@@ -93,6 +93,7 @@ from complyroll.reports import (
     parse_evaluations,
     parse_inventory,
 )
+from complyroll.reports import coverage as coverage_module
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.coverage import CoverageEvidence, EvidenceKind
 from complyroll.reports.gaps import (
@@ -1041,6 +1042,24 @@ class GapDivergenceTests(CoverageStoreFixture):
                 diagnostics,
             )
         assert_markdown_carries_the_json(self, report)
+
+    def test_the_disproof_files_the_observations_once_per_compile(self) -> None:
+        # Each underived gap used to refile every observation (CL-73); the compile now files
+        # them once for the derivation and once for every gap the run derives no window for.
+        self.contradicted_store(
+            ("late-upload.xml", xccdf("late-upload", "lab-ubuntu-01", LATE_AT, "pass"))
+        )
+        with mock.patch.object(
+            coverage_module, "_collect", wraps=coverage_module._collect
+        ) as collect:
+            report = self.replay(inventory=INVENTORY)
+
+        underived = [
+            *diagnostics_of(report, "coverage_gap_contradicted"),
+            *diagnostics_of(report, "coverage_gap_unmatched"),
+        ]
+        self.assertEqual(len(underived), 2)
+        self.assertEqual(collect.call_count, 2)
 
     def test_the_earliest_verification_inside_the_window_is_named(self) -> None:
         # The examining scan is earlier but verifies nothing, and a later pass is not first.

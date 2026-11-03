@@ -122,6 +122,8 @@ _NON_BLANK_TEXT: Final[dict[str, Any]] = {
 _SHA256: Final[dict[str, Any]] = {"type": "string", "pattern": r"^[0-9a-f]{64}$"}
 #: System observations carry no artifact, so their digest field is the empty string.
 _OPTIONAL_SHA256: Final[dict[str, Any]] = {"type": "string", "pattern": r"^([0-9a-f]{64})?$"}
+#: The repository checks `integer` as a JSON integer, where JSON Schema alone admits 1.0, so a
+#: validator reading these documents by themselves passes what `store verify` refuses.
 _PAIN: Final[dict[str, Any]] = {"type": "integer", "minimum": 1, "maximum": 5}
 _COUNT: Final[dict[str, Any]] = {"type": "integer", "minimum": 0}
 _TRACKING_ID: Final[dict[str, Any]] = {"type": "string", "pattern": r"^case-[0-9a-f]{16}$"}

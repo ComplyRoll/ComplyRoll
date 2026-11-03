@@ -412,11 +412,13 @@ narrative rule.
 
 ## Core entities
 
-Implemented in `complyroll.models` today: `ResourceRef`, `EvidenceArtifact`, `Observation`,
-`Evaluation`, and `VulnerabilityCase`. `models.Evaluation` and `models.VulnerabilityCase` are
-exported but unused by production code: the report compiler reads evaluations through
-`complyroll.reports.evaluations` and case state through the fold in `complyroll.history`, and
-reconciling or retiring the two classes is Phase 2 cleanup. `AcceptedVulnerability` predates
+Implemented in `complyroll.models` today: `ResourceRef`, `EvidenceArtifact`, and `Observation`.
+The vulnerability case and its evaluation have no class of their own: the event log records them,
+the fold in `complyroll.history` reads a case as a `CaseState` with its `EvaluationRecord`s, and the
+report compiler reads an evaluations file through `complyroll.reports.evaluations`. The
+`VulnerabilityCase` and `Evaluation` sections below describe those records, not classes; the
+in-memory `models.VulnerabilityCase` and `models.Evaluation`, which no production code used, were
+removed before 1.0. `AcceptedVulnerability` predates
 ADR 0010 in `complyroll.reports`; ADR 0010 made the accepted-vulnerability and historical
 reports publish it, as described below. `InformationResource` shipped with ADR 0015 in
 `complyroll.reports.inventory`, beside the KEV reader. `ResponseAction`, `ValidationDefinition`,
@@ -550,16 +552,24 @@ digest.
 
 ### VulnerabilityCase
 
+A case is a `case/<tracking id>` stream in the event log, and the fold reads it as a
+`complyroll.history.CaseState`. The stream opens with exactly one `case.created`; every later event
+adds to it.
+
 | Field | Purpose |
 |---|---|
-| `case_id` | Provider tracking identifier used in reports |
+| `tracking_id` | Correlation tracking identifier, which names the stream (`case.created`) |
+| `provider_tracking_id` | The operator's override, the id a report publishes (`case.identified`) |
+| `source_type` / `source_record_id` / `context_key` | The group key the case correlates on |
 | `title` / `description` | Logical weakness description |
-| `status` | New, evaluating, active, mitigated, remediated, accepted, false positive, closed |
-| `observation_ids` | Complete supporting observation set |
-| `current_evaluation_id` | Current contextual assessment |
-| `response_actions` | Planned and completed work |
-| `rating_history` | PAIN reductions and evidence |
-| `owner` | Responsible provider role or system |
+| `created_at` | When the case was created |
+| `links` | Every supporting observation, in the order linked (`case.observation_linked`) |
+| `attestation` | The latest attested detection time and its rationale (`detection.attested`) |
+| `evaluations` | Every evaluation, in order; the latest is current (`case.evaluated`) |
+| `pain_reductions` | PAIN reductions and when they took effect (`case.pain_reduced`) |
+| `disposition` | The latest recorded status, closed disposition and acceptance rationale (`case.disposition_recorded`) |
+
+Response actions and an owner are not recorded; see `ResponseAction (planned)` below.
 
 ### Evaluation
 
@@ -575,9 +585,8 @@ digest.
 | `evaluator` | Human or automated actor, with method/version |
 
 Evaluation revisions append history. They never rewrite the original completed time or rationale.
-In the in-memory aggregate, `VulnerabilityCase.with_evaluation` moves the previous evaluation into
-`evaluation_history` and refuses to reactivate an ACCEPTED or CLOSED case unless the caller passes
-an explicit reopen flag. Durable history lives in the event log.
+Each is a `case.evaluated` event, and the fold keeps every one in order: a case's current
+evaluation is its latest. Durable history lives in the event log.
 
 `completedAt` is ordered against `detectedAt`. A report refuses a record whose evaluation completed
 strictly before a detection time that is the record's own (an artifact timestamp, an attestation,

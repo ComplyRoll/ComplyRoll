@@ -60,6 +60,7 @@ from complyroll.history import (
 from complyroll.models import Observation
 from complyroll.reports import vdt as vdt_module
 from complyroll.store import MAX_EVENT_JSON_BYTES, EventRecord, NewEvent, SQLiteEventStore
+from complyroll.terminal import terminal_text
 
 # Versions after the shipped SARIF parser, for a fixture re-read under another version.
 SARIF_NEXT = str(int(SARIF_PARSER_VERSION) + 1)
@@ -1612,6 +1613,7 @@ COVERED_AUDIT_CODES = {
     "artifact_incomplete",
     "artifact_overfull",
     "artifact_stream_mismatch",
+    "case_stream_mismatch",
     "case_tracking_id_mismatch",
     # Its `store verify` command tests live in `UnusableStoredClockTests` below.
     "clock_out_of_range",
@@ -1635,6 +1637,8 @@ COVERED_AUDIT_CODES = {
     "failure_schema_unmarked",
     "failure_stream_mismatch",
     "payload_contract_invalid",
+    # Its `store verify` command tests live in `tests/test_evaluation_order.py`.
+    "tracking_id_collision",
 }
 
 #: A source timestamp Python parses and RFC 3339 forbids: an offset carrying seconds.
@@ -4945,6 +4949,41 @@ class PersistedEvaluationWarningTests(PersistedStoreTestCase):
         self.assertIn(UBUNTU_CASE, err)
         self.assertIn("dispositions: 0 appended, 0 skipped", out)
 
+    def test_each_retained_warning_prints_the_line_it_always_printed(self) -> None:
+        # The writer carries each as a diagnostic now, so the code is held to its set; the
+        # bytes on standard error did not move (CL6A-D-03).
+        self.ingest_fixtures()
+        self.correlate()
+        self.attest_missing()
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        payload["evaluations"][0]["trackingId"] = "PROV-7"
+        named = self.workspace / "evaluations-named.json"
+        named.write_text(json.dumps(payload), encoding="utf-8")
+        self.evaluate(named)
+        for entry in payload["evaluations"]:
+            for key in ("trackingId", "disposition", "closedDisposition", "acceptanceRationale"):
+                entry.pop(key, None)
+            entry.pop("painReductionEvents", None)
+        dropped = self.workspace / "evaluations-dropped.json"
+        dropped.write_text(json.dumps(payload), encoding="utf-8")
+
+        _, err = self.evaluate(dropped)
+
+        self.assertEqual(
+            err,
+            f"warning: identification_retained: {UBUNTU_CASE}: evaluations[0] states no "
+            "trackingId, so the recorded override 'PROV-7' stands and the persisted report keeps "
+            "reporting it; ComplyRoll has no retraction event, and returning to the correlation "
+            "identifier is not something an evaluations file can ask for\n"
+            f"warning: disposition_retained: {UBUNTU_CASE}: evaluations[0] states no disposition, "
+            "so the recorded partially_mitigated disposition stands; ComplyRoll has no retraction "
+            "event, and changing it needs a new disposition with a rationale\n"
+            f"warning: reduction_retained: {WINDOWS_CASE}: evaluations[1] no longer states 1 "
+            "recorded PAIN reduction(s) (PAIN 4 at 2026-08-12T16:00:00Z); ComplyRoll has no "
+            "retraction event, so the recorded reductions stand, and changing them needs a new "
+            "evaluation entry with a rationale\n",
+        )
+
     def test_an_unmatched_entry_is_reported_as_unmatched(self) -> None:
         self.populate()
         path = self.workspace / "evaluations-unmatched.json"
@@ -5154,6 +5193,246 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
         self.assertIn("no published contract for event 'case.retracted'", err)
 
+    def test_a_case_stream_not_opening_with_creation_is_named_as_every_reader_refuses_it(
+        self,
+    ) -> None:
+        # CL-81: verify used to print the fold's `history_invalid` alone, and nothing at all
+        # beside a fault no reader refuses. It is now an audit fault, in the readers' words.
+        self.populate()
+        sequence = self.smuggle(
+            "detection.attested",
+            {
+                "detectedAt": ATTESTED_AT,
+                "rationale": RATIONALE,
+                "attestedAt": "2026-08-21T12:00:00Z",
+            },
+            stream_id=SMUGGLED_CASE_STREAM,
+        )
+        message = f"case {UNKNOWN_CASE!r} begins with 'detection.attested', not 'case.created'"
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        lines = err.splitlines()
+        self.assertEqual(lines[0], f"error: sequence {sequence}: case_stream_mismatch: {message}")
+        self.assertTrue(lines[1].startswith("faults: 1 domain fault(s) in "), err)
+        self.assertEqual(len(lines), 2)
+        for reader in (
+            self.report_from_history,
+            lambda: run(["cases", "list", "--db", str(self.database)]),
+        ):
+            code, out, err = reader()
+            self.assertEqual((code, out, err), (1, "", f"error: history_invalid: {message}\n"))
+
+    def test_a_case_stream_not_opening_with_creation_is_named_once_at_its_first_event(
+        self,
+    ) -> None:
+        self.populate()
+        attested = {
+            "detectedAt": ATTESTED_AT,
+            "rationale": RATIONALE,
+            "attestedAt": "2026-08-21T12:00:00Z",
+        }
+        first = self.smuggle("detection.attested", attested, stream_id=SMUGGLED_CASE_STREAM)
+        second = self.smuggle(
+            "detection.attested", attested, stream_id=SMUGGLED_CASE_STREAM, expected_version=1
+        )
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertLess(first, second)
+        self.assertEqual(err.count("case_stream_mismatch"), 1)
+        self.assertIn(f"error: sequence {first}: case_stream_mismatch: ", err)
+
+    def recreate(self, *, count: int = 1, **changes: Any) -> tuple[list[int], str]:
+        """Append `count` more `case.created` events to a fixture case stream, past the writers.
+
+        `EventRepository.append` accepts one too, so a store needs no tool around the writers
+        to hold this shape (CL-81); it is smuggled here only to set its metadata.
+        """
+
+        stream = self.case_stream(UBUNTU_CASE)
+        created = stream[0]
+        metadata = changes.pop("metadata", None)
+        payload = {**created.payload, **changes}
+        sequences = [
+            self.smuggle(
+                "case.created",
+                payload,
+                stream_id=created.stream_id,
+                metadata=metadata,
+                expected_version=len(stream) + index,
+            )
+            for index in range(count)
+        ]
+        return sequences, created.stream_id
+
+    def test_a_second_creation_is_named_as_every_reader_refuses_it(self) -> None:
+        self.populate()
+        (sequence,), _ = self.recreate()
+        message = (
+            f"case {UBUNTU_CASE!r} carries unexpected event 'case.created' at sequence {sequence}"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        lines = err.splitlines()
+        self.assertEqual(lines[0], f"error: sequence {sequence}: case_stream_mismatch: {message}")
+        self.assertTrue(lines[1].startswith("faults: 1 domain fault(s) in "), err)
+        self.assertEqual(len(lines), 2)
+        for reader in (
+            self.report_from_history,
+            lambda: run(["cases", "list", "--db", str(self.database)]),
+        ):
+            code, out, err = reader()
+            self.assertEqual((code, out, err), (1, "", f"error: history_invalid: {message}\n"))
+
+    def test_a_second_creation_is_named_beside_a_fault_no_reader_refuses(self) -> None:
+        # On 961bc60 verify named the metadata fault alone and passed over the creation.
+        self.populate()
+        (sequence,), _ = self.recreate(metadata={**SMUGGLED_METADATA, "runId": "run-not-a-uuid"})
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"error: sequence {sequence}: case_stream_mismatch: ", err)
+        self.assertIn(f"error: sequence {sequence}: event_metadata_invalid: ", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
+    def test_a_second_creation_naming_another_case_is_named_for_both(self) -> None:
+        self.populate()
+        (sequence,), _ = self.recreate(trackingId=OTHER_UNKNOWN_CASE)
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"error: sequence {sequence}: case_stream_mismatch: ", err)
+        self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch: ", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
+    def test_every_later_creation_is_named_at_its_own_sequence(self) -> None:
+        self.populate()
+        sequences, _ = self.recreate(count=2)
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        for sequence in sequences:
+            self.assertIn(
+                f"error: sequence {sequence}: case_stream_mismatch: case {UBUNTU_CASE!r} "
+                f"carries unexpected event 'case.created' at sequence {sequence}\n",
+                err,
+            )
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
+    def test_a_misopened_stream_with_a_later_creation_names_both(self) -> None:
+        # One fault at the first event and one at the creation, as the amendment describes,
+        # where a reader names the first it meets (CL6A-D-07).
+        self.populate()
+        attested = {
+            "detectedAt": ATTESTED_AT,
+            "rationale": RATIONALE,
+            "attestedAt": "2026-08-21T12:00:00Z",
+        }
+        created = self.case_stream(UBUNTU_CASE)[0]
+        first = self.smuggle("detection.attested", attested, stream_id=SMUGGLED_CASE_STREAM)
+        later = self.smuggle(
+            "case.created",
+            {**created.payload, "trackingId": UNKNOWN_CASE},
+            stream_id=SMUGGLED_CASE_STREAM,
+            expected_version=1,
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        lines = err.splitlines()
+        self.assertEqual(
+            lines[:2],
+            [
+                f"error: sequence {first}: case_stream_mismatch: case {UNKNOWN_CASE!r} begins "
+                "with 'detection.attested', not 'case.created'",
+                f"error: sequence {later}: case_stream_mismatch: case {UNKNOWN_CASE!r} carries "
+                f"unexpected event 'case.created' at sequence {later}",
+            ],
+        )
+        self.assertTrue(lines[2].startswith("faults: 2 domain fault(s) in "), err)
+        self.assertEqual(len(lines), 3)
+
+    def test_a_float_rating_is_a_contract_fault_at_its_sequence(self) -> None:
+        # It passed the contract and stopped verify outside the audit, with `history_invalid`
+        # and no fault (CL6A-D-02).
+        self.populate()
+        sequence = self.smuggle(
+            "case.pain_reduced",
+            {"reducedAt": "2026-08-10T00:00:00Z", "rating": 1.0},
+            stream_id=self.case_stream(UBUNTU_CASE)[0].stream_id,
+            expected_version=len(self.case_stream(UBUNTU_CASE)),
+        )
+        message = (
+            "case.pain_reduced version 1 payload is invalid: /rating: type: 1.0 is not of type "
+            "'integer'"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        lines = err.splitlines()
+        self.assertEqual(
+            lines[0], f"error: sequence {sequence}: payload_contract_invalid: {message}"
+        )
+        self.assertTrue(lines[1].startswith("faults: 1 domain fault(s) in "), err)
+        self.assertEqual(len(lines), 2)
+        for reader in (
+            self.report_from_history,
+            lambda: run(["cases", "list", "--db", str(self.database)]),
+        ):
+            code, out, err = reader()
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn(f"error: event_contract_invalid: {message}", err)
+
+    def test_a_float_rating_is_named_beside_a_fault_no_reader_refuses(self) -> None:
+        # Verify named the metadata fault alone and passed over the rating (CL6A-D-02).
+        self.populate()
+        stream = self.case_stream(UBUNTU_CASE)
+        sequence = self.smuggle(
+            "case.pain_reduced",
+            {"reducedAt": "2026-08-10T00:00:00Z", "rating": 5.0},
+            stream_id=stream[0].stream_id,
+            expected_version=len(stream),
+            metadata={**SMUGGLED_METADATA, "runId": "run-not-a-uuid"},
+        )
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"error: sequence {sequence}: payload_contract_invalid: ", err)
+        self.assertIn(f"error: sequence {sequence}: event_metadata_invalid: ", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
+    def test_a_misplaced_first_event_is_named_for_its_stream_and_for_the_case(self) -> None:
+        # Two facts about one event: it does not belong on a case stream, and the stream it
+        # opens is a case that does not begin with `case.created` (ADR 0008, 2026-10-26).
+        self.populate()
+        observation = next(
+            record for record in self.records() if record.event_type == "observation.recorded"
+        )
+        sequence = self.smuggle(
+            observation.event_type, dict(observation.payload), stream_id=SMUGGLED_CASE_STREAM
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(f"error: sequence {sequence}: event_stream_mismatch:", err)
+        self.assertIn(
+            f"error: sequence {sequence}: case_stream_mismatch: case {UNKNOWN_CASE!r} begins "
+            "with 'observation.recorded', not 'case.created'\n",
+            err,
+        )
+
     def test_a_payload_its_own_contract_refuses_is_named_and_exits_one(self) -> None:
         self.populate()
         sequence = self.smuggle(
@@ -5168,7 +5447,9 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(out, "")
         self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
         self.assertIn("/rating", err)
-        self.assertIn("faults: 1 domain fault(s) in", err)
+        # It also opens its case stream, which every reader refuses (CL-81).
+        self.assertIn(f"error: sequence {sequence}: case_stream_mismatch:", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
 
     def case_stream(self, tracking_id: str) -> tuple[EventRecord, ...]:
         """Return one fixture case stream in the log, in stream order."""
@@ -6040,7 +6321,10 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(out, "")
         self.assertIn(f"error: sequence {sequence}: event_metadata_invalid:", err)
         self.assertIn("runId", err)
-        self.assertIn("faults: 1 domain fault(s) in", err)
+        # 961bc60 named the metadata alone and passed over the stream's opening event, which
+        # every reader refuses; the order check that raised on it ran only to be ignored.
+        self.assertIn(f"error: sequence {sequence}: case_stream_mismatch:", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
 
     def test_a_metadata_fault_beside_a_case_stream_naming_no_tracking_id_is_named(self) -> None:
         # A case stream whose id names no tracking id is a fault of its own, at its first
@@ -8488,6 +8772,68 @@ class TerminalTextTests(PersistedStoreTestCase):
         self.assertEqual((code, out), (1, b""))
         self.assertTrue(err.startswith(b"error: artifact_parse_failed: "), err)
         self.assertIn(b"[caf\\xe9.cklb]", err)
+
+
+def usage_error(argv: Sequence[str]) -> tuple[object, str]:
+    """Run one invocation argparse refuses, returning its exit code and stderr."""
+
+    err = io.StringIO()
+    with redirect_stdout(io.StringIO()), redirect_stderr(err):
+        try:
+            main(list(argv))
+        except SystemExit as caught:
+            return caught.code, err.getvalue()
+    raise AssertionError(f"argparse accepted {argv!r}")
+
+
+class UsageErrorTextTests(unittest.TestCase):
+    """argparse's own usage errors print through the same escape as every other line (CL-80).
+
+    argparse echoes an unrecognized argument as typed, so a newline in one forged a line on
+    0.3.0a0. The exit code stays 2, and an error that carries no control character keeps
+    argparse's bytes.
+    """
+
+    def assert_unforged(self, text: str) -> None:
+        for line in text.splitlines():
+            self.assertFalse(line.startswith("error: forged"), line)
+        for control in ("\x1b", "\r", "\u2028", "\x9b"):
+            self.assertNotIn(control, text)
+
+    def test_an_unrecognized_argument_forges_no_line(self) -> None:
+        code, err = usage_error(["version", f"--{FORGING_TEXT}"])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            err.splitlines()[-1], f"complyroll: error: unrecognized arguments: --{FORGING_SHOWN}"
+        )
+        self.assert_unforged(err)
+
+    def test_a_subcommand_error_forges_no_line(self) -> None:
+        # --c could be --class or --calendar-tz, and argparse quotes the argument as typed.
+        code, err = usage_error(["report", "vdt", f"--c={FORGING_TEXT}"])
+
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("usage: complyroll report vdt "), err)
+        self.assertIn(FORGING_SHOWN, err)
+        self.assert_unforged(err)
+
+    def test_the_escape_class_is_spelled_in_ascii(self) -> None:
+        # U+2028 and U+2029 written as themselves are invisible, and an editor can drop them.
+        source = (Path(cli_module.__file__).parent / "terminal.py").read_bytes()
+        source.decode("ascii")
+        self.assertIn(b"\\u2028\\u2029]", source)
+        self.assertEqual(terminal_text("a\u2028b\u2029c"), "a\\u2028b\\u2029c")
+
+    def test_an_ordinary_usage_error_keeps_argparses_bytes(self) -> None:
+        code, err = usage_error(["version", "--nope\tx"])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            err,
+            "usage: complyroll [-h] {version,plan,ingest,cases,report,store,validate} ...\n"
+            "complyroll: error: unrecognized arguments: --nope\tx\n",
+        )
 
 
 class FrozenCategoryStoreTests(PersistedStoreTestCase):

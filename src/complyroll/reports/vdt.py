@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 from urllib.parse import urlsplit
 
 from complyroll import __version__
@@ -144,6 +144,51 @@ class ReportDiagnostic:
         if self.location:
             value["location"] = self.location
         return value
+
+
+#: The codes the report compiler gives a diagnostic of its own. A report prints them in its
+#: JSON and on stderr, so they are part of its contract; an ingest diagnostic it carries keeps
+#: its adapter's code. `tests/test_report_codes.py` holds every `ReportDiagnostic` the
+#: reports package builds to this set, and the set to what is built.
+REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
+    "acceptance_rationale_missing",
+    "accepted_excluded",
+    "artifact_superseded",
+    "artifact_superseded_by_failure",
+    "clock_out_of_range",
+    "closed_without_disposition",
+    "coverage_gap_contradicted",
+    "coverage_gap_unmatched",
+    "coverage_gap_unrecorded",
+    "coverage_rule_unavailable",
+    "detection_time_missing",
+    "detection_time_partial",
+    "disposition_without_evaluation",
+    "drift_likelihood_unknown",
+    "duplicate_artifact",
+    "evaluation_ambiguous",
+    "evaluation_before_detection",
+    "evaluation_before_partial_detection",
+    "evaluation_context_key_required",
+    "evaluation_duplicate",
+    "evaluation_unmatched",
+    "excluded_by_period",
+    "failure_held",
+    "failure_superseded",
+    "kev_catalog_after_as_of",
+    "kev_catalog_stale",
+    "kev_entries_after_as_of",
+    "kev_match_incomplete",
+    "kev_no_cve_identifiers",
+    "kev_no_matches",
+    "kev_rule_unavailable",
+    "no_artifacts",
+    "report_period_missing",
+    "schema_invalid",
+    "stale_case",
+    "tracking_id_collision",
+    "unresolved_observation",
+)
 
 
 class ReportCompileError(Exception):
@@ -2235,7 +2280,7 @@ def coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
             notes.append(
                 ReportDiagnostic(
                     level=DiagnosticLevel.WARNING,
-                    code=code,
+                    code=DRIFT_LIKELIHOOD_UNKNOWN,
                     message=(
                         f'{label} declares driftLikely "unknown", so it carries {PDD_RULE}, '
                         "the shorter drift window, until the inventory says whether drift is "
@@ -3646,6 +3691,7 @@ __all__ = [
     "DISCLAIMER",
     "EXTENSION_KEY",
     "FINAL_DISPOSITIONS",
+    "REPORT_DIAGNOSTIC_CODES",
     "AcceptedVulnerability",
     "CompiledArtifact",
     "CompiledDeadline",

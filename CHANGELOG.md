@@ -6,6 +6,24 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- A case stream whose first event is not `case.created` is now the `store verify` audit fault
+  `case_stream_mismatch`, at that event, in the words every reader that folds the case refuses it
+  with ("case ... begins with ..., not 'case.created'"). Alone, it used to stop `store verify` as
+  `history_invalid` outside the audit, and `audit_history` raised on it; beside a fault no reader
+  refuses, such as `event_metadata_invalid`, verify named that fault alone and passed over this
+  one; beside any other fault it was not looked for. The readers refuse it as before, as
+  `history_invalid`, and `AUDIT_FAULT_CODES` gains the code (ADR 0008 amendment 2026-10-26).
+- argparse's own usage errors no longer forge a line: an unrecognized or ambiguous argument was
+  echoed as typed, so a newline in one printed a line of its own. Both commands' parsers, and every
+  subcommand's, now print the error through the escape every other line passes through. The exit
+  code is still 2, and an error that carries no control character prints exactly as before.
+- The `stigroll` command prints its warnings, errors and `wrote` line through the same escape, so
+  a newline or ANSI escape in a file name no longer forges a line, and a stdout or stderr that
+  cannot encode a character writes it as a backslash escape instead of ending the run, as under
+  `PYTHONIOENCODING=ascii` with a non-ASCII file name in the CSV roll-up. The roll-up itself is
+  written as rendered, to stdout as to `-o`; its JSON is ASCII, and its UTF-8 output and the
+  `ubuntu-host.md`, `mixed.csv`, `mixed.json` and `mixed-mapped.json` goldens are unchanged.
+
 - A stored instant whose offset puts it outside the years `datetime` holds, such as an
   `observedAt` of `0001-01-01T00:30:00+01:00` on a case link, matched the contract pattern and
   then ended `store verify`, every report from the store and most `cases` commands in an
@@ -65,14 +83,14 @@ All notable project changes will be documented here.
   escapes; a tab is kept. This covers the diagnostics, the `ingest` summary, `validate`'s issue
   lines, `store verify`, and the actor and evaluator `cases history` prints, which a forged `error:`
   line used to reach both on the stateless path and from a store. JSON output already escaped them
-  and is unchanged, and no golden moved. Three paths are not covered: argparse's own usage errors,
-  the `stigroll` command, and Markdown report files, which carry stored text as written.
+  and is unchanged, and no golden moved. Markdown report files are not covered: they carry stored
+  text as written.
 - A stdout or stderr that cannot encode a character, as under `PYTHONIOENCODING=ascii`, no longer
   ends a `complyroll` run. `report vdt` to stdout crashed on the registered sign (U+00AE), and
   `ingest` crashed printing a non-ASCII file name after its store write had committed, so a saved
   write exited 1. A strict stream now writes such a character as a backslash escape, and a report on
   stdout spells it as a JSON `\u` escape, so it is the same document. UTF-8 output is byte for byte
-  what it was. The `stigroll` command is not covered and still ends on such a stream.
+  what it was.
 - A duplicate key in an evaluations file, in a report `validate` reads, in the rule source and in
   a schema document is now quoted as a repr cut at 200 characters, where it was echoed raw, so a
   newline in the key forged a stderr line and a long key flooded one.
@@ -911,6 +929,15 @@ All notable project changes will be documented here.
   exits 1 with `error_diagnostic_unpublished` and writes nothing. No current input reaches the
   refusal, because every ERROR already stops the compile, so no observable behavior changes (ADR
   0017 Decision 2).
+
+### Removed
+
+- `complyroll.Evaluation` and `complyroll.VulnerabilityCase` (`models.Evaluation` and
+  `models.VulnerabilityCase`), with `VulnerabilityCase.with_evaluation`. No command or report
+  used them: reports read evaluations through `complyroll.reports.evaluations` and case state
+  through the fold in `complyroll.history`. Removed before 1.0 with no deprecation step.
+- `correlation.VulnerabilityGroup.parser_versions`, which nothing read; a report builds its parser
+  versions from its observations.
 
 ## 0.3.0a0 - 2026-08-23
 

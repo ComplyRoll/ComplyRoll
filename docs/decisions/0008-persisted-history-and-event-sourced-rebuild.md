@@ -622,3 +622,21 @@ because it refuses the record for its detection time first.
 An append-only store has no repair for such a clock. Refusing it in the event contract instead
 was rejected: every command, `cases list` included, would then refuse the whole store, including
 the stores whose clocks report today. No golden changes.
+
+## Amendment 2026-10-26: a case stream that does not open with case.created
+
+Every reader that folds a case refuses a case stream whose first event is not `case.created`, as
+`history_invalid` with "case ... begins with ..., not 'case.created'". The audit had no fault for
+it. Alone, the evaluation order check met it by folding every case and raised, so `store verify`
+stopped with that `history_invalid` outside the audit and `audit_history` raised instead of
+reporting. Beside a fault no reader refuses (`event_metadata_invalid`, `failure_schema_unmarked`,
+`coverage_schema_unmarked`) the order check swallowed the error, and `store verify` named the other
+fault alone; beside any other fault the check did not run. Either way a store every reader refuses
+was rejected without the fault that refuses it, which the 2026-10-21 amendment's rule forbids.
+
+The audit now reports it as `case_stream_mismatch`, which `AUDIT_FAULT_CODES` gains: once per case
+stream, at its first event, with the readers' message. A stream whose id names no tracking id stays
+`case_tracking_id_mismatch` alone, as that amendment decided. A first event that does not belong on
+a case stream at all is also `event_stream_mismatch`, at the same sequence; the two describe
+different facts. The fault is not one the order check runs beside, so a store that carries it is
+not folded. The readers and writers refuse exactly what they refused before, and no golden changes.

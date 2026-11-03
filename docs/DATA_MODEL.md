@@ -412,11 +412,13 @@ narrative rule.
 
 ## Core entities
 
-Implemented in `complyroll.models` today: `ResourceRef`, `EvidenceArtifact`, `Observation`,
-`Evaluation`, and `VulnerabilityCase`. `models.Evaluation` and `models.VulnerabilityCase` are
-exported but unused by production code: the report compiler reads evaluations through
-`complyroll.reports.evaluations` and case state through the fold in `complyroll.history`, and
-reconciling or retiring the two classes is Phase 2 cleanup. `AcceptedVulnerability` predates
+Implemented in `complyroll.models` today: `ResourceRef`, `EvidenceArtifact`, and `Observation`.
+The vulnerability case and its evaluation have no class of their own: the event log records them,
+the fold in `complyroll.history` reads a case as a `CaseState` with its `EvaluationRecord`s, and the
+report compiler reads an evaluations file through `complyroll.reports.evaluations`. The
+`VulnerabilityCase` and `Evaluation` sections below describe those records, not classes; the
+in-memory `models.VulnerabilityCase` and `models.Evaluation`, which no production code used, were
+removed before 1.0. `AcceptedVulnerability` predates
 ADR 0010 in `complyroll.reports`; ADR 0010 made the accepted-vulnerability and historical
 reports publish it, as described below. `InformationResource` shipped with ADR 0015 in
 `complyroll.reports.inventory`, beside the KEV reader. `ResponseAction`, `ValidationDefinition`,
@@ -575,9 +577,8 @@ digest.
 | `evaluator` | Human or automated actor, with method/version |
 
 Evaluation revisions append history. They never rewrite the original completed time or rationale.
-In the in-memory aggregate, `VulnerabilityCase.with_evaluation` moves the previous evaluation into
-`evaluation_history` and refuses to reactivate an ACCEPTED or CLOSED case unless the caller passes
-an explicit reopen flag. Durable history lives in the event log.
+Each is a `case.evaluated` event, and the fold keeps every one in order: a case's current
+evaluation is its latest. Durable history lives in the event log.
 
 `completedAt` is ordered against `detectedAt`. A report refuses a record whose evaluation completed
 strictly before a detection time that is the record's own (an artifact timestamp, an attestation,

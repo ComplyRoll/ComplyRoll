@@ -8490,6 +8490,61 @@ class TerminalTextTests(PersistedStoreTestCase):
         self.assertIn(b"[caf\\xe9.cklb]", err)
 
 
+def usage_error(argv: Sequence[str]) -> tuple[object, str]:
+    """Run one invocation argparse refuses, returning its exit code and stderr."""
+
+    err = io.StringIO()
+    with redirect_stdout(io.StringIO()), redirect_stderr(err):
+        try:
+            main(list(argv))
+        except SystemExit as caught:
+            return caught.code, err.getvalue()
+    raise AssertionError(f"argparse accepted {argv!r}")
+
+
+class UsageErrorTextTests(unittest.TestCase):
+    """argparse's own usage errors print through the same escape as every other line (CL-78).
+
+    argparse echoes an unrecognized argument as typed, so a newline in one forged a line on
+    0.3.0a0. The exit code stays 2, and an error that carries no control character keeps
+    argparse's bytes.
+    """
+
+    def assert_unforged(self, text: str) -> None:
+        for line in text.splitlines():
+            self.assertFalse(line.startswith("error: forged"), line)
+        for control in ("\x1b", "\r", "\u2028", "\x9b"):
+            self.assertNotIn(control, text)
+
+    def test_an_unrecognized_argument_forges_no_line(self) -> None:
+        code, err = usage_error(["version", f"--{FORGING_TEXT}"])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            err.splitlines()[-1], f"complyroll: error: unrecognized arguments: --{FORGING_SHOWN}"
+        )
+        self.assert_unforged(err)
+
+    def test_a_subcommand_error_forges_no_line(self) -> None:
+        # --c could be --class or --calendar-tz, and argparse quotes the argument as typed.
+        code, err = usage_error(["report", "vdt", f"--c={FORGING_TEXT}"])
+
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("usage: complyroll report vdt "), err)
+        self.assertIn(FORGING_SHOWN, err)
+        self.assert_unforged(err)
+
+    def test_an_ordinary_usage_error_keeps_argparses_bytes(self) -> None:
+        code, err = usage_error(["version", "--nope\tx"])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            err,
+            "usage: complyroll [-h] {version,plan,ingest,cases,report,store,validate} ...\n"
+            "complyroll: error: unrecognized arguments: --nope\tx\n",
+        )
+
+
 class FrozenCategoryStoreTests(PersistedStoreTestCase):
     """A store 0.3.0a0 wrote on 3.11 can hold an identity the frozen table refuses (CL-65).
 

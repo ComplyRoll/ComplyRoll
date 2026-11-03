@@ -281,5 +281,116 @@ class StigrollCompatibilityTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;\\|next row&lt;/script&gt;", output)
 
 
+#: Text that would forge a line, move the cursor and clear the screen if printed raw.
+FORGING_TEXT = "x\nerror: forged: injected\r\u2028\x1b[2J\x9b"
+#: The same text as the command prints it, every control spelled as an escape.
+FORGING_SHOWN = "x\\nerror: forged: injected\\r\\u2028\\x1b[2J\\x9b"
+
+
+def run_on_encoding(arguments: list[str], encoding: str) -> tuple[int, bytes, bytes]:
+    """Run stigroll on byte streams that encode as a terminal set to `encoding` does."""
+    out_bytes = io.BytesIO()
+    err_bytes = io.BytesIO()
+    out = io.TextIOWrapper(out_bytes, encoding=encoding, errors="strict", write_through=True)
+    err = io.TextIOWrapper(err_bytes, encoding=encoding, errors="strict", write_through=True)
+    with redirect_stdout(out), redirect_stderr(err):
+        result = main(arguments)
+    return result, out_bytes.getvalue(), err_bytes.getvalue()
+
+
+class StigrollTerminalTextTests(unittest.TestCase):
+    """stigroll prints its lines through the escape `complyroll` uses (CL-78).
+
+    0.3.0a0 printed file names raw, so a newline in one forged a line, and a stdout that
+    could not encode a character ended the run. UTF-8 output is byte for byte what it was.
+    """
+
+    def run_cli(self, arguments: list[str]) -> tuple[int, str, str]:
+        return StigrollCompatibilityTests.run_cli(self, arguments)  # type: ignore[arg-type]
+
+    def assert_unforged(self, text: str) -> None:
+        for line in text.splitlines():
+            self.assertFalse(line.startswith("error: forged"), line)
+        for control in ("\x1b", "\r", "\u2028", "\x9b"):
+            self.assertNotIn(control, text)
+
+    def test_an_unrecognized_argument_forges_no_line(self) -> None:
+        # argparse reads an argument holding a space as an input file, so this one holds none.
+        stderr = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as caught:
+                main([str(FIXTURES / "ubuntu-host.cklb"), "--x\nerror:forged\r\x1b[2J"])
+
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(
+            stderr.getvalue().splitlines()[-1],
+            "stigroll: error: unrecognized arguments: --x\\nerror:forged\\r\\x1b[2J",
+        )
+        self.assert_unforged(stderr.getvalue())
+
+    def test_a_missing_input_forges_no_line(self) -> None:
+        result, stdout, stderr = self.run_cli([f"{FORGING_TEXT}.ckl"])
+
+        self.assertEqual((result, stdout), (1, ""))
+        self.assertEqual(
+            stderr,
+            f"warning: {FORGING_SHOWN}.ckl not found, skipping\n"
+            "error: no findings parsed from any input\n",
+        )
+
+    def test_a_parse_warning_forges_no_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / f"{FORGING_TEXT}.cklb"
+            path.write_text("{", encoding="utf-8")
+            result, stdout, stderr = self.run_cli([str(path)])
+
+        self.assertEqual((result, stdout), (1, ""))
+        self.assertTrue(stderr.startswith(f"warning: could not parse {FORGING_SHOWN}.cklb: "))
+        self.assert_unforged(stderr)
+
+    def test_the_written_path_forges_no_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / f"{FORGING_TEXT}.md"
+            result, stdout, stderr = self.run_cli(
+                [str(FIXTURES / "ubuntu-host.cklb"), "-o", str(output)]
+            )
+            written = output.read_text(encoding="utf-8")
+
+        self.assertEqual((result, stdout), (0, ""))
+        self.assertEqual(stderr, f"wrote {directory}/{FORGING_SHOWN}.md\n")
+        self.assertEqual(written, (GOLDEN / "ubuntu-host.md").read_text(encoding="utf-8"))
+
+    def test_an_ascii_stdout_writes_a_backslash_escape_and_finishes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            checklist = Path(directory) / "caf\u00e9-host.cklb"
+            checklist.write_bytes((FIXTURES / "ubuntu-host.cklb").read_bytes())
+            missing = Path(directory) / "\u00e9.ckl"
+            arguments = [str(missing), str(checklist), "--format", "csv"]
+            result, ascii_out, ascii_err = run_on_encoding(arguments, "ascii")
+            utf8_result, utf8_out, utf8_err = run_on_encoding(arguments, "utf-8")
+
+        self.assertEqual((result, utf8_result), (0, 0))
+        self.assertIn(b"caf\\xe9-host.cklb", ascii_out)
+        self.assertEqual(ascii_out, utf8_out.decode("utf-8").encode("ascii", "backslashreplace"))
+        self.assertEqual(ascii_err, utf8_err.decode("utf-8").encode("ascii", "backslashreplace"))
+        self.assertIn(b"\\xe9.ckl not found, skipping", ascii_err)
+
+    def test_utf8_output_is_byte_for_byte_the_golden(self) -> None:
+        inputs = [
+            str(FIXTURES / "windows-host.ckl"),
+            str(FIXTURES / "ubuntu-host.cklb"),
+            str(FIXTURES / "openscap-results.xml"),
+        ]
+        for arguments, golden in (
+            ([*inputs, "--format", "json"], "mixed.json"),
+            ([*inputs, "--format", "csv"], "mixed.csv"),
+            ([str(FIXTURES / "ubuntu-host.cklb")], "ubuntu-host.md"),
+        ):
+            with self.subTest(golden=golden):
+                result, stdout, stderr = run_on_encoding(arguments, "utf-8")
+                self.assertEqual((result, stderr), (0, b""))
+                self.assertEqual(stdout, (GOLDEN / golden).read_bytes() + b"\n")
+
+
 if __name__ == "__main__":
     unittest.main()

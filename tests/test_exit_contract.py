@@ -48,6 +48,7 @@ from test_coverage_gap_report import (
 from test_reports import FAILED_EVALUATIONS, FIXTURES, GOLDEN, REPORT_KINDS
 
 from complyroll import cli as cli_module
+from complyroll import terminal as terminal_module
 from complyroll.adapters import DiagnosticLevel
 from complyroll.cli import main
 from complyroll.compat import stigroll
@@ -531,7 +532,10 @@ class UncontractedEdgeTests(unittest.TestCase):
         for command in ("version", "plan"):
             with (
                 self.subTest(command=command),
-                patch.object(cli_module, "print", create=True, side_effect=ValueError("simulated")),
+                # The CLI prints every line through `complyroll.terminal` (CL-78).
+                patch.object(
+                    terminal_module, "print", create=True, side_effect=ValueError("simulated")
+                ),
                 self.assertRaises(ValueError),
             ):
                 main([command])

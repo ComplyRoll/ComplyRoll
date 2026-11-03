@@ -299,7 +299,7 @@ def run_on_encoding(arguments: list[str], encoding: str) -> tuple[int, bytes, by
 
 
 class StigrollTerminalTextTests(unittest.TestCase):
-    """stigroll prints its lines through the escape `complyroll` uses (CL-78).
+    """stigroll prints its lines through the escape `complyroll` uses (CL-80).
 
     0.3.0a0 printed file names raw, so a newline in one forged a line, and a stdout that
     could not encode a character ended the run. UTF-8 output is byte for byte what it was.

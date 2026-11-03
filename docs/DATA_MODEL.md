@@ -552,16 +552,24 @@ digest.
 
 ### VulnerabilityCase
 
+A case is a `case/<tracking id>` stream in the event log, and the fold reads it as a
+`complyroll.history.CaseState`. The stream opens with exactly one `case.created`; every later event
+adds to it.
+
 | Field | Purpose |
 |---|---|
-| `case_id` | Provider tracking identifier used in reports |
+| `tracking_id` | Correlation tracking identifier, which names the stream (`case.created`) |
+| `provider_tracking_id` | The operator's override, the id a report publishes (`case.identified`) |
+| `source_type` / `source_record_id` / `context_key` | The group key the case correlates on |
 | `title` / `description` | Logical weakness description |
-| `status` | New, evaluating, active, mitigated, remediated, accepted, false positive, closed |
-| `observation_ids` | Complete supporting observation set |
-| `current_evaluation_id` | Current contextual assessment |
-| `response_actions` | Planned and completed work |
-| `rating_history` | PAIN reductions and evidence |
-| `owner` | Responsible provider role or system |
+| `created_at` | When the case was created |
+| `links` | Every supporting observation, in the order linked (`case.observation_linked`) |
+| `attestation` | The latest attested detection time and its rationale (`detection.attested`) |
+| `evaluations` | Every evaluation, in order; the latest is current (`case.evaluated`) |
+| `pain_reductions` | PAIN reductions and when they took effect (`case.pain_reduced`) |
+| `disposition` | The latest recorded status, closed disposition and acceptance rationale (`case.disposition_recorded`) |
+
+Response actions and an owner are not recorded; see `ResponseAction (planned)` below.
 
 ### Evaluation
 

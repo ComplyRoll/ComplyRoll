@@ -5,9 +5,10 @@
 # ******************************************************************************
 """Terminal-safe text output, shared by the `complyroll` and `stigroll` commands.
 
-Every line either command prints, its usage errors included, passes through
-`terminal_text`, and each command lets a stream that cannot encode a character write it
-as a backslash escape (CL-50, CL-51, CL-78).
+Every line either command prints that can carry input (diagnostics, status lines and
+argparse's usage error message) passes through `terminal_text`; help text and the usage block
+carry none. Each command lets a stream that cannot encode a character write it as a
+backslash escape (CL-50, CL-51, CL-80).
 """
 
 # *--- Imports ---*
@@ -25,7 +26,7 @@ from typing import NoReturn, TextIO
 # here. A newline, carriage return, line or paragraph separator, or any other C0 or C1
 # control, DEL included, would forge a line or drive the terminal, so each is spelled as an
 # escape; a tab, which moves no line, is kept (CL-50).
-_TERMINAL_CONTROLS = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f  ]")
+_TERMINAL_CONTROLS = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]")
 _SHORT_ESCAPES = {"\n": "\\n", "\r": "\\r"}
 
 
@@ -75,7 +76,7 @@ class TerminalArgumentParser(argparse.ArgumentParser):
     """An argument parser whose usage errors print through `terminal_text`.
 
     argparse echoes an unrecognized or ambiguous argument as typed, so a newline in one forged
-    a line (CL-78). A subparser is built with its parent's class, so every subcommand's errors
+    a line (CL-80). A subparser is built with its parent's class, so every subcommand's errors
     pass through here too. The exit code, 2, and an error without a control character are
     argparse's own.
     """

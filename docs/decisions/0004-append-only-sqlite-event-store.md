@@ -389,8 +389,8 @@ cursor.
 
 ## Amendment 2026-10-26: usage errors and the stigroll command
 
-Two of the three paths the 2026-10-25 amendment left uncovered now are. argparse's own usage
-errors echoed an unrecognized or ambiguous argument as typed; both commands' parsers, and every
+Two of the three paths the 2026-10-25 amendment left uncovered now are. argparse's usage error
+messages echoed an unrecognized or ambiguous argument as typed; both commands' parsers, and every
 subcommand's, now print the error through the same function, keeping exit code 2 and the bytes of
 an error that carries no control character. The `stigroll` command printed file names raw and
 ended on a stream that could not encode one; its warnings, errors and `wrote` line now pass
@@ -398,5 +398,6 @@ through the same function, and its streams write an unencodable character as a b
 as the `complyroll` command's do. Its roll-up is a document, not a line, and is written as
 rendered, to stdout as to `-o`, so its UTF-8 output and goldens are unchanged. What remains
 uncovered is documents: Markdown report files, and `stigroll`'s Markdown and CSV roll-ups, which
-carry their text as written apart from the Markdown table escapes. The function moved from the
-CLI module to `complyroll.terminal`, which both commands import.
+carry their text as written apart from the Markdown table escapes and the CSV formula
+neutralization. Help text and the usage block carry no input and print as argparse prints them.
+The function moved from the CLI module to `complyroll.terminal`, which both commands import.

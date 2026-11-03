@@ -1321,7 +1321,7 @@ class FoldRefusalTests(WriterFixture):
         self.assertIn("begins with 'detection.attested'", str(caught.exception))
 
     def test_the_audit_names_a_case_stream_that_does_not_begin_with_creation(self) -> None:
-        # The fold refuses it, so the audit names it in the fold's words (CL-79).
+        # The fold refuses it, so the audit names it in the fold's words (CL-81).
         stream_id = case_stream_id(SPARE_CASE)
         self.append_raw(
             stream_id,
@@ -1344,6 +1344,30 @@ class FoldRefusalTests(WriterFixture):
         self.assertEqual(
             str(caught.exception),
             f"case {SPARE_CASE!r} begins with 'detection.attested', not 'case.created'",
+        )
+
+    def test_the_audit_names_a_second_creation_the_repository_accepts(self) -> None:
+        # The writer appends it and the fold refuses it, so the audit names it (CL-81).
+        created = next(
+            record for record in self.repository.read_all() if record.event_type == "case.created"
+        )
+        version = len(self.repository.read_stream(created.stream_id))
+        self.append_raw(
+            created.stream_id, "case.created", created.payload, expected_version=version
+        )
+        recreated = self.repository.read_stream(created.stream_id)[-1]
+        tracking_id = created.stream_id.removeprefix("case/")
+        with self.assertRaises(HistoryError) as caught:
+            fold_case(self.repository, tracking_id)
+
+        self.assertEqual(
+            audit_history(self.repository),
+            (HistoryFault(recreated.sequence, "case_stream_mismatch", str(caught.exception)),),
+        )
+        self.assertEqual(
+            str(caught.exception),
+            f"case {tracking_id!r} carries unexpected event 'case.created' at sequence "
+            f"{recreated.sequence}",
         )
 
     def mismatched_creation(self) -> None:

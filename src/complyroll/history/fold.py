@@ -597,9 +597,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       reader ignores while the log looks healthy.
     - `case_tracking_id_mismatch`: a `case.created` naming a tracking id its stream does not,
       or a case stream whose id names no tracking id at all, once, at its first event.
-    - `case_stream_mismatch`: a case stream whose first event is not `case.created`, at that
-      event, in the words every reader that folds the case refuses it with (ADR 0008
-      amendment 2026-10-26).
+    - `case_stream_mismatch`: a case stream that does not hold exactly one `case.created`,
+      as its first event: a first event of another type, at that event, and every later
+      `case.created`, at its own, each in the words every reader that folds the case refuses
+      it with (ADR 0008 amendment 2026-10-26).
     - `artifact_stream_mismatch`: an artifact event or an observation naming an artifact its
       stream does not, which would rehydrate under bytes it never came from.
     - `artifact_incomplete`: a stream holding fewer observations than it declared.
@@ -703,9 +704,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     coverage_pairs: dict[str, dict[str, EventRecord]] = {}
     # Every case stream seen so far, so one whose id names no tracking id is named once.
     case_streams: set[str] = set()
-    # Per case stream: its first event, whether it records an evaluation, and its last
-    # readable disposition.
+    # Per case stream: its first event, every `case.created` after it, whether it records an
+    # evaluation, and its last readable disposition.
     case_openers: dict[str, EventRecord] = {}
+    case_recreations: list[EventRecord] = []
     evaluated: set[str] = set()
     dispositions: dict[str, EventRecord] = {}
     for record in repository.read_all():
@@ -734,7 +736,9 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
                     pair = failure_pairs.setdefault(record.stream_id, {})
                     pair.setdefault(record.event_type, record)
         if is_case_stream(record.stream_id):
-            case_openers.setdefault(record.stream_id, record)
+            opener = case_openers.setdefault(record.stream_id, record)
+            if record.event_type == CASE_CREATED and opener is not record:
+                case_recreations.append(record)
             if record.event_type == CASE_EVALUATED:
                 evaluated.add(record.stream_id)
             elif record.event_type == CASE_DISPOSITION_RECORDED and not contract_faults:
@@ -793,7 +797,7 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
             )
         )
     faults.extend(_coverage_schema_faults(repository, coverage_shapes))
-    faults.extend(_case_opener_faults(case_openers))
+    faults.extend(_case_shape_faults(case_openers, case_recreations))
     faults.extend(_disposition_faults(dispositions, evaluated))
     for stream_id, (sequence, count) in declared.items():
         found = observed.get(stream_id, 0)
@@ -926,8 +930,7 @@ def fold_case_records(
             identified_sequence = record.sequence
         else:
             raise HistoryError(
-                f"case {tracking_id!r} carries unexpected event {record.event_type!r} "
-                f"at sequence {record.sequence}"
+                _unexpected_case_event_message(tracking_id, record.event_type, record.sequence)
             )
 
     recorded_tracking_id = _text(payload, "trackingId")
@@ -2049,27 +2052,38 @@ def _case_opener_message(tracking_id: str, event_type: str) -> str:
     return f"case {tracking_id!r} begins with {event_type!r}, not {CASE_CREATED!r}"
 
 
-def _case_opener_faults(openers: Mapping[str, EventRecord]) -> tuple[HistoryFault, ...]:
-    """Report each case stream whose first event is not `case.created`, at that event.
+def _unexpected_case_event_message(tracking_id: str, event_type: str, sequence: int) -> str:
+    """Word an event a case stream cannot carry after its opening, for the audit and the fold."""
 
-    Every reader that folds the case refuses it in these words. A stream whose id names no
-    tracking id is `case_tracking_id_mismatch`'s business.
+    return f"case {tracking_id!r} carries unexpected event {event_type!r} at sequence {sequence}"
+
+
+def _case_shape_faults(
+    openers: Mapping[str, EventRecord],
+    recreations: Sequence[EventRecord],
+) -> tuple[HistoryFault, ...]:
+    """Report each case stream that does not hold exactly one `case.created`, first.
+
+    A stream whose first event is something else is named at that event, and every later
+    `case.created` at its own sequence, each in the words the fold refuses it with. A
+    stream whose id names no tracking id is `case_tracking_id_mismatch`'s business.
     """
 
     faults: list[HistoryFault] = []
-    for stream_id, record in openers.items():
-        if record.event_type == CASE_CREATED:
-            continue
+    misopened = [record for record in openers.values() if record.event_type != CASE_CREATED]
+    for record in (*misopened, *recreations):
         try:
-            tracking_id = tracking_id_from_stream(stream_id)
+            tracking_id = tracking_id_from_stream(record.stream_id)
         except ValueError:
             continue
-        faults.append(
-            HistoryFault(
-                sequence=record.sequence,
-                code="case_stream_mismatch",
-                message=_case_opener_message(tracking_id, record.event_type),
+        if record.event_type == CASE_CREATED:
+            message = _unexpected_case_event_message(
+                tracking_id, record.event_type, record.sequence
             )
+        else:
+            message = _case_opener_message(tracking_id, record.event_type)
+        faults.append(
+            HistoryFault(sequence=record.sequence, code="case_stream_mismatch", message=message)
         )
     return tuple(faults)
 

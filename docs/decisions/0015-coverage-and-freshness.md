@@ -771,3 +771,14 @@ from. `cases list` adds a last column, `CONTEXT KEY`, once the store holds a cov
 the gap's context key, and `-` for every other case. A listing with no gap case keeps its seven
 columns byte for byte, and the column is text output, escaped as every line is (ADR 0004
 amendment 2026-10-25). No report document carries the key, and no golden moved.
+
+## Amendment (2026-10-27): the report diagnostic code registry
+
+The registry "Left for later (2026-10-16)" names is built. `REPORT_DIAGNOSTIC_CODES`, beside
+`ReportDiagnostic` in `complyroll.reports.vdt` and exported from `complyroll.reports`, is the
+closed set of codes a diagnostic line carries: every `ReportDiagnostic` a report or the CLI builds,
+the three coverage gap INFO codes above among them, and the two warnings the CLI writes as text.
+`tests/test_report_codes.py` reads `src/complyroll` and holds every site to the set, and the set to
+what is built, so a code cannot ship unlisted. An ingest diagnostic a report carries keeps its
+adapter's code, and audit faults stay in `AUDIT_FAULT_CODES`. There is no run-time check, so no
+new refusal; the docstring of the test names what its scan cannot see.

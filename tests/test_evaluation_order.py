@@ -1601,7 +1601,7 @@ class CommandOrderTests(unittest.TestCase):
         # A case stream that is contract-valid but does not fold fails `store verify`, as a
         # report from the store refuses it, although no case in the store is evaluated. The
         # order check used to find it by folding every case and raising `history_invalid`;
-        # the audit now names it first, as `case_stream_mismatch` (CL-79).
+        # the audit now names it first, as `case_stream_mismatch` (CL-81).
         store = SQLiteEventStore(self.database)
         try:
             EventRepository(store).append(

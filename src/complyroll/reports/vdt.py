@@ -147,15 +147,20 @@ class ReportDiagnostic:
         return value
 
 
-#: The codes the report compiler gives a diagnostic of its own. A report prints them in its
-#: JSON and on stderr, so they are part of its contract; an ingest diagnostic it carries keeps
-#: its adapter's code. `tests/test_report_codes.py` holds every `ReportDiagnostic` the
-#: reports package builds to this set, and the set to what is built.
+#: The codes a diagnostic line carries: every `ReportDiagnostic` a report or the CLI builds,
+#: and the two the CLI writes as text lines. A report prints its own in its JSON and on stderr,
+#: and the CLI prints its refusals in the same `level: code: message` form, so all of them are
+#: part of the contract. An ingest diagnostic a report carries keeps its adapter's code; audit
+#: faults are `AUDIT_FAULT_CODES`, and the store's integrity faults are the store's own.
+#: `tests/test_report_codes.py` holds every site in `src/complyroll` to this set, and the set
+#: to what is built.
 REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "acceptance_rationale_missing",
     "accepted_excluded",
     "artifact_superseded",
     "artifact_superseded_by_failure",
+    "attestation_not_applicable",
+    "case_not_found",
     "clock_out_of_range",
     "closed_without_disposition",
     "coverage_gap_contradicted",
@@ -167,15 +172,22 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "disposition_without_evaluation",
     "drift_likelihood_unknown",
     "duplicate_artifact",
+    "error_diagnostic_unpublished",
     "evaluation_ambiguous",
     "evaluation_before_detection",
     "evaluation_before_partial_detection",
     "evaluation_context_key_required",
     "evaluation_duplicate",
     "evaluation_unmatched",
+    "event_contract_invalid",
+    "event_too_large",
     "excluded_by_period",
     "failure_held",
+    "failure_read_elsewhere",
     "failure_superseded",
+    "history_invalid",
+    "invalid_input",
+    "invalid_option",
     "kev_catalog_after_as_of",
     "kev_catalog_stale",
     "kev_entries_after_as_of",
@@ -184,9 +196,20 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "kev_no_matches",
     "kev_rule_unavailable",
     "no_artifacts",
+    "output_is_symlink",
+    "output_rollback_failed",
+    "output_write_failed",
+    "payload_contracts_unchecked",
+    "report_malformed",
     "report_period_missing",
+    "report_read_failed",
+    "report_too_large",
     "schema_invalid",
     "stale_case",
+    "store_conflict",
+    "store_integrity",
+    "store_missing",
+    "store_unavailable",
     "tracking_id_collision",
     "unresolved_observation",
 )

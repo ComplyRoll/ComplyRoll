@@ -149,8 +149,9 @@ The standard-library ingestion layer currently enforces:
 - An input path that is a symbolic-link loop is refused by the read that meets it, as
   `artifact_read_failed` for an artifact, on every interpreter. The input-overwrite check follows
   links with `os.path.realpath`, which returns a loop's path where 3.11's `Path.resolve` raised
-- Every line the `complyroll` and `stigroll` commands print as text, argparse's own usage errors
-  included, passes through one function that spells C0 and C1 control characters, DEL, U+2028
+- Every line the `complyroll` and `stigroll` commands print as text that can carry input
+  (diagnostics, status and summary lines, and argparse's usage error message) passes through one
+  function that spells C0 and C1 control characters, DEL, U+2028
   and U+2029 as escapes (`\n`, `\r`, `\x1b`, `\u2028`), so no argument, file name, stored text or
   message that quotes one can forge a line or drive a terminal through it. A tab is kept, and a
   backslash is not escaped, so the two characters `\n` and an escaped newline print alike. JSON
@@ -160,7 +161,8 @@ The standard-library ingestion layer currently enforces:
   used to exit 1 after its store write had committed. UTF-8 output is byte for byte what it was.
   Documents are not lines and are not covered: Markdown report files, and `stigroll`'s Markdown
   and CSV roll-ups, on stdout as in a file, carry their text as written apart from the Markdown
-  table escapes below. Treat them as untrusted text
+  table escapes and the CSV formula neutralization below. Help text and the usage block carry no
+  input. Treat them as untrusted text
 
 Callers may lower these limits for their environment. Raising them is an explicit caller decision.
 Compatibility CSV output neutralizes formula-leading cells, and Markdown table output escapes raw
@@ -315,7 +317,8 @@ those three match, and a test pins it.
   written. An append that would mark such a store refuses it as `store_unavailable` and names
   the record, rather than failing on SQLite's unique constraint.
 - `store verify` reports a case stream whose id names no tracking id
-  (`case_tracking_id_mismatch`), a case stream whose first event is not `case.created`
+  (`case_tracking_id_mismatch`), a case stream that does not hold exactly one `case.created` as
+  its first event, named at a first event of another type and at every later `case.created`
   (`case_stream_mismatch`), and a case that records a disposition and no evaluation
   (`disposition_without_evaluation`). Every report from the store, `cases list`,
   `cases evaluate` and `cases attest-detection` refuse the first two as `history_invalid`, and

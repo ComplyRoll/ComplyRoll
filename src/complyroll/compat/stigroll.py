@@ -370,6 +370,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"error: could not parse {args.cci_list.name}: {diagnostic.message}",
                     file=sys.stderr,
                 )
+            if not mapping_result.errors:
+                # Every unsuccessful result names its error today, so this arm prints only if
+                # a loader change ever returns no mapping and no error.
+                say(
+                    f"error: could not parse {args.cci_list.name}: no mapping read", file=sys.stderr
+                )
             return 1
         findings = [
             replace(

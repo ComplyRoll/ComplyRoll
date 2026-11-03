@@ -6,13 +6,16 @@ All notable project changes will be documented here.
 
 ### Fixed
 
-- A case stream whose first event is not `case.created` is now the `store verify` audit fault
-  `case_stream_mismatch`, at that event, in the words every reader that folds the case refuses it
-  with ("case ... begins with ..., not 'case.created'"). Alone, it used to stop `store verify` as
-  `history_invalid` outside the audit, and `audit_history` raised on it; beside a fault no reader
-  refuses, such as `event_metadata_invalid`, verify named that fault alone and passed over this
-  one; beside any other fault it was not looked for. The readers refuse it as before, as
-  `history_invalid`, and `AUDIT_FAULT_CODES` gains the code (ADR 0008 amendment 2026-10-26).
+- A case stream whose first event is not `case.created`, or that carries a second
+  `case.created`, is now the `store verify` audit fault `case_stream_mismatch`, at the first event
+  or at each later `case.created`, in the words every reader that folds the case refuses it with
+  ("case ... begins with ..., not 'case.created'", "case ... carries unexpected event
+  'case.created' at sequence N"). Alone, either used to stop `store verify` as `history_invalid`
+  outside the audit, and `audit_history` raised on it; beside a fault no reader refuses, such as
+  `event_metadata_invalid`, verify named that fault alone and passed over this one; beside any
+  other fault it was not looked for. `EventRepository.append` still accepts a second
+  `case.created`. The readers refuse both as before, as `history_invalid`, and
+  `AUDIT_FAULT_CODES` gains the code (ADR 0008 amendment 2026-10-26).
 - argparse's own usage errors no longer forge a line: an unrecognized or ambiguous argument was
   echoed as typed, so a newline in one printed a line of its own. Both commands' parsers, and every
   subcommand's, now print the error through the escape every other line passes through. The exit
@@ -23,7 +26,6 @@ All notable project changes will be documented here.
   `PYTHONIOENCODING=ascii` with a non-ASCII file name in the CSV roll-up. The roll-up itself is
   written as rendered, to stdout as to `-o`; its JSON is ASCII, and its UTF-8 output and the
   `ubuntu-host.md`, `mixed.csv`, `mixed.json` and `mixed-mapped.json` goldens are unchanged.
-
 - A stored instant whose offset puts it outside the years `datetime` holds, such as an
   `observedAt` of `0001-01-01T00:30:00+01:00` on a case link, matched the contract pattern and
   then ended `store verify`, every report from the store and most `cases` commands in an

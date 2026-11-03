@@ -60,6 +60,7 @@ from complyroll.history import (
 from complyroll.models import Observation
 from complyroll.reports import vdt as vdt_module
 from complyroll.store import MAX_EVENT_JSON_BYTES, EventRecord, NewEvent, SQLiteEventStore
+from complyroll.terminal import terminal_text
 
 # Versions after the shipped SARIF parser, for a fixture re-read under another version.
 SARIF_NEXT = str(int(SARIF_PARSER_VERSION) + 1)
@@ -5158,7 +5159,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
     def test_a_case_stream_not_opening_with_creation_is_named_as_every_reader_refuses_it(
         self,
     ) -> None:
-        # CL-79: verify used to print the fold's `history_invalid` alone, and nothing at all
+        # CL-81: verify used to print the fold's `history_invalid` alone, and nothing at all
         # beside a fault no reader refuses. It is now an audit fault, in the readers' words.
         self.populate()
         sequence = self.smuggle(
@@ -5207,6 +5208,88 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(err.count("case_stream_mismatch"), 1)
         self.assertIn(f"error: sequence {first}: case_stream_mismatch: ", err)
 
+    def recreate(self, *, count: int = 1, **changes: Any) -> tuple[list[int], str]:
+        """Append `count` more `case.created` events to a fixture case stream, past the writers.
+
+        `EventRepository.append` accepts one too, so a store needs no tool around the writers
+        to hold this shape (CL-81); it is smuggled here only to set its metadata.
+        """
+
+        stream = self.case_stream(UBUNTU_CASE)
+        created = stream[0]
+        metadata = changes.pop("metadata", None)
+        payload = {**created.payload, **changes}
+        sequences = [
+            self.smuggle(
+                "case.created",
+                payload,
+                stream_id=created.stream_id,
+                metadata=metadata,
+                expected_version=len(stream) + index,
+            )
+            for index in range(count)
+        ]
+        return sequences, created.stream_id
+
+    def test_a_second_creation_is_named_as_every_reader_refuses_it(self) -> None:
+        self.populate()
+        (sequence,), _ = self.recreate()
+        message = (
+            f"case {UBUNTU_CASE!r} carries unexpected event 'case.created' at sequence {sequence}"
+        )
+
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code, out), (1, ""))
+        lines = err.splitlines()
+        self.assertEqual(lines[0], f"error: sequence {sequence}: case_stream_mismatch: {message}")
+        self.assertTrue(lines[1].startswith("faults: 1 domain fault(s) in "), err)
+        self.assertEqual(len(lines), 2)
+        for reader in (
+            self.report_from_history,
+            lambda: run(["cases", "list", "--db", str(self.database)]),
+        ):
+            code, out, err = reader()
+            self.assertEqual((code, out, err), (1, "", f"error: history_invalid: {message}\n"))
+
+    def test_a_second_creation_is_named_beside_a_fault_no_reader_refuses(self) -> None:
+        # On 961bc60 verify named the metadata fault alone and passed over the creation.
+        self.populate()
+        (sequence,), _ = self.recreate(metadata={**SMUGGLED_METADATA, "runId": "run-not-a-uuid"})
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"error: sequence {sequence}: case_stream_mismatch: ", err)
+        self.assertIn(f"error: sequence {sequence}: event_metadata_invalid: ", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
+    def test_a_second_creation_naming_another_case_is_named_for_both(self) -> None:
+        self.populate()
+        (sequence,), _ = self.recreate(trackingId=OTHER_UNKNOWN_CASE)
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        self.assertIn(f"error: sequence {sequence}: case_stream_mismatch: ", err)
+        self.assertIn(f"error: sequence {sequence}: case_tracking_id_mismatch: ", err)
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
+    def test_every_later_creation_is_named_at_its_own_sequence(self) -> None:
+        self.populate()
+        sequences, _ = self.recreate(count=2)
+
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual(code, 1)
+        for sequence in sequences:
+            self.assertIn(
+                f"error: sequence {sequence}: case_stream_mismatch: case {UBUNTU_CASE!r} "
+                f"carries unexpected event 'case.created' at sequence {sequence}\n",
+                err,
+            )
+        self.assertIn("faults: 2 domain fault(s) in", err)
+
     def test_a_misplaced_first_event_is_named_for_its_stream_and_for_the_case(self) -> None:
         # Two facts about one event: it does not belong on a case stream, and the stream it
         # opens is a case that does not begin with `case.created` (ADR 0008, 2026-10-26).
@@ -5242,7 +5325,7 @@ class StoreVerifyCommandTests(PersistedStoreTestCase):
         self.assertEqual(out, "")
         self.assertIn(f"error: sequence {sequence}: payload_contract_invalid:", err)
         self.assertIn("/rating", err)
-        # It also opens its case stream, which every reader refuses (CL-79).
+        # It also opens its case stream, which every reader refuses (CL-81).
         self.assertIn(f"error: sequence {sequence}: case_stream_mismatch:", err)
         self.assertIn("faults: 2 domain fault(s) in", err)
 
@@ -8582,7 +8665,7 @@ def usage_error(argv: Sequence[str]) -> tuple[object, str]:
 
 
 class UsageErrorTextTests(unittest.TestCase):
-    """argparse's own usage errors print through the same escape as every other line (CL-78).
+    """argparse's own usage errors print through the same escape as every other line (CL-80).
 
     argparse echoes an unrecognized argument as typed, so a newline in one forged a line on
     0.3.0a0. The exit code stays 2, and an error that carries no control character keeps
@@ -8612,6 +8695,13 @@ class UsageErrorTextTests(unittest.TestCase):
         self.assertTrue(err.startswith("usage: complyroll report vdt "), err)
         self.assertIn(FORGING_SHOWN, err)
         self.assert_unforged(err)
+
+    def test_the_escape_class_is_spelled_in_ascii(self) -> None:
+        # U+2028 and U+2029 written as themselves are invisible, and an editor can drop them.
+        source = (Path(cli_module.__file__).parent / "terminal.py").read_bytes()
+        source.decode("ascii")
+        self.assertIn(b"\\u2028\\u2029]", source)
+        self.assertEqual(terminal_text("a\u2028b\u2029c"), "a\\u2028b\\u2029c")
 
     def test_an_ordinary_usage_error_keeps_argparses_bytes(self) -> None:
         code, err = usage_error(["version", "--nope\tx"])

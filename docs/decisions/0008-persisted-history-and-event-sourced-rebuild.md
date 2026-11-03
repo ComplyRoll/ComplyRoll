@@ -623,20 +623,37 @@ An append-only store has no repair for such a clock. Refusing it in the event co
 was rejected: every command, `cases list` included, would then refuse the whole store, including
 the stores whose clocks report today. No golden changes.
 
-## Amendment 2026-10-26: a case stream that does not open with case.created
+## Amendment 2026-10-26: a case stream that does not hold one case.created, first
 
 Every reader that folds a case refuses a case stream whose first event is not `case.created`, as
-`history_invalid` with "case ... begins with ..., not 'case.created'". The audit had no fault for
-it. Alone, the evaluation order check met it by folding every case and raised, so `store verify`
-stopped with that `history_invalid` outside the audit and `audit_history` raised instead of
-reporting. Beside a fault no reader refuses (`event_metadata_invalid`, `failure_schema_unmarked`,
-`coverage_schema_unmarked`) the order check swallowed the error, and `store verify` named the other
-fault alone; beside any other fault the check did not run. Either way a store every reader refuses
-was rejected without the fault that refuses it, which the 2026-10-21 amendment's rule forbids.
+`history_invalid` with "case ... begins with ..., not 'case.created'", and one that carries a second
+`case.created`, with "case ... carries unexpected event 'case.created' at sequence N". The audit had
+no fault for either. Alone, the evaluation order check met one by folding every case and raised, so
+`store verify` stopped with that `history_invalid` outside the audit and `audit_history` raised
+instead of reporting. Beside a fault no reader refuses (`event_metadata_invalid`,
+`failure_schema_unmarked`, `coverage_schema_unmarked`) the order check swallowed the error, and
+`store verify` named the other fault alone; beside any other fault the check did not run. Either way
+a store every reader refuses was rejected without the fault that refuses it, which the 2026-10-21
+amendment's rule forbids.
 
-The audit now reports it as `case_stream_mismatch`, which `AUDIT_FAULT_CODES` gains: once per case
-stream, at its first event, with the readers' message. A stream whose id names no tracking id stays
-`case_tracking_id_mismatch` alone, as that amendment decided. A first event that does not belong on
-a case stream at all is also `event_stream_mismatch`, at the same sequence; the two describe
-different facts. The fault is not one the order check runs beside, so a store that carries it is
-not folded. The readers and writers refuse exactly what they refused before, and no golden changes.
+The audit now reports both as `case_stream_mismatch`, which `AUDIT_FAULT_CODES` gains, with the
+readers' messages: a first event of another type, once per case stream at that event, and every
+`case.created` after the first, each at its own sequence. One code serves both because they break
+one rule, that a case stream holds exactly one `case.created` and holds it first; unlike a failure
+or coverage stream, a case stream has no count of events to be overfull against. The fold names only
+the first problem it meets, so a stream holding several carries one fault per problem in the audit
+and one refusal in a reader. `EventRepository.append` still accepts a second `case.created`; the
+rule asks `store verify` to name what a reader refuses, not the writer to refuse it, so that is left
+as it is. A second `case.created` naming another tracking id is also `case_tracking_id_mismatch`,
+and a first event that does not belong on a case stream at all is also `event_stream_mismatch`, each
+at the same sequence; the two describe different facts. A stream whose id names no tracking id stays
+`case_tracking_id_mismatch` alone, as that amendment decided.
+
+With this, every shape the case fold refuses has a named fault. A stream whose id names no tracking
+id, or a `case.created` naming another, is `case_tracking_id_mismatch`; a first event other than
+`case.created`, or a later `case.created`, is `case_stream_mismatch`; any other event that does not
+belong on a case stream is `event_stream_mismatch`, and also `payload_contract_invalid` when its
+type is unpublished; a payload its contract refuses is `payload_contract_invalid`, and the fold
+reads no field its contract does not already hold. `case_stream_mismatch` is not a fault the order
+check runs beside, so a store that carries it is not folded. The readers and writers refuse exactly
+what they refused before, and no golden changes.

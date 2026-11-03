@@ -591,6 +591,28 @@ class JsonReaderBoundTests(unittest.TestCase):
                 message = self.refusal(reader, error, b"[" * (depth + 1) + b"]" * (depth + 1))
                 self.assertEqual(message, f"{name} exceeds {depth} levels of JSON nesting")
 
+    def test_object_nesting_past_the_bound_is_refused_and_at_it_reads(self) -> None:
+        # Each object counts one level, and so does the object its key holds.
+        def nested(levels: int) -> bytes:
+            return b'{"a":' * (levels - 1) + b"{}" + b"}" * (levels - 1)
+
+        for name, reader, error, _values, depth, _surrogates in self.READERS:
+            with self.subTest(reader=name):
+                reader(nested(depth))
+                message = self.refusal(reader, error, nested(depth + 1))
+                self.assertEqual(message, f"{name} exceeds {depth} levels of JSON nesting")
+
+    def test_one_value_past_both_bounds_is_refused_for_the_value_bound(self) -> None:
+        # The walk pops the trailing zeros first, so the chain's deepest array is both the
+        # value past the value bound and the level past the depth bound; values are checked
+        # first.
+        for name, reader, error, values, depth, _surrogates in self.READERS:
+            chain = b"[" * depth + b"]" * depth
+            content = b"[" + chain + b",0" * (values - depth) + b"]"
+            with self.subTest(reader=name):
+                message = self.refusal(reader, error, content)
+                self.assertEqual(message, f"{name} contains more than {values} JSON values")
+
     def test_a_lone_surrogate_is_refused_only_by_the_evaluations_reader(self) -> None:
         # The other three read one as 961bc60 read it; sharing the parser keeps that.
         for name, reader, error, _values, _depth, refuses in self.READERS:

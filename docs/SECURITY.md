@@ -309,8 +309,11 @@ those three match, and a test pins it.
 - `store verify` names two current groups a report would publish under one tracking id as
   `tracking_id_collision`, by the report's own rule and in its words (ADR 0008 amendment
   2026-11-03). `cases evaluate` refuses to write such a store, but a later `ingest` can leave one,
-  by bringing a group whose correlation id an override already names. Every report refuses it
-  either way, and a new override clears it.
+  by bringing a group whose correlation id an override already names, or by one crafted file holding
+  two groups under one 64-bit correlation id. Every report refuses it either way. A new override
+  clears the first where an entry can name a claimant, which a context key of only whitespace can
+  prevent. The second has no repair: that file stops every report and `cases correlate` from then
+  on, verify names it, and the remedy is a new store rebuilt from sources without it.
 - A failure or coverage stream's observation names its clock in its identity, so one whose clock
   has no UTC instant cannot be read at all. `Observation` and the repository refuse it, every
   command that reads the stream refuses it as `history_invalid`, and `store verify` names it as

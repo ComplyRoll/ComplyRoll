@@ -736,6 +736,15 @@ class, with or without a `cases correlate` in between, while `store verify` pass
 written around the writers reaches the same state, two evaluated cases sharing one override among
 them.
 
+A second route needs one file and no override. A correlation id is 64 bits of SHA-256, so two groups
+can share one, and a search on a laptop found a pair in under a minute:
+`["cklb","R44e0d066875d4bc4","S"]` and `["cklb","Re463e3245367e5c9","S"]` both give
+`case-8c2b3a84c332d647`. By accident the odds are about n^2/2^65, roughly 3e-8 at a million records,
+so this takes a crafted or adversary-influenced file, not bad luck. `ingest` accepts the file, and
+every report then refuses the store. `cases correlate` refuses it too, as `store_conflict`, because
+it opens one stream per group, so no later group gets a case. A store 0.3.0a0 correlated holds one
+case for the pair: `cases correlate` passes there, and every report still refuses.
+
 `tracking_id_collision` joins `AUDIT_FAULT_CODES`, on the precedent of
 `evaluation_before_detection`, and is checked in the same two branches under the same conditions.
 `reports.vdt.tracking_id_collisions` decides it for both sides and `tracking_id_collision_message`
@@ -746,8 +755,12 @@ as it reads them: each current group claims its correlation id, or the override
 writer's view, in two ways. An override reaches a report only through the case's current evaluation,
 so one with no current evaluation claims nothing. A group no case holds yet still claims its
 correlation id, which is the variant the writer's check misses. A stale case has no group, so it
-claims nothing either. The fault sits at the latest event recording an override among the two
-claimants, the event a new override answers.
+claims nothing either. Two groups under one correlation id each claim and share that id's
+evaluation, so the check walks the groups a report compiles and not `history.order.current_groups`,
+a mapping that keeps one of them. The fault sits at the latest event recording an override among the
+two claimants, the event a new override answers. A pair with no override sits at the latest
+`observation.recorded` among the pair's observations: the event that brought it, until a later scan
+of either rule moves it.
 
 The fault can name a store before its report does. A group with no detection time is not compiled,
 so a report stops at `detection_time_missing` first and meets the collision after the attestation.
@@ -767,7 +780,22 @@ fault: the store is in a normal state, and `examples/README.md` shows that refus
 attestation. Nor is a refusal of a run's own input, such as `evaluation_unmatched`.
 
 A store holding a collision verified clean before and now exits 1. Every report already refused it,
-so no report stops that worked. A new override clears both: `cases evaluate` with another
-`trackingId` records it, and the store then verifies and reports. An append-only store has no other
-repair. The message now quotes an override through `shown`, cut past 200 characters as other stored
-values are, on both sides; a shorter one prints as before. No golden changes.
+so no report stops that worked. Where an override made the collision and an entry can name a
+claimant, a new override clears both: `cases evaluate` with another `trackingId` records it, and the
+store then verifies and reports. An append-only store has no other repair, and two collisions have
+no repair through the command line.
+
+Two groups under one correlation id share whatever override their case holds, and where `cases
+correlate` refused they have no case to name. So one crafted file holding two groups under one
+64-bit id stops every report and `cases correlate` from then on, verify names it, and the remedy is
+a new store rebuilt from sources without that file. A claimant whose stored context key is only
+whitespace, which an XCCDF `TestResult id=" "` under a benchmark with no id gives, cannot be named
+either: `contextKey` must be non-blank, so once a twin under a real name makes its source record
+ambiguous, no entry reaches it, and verify and every report refuse from then on. A CKLB file's blank
+STIG name is not that case: it is stored as `cklb`, which an entry can name. Refusing a second
+identity under a held id, widening the id, and reaching a whitespace context key are not decided
+here; each needs its own ruling.
+
+The message now quotes an override through `shown`, cut past 200 characters of the quoted form, as
+other stored values are, on both sides. A plain override of up to 198 characters prints as before,
+and one heavy in escapes is cut sooner. No golden changes.

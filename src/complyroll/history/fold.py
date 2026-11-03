@@ -694,8 +694,9 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
 
     - `tracking_id_collision`: two current groups a report would publish under one tracking
       id, by the report's rule and in its words, at the latest event recording an override
-      among the two. `ingest` can leave this, by bringing a group whose correlation id an
-      override already names (ADR 0008 amendment 2026-11-03).
+      among the two, else at the latest observation among their observations. `ingest` can
+      leave this, by bringing a group whose correlation id an override already names, or two
+      groups under one correlation id (ADR 0008 amendment 2026-11-03).
 
     Faults are ordered by sequence and then by code, so one damaged file always describes
     itself the same way. A store-level failure (an unreadable file, a hole in history) is

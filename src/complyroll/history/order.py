@@ -79,12 +79,13 @@ class EvaluationOrderError(HistoryError):
 
 @dataclass(frozen=True, slots=True)
 class _GroupClaim:
-    """One current group's claim on a published id, and the event that recorded its override."""
+    """One current group's claim on a published id, and the events a fault can sit at."""
 
     tracking_id: str
     original_tracking_id: str
     evaluation_location: str
     override_sequence: int | None
+    latest_observation_sequence: int
 
 
 # *--- Core Logic ---*
@@ -201,36 +202,38 @@ def tracking_id_collision_faults(repository: EventRepository) -> tuple[HistoryFa
     its correlation id, including a group no case holds yet, or the override `case_evaluations`
     gives it. So an override with no current evaluation claims nothing, which is why this does
     not read `CaseState.effective_tracking_id`, the writer's view, and a stale case has no group
-    to claim with. `reports.vdt.tracking_id_collisions` decides and words it for both sides. A
-    fault sits at the latest event recording an override among its two claimants. The rule reads
-    no clock and no report option, so the fault holds at every as-of and under either class.
+    to claim with. A correlation id is 64 bits, so one file can hold two groups under one id; each
+    still claims, which is why this walks the groups and not `current_groups`, a mapping that keeps
+    one of them. `reports.vdt.tracking_id_collisions` decides and words it for both sides. A fault
+    sits at the latest event recording an override among its two claimants, else at the latest
+    observation among their observations: the event that brought it, until a later scan of either
+    moves it. The rule reads no clock and no report option, so the fault holds at every as-of and
+    under either class.
     """
 
     cases = fold_all_cases(repository)
     evaluations = case_evaluations(cases)
-    if all(entry.tracking_id is None for entry in evaluations.values()):
-        return ()
     sequences = {case.tracking_id: case.identified_sequence for case in cases}
+    records = rehydrate_observation_records(repository)
+    recorded = {observation.observation_id: sequence for sequence, observation in records}
     claims: list[_GroupClaim] = []
-    for tracking_id, group in current_groups(repository).items():
-        evaluation = evaluations.get(tracking_id)
+    for group in group_open_observations([observation for _, observation in records]):
+        evaluation = evaluations.get(group.tracking_id)
         override = evaluation is not None and evaluation.tracking_id is not None
         claims.append(
             _GroupClaim(
                 tracking_id=published_tracking_id(group, evaluation),
-                original_tracking_id=tracking_id,
+                original_tracking_id=group.tracking_id,
                 evaluation_location=evaluation_location(evaluation),
-                override_sequence=sequences[tracking_id] if override else None,
+                override_sequence=sequences[group.tracking_id] if override else None,
+                latest_observation_sequence=max(recorded[item] for item in group.observation_ids),
             )
         )
     faults: list[HistoryFault] = []
     for previous, claim in tracking_id_collisions(claims):
-        # Two groups never share a correlation id, so one of a pair always carries an override.
-        sequence = max(
-            item.override_sequence
-            for item in (previous, claim)
-            if item.override_sequence is not None
-        )
+        pair = (previous, claim)
+        overrides = [item.override_sequence for item in pair if item.override_sequence is not None]
+        sequence = max(overrides or [item.latest_observation_sequence for item in pair])
         message = tracking_id_collision_message(previous, claim)
         faults.append(HistoryFault(sequence, TRACKING_ID_COLLISION, message))
     return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))

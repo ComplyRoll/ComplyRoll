@@ -8,13 +8,20 @@ All notable project changes will be documented here.
 
 - A store two records would publish under one tracking id now fails `store verify`, as the audit
   fault `tracking_id_collision`, in the report's words, at the latest event recording an override
-  among the two. Every report already refused such a store, and verify passed it. `cases evaluate`
-  refuses to write one, but it accepts an override naming a correlation id no case holds yet, and a
-  later `ingest` then brings a group with that id, with or without `cases correlate`. That route
-  needs only the command line, on every build from 0.3.0a0. A store holding a collision verified
-  clean before and now exits 1; `cases evaluate` with a new `trackingId` clears both the fault and
-  the refusal. The message now cuts an override past 200 characters, as other stored values are cut
-  (ADR 0008 amendment 2026-11-03).
+  among the two, else at the latest observation among their observations. Every report already
+  refused such a store, and verify passed it. `cases evaluate` refuses to write one, but it accepts
+  an override naming a correlation id no case holds yet, and a later `ingest` then brings a group
+  with that id, with or without `cases correlate`. That route needs only the command line, on every
+  build from 0.3.0a0. A store holding a collision verified clean before and now exits 1; on that
+  route, `cases evaluate` with a new `trackingId` clears both the fault and the refusal. The message
+  now cuts an override past 200 characters of its quoted form, as other stored values are cut (ADR
+  0008 amendment 2026-11-03).
+- One crafted file holding two groups under one 64-bit correlation id stops every report and `cases
+  correlate` from then on. `store verify` passed such a store and now names it. `ingest` still
+  accepts the file, no override can part the two, and the remedy is a new store rebuilt from sources
+  without that file. A collision whose claimants hold a context key of only whitespace cannot be
+  cleared by a new override either, once a twin under a real name makes each source record
+  ambiguous, because no entry can then name them (the same amendment).
 - A failure or coverage stream's observation whose `observed_at` has no UTC instant, such as
   `0001-01-01T00:30:00+01:00`, ended `store verify`, every report from the store, `cases correlate`,
   `cases coverage`, `cases evaluate`, `cases attest-detection --case` on an evaluated case, `ingest

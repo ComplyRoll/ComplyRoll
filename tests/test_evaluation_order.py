@@ -45,7 +45,11 @@ from test_reports import (
 
 from complyroll.adapters import IngestResult, ingest_stig_artifact
 from complyroll.cli import main
-from complyroll.correlation import VulnerabilityGroup, group_open_observations
+from complyroll.correlation import (
+    VulnerabilityGroup,
+    group_open_observations,
+    tracking_id_for,
+)
 from complyroll.events import EventMetadata, EventRepository, case_stream_id, iso_utc
 from complyroll.history import (
     ARTIFACT_INGESTED,
@@ -55,6 +59,7 @@ from complyroll.history import (
     CASE_IDENTIFIED,
     CASE_OBSERVATION_LINKED,
     DETECTION_ATTESTED,
+    OBSERVATION_RECORDED,
     AttestationOutcome,
     EvaluationMatchError,
     EvaluationOrderError,
@@ -195,6 +200,44 @@ def orphan_created(tracking_id: str) -> dict[str, Any]:
         "description": "Recorded from an artifact that is no longer supplied.",
         "createdAt": iso_utc(WRITTEN_AT),
     }
+
+
+#: Two rules whose group keys share one correlation id, 64 bits of SHA-256. A search on a laptop
+#: found the pair in under a minute, so a file can be built to hold one (CL6A-F-01).
+COLLIDING_RULES = ("R44e0d066875d4bc4", "Re463e3245367e5c9")
+COLLIDING_CONTEXT = "S"
+COLLIDING_ID = "case-8c2b3a84c332d647"
+COLLISION_TAIL = "an override may rename one vulnerability but may not merge two"
+
+
+def colliding_scan(
+    directory: Path, *rules: str, host: str = "lab-01", completed_at: str = "2026-08-10T00:00:00Z"
+) -> Path:
+    """Write a CKLB file holding the named rules on one host, both of the pair by default."""
+
+    path = directory / f"{host}-{len(rules)}-{'-'.join(rules)[:24]}.cklb"
+    payload = {
+        "title": "scan",
+        "completed_at": completed_at,
+        "target_data": {"host_name": host},
+        "stigs": [
+            {
+                "stig_name": COLLIDING_CONTEXT,
+                "rules": [
+                    {
+                        "group_id": rule,
+                        "rule_title": f"rule {rule}",
+                        "severity": "medium",
+                        "status": "open",
+                        "ccis": [],
+                    }
+                    for rule in rules or COLLIDING_RULES
+                ],
+            }
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
 
 
 def report_vdt(database: Path) -> tuple[int, str, str]:
@@ -1720,11 +1763,9 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
 
     def override_with_no_current_evaluation(self) -> None:
         # `effective_tracking_id` would call this a collision. No report ever reads the override.
-        # The third case's override keeps the check from stopping at "no override to compare".
         banner, sshd = self.timed(BANNER_RULE), self.timed(SSHD_RULE)
-        self.ingest(banner, sshd, self.timed("third_rule"))
+        self.ingest(banner, sshd)
         self.correlate()
-        self.evaluate(self.evaluation_of("third_rule", trackingId="PROV-OTHER"))
         self.identify(self.case_of(BANNER_RULE), self.tracking_id_of(sshd))
 
     def stale_case_with_the_override(self) -> None:
@@ -1747,6 +1788,43 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
         self.ingest(banner, self.timed(SSHD_RULE))
         self.correlate()
         self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=self.tracking_id_of(banner)))
+
+    def real_pair_alone(self) -> None:
+        self.ingest(self.timed(BANNER_RULE))
+        self.correlate()
+        self.ingest(colliding_scan(self.directory))
+
+    def real_pair_beside_an_override_elsewhere(self) -> None:
+        self.ingest(self.timed(BANNER_RULE))
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-ELSEWHERE"))
+        self.ingest(colliding_scan(self.directory))
+
+    def real_pair_with_an_override_onto_its_id(self) -> None:
+        self.ingest(self.timed(BANNER_RULE))
+        self.correlate()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=COLLIDING_ID))
+        self.ingest(colliding_scan(self.directory))
+
+    def real_pair_after_the_new_override(self) -> None:
+        self.real_pair_with_an_override_onto_its_id()
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-RENAMED"))
+
+    def one_case_for_the_real_pair(self, **fields: object) -> None:
+        # 0.3.0a0's `cases correlate` made one case for the pair, from the first group.
+        scan = colliding_scan(self.directory)
+        self.ingest(scan)
+        created = history_writers._case_created_payload(groups_of((scan,))[0], WRITTEN_AT)
+        self.append_around(COLLIDING_ID, CASE_CREATED, created)
+        if fields:
+            match = {"sourceRecordId": COLLIDING_RULES[0]}
+            self.evaluate(self.evaluation_of(COLLIDING_RULES[0], match=match, **fields))
+
+    def real_pair_on_the_one_case_an_old_build_made(self) -> None:
+        self.one_case_for_the_real_pair()
+
+    def real_pair_on_one_case_with_its_override(self) -> None:
+        self.one_case_for_the_real_pair(trackingId="PROV-ONE-CASE")
 
     def refused_collisions(self) -> set[str]:
         """Return the messages a report refuses this store with, under either class."""
@@ -1775,6 +1853,12 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
             (self.stale_case_with_the_override, 0),
             (self.distinct_overrides, 0),
             (self.override_equal_to_its_own_id, 0),
+            (self.real_pair_alone, 1),
+            (self.real_pair_beside_an_override_elsewhere, 1),
+            (self.real_pair_with_an_override_onto_its_id, 2),
+            (self.real_pair_after_the_new_override, 1),
+            (self.real_pair_on_the_one_case_an_old_build_made, 1),
+            (self.real_pair_on_one_case_with_its_override, 1),
         ):
             with self.subTest(store=build.__name__):
                 self.open_store(f"{build.__name__}.db")
@@ -1954,6 +2038,206 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
         self.assertEqual({fault.code for fault in faults}, {"event_stream_mismatch"})
         self.assertEqual(len(self.refused_collisions()), 1)
 
+    def test_each_later_claimant_pairs_with_the_first_in_the_report_s_order(self) -> None:
+        self.three_claimants()
+        cases = {
+            case.source_record_id: f"evaluations[{index}] (originally {case.tracking_id})"
+            for index, case in enumerate(fold_all_cases(self.repository))
+        }
+
+        def pair(first: str, second: str) -> str:
+            return (
+                f"effective tracking id 'PROV-SHARED' is claimed by {cases[first]} and "
+                f"{cases[second]}; {COLLISION_TAIL}"
+            )
+
+        expected = [pair(BANNER_RULE, SSHD_RULE), pair(BANNER_RULE, "third_rule")]
+
+        with self.assertRaises(ReportCompileError) as caught:
+            self.report()
+
+        self.assertEqual([item.message for item in caught.exception.diagnostics], expected)
+        self.assertEqual([fault.message for fault in audit_history(self.repository)], expected)
+
+    # *--- Two groups under one correlation id ---*
+
+    def observation_sequences(self, rule: str) -> list[int]:
+        """Return the sequences of a rule's `observation.recorded` events, in order."""
+
+        return [
+            record.sequence
+            for record in self.repository.read_all()
+            if record.event_type == OBSERVATION_RECORDED
+            and record.payload["source_record_id"] == rule
+        ]
+
+    def pair_message(self) -> str:
+        side = f"no evaluation entry (originally {COLLIDING_ID})"
+        return (
+            f"effective tracking id {COLLIDING_ID!r} is claimed by {side} and {side}; "
+            f"{COLLISION_TAIL}"
+        )
+
+    def test_the_pair_is_one_correlation_id(self) -> None:
+        for rule in COLLIDING_RULES:
+            self.assertEqual(tracking_id_for("cklb", rule, COLLIDING_CONTEXT), COLLIDING_ID)
+        groups = groups_of((colliding_scan(self.directory),))
+        self.assertEqual([group.source_record_id for group in groups], list(COLLIDING_RULES))
+        self.assertEqual([group.tracking_id for group in groups], [COLLIDING_ID] * 2)
+
+    def test_a_pair_with_no_override_is_at_the_latest_observation_among_the_two(self) -> None:
+        first, second = COLLIDING_RULES
+        self.real_pair_alone()
+
+        (fault,) = audit_history(self.repository)
+
+        self.assertEqual(fault.message, self.pair_message())
+        self.assertEqual(fault.sequence, self.observation_sequences(second)[-1])
+        self.assertLess(self.observation_sequences(first)[-1], fault.sequence)
+
+    def test_that_sequence_holds_whichever_group_arrived_last(self) -> None:
+        # The report's first claimant holds the first rule, and here its observation is the latest.
+        first, second = COLLIDING_RULES
+        self.ingest(colliding_scan(self.directory, second, host="lab-02"))
+        self.assertEqual(audit_history(self.repository), ())
+        self.ingest(colliding_scan(self.directory, first, host="lab-03"))
+
+        (fault,) = audit_history(self.repository)
+
+        self.assertEqual(fault.sequence, self.observation_sequences(first)[-1])
+        self.assertLess(self.observation_sequences(second)[-1], fault.sequence)
+
+    def test_that_sequence_is_the_latest_of_a_group_s_observations(self) -> None:
+        first, second = COLLIDING_RULES
+        self.ingest(colliding_scan(self.directory, first, host="lab-02"))
+        self.ingest(colliding_scan(self.directory, second, host="lab-03"))
+        self.ingest(colliding_scan(self.directory, first, host="lab-04"))
+
+        (fault,) = audit_history(self.repository)
+
+        (earlier, latest) = self.observation_sequences(first)
+        self.assertLess(earlier, self.observation_sequences(second)[-1])
+        self.assertEqual(fault.sequence, latest)
+
+    def test_a_pair_keeps_the_latest_override_when_it_has_one(self) -> None:
+        self.real_pair_with_an_override_onto_its_id()
+        (override,) = [
+            record.sequence
+            for record in self.repository.read_stream(case_stream_id(self.case_of(BANNER_RULE)))
+            if record.event_type == CASE_IDENTIFIED
+        ]
+
+        faults = audit_history(self.repository)
+
+        self.assertEqual(
+            [(fault.sequence, fault.message) for fault in faults],
+            [
+                (
+                    override,
+                    f"effective tracking id {COLLIDING_ID!r} is claimed by no evaluation entry "
+                    f"(originally {COLLIDING_ID}) and evaluations[0] (originally "
+                    f"{self.case_of(BANNER_RULE)}); {COLLISION_TAIL}",
+                ),
+                (self.observation_sequences(COLLIDING_RULES[1])[-1], self.pair_message()),
+            ],
+        )
+
+    def test_two_groups_sharing_one_case_share_its_override(self) -> None:
+        # So no override can part them, and both sides name one entry twice.
+        self.real_pair_on_one_case_with_its_override()
+        (override,) = [
+            record.sequence
+            for record in self.repository.read_stream(case_stream_id(COLLIDING_ID))
+            if record.event_type == CASE_IDENTIFIED
+        ]
+        side = f"evaluations[0] (originally {COLLIDING_ID})"
+
+        (fault,) = audit_history(self.repository)
+
+        self.assertEqual(fault.sequence, override)
+        self.assertEqual(
+            fault.message,
+            f"effective tracking id 'PROV-ONE-CASE' is claimed by {side} and {side}; "
+            f"{COLLISION_TAIL}",
+        )
+        self.assertEqual(self.refused_collisions(), {fault.message})
+
+    def test_a_new_override_does_not_clear_a_pair(self) -> None:
+        self.real_pair_with_an_override_onto_its_id()
+        self.assertEqual(len(audit_history(self.repository)), 2)
+
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-RENAMED"))
+
+        (fault,) = audit_history(self.repository)
+        self.assertEqual(fault.message, self.pair_message())
+        self.assertEqual(self.refused_collisions(), {self.pair_message()})
+        self.assertEqual(verify_store(self.database)[0], 1)
+
+    def test_the_order_checks_still_read_one_group_for_the_pair(self) -> None:
+        self.real_pair_alone()
+        groups = current_groups(self.repository)
+        self.assertEqual(sum(key == COLLIDING_ID for key in groups), 1)
+        self.assertEqual(
+            len(group_open_observations(history_order.rehydrate_observations(self.repository))), 3
+        )
+
+    def plain_xccdf(self, name: str, benchmark: str, result: str, *rules: str) -> Path:
+        """Write an XCCDF document whose ids are exactly the ones given, unstripped."""
+
+        path = self.directory / name
+        verdicts = "".join(
+            f'<rule-result idref="{rule}"><result>fail</result></rule-result>' for rule in rules
+        )
+        path.write_text(
+            '<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" '
+            f'id="{benchmark}"><TestResult id="{result}" end-time="{TIMED_AT}">'
+            f"<target>lab-01</target>{verdicts}</TestResult></Benchmark>",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_context_key_of_only_whitespace_leaves_no_entry_to_name_a_claimant(self) -> None:
+        # So a new override cannot clear this collision. `contextKey` must be non-blank, and the
+        # twin under a real name makes each source record ambiguous.
+        second = self.plain_xccdf("second.xml", "", " ", "rule_two")
+        self.ingest(self.plain_xccdf("first.xml", "", " ", "rule_one"))
+        self.correlate()
+        self.assertEqual(self.case_of("rule_one"), tracking_id_for("xccdf", "rule_one", " "))
+        match = {"sourceRecordId": "rule_one"}
+        target = self.tracking_id_of(second)
+        self.evaluate(self.evaluation_of("rule_one", match=match, trackingId=target))
+        self.ingest(second, self.plain_xccdf("real.xml", "real", "named", "rule_one", "rule_two"))
+        self.correlate()
+        self.assertEqual(len(audit_history(self.repository)), 1)
+
+        with self.assertRaisesRegex(EvaluationMatchError, "matches 2 cases"):
+            self.evaluate(self.evaluation_of("rule_one", match=match))
+        with self.assertRaisesRegex(ValueError, "contextKey must be non-blank"):
+            self.evaluation_of("rule_one", match={**match, "contextKey": " "})
+
+    def test_a_cklb_file_with_a_blank_stig_name_stays_reachable(self) -> None:
+        # Its context key is stored as `cklb`, so an entry can name either claimant.
+        def scan(name: str, stig: str, *rules: str) -> Path:
+            path = colliding_scan(self.directory, *rules, host=name)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["stigs"][0]["stig_name"] = stig
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return path
+
+        second = scan("second", " ", "V-2")
+        self.ingest(scan("first", " ", "V-1"))
+        self.correlate()
+        match = {"sourceRecordId": "V-1", "contextKey": "cklb"}
+        target = self.tracking_id_of(second)
+        self.evaluate(self.evaluation_of("V-1", match=match, trackingId=target))
+        self.ingest(second, scan("real", "Real Name", "V-1", "V-2"))
+        self.correlate()
+        self.assertEqual(len(audit_history(self.repository)), 1)
+
+        self.evaluate(self.evaluation_of("V-1", match=match, trackingId="PROV-RENAMED"))
+
+        self.assertEqual(audit_history(self.repository), ())
+
     def test_a_long_override_is_cut_in_both_places_alike(self) -> None:
         sshd = self.timed(SSHD_RULE)
         self.ingest(self.timed(BANNER_RULE), sshd)
@@ -2064,6 +2348,131 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
 
         self.succeeds("store", "verify", "--db", self.database)
         self.assertEqual(self.report("vdt")[0], 0)
+
+    # *--- One crafted file, two groups under one correlation id ---*
+
+    PAIR_SIDE = f"no evaluation entry (originally {COLLIDING_ID})"
+    PAIR_MESSAGE = (
+        f"effective tracking id {COLLIDING_ID!r} is claimed by {PAIR_SIDE} and {PAIR_SIDE}; "
+        f"{COLLISION_TAIL}"
+    )
+    PAIR_REFUSAL = f"error: tracking_id_collision: {PAIR_MESSAGE} [no evaluation entry]"
+    ONTO_THE_PAIR_MESSAGE = (
+        f"effective tracking id {COLLIDING_ID!r} is claimed by {PAIR_SIDE} and evaluations[0] "
+        f"(originally {UBUNTU_ID}); {COLLISION_TAIL}"
+    )
+    ONTO_THE_PAIR_REFUSAL = (
+        f"error: tracking_id_collision: {ONTO_THE_PAIR_MESSAGE} [evaluations[0]]"
+    )
+
+    def healthy_store(self) -> None:
+        self.ingest("ubuntu-host.cklb", "windows-host.ckl")
+        self.correlate_and_attest()
+        self.succeeds("store", "verify", "--db", self.database)
+        self.assertEqual(self.report("vdt")[0], 0)
+
+    def ingest_the_crafted_file(self) -> None:
+        scan = colliding_scan(self.directory)
+        code, out, _ = run(["ingest", str(scan), "--db", self.database, "--as-of", self.AS_OF])
+        self.assertEqual((code, out), (0, f"{scan.name}: recorded 2 observation(s)\n"))
+
+    def assert_verify_names(self, *messages: str) -> None:
+        code, out, err = run(["store", "verify", "--db", self.database])
+        self.assertEqual((code, out), (1, ""), err)
+        lines = err.splitlines()
+        named = [line.split(": tracking_id_collision: ", 1)[1] for line in lines[:-1]]
+        self.assertCountEqual(named, messages)
+        self.assertRegex(
+            lines[-1], rf"^faults: {len(messages)} domain fault\(s\) in \d+ verified event\(s\)$"
+        )
+
+    def assert_every_report_refuses(self, *lines: str) -> None:
+        refusal = "".join(f"{line}\n" for line in lines)
+        for kind in ("vdt", "avi", "historical"):
+            with self.subTest(report=kind):
+                self.assertEqual(self.report(kind), (1, "", refusal))
+
+    def test_one_crafted_file_stops_every_report_and_correlate(self) -> None:
+        self.healthy_store()
+
+        self.ingest_the_crafted_file()
+
+        self.assert_verify_names(self.PAIR_MESSAGE)
+        self.assert_every_report_refuses(self.PAIR_REFUSAL)
+        code, _, err = run(["cases", "correlate", "--db", self.database])
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith(f"error: store_conflict: stream 'case/{COLLIDING_ID}'"), err)
+        self.assert_verify_names(self.PAIR_MESSAGE)
+
+    def test_no_entry_can_name_either_group_of_the_pair(self) -> None:
+        self.healthy_store()
+        self.ingest_the_crafted_file()
+        for rule in COLLIDING_RULES:
+            payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+            payload["evaluations"] = [
+                {**payload["evaluations"][0], "match": {"sourceRecordId": rule}}
+            ]
+            evaluations = self.directory / "evaluations.json"
+            evaluations.write_text(json.dumps(payload), encoding="utf-8")
+            with self.subTest(rule=rule):
+                code, _, err = run(
+                    ["cases", "evaluate", "--db", self.database, "--evaluations", str(evaluations)]
+                )
+                self.assertEqual(code, 1)
+                self.assertIn(f"no case matches sourceRecordId={rule!r}", err)
+        self.assert_verify_names(self.PAIR_MESSAGE)
+
+    def test_an_override_elsewhere_changes_nothing_about_the_pair(self) -> None:
+        self.healthy_store()
+        self.evaluate("ACME-1")
+
+        self.ingest_the_crafted_file()
+
+        self.assert_verify_names(self.PAIR_MESSAGE)
+        self.assert_every_report_refuses(self.PAIR_REFUSAL)
+
+    def test_an_override_onto_the_pair_then_a_new_one(self) -> None:
+        self.healthy_store()
+        self.evaluate(COLLIDING_ID)
+
+        self.ingest_the_crafted_file()
+
+        self.assert_verify_names(self.PAIR_MESSAGE, self.ONTO_THE_PAIR_MESSAGE)
+        self.assert_every_report_refuses(self.PAIR_REFUSAL, self.ONTO_THE_PAIR_REFUSAL)
+
+        self.evaluate("RENAMED-1")
+
+        self.assert_verify_names(self.PAIR_MESSAGE)
+        self.assert_every_report_refuses(self.PAIR_REFUSAL)
+
+    def test_the_pair_beside_an_inventory(self) -> None:
+        self.healthy_store()
+        self.ingest_the_crafted_file()
+
+        code, out, err = run(
+            [
+                "report",
+                "vdt",
+                "--db",
+                self.database,
+                "--class",
+                "C",
+                "--package-uri",
+                "https://example.test/cpo",
+                "--as-of",
+                self.AS_OF,
+                "--from",
+                "2026-08-01T00:00:00Z",
+                "--to",
+                "2026-08-31T23:59:59Z",
+                "--inventory",
+                str(EXAMPLES / "inventory.json"),
+            ]
+        )
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, f"{self.PAIR_REFUSAL}\n")
+        self.assert_verify_names(self.PAIR_MESSAGE)
 
 
 if __name__ == "__main__":

@@ -28,17 +28,24 @@ All notable project changes will be documented here.
   named by `store verify`, which passed it before, and refused by every report; `cases correlate`
   says `store_conflict` when both groups meet in one correlate, and exits 0 and links the later side
   onto the first's case when the first was already correlated. A latent pair has at most one side
-  current. Verify, every report and `cases correlate` name no collision in it, so verify's exit 0
-  does not mean no pair, nor that its reports are right: `report avi` can publish the current side
-  with the rationale written for the other. No override can part either kind, and the remedy is a
-  new store rebuilt from sources without that file. A run bringing neither side can still move which
-  readings are current, so verify's answer on such a store can change. No golden or id moves. Each
+  current. Every report and `cases correlate` name no collision in it, and `report avi` can publish
+  the current side with the rationale written for the other. No override can part either kind, and
+  the remedy is a new store rebuilt from sources without that file. A run bringing neither side can
+  still move which readings are current, so verify's answer on such a store can change. No golden or
+  id moves. Each
   `ingest` reads the whole log once for this, about 0.6 s on 15000 observations. So a log the read
   path refuses now stops a plain `ingest` as `store_integrity` with nothing recorded, as every
   report does; it used to read only its own streams and pass such a store. A collision whose
   claimants hold a context key of only whitespace cannot be cleared by a new override either, once a
   twin under a real name makes each source record ambiguous, because no entry can then name them
   (ADR 0008 amendments 2026-11-03).
+- `store verify` now warns on a latent pair, an id the log holds under two identities with at most
+  one side current. It used to pass such a store with nothing said. On a store with no fault each
+  such id prints one WARNING `tracking_id_latent_pair` on standard error, naming the id and its
+  first two holders, and verify still exits 0 with its `ok:` line unchanged, so exit 0 with no
+  warning now means the log holds no id under two identities. A store with a fault prints what it
+  did and says so once the fault is gone. Reports and `cases correlate` are unchanged, and no golden
+  or id moves (ADR 0008 amendment 2026-11-04).
 - `cases evaluate` no longer refuses every file once one of two claimants of an id goes stale. It
   counted every folded case, so an override naming a detection failure's id, or that failure's own
   override, refused even an entry about an unrelated case at `recorded history` once the same bytes

@@ -52,6 +52,7 @@ from .writers import (
     attest_detection,
     content_digest,
     correlate_cases,
+    latent_pair_warnings,
     record_coverage_gaps,
     record_failure,
     record_ingest,
@@ -111,5 +112,6 @@ __all__ = [
     "rehydrate_observations",
     "summarize",
     "superseded_artifact_records",
+    "latent_pair_warnings",
     "tracking_id_refusals",
 ]

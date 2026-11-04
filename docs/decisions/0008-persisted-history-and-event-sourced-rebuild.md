@@ -924,3 +924,51 @@ onto a natural id stays as the amendment above describes it, because an override
 as a pair, and exit 1 would fail stores the reports still read. No golden, fixture, example,
 tracking id or store byte moves for a store with no pair, and a run on such a store reads exactly as
 it did.
+
+## Amendment 2026-11-04: `store verify` warns on a latent pair
+
+The amendment above says "Until a run brings either side or an election makes it live, nothing names
+the pair", "verify's exit 0 does not mean no pair" and, under Left out, "`store verify` does not
+name a latent pair". The ruling came the next day: verify warns on a latent pair and still exits 0.
+Those sentences stay as written above and stop holding here. Reports and `cases correlate` still
+name no collision in one.
+
+When verify finds no fault it calls `history.writers.latent_pair_warnings`, and prints one WARNING
+`tracking_id_latent_pair` per tracking id the log holds under two or more identities, on standard
+error, before the unchanged `ok:` line, in the order the log first holds each id. Each line names
+the id and its first two holders through `shown`, then counts any more, so only that count grows
+with them. The scan is `_identities_held`, the same one `ingest` closes an id by, so the two agree:
+the warning names exactly the ids a run may bring nothing under.
+
+Whether a side is current is not read. Two current groups under one id each claim it, which is a
+`tracking_id_collision` fault, so on a store with no fault every id held twice has at most one side
+current. So exit 0 with no warning means the log holds no id under two identities.
+
+That holds of a store no writer is changing. Verify's reads are not one snapshot and were not before
+this: the integrity walk, the audit and this scan each read for themselves. So a writer committing
+both sides of a pair just after the audit gets it named here as latent when it is live, beside an
+`ok:` count taken before that write, and the next verify names it as the fault. No `ingest` of this
+build can do that, because it refuses a pair inside its write transaction. It takes a library caller
+or an earlier build, and the pair is named either way, with the same remedy.
+
+Only a store with no fault reaches the warning. A live pair keeps its `tracking_id_collision` lines
+and a store with any other fault prints what it did, so every exit 1 reads byte for byte as before.
+A pair beside a fault is named once that fault is gone, which includes the latent shape that fails
+verify and every report as `evaluation_before_detection`.
+
+An election can still move a store between the two answers, as the amendment above says. One that
+clears a live pair now leaves exit 0 with this warning, and one that brings a retired side back
+turns the warning into the fault. What it can no longer do is leave a pair unnamed.
+
+This is not a refusal, so the store rule asks nothing of it, and ADR 0017 I3 already says a WARNING
+never changes an exit. ADR 0017's table row for `store verify` stands, because only the exit status
+is a contract there. A job gating on verify's exit status does not see this line. The line carries
+no
+location: the amendments above say a code located at `recorded history` names a store's own
+collision and verify rejects that store, and this one names a store's own pair and verify passes
+it. `REPORT_DIAGNOSTIC_CODES` grows by one. Verify reads the log once more, the read the amendment
+above costs an `ingest`.
+
+Left out, on purpose. A report does not warn, since no reader refuses a latent pair and a report's
+output is compared byte for byte. `cases correlate` does not either. No golden, fixture, example,
+tracking id or store byte moves, and verify on a store with no pair reads exactly as it did.

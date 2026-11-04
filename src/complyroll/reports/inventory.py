@@ -36,12 +36,12 @@ from .evaluations import ReportInputError, parse_rfc3339
 # NOTE: The KEV reader's message hygiene and instant pattern, shared so both per-run inputs
 # quote, cut, and parse alike (ADR 0012).
 from .kev import (
-    _DATE_RELEASED,
+    DATE_RELEASED,
     MAX_DATE_RELEASED_CHARS,
-    _detail,
-    _excerpt,
-    _json_type,
-    _utc_text,
+    detail,
+    excerpt,
+    json_type,
+    utc_text,
 )
 
 # *--- Configuration ---*
@@ -90,7 +90,7 @@ _PACKAGE_REFUSAL = (
     "resourceType package is not an information resource; inventory the image or host that "
     "carries it"
 )
-_INSTANT = _DATE_RELEASED
+_INSTANT = DATE_RELEASED
 _ABSENT = object()
 
 
@@ -108,7 +108,7 @@ class Verification:
         _require_utc_aware(self.at, "at")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"at": _utc_text(self.at), "reference": self.reference}
+        return {"at": utc_text(self.at), "reference": self.reference}
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +169,7 @@ class InformationResource:
             "resourceType": self.resource_type,
             "resourceId": self.resource_id,
             "machineBased": self.machine_based,
-            "expectedSince": _utc_text(self.expected_since),
+            "expectedSince": utc_text(self.expected_since),
         }
         if self.drift_likely is not None:
             value["driftLikely"] = self.drift_likely
@@ -178,7 +178,7 @@ class InformationResource:
         if self.job is not None:
             value["job"] = self.job
         if self.decommissioned_at is not None:
-            value["decommissionedAt"] = _utc_text(self.decommissioned_at)
+            value["decommissionedAt"] = utc_text(self.decommissioned_at)
         if self.aliases:
             value["aliases"] = [
                 {"resourceType": alias.resource_type, "resourceId": alias.resource_id}
@@ -245,9 +245,9 @@ def load_inventory(path: Path) -> Inventory:
     try:
         content = read_bounded(location, INVENTORY_LIMITS)
     except InputLimitError as exc:
-        raise ReportInputError(f"inventory exceeds a limit: {_detail(exc)}") from exc
+        raise ReportInputError(f"inventory exceeds a limit: {detail(exc)}") from exc
     except (OSError, ValueError) as exc:
-        raise ReportInputError(f"inventory cannot be read: {_detail(exc)}") from exc
+        raise ReportInputError(f"inventory cannot be read: {detail(exc)}") from exc
     return parse_inventory(content)
 
 
@@ -267,9 +267,9 @@ def parse_inventory(content: bytes) -> Inventory:
     try:
         value = parse_json_bounded(content, INVENTORY_LIMITS)
     except InputLimitError as exc:
-        raise ReportInputError(f"inventory exceeds a limit: {_detail(exc)}") from exc
+        raise ReportInputError(f"inventory exceeds a limit: {detail(exc)}") from exc
     except (ValueError, RecursionError) as exc:
-        raise ReportInputError(f"inventory must be a JSON document: {_detail(exc)}") from exc
+        raise ReportInputError(f"inventory must be a JSON document: {detail(exc)}") from exc
     # NOTE: The year window keeps every instant clear of overflow; this block is the backstop,
     # since OverflowError is not a ValueError and would otherwise escape as a traceback.
     try:
@@ -277,23 +277,23 @@ def parse_inventory(content: bytes) -> Inventory:
     except ReportInputError:
         raise
     except (ValueError, RecursionError, OverflowError) as exc:
-        raise ReportInputError(f"inventory is invalid: {_detail(exc)}") from exc
+        raise ReportInputError(f"inventory is invalid: {detail(exc)}") from exc
 
 
 def _parse_inventory(value: Any, *, sha256: str, size_bytes: int) -> Inventory:
     if not isinstance(value, dict):
-        raise _refusal("", f"the top level is {_json_type(value)}, not an object")
+        raise _refusal("", f"the top level is {json_type(value)}, not an object")
     # The schema is read first, so another document, a KEV catalog say, is named as one.
     schema = _string(value, "schema", "")
     if schema != INVENTORY_SCHEMA:
-        raise _refusal("", f"schema must be {INVENTORY_SCHEMA!r}, got {_excerpt(schema)}")
+        raise _refusal("", f"schema must be {INVENTORY_SCHEMA!r}, got {excerpt(schema)}")
     _schema_version(value)
     _reject_unknown_keys(value, _ROOT_KEYS, "")
     name = _label(_string(value, "name", ""), "name", "")
 
     raw_entries = _required(value, "resources", "")
     if not isinstance(raw_entries, list):
-        raise _refusal("", f"resources must be an array, got {_json_type(raw_entries)}")
+        raise _refusal("", f"resources must be an array, got {json_type(raw_entries)}")
     if len(raw_entries) > MAX_INVENTORY_RESOURCES:
         raise _refusal(
             "",
@@ -341,7 +341,7 @@ def _parse_inventory(value: Any, *, sha256: str, size_bytes: int) -> Inventory:
 def _parse_entry(raw_entry: Any, where: str) -> tuple[InformationResource, list[ResourceRef]]:
     """Return one entry without aliases, and its aliases in file order for the caller."""
     if not isinstance(raw_entry, dict):
-        raise _refusal(where, f"the entry must be an object, got {_json_type(raw_entry)}")
+        raise _refusal(where, f"the entry must be an object, got {json_type(raw_entry)}")
     _reject_unknown_keys(raw_entry, _ENTRY_KEYS, where)
     resource_type = _resource_type(raw_entry, where)
     resource_id = _identity(_string(raw_entry, "resourceId", where), "resourceId", where)
@@ -374,12 +374,12 @@ def _aliases(raw_entry: Mapping[str, Any], where: str) -> list[ResourceRef]:
     if raw is _ABSENT:
         return []
     if not isinstance(raw, list):
-        raise _refusal(where, f"aliases must be an array, got {_json_type(raw)}")
+        raise _refusal(where, f"aliases must be an array, got {json_type(raw)}")
     aliases: list[ResourceRef] = []
     for position, item in enumerate(raw):
         at = f"{where}.aliases[{position}]"
         if not isinstance(item, dict):
-            raise _refusal(at, f"the alias must be an object, got {_json_type(item)}")
+            raise _refusal(at, f"the alias must be an object, got {json_type(item)}")
         _reject_unknown_keys(item, _ALIAS_KEYS, at)
         resource_type = _resource_type(item, at)
         resource_id = _identity(_string(item, "resourceId", at), "resourceId", at)
@@ -397,12 +397,12 @@ def _verifications(
     if machine_based:
         raise _refusal(where, "verifications are for entries whose machineBased is false")
     if not isinstance(raw, list):
-        raise _refusal(where, f"verifications must be an array, got {_json_type(raw)}")
+        raise _refusal(where, f"verifications must be an array, got {json_type(raw)}")
     verifications: list[Verification] = []
     for position, item in enumerate(raw):
         at = f"{where}.verifications[{position}]"
         if not isinstance(item, dict):
-            raise _refusal(at, f"the verification must be an object, got {_json_type(item)}")
+            raise _refusal(at, f"the verification must be an object, got {json_type(item)}")
         _reject_unknown_keys(item, _VERIFICATION_KEYS, at)
         instant = _instant(_string(item, "at", at), "at", at)
         reference = _text(_string(item, "reference", at), "reference", at, MAX_REFERENCE_CHARS)
@@ -429,21 +429,21 @@ def _string(raw: Mapping[str, Any], key: str, where: str) -> str:
     """Return a required field that must be a JSON string, checked before any pattern."""
     value = _required(raw, key, where)
     if not isinstance(value, str):
-        raise _refusal(where, f"{key} must be a JSON string, got {_json_type(value)}")
+        raise _refusal(where, f"{key} must be a JSON string, got {json_type(value)}")
     return value
 
 
 def _boolean(raw: Mapping[str, Any], key: str, where: str) -> bool:
     value = _required(raw, key, where)
     if not isinstance(value, bool):
-        raise _refusal(where, f"{key} must be a JSON boolean, got {_json_type(value)}")
+        raise _refusal(where, f"{key} must be a JSON boolean, got {json_type(value)}")
     return value
 
 
 def _schema_version(raw: Mapping[str, Any]) -> None:
     value = _required(raw, "schemaVersion", "")
     if isinstance(value, bool) or not isinstance(value, int):
-        raise _refusal("", f"schemaVersion must be a JSON integer, got {_json_type(value)}")
+        raise _refusal("", f"schemaVersion must be a JSON integer, got {json_type(value)}")
     # NOTE: A JSON integer has no size limit, so the value is never echoed.
     if value != INVENTORY_SCHEMA_VERSION:
         raise _refusal(
@@ -471,7 +471,7 @@ def _resource_type(raw: Mapping[str, Any], where: str) -> str:
     """Return a resourceType, refused when it holds the context key's separator or is `package`."""
     value = _identity(_string(raw, "resourceType", where), "resourceType", where)
     if _TYPE_SEPARATOR in value:
-        raise _refusal(where, f"resourceType must not contain a colon, got {_excerpt(value)}")
+        raise _refusal(where, f"resourceType must not contain a colon, got {excerpt(value)}")
     if value == PACKAGE_RESOURCE_TYPE:
         raise _refusal(where, _PACKAGE_REFUSAL)
     return value
@@ -483,7 +483,7 @@ def _label(value: str, key: str, where: str) -> str:
         raise _refusal(
             where,
             f"{key} must be 1 to {MAX_NAME_CHARS} printable ASCII characters with no leading or "
-            f"trailing space, got {_excerpt(value)}",
+            f"trailing space, got {excerpt(value)}",
         )
     return value
 
@@ -493,7 +493,7 @@ def _optional_label(raw: Mapping[str, Any], key: str, where: str) -> str | None:
     if value is _ABSENT:
         return None
     if not isinstance(value, str):
-        raise _refusal(where, f"{key} must be a JSON string, got {_json_type(value)}")
+        raise _refusal(where, f"{key} must be a JSON string, got {json_type(value)}")
     return _label(value, key, where)
 
 
@@ -508,7 +508,7 @@ def _drift_likely(raw: Mapping[str, Any], where: str, *, machine_based: bool) ->
         raise _refusal(where, "driftLikely is for entries whose machineBased is true")
     if isinstance(value, bool) or value == DRIFT_UNKNOWN:
         return value
-    got = _excerpt(value) if isinstance(value, str) else _json_type(value)
+    got = excerpt(value) if isinstance(value, str) else json_type(value)
     raise _refusal(where, f'driftLikely must be true, false or "unknown", got {got}')
 
 
@@ -518,7 +518,7 @@ def _instant(value: str, key: str, where: str) -> datetime:
     if len(value) > MAX_INSTANT_CHARS:
         raise _refusal(where, f"{key} must be at most {MAX_INSTANT_CHARS} characters")
     if _INSTANT.fullmatch(value) is None:
-        raise _refusal(where, f"{key} must be an RFC 3339 timestamp, got {_excerpt(value)}")
+        raise _refusal(where, f"{key} must be an RFC 3339 timestamp, got {excerpt(value)}")
     # parse_rfc3339 refuses an impossible date and keeps the years 1970 through 9000 UTC, so
     # the conversion below cannot overflow.
     try:
@@ -533,7 +533,7 @@ def _optional_instant(raw: Mapping[str, Any], key: str, where: str) -> datetime 
     if value is _ABSENT:
         return None
     if not isinstance(value, str):
-        raise _refusal(where, f"{key} must be a JSON string, got {_json_type(value)}")
+        raise _refusal(where, f"{key} must be a JSON string, got {json_type(value)}")
     return _instant(value, key, where)
 
 
@@ -542,7 +542,7 @@ def _reject_unknown_keys(raw: Mapping[str, Any], allowed: frozenset[str], where:
     if not unknown:
         return
     more = f" and {len(unknown) - 1} more" if len(unknown) > 1 else ""
-    raise _refusal(where, f"unknown key {_excerpt(min(unknown))}{more}")
+    raise _refusal(where, f"unknown key {excerpt(min(unknown))}{more}")
 
 
 # *--- Helper Functions ---*

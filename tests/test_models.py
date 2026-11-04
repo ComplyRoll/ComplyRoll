@@ -6,17 +6,14 @@ from datetime import UTC, datetime, timedelta, timezone
 
 from complyroll.models import (
     RESERVED_SOURCE_TYPE_PREFIX,
-    CaseStatus,
-    Evaluation,
     EvidenceArtifact,
     Observation,
+    ObservationClockError,
     ObservationDisposition,
     ObservationOrigin,
-    PainRating,
     ResourceRef,
     Sensitivity,
     SourceSeverity,
-    VulnerabilityCase,
 )
 
 NOW = datetime(2026, 8, 18, 20, 0, tzinfo=UTC)
@@ -74,34 +71,6 @@ def system_observation(**overrides: object) -> Observation:
     }
     values.update(overrides)
     return Observation(**values)  # type: ignore[arg-type]
-
-
-def sample_evaluation(**overrides: object) -> Evaluation:
-    values: dict[str, object] = {
-        "evaluation_id": "eval-001",
-        "completed_at": NOW,
-        "is_internet_reachable": True,
-        "is_likely_exploitable": True,
-        "pain": PainRating.N4,
-        "potential_agency_impact": "Could disrupt one agency customer.",
-        "rationale": "Synthetic test rationale.",
-        "evaluator": "test-user",
-    }
-    values.update(overrides)
-    return Evaluation(**values)  # type: ignore[arg-type]
-
-
-def sample_case(**overrides: object) -> VulnerabilityCase:
-    values: dict[str, object] = {
-        "case_id": "TR-1",
-        "title": "Example weakness",
-        "description": "Synthetic test case.",
-        "status": CaseStatus.EVALUATING,
-        "observation_ids": ("obs-001",),
-        "created_at": NOW,
-    }
-    values.update(overrides)
-    return VulnerabilityCase(**values)  # type: ignore[arg-type]
 
 
 class ObservationTests(unittest.TestCase):
@@ -330,141 +299,6 @@ class EvidenceArtifactTests(unittest.TestCase):
             self._artifact(sensitivity=1)
 
 
-class EvaluationValidationTests(unittest.TestCase):
-    def test_pain_must_be_a_pain_rating(self) -> None:
-        with self.assertRaisesRegex(TypeError, "pain must be a PainRating"):
-            sample_evaluation(pain=6)
-
-    def test_pain_string_is_rejected(self) -> None:
-        with self.assertRaisesRegex(TypeError, "pain must be a PainRating"):
-            sample_evaluation(pain="N4")
-
-    def test_pain_none_is_rejected(self) -> None:
-        with self.assertRaisesRegex(TypeError, "pain must be a PainRating"):
-            sample_evaluation(pain=None)
-
-    def test_reachability_must_be_a_bool(self) -> None:
-        with self.assertRaisesRegex(TypeError, "is_internet_reachable must be a bool"):
-            sample_evaluation(is_internet_reachable="yes")
-
-    def test_exploitability_must_be_a_bool(self) -> None:
-        with self.assertRaisesRegex(TypeError, "is_likely_exploitable must be a bool"):
-            sample_evaluation(is_likely_exploitable=1)
-
-    def test_false_positive_must_be_a_bool(self) -> None:
-        with self.assertRaisesRegex(TypeError, "is_false_positive must be a bool"):
-            sample_evaluation(is_false_positive="no")
-
-    def test_evidence_ids_are_coerced_to_a_tuple(self) -> None:
-        self.assertEqual(sample_evaluation(evidence_ids=["ev-1"]).evidence_ids, ("ev-1",))
-
-
-class VulnerabilityCaseTests(unittest.TestCase):
-    def test_case_requires_observation(self) -> None:
-        with self.assertRaisesRegex(ValueError, "at least one observation"):
-            VulnerabilityCase(
-                case_id="TR-1",
-                title="Coverage failure",
-                description="A scheduled validation did not run.",
-                status=CaseStatus.NEW,
-                observation_ids=(),
-                created_at=NOW,
-            )
-
-    def test_evaluation_creates_new_projection(self) -> None:
-        case = VulnerabilityCase(
-            case_id="TR-1",
-            title="Example weakness",
-            description="Synthetic test case.",
-            status=CaseStatus.EVALUATING,
-            observation_ids=("obs-001",),
-            created_at=NOW,
-        )
-        evaluation = Evaluation(
-            evaluation_id="eval-001",
-            completed_at=NOW,
-            is_internet_reachable=True,
-            is_likely_exploitable=True,
-            pain=PainRating.N4,
-            potential_agency_impact="Could disrupt one agency customer.",
-            rationale="Synthetic test rationale.",
-            evaluator="test-user",
-        )
-
-        updated = case.with_evaluation(evaluation)
-
-        self.assertIsNone(case.current_evaluation)
-        self.assertEqual(updated.current_evaluation, evaluation)
-        self.assertEqual(updated.status, CaseStatus.ACTIVE)
-
-    def test_status_must_be_an_enum(self) -> None:
-        with self.assertRaisesRegex(TypeError, "status must be a CaseStatus"):
-            sample_case(status="active")
-
-    def test_observation_ids_are_coerced_to_a_tuple(self) -> None:
-        case = sample_case(observation_ids=["obs-001", "obs-002"])
-        self.assertEqual(case.observation_ids, ("obs-001", "obs-002"))
-
-    def test_observation_id_entries_must_be_strings(self) -> None:
-        with self.assertRaisesRegex(TypeError, "observation_ids"):
-            sample_case(observation_ids=[1])
-
-    def test_current_evaluation_must_be_an_evaluation(self) -> None:
-        with self.assertRaisesRegex(TypeError, "current_evaluation"):
-            sample_case(current_evaluation="eval-001")
-
-    def test_evaluation_history_entries_must_be_evaluations(self) -> None:
-        with self.assertRaisesRegex(TypeError, "evaluation_history"):
-            sample_case(evaluation_history=("eval-001",))
-
-
-class CaseStateMachineTests(unittest.TestCase):
-    def test_new_history_starts_empty(self) -> None:
-        self.assertEqual(sample_case().evaluation_history, ())
-
-    def test_previous_evaluation_moves_into_history(self) -> None:
-        first = sample_evaluation()
-        second = sample_evaluation(evaluation_id="eval-002", pain=PainRating.N2)
-
-        case = sample_case().with_evaluation(first).with_evaluation(second)
-
-        self.assertEqual(case.current_evaluation, second)
-        self.assertEqual(case.evaluation_history, (first,))
-        self.assertEqual(case.status, CaseStatus.ACTIVE)
-
-    def test_false_positive_evaluation_sets_false_positive_status(self) -> None:
-        case = sample_case().with_evaluation(sample_evaluation(is_false_positive=True))
-        self.assertEqual(case.status, CaseStatus.FALSE_POSITIVE)
-
-    def test_accepted_case_cannot_be_silently_reopened(self) -> None:
-        case = sample_case(status=CaseStatus.ACCEPTED)
-        with self.assertRaisesRegex(ValueError, "requires reopen=True"):
-            case.with_evaluation(sample_evaluation())
-
-    def test_closed_case_cannot_be_silently_reopened(self) -> None:
-        case = sample_case(status=CaseStatus.CLOSED)
-        with self.assertRaisesRegex(ValueError, "requires reopen=True"):
-            case.with_evaluation(sample_evaluation())
-
-    def test_closed_case_reopens_explicitly(self) -> None:
-        previous = sample_evaluation()
-        case = sample_case(status=CaseStatus.CLOSED, current_evaluation=previous)
-
-        reopened = case.with_evaluation(sample_evaluation(evaluation_id="eval-002"), reopen=True)
-
-        self.assertEqual(reopened.status, CaseStatus.ACTIVE)
-        self.assertEqual(reopened.evaluation_history, (previous,))
-
-    def test_active_case_does_not_need_reopen(self) -> None:
-        case = sample_case(status=CaseStatus.ACTIVE)
-        self.assertEqual(case.with_evaluation(sample_evaluation()).status, CaseStatus.ACTIVE)
-
-    def test_with_evaluation_rejects_non_evaluation(self) -> None:
-        case = sample_case(status=CaseStatus.ACTIVE)
-        with self.assertRaises(TypeError):
-            case.with_evaluation("not an evaluation")  # type: ignore[arg-type]
-
-
 class WrongTypeInputTests(unittest.TestCase):
     """Wrong types fail with TypeError, not an AttributeError from inside a validator."""
 
@@ -518,6 +352,55 @@ class WrongTypeInputTests(unittest.TestCase):
             with self.subTest(field=field_name):
                 with self.assertRaises(TypeError):
                     sample_observation(**{**base, field_name: value})
+
+
+class SystemClockTests(unittest.TestCase):
+    """A system observation's identity is its UTC instant, so it has to have one (CL6A-D-01)."""
+
+    NO_INSTANT = (
+        datetime(1, 1, 1, 0, 30, tzinfo=timezone(timedelta(hours=1))),
+        datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone(-timedelta(hours=23, minutes=59))),
+    )
+    LAST_INSTANTS = (
+        datetime(1, 1, 1, 1, 0, tzinfo=timezone(timedelta(hours=1))),
+        datetime(9999, 12, 31, 22, 59, 59, tzinfo=timezone(-timedelta(hours=1))),
+    )
+
+    def test_a_clock_with_no_utc_instant_is_refused_as_a_value_error(self) -> None:
+        for clock in self.NO_INSTANT:
+            with self.subTest(clock=clock.isoformat()):
+                with self.assertRaises(ObservationClockError) as caught:
+                    system_observation(observed_at=clock)
+                self.assertIsInstance(caught.exception, ValueError)
+                self.assertEqual(caught.exception.clock, clock)
+                self.assertEqual(
+                    str(caught.exception),
+                    f"source time {clock.isoformat()} has no UTC instant inside the years 1 to "
+                    "9999, so a system observation has no identity",
+                )
+
+    def test_the_canonical_reader_refuses_it_before_the_fingerprint(self) -> None:
+        for clock in self.NO_INSTANT:
+            with self.subTest(clock=clock.isoformat()):
+                payload = system_observation().to_canonical_dict()
+                payload["observed_at"] = clock.isoformat()
+                with self.assertRaises(ObservationClockError):
+                    Observation.from_canonical_dict(payload)
+
+    def test_an_artifact_observation_still_holds_such_a_clock(self) -> None:
+        # Its identity does not name its clock, so it reads, and `clock_problem` names it.
+        for clock in self.NO_INSTANT:
+            with self.subTest(clock=clock.isoformat()):
+                observation = sample_observation(observed_at=clock)
+                rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+                self.assertEqual(rebuilt.observed_at, clock)
+
+    def test_the_last_clocks_with_a_utc_instant_still_read(self) -> None:
+        for clock in self.LAST_INSTANTS:
+            with self.subTest(clock=clock.isoformat()):
+                observation = system_observation(observed_at=clock)
+                rebuilt = Observation.from_canonical_dict(observation.to_canonical_dict())
+                self.assertEqual(rebuilt.fingerprint, observation.fingerprint)
 
 
 class CanonicalRoundTripTests(unittest.TestCase):
@@ -723,6 +606,24 @@ class CanonicalRoundTripTests(unittest.TestCase):
     def test_a_payload_that_is_not_a_mapping_is_a_type_error(self) -> None:
         with self.assertRaisesRegex(TypeError, "canonical observation must be a mapping"):
             Observation.from_canonical_dict(["observation_id"])  # type: ignore[arg-type]
+
+
+class RemovedModelTests(unittest.TestCase):
+    """The in-memory case and evaluation classes were removed before 1.0 (CL-67).
+
+    Reports read evaluations through `complyroll.reports.evaluations` and case state
+    through the fold in `complyroll.history`, so nothing constructed either class.
+    """
+
+    def test_neither_class_is_exported_or_defined(self) -> None:
+        import complyroll
+        from complyroll import models
+
+        for name in ("Evaluation", "VulnerabilityCase"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, complyroll.__all__)
+                self.assertFalse(hasattr(complyroll, name))
+                self.assertFalse(hasattr(models, name))
 
 
 if __name__ == "__main__":

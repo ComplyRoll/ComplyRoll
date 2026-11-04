@@ -18,11 +18,11 @@ reports describe it.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Final, Protocol, TypeVar
 from urllib.parse import urlsplit
 
 from complyroll import __version__
@@ -44,6 +44,7 @@ from complyroll.correlation import (
     group_open_observations,
 )
 from complyroll.models import (
+    NO_UTC_INSTANT,
     RESERVED_SOURCE_TYPE_PREFIX,
     CaseStatus,
     Observation,
@@ -71,6 +72,7 @@ from complyroll.schemas import (
     load_bundled_schema_bundle,
     validate_bundled_report,
 )
+from complyroll.store.sqlite import bounded, shown
 
 from .coverage import (
     COVERAGE_BASIS,
@@ -80,9 +82,10 @@ from .coverage import (
     CoverageResult,
     CoverageStatus,
     CoverageWindow,
+    FiledEvidence,
     ResourceCoverage,
     derive_coverage,
-    verifying_evidence,
+    file_evidence,
 )
 from .evaluations import EvaluationInput, EvaluationSet, ReportInputError, record_label
 from .gaps import COVERAGE_GAP_SOURCE_TYPE, coverage_gap_observation, coverage_gap_observations
@@ -144,6 +147,80 @@ class ReportDiagnostic:
         if self.location:
             value["location"] = self.location
         return value
+
+
+#: The codes a diagnostic line carries: every `ReportDiagnostic` a report, a history writer or
+#: the CLI builds, every `IngestDiagnostic` a history writer builds, and the two the CLI writes as
+#: text lines. A report prints its own in its JSON and on stderr, and the CLI prints its refusals
+#: and a writer's warnings in the same `level: code: message` form, so all of them are part of the
+#: contract. A diagnostic an adapter mints keeps its own code when a report carries it, and a stored
+#: one read back keeps the code it was stored with; audit faults are `AUDIT_FAULT_CODES`, and the
+#: store's integrity faults are the store's own. `tests/test_report_codes.py` holds the sites its
+#: scan can see to this set, and the set to what the scan finds; its docstring lists what has been
+#: found that it cannot see, which is not a closed list.
+REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
+    "acceptance_rationale_missing",
+    "accepted_excluded",
+    "artifact_superseded",
+    "artifact_superseded_by_failure",
+    "attestation_not_applicable",
+    "case_not_found",
+    "clock_out_of_range",
+    "closed_without_disposition",
+    "coverage_gap_contradicted",
+    "coverage_gap_unmatched",
+    "coverage_gap_unrecorded",
+    "coverage_rule_unavailable",
+    "detection_time_missing",
+    "detection_time_partial",
+    "disposition_retained",
+    "disposition_without_evaluation",
+    "drift_likelihood_unknown",
+    "duplicate_artifact",
+    "error_diagnostic_unpublished",
+    "evaluation_ambiguous",
+    "evaluation_before_detection",
+    "evaluation_before_partial_detection",
+    "evaluation_context_key_required",
+    "evaluation_duplicate",
+    "evaluation_unmatched",
+    "event_contract_invalid",
+    "event_too_large",
+    "excluded_by_period",
+    "failure_held",
+    "failure_held_by_another_stream",
+    "failure_read_elsewhere",
+    "failure_superseded",
+    "history_invalid",
+    "identification_retained",
+    "invalid_input",
+    "invalid_option",
+    "kev_catalog_after_as_of",
+    "kev_catalog_stale",
+    "kev_entries_after_as_of",
+    "kev_match_incomplete",
+    "kev_no_cve_identifiers",
+    "kev_no_matches",
+    "kev_rule_unavailable",
+    "no_artifacts",
+    "output_is_symlink",
+    "output_rollback_failed",
+    "output_write_failed",
+    "payload_contracts_unchecked",
+    "reduction_retained",
+    "report_malformed",
+    "report_period_missing",
+    "report_read_failed",
+    "report_too_large",
+    "schema_invalid",
+    "stale_case",
+    "store_conflict",
+    "store_integrity",
+    "store_missing",
+    "store_unavailable",
+    "tracking_id_collision",
+    "unresolved_observation",
+)
 
 
 class ReportCompileError(Exception):
@@ -428,7 +505,7 @@ class CompiledVulnerability:
     def evaluation_location(self) -> str:
         """Return the evaluations-file location behind this record, if any."""
 
-        return self.evaluation.location if self.evaluation is not None else "no evaluation entry"
+        return evaluation_location(self.evaluation)
 
     @property
     def current_rating(self) -> PainRating | None:
@@ -1432,7 +1509,7 @@ def clock_problem(
     try:
         instant = clock.astimezone(UTC)
     except OverflowError:
-        return "has no UTC instant inside the years 1 to 9999"
+        return NO_UTC_INSTANT
     for policy in policies:
         for rule_id, deadline in _clock_deadlines(policy, instant, evaluation):
             try:
@@ -1487,9 +1564,10 @@ def evaluation_clock_message(tracking_id: str, clock: datetime, problem: str) ->
 def observation_clock_message(observation_id: str, clock: datetime, problem: str) -> str:
     """Word one observation refused for its source time, wherever a reader converts it."""
 
+    # A system observation's id is its writer's to choose and is read before any check of it.
     return (
-        f"observation {observation_id} has source time {clock.isoformat()} in history, which "
-        f"{problem}, so no report can compute with it"
+        f"observation {bounded(observation_id)} has source time {clock.isoformat()} in history, "
+        f"which {problem}, so no report can compute with it"
     )
 
 
@@ -1738,34 +1816,81 @@ def _attestation_groups(
     )
 
 
-def _require_unique_tracking_ids(records: Sequence[CompiledVulnerability]) -> None:
-    """Refuse a trackingId override that would merge two vulnerabilities.
+#: The ERROR a report raises, and the fault `store verify` reports, for two records one id
+#: would publish (ADR 0008 amendment 2026-11-03).
+TRACKING_ID_COLLISION = "tracking_id_collision"
+
+
+class TrackingIdClaim(Protocol):
+    """What the uniqueness rule reads of a record, compiled or about to be."""
+
+    @property
+    def tracking_id(self) -> str: ...
+
+    @property
+    def original_tracking_id(self) -> str: ...
+
+    @property
+    def evaluation_location(self) -> str: ...
+
+
+ClaimT = TypeVar("ClaimT", bound=TrackingIdClaim)
+
+
+def published_tracking_id(group: VulnerabilityGroup, evaluation: EvaluationInput | None) -> str:
+    """Return the id a report publishes a group under: the evaluation's override, else its own."""
+
+    if evaluation is not None and evaluation.tracking_id is not None:
+        return evaluation.tracking_id
+    return group.tracking_id
+
+
+def evaluation_location(evaluation: EvaluationInput | None) -> str:
+    """Return where the evaluation behind a record came from, as a diagnostic names it."""
+
+    return evaluation.location if evaluation is not None else "no evaluation entry"
+
+
+def tracking_id_collisions(claims: Iterable[ClaimT]) -> list[tuple[ClaimT, ClaimT]]:
+    """Return each claim on an id an earlier claim holds, beside that earlier claim.
 
     An override may rename one vulnerability; it may not collapse two into one
-    (ADR 0007 amendment).
+    (ADR 0007 amendment). A report and `store verify` both decide it here.
     """
 
-    claimed: dict[str, CompiledVulnerability] = {}
-    collisions: list[ReportDiagnostic] = []
-    for record in records:
-        previous = claimed.get(record.tracking_id)
-        if previous is None:
-            claimed[record.tracking_id] = record
-            continue
-        collisions.append(
-            ReportDiagnostic(
-                level=DiagnosticLevel.ERROR,
-                code="tracking_id_collision",
-                message=(
-                    f"effective tracking id {record.tracking_id!r} is claimed by "
-                    f"{previous.evaluation_location} (originally "
-                    f"{previous.original_tracking_id}) and {record.evaluation_location} "
-                    f"(originally {record.original_tracking_id}); an override may rename "
-                    "one vulnerability but may not merge two"
-                ),
-                location=record.evaluation_location,
-            )
+    claimed: dict[str, ClaimT] = {}
+    collisions: list[tuple[ClaimT, ClaimT]] = []
+    for claim in claims:
+        previous = claimed.setdefault(claim.tracking_id, claim)
+        if previous is not claim:
+            collisions.append((previous, claim))
+    return collisions
+
+
+def tracking_id_collision_message(previous: TrackingIdClaim, claim: TrackingIdClaim) -> str:
+    """Word one collision, as the report and `store verify` both print it."""
+
+    return (
+        f"effective tracking id {shown(claim.tracking_id)} is claimed by "
+        f"{previous.evaluation_location} (originally "
+        f"{previous.original_tracking_id}) and {claim.evaluation_location} "
+        f"(originally {claim.original_tracking_id}); an override may rename "
+        "one vulnerability but may not merge two"
+    )
+
+
+def _require_unique_tracking_ids(records: Sequence[CompiledVulnerability]) -> None:
+    """Refuse a trackingId override that would merge two vulnerabilities."""
+
+    collisions = [
+        ReportDiagnostic(
+            level=DiagnosticLevel.ERROR,
+            code=TRACKING_ID_COLLISION,
+            message=tracking_id_collision_message(previous, record),
+            location=record.evaluation_location,
         )
+        for previous, record in tracking_id_collisions(records)
+    ]
     if collisions:
         raise ReportCompileError(collisions)
 
@@ -2078,11 +2203,12 @@ def _coverage_gap_divergences(
         ),
         key=_gap_order,
     )
-    disproof = {
-        item.observation_id: _disproving_evidence(item, observations, coverage)
-        for item in recorded
-        if item.observation_id not in derived
-    }
+    underived = [item for item in recorded if item.observation_id not in derived]
+    disproof: dict[str, CoverageEvidence | None] = {}
+    if underived:
+        # One filing serves every underived gap; refiling per gap was O(gaps x observations).
+        filed = file_evidence(observations, coverage.inventory, coverage.as_of)
+        disproof = {item.observation_id: _disproving_evidence(item, filed) for item in underived}
     # Each case's recorded gaps, in window order, so siblings are found once per case.
     cases: dict[str, list[Observation]] = {}
     for item in recorded:
@@ -2110,9 +2236,7 @@ def _coverage_gap_divergences(
     return notes
 
 
-def _disproving_evidence(
-    gap: Observation, observations: Sequence[Observation], coverage: CoverageResult
-) -> CoverageEvidence | None:
+def _disproving_evidence(gap: Observation, filed: FiledEvidence) -> CoverageEvidence | None:
     """Return the earliest verification inside a recorded gap's window, or None.
 
     The window is (anchorAt, windowClosedAt] from the record's own metadata, which the
@@ -2128,9 +2252,7 @@ def _disproving_evidence(
     return next(
         (
             item
-            for item in verifying_evidence(
-                observations, coverage.inventory, coverage.as_of, rule_id=rule, subject=gap.resource
-            )
+            for item in filed.verifying(rule_id=rule, subject=gap.resource)
             if item.at is not None and anchor_at < item.at <= closed_at
         ),
         None,
@@ -2235,7 +2357,7 @@ def coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
             notes.append(
                 ReportDiagnostic(
                     level=DiagnosticLevel.WARNING,
-                    code=code,
+                    code=DRIFT_LIKELIHOOD_UNKNOWN,
                     message=(
                         f'{label} declares driftLikely "unknown", so it carries {PDD_RULE}, '
                         "the shorter drift window, until the inventory says whether drift is "
@@ -2516,12 +2638,8 @@ def _build_record(
     if overdue_clauses:
         explanation = _explanation(overdue_clauses, policy, snapshot, options)
 
-    tracking_id = group.tracking_id
-    if evaluation is not None and evaluation.tracking_id is not None:
-        tracking_id = evaluation.tracking_id
-
     return CompiledVulnerability(
-        tracking_id=tracking_id,
+        tracking_id=published_tracking_id(group, evaluation),
         source_type=group.source_type,
         source_record_id=group.source_record_id,
         context_key=group.context_key,
@@ -3646,6 +3764,7 @@ __all__ = [
     "DISCLAIMER",
     "EXTENSION_KEY",
     "FINAL_DISPOSITIONS",
+    "REPORT_DIAGNOSTIC_CODES",
     "AcceptedVulnerability",
     "CompiledArtifact",
     "CompiledDeadline",

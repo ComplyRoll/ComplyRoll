@@ -51,9 +51,16 @@ from complyroll.events import (
     parse_utc,
     tracking_id_from_stream,
 )
-from complyroll.models import CaseStatus, Observation, PainRating
+from complyroll.models import (
+    NO_UTC_INSTANT,
+    CaseStatus,
+    Observation,
+    ObservationClockError,
+    PainRating,
+)
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
+from complyroll.reports.vdt import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 
@@ -75,6 +82,7 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "artifact_incomplete",
     "artifact_overfull",
     "artifact_stream_mismatch",
+    "case_stream_mismatch",
     "case_tracking_id_mismatch",
     "clock_out_of_range",
     "coverage_identity_breach",
@@ -93,6 +101,7 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "failure_schema_unmarked",
     "failure_stream_mismatch",
     "payload_contract_invalid",
+    "tracking_id_collision",
 )
 
 
@@ -596,6 +605,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       reader ignores while the log looks healthy.
     - `case_tracking_id_mismatch`: a `case.created` naming a tracking id its stream does not,
       or a case stream whose id names no tracking id at all, once, at its first event.
+    - `case_stream_mismatch`: a case stream that does not hold exactly one `case.created`,
+      as its first event: a first event of another type, at that event, and every later
+      `case.created`, at its own, each in the words every reader that folds the case refuses
+      it with (ADR 0008 amendment 2026-10-26).
     - `artifact_stream_mismatch`: an artifact event or an observation naming an artifact its
       stream does not, which would rehydrate under bytes it never came from.
     - `artifact_incomplete`: a stream holding fewer observations than it declared.
@@ -672,7 +685,18 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       refuses it), at the observation, or a group's detection time whose VER-TFR-EVU
       deadline overflows under either class, at the earliest observation or the
       attestation that gives it, with the report's message (ADR 0008 amendment
-      2026-10-25).
+      2026-10-25). A failure or coverage stream's observation is the exception. Its identity
+      names its clock, so one with no UTC instant cannot be read at all, and it carries this
+      code from the contract check at its own sequence, on any log (ADR 0008 amendment
+      2026-11-02).
+
+    A third is checked under those conditions, for what a report publishes:
+
+    - `tracking_id_collision`: two current groups a report would publish under one tracking
+      id, by the report's rule and in its words, at the latest event recording an override
+      among the two, else at the latest observation among their observations. `ingest` can
+      leave this, by bringing a group whose correlation id an override already names, or two
+      groups under one correlation id (ADR 0008 amendment 2026-11-03).
 
     Faults are ordered by sequence and then by code, so one damaged file always describes
     itself the same way. A store-level failure (an unreadable file, a hole in history) is
@@ -699,7 +723,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     coverage_pairs: dict[str, dict[str, EventRecord]] = {}
     # Every case stream seen so far, so one whose id names no tracking id is named once.
     case_streams: set[str] = set()
-    # Per case stream: whether it records an evaluation, and its last readable disposition.
+    # Per case stream: its first event, every `case.created` after it, whether it records an
+    # evaluation, and its last readable disposition.
+    case_openers: dict[str, EventRecord] = {}
+    case_recreations: list[EventRecord] = []
     evaluated: set[str] = set()
     dispositions: dict[str, EventRecord] = {}
     for record in repository.read_all():
@@ -728,6 +755,9 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
                     pair = failure_pairs.setdefault(record.stream_id, {})
                     pair.setdefault(record.event_type, record)
         if is_case_stream(record.stream_id):
+            opener = case_openers.setdefault(record.stream_id, record)
+            if record.event_type == CASE_CREATED and opener is not record:
+                case_recreations.append(record)
             if record.event_type == CASE_EVALUATED:
                 evaluated.add(record.stream_id)
             elif record.event_type == CASE_DISPOSITION_RECORDED and not contract_faults:
@@ -786,6 +816,7 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
             )
         )
     faults.extend(_coverage_schema_faults(repository, coverage_shapes))
+    faults.extend(_case_shape_faults(case_openers, case_recreations))
     faults.extend(_disposition_faults(dispositions, evaluated))
     for stream_id, (sequence, count) in declared.items():
         found = observed.get(stream_id, 0)
@@ -801,18 +832,23 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     if any(fault.code not in _ORDER_CHECKED_BESIDE for fault in faults):
         return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
     # Imported here because `history.order` imports this module.
-    from .order import clock_faults, evaluation_order_faults
+    from .order import clock_faults, evaluation_order_faults, tracking_id_collision_faults
 
     if not faults:
         return tuple(
             sorted(
-                (*clock_faults(repository), *evaluation_order_faults(repository)),
+                (
+                    *clock_faults(repository),
+                    *evaluation_order_faults(repository),
+                    *tracking_id_collision_faults(repository),
+                ),
                 key=lambda fault: (fault.sequence, fault.code),
             )
         )
     try:
         faults.extend(clock_faults(repository))
         faults.extend(evaluation_order_faults(repository))
+        faults.extend(tracking_id_collision_faults(repository))
     except ValueError:
         # A case stream can fail its fold in a way no fault above names: a `HistoryError`,
         # an `EventContractError`, or a stream id that names no tracking id. The faults
@@ -858,9 +894,7 @@ def fold_case_records(
         raise CaseNotFoundError(f"no case stream exists for {tracking_id!r}")
     created = ordered[0]
     if created.event_type != CASE_CREATED:
-        raise HistoryError(
-            f"case {tracking_id!r} begins with {created.event_type!r}, not {CASE_CREATED!r}"
-        )
+        raise HistoryError(_case_opener_message(tracking_id, created.event_type))
     for record in ordered:
         repository.validate_payload(
             record.event_type, record.payload, event_version=record.event_version
@@ -920,8 +954,7 @@ def fold_case_records(
             identified_sequence = record.sequence
         else:
             raise HistoryError(
-                f"case {tracking_id!r} carries unexpected event {record.event_type!r} "
-                f"at sequence {record.sequence}"
+                _unexpected_case_event_message(tracking_id, record.event_type, record.sequence)
             )
 
     recorded_tracking_id = _text(payload, "trackingId")
@@ -2027,6 +2060,13 @@ def _contract_faults(
             record.event_type, record.payload, event_version=record.event_version
         )
     except EventContractError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, ObservationClockError):
+            # A reader cannot build this record to ask `clock_problem`, so it is named here.
+            message = observation_clock_message(
+                str(record.payload.get(OBSERVATION_ID_KEY)), cause.clock, NO_UTC_INSTANT
+            )
+            return (HistoryFault(record.sequence, CLOCK_OUT_OF_RANGE, message),)
         return (
             HistoryFault(
                 sequence=record.sequence,
@@ -2035,6 +2075,48 @@ def _contract_faults(
             ),
         )
     return ()
+
+
+def _case_opener_message(tracking_id: str, event_type: str) -> str:
+    """Word a case stream that does not open with `case.created`, for the audit and the fold."""
+
+    return f"case {tracking_id!r} begins with {event_type!r}, not {CASE_CREATED!r}"
+
+
+def _unexpected_case_event_message(tracking_id: str, event_type: str, sequence: int) -> str:
+    """Word an event a case stream cannot carry after its opening, for the audit and the fold."""
+
+    return f"case {tracking_id!r} carries unexpected event {event_type!r} at sequence {sequence}"
+
+
+def _case_shape_faults(
+    openers: Mapping[str, EventRecord],
+    recreations: Sequence[EventRecord],
+) -> tuple[HistoryFault, ...]:
+    """Report each case stream that does not hold exactly one `case.created`, first.
+
+    A stream whose first event is something else is named at that event, and every later
+    `case.created` at its own sequence, each in the words the fold refuses it with. A
+    stream whose id names no tracking id is `case_tracking_id_mismatch`'s business.
+    """
+
+    faults: list[HistoryFault] = []
+    misopened = [record for record in openers.values() if record.event_type != CASE_CREATED]
+    for record in (*misopened, *recreations):
+        try:
+            tracking_id = tracking_id_from_stream(record.stream_id)
+        except ValueError:
+            continue
+        if record.event_type == CASE_CREATED:
+            message = _unexpected_case_event_message(
+                tracking_id, record.event_type, record.sequence
+            )
+        else:
+            message = _case_opener_message(tracking_id, record.event_type)
+        faults.append(
+            HistoryFault(sequence=record.sequence, code="case_stream_mismatch", message=message)
+        )
+    return tuple(faults)
 
 
 def _disposition_faults(

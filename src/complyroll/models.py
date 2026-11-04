@@ -12,7 +12,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum, IntEnum
-from typing import Any, Self, TypeVar
+from typing import Any, Final, TypeVar
 
 
 class SourceSeverity(str, Enum):
@@ -105,12 +105,6 @@ def _require_enum(value: object, enum_type: type[EnumT], field_name: str) -> Enu
         raise TypeError(
             f"{field_name} must be {article} {enum_type.__name__}, got {type(value).__name__}"
         )
-    return value
-
-
-def _require_bool(value: object, field_name: str) -> bool:
-    if not isinstance(value, bool):
-        raise TypeError(f"{field_name} must be a bool, got {type(value).__name__}")
     return value
 
 
@@ -305,6 +299,21 @@ class EvidenceArtifact:
         object.__setattr__(self, "sensitivity", _require_sensitivity(self.sensitivity))
 
 
+#: How a clock is worded when its conversion to UTC leaves the years `datetime` holds.
+NO_UTC_INSTANT: Final = "has no UTC instant inside the years 1 to 9999"
+
+
+class ObservationClockError(ValueError):
+    """A system observation's source time has no UTC instant, so it derives no identity."""
+
+    def __init__(self, clock: datetime) -> None:
+        self.clock = clock
+        super().__init__(
+            f"source time {clock.isoformat()} {NO_UTC_INSTANT}, so a system observation has no "
+            "identity"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Observation:
     observation_id: str
@@ -388,6 +397,13 @@ class Observation:
             if self.observed_at is None:
                 raise ValueError("system observations must declare observed_at")
             _require_text(self.context_key, "context_key")
+            # The identity recipe converts this clock, whose OverflowError is no ValueError and
+            # passed every reader's refusal. An artifact observation's identity does not name
+            # its clock, so that clock is left for `reports.vdt.clock_problem` to name.
+            try:
+                self.observed_at.astimezone(UTC)
+            except OverflowError as exc:
+                raise ObservationClockError(self.observed_at) from exc
 
         if len(set(self.source_identifiers)) != len(self.source_identifiers):
             raise ValueError("source_identifiers must not contain duplicates")
@@ -583,102 +599,3 @@ class Observation:
                 f"{observation.derived_observation_id!r}"
             )
         return observation
-
-
-@dataclass(frozen=True, slots=True)
-class Evaluation:
-    evaluation_id: str
-    completed_at: datetime
-    is_internet_reachable: bool
-    is_likely_exploitable: bool
-    pain: PainRating
-    potential_agency_impact: str
-    rationale: str
-    evaluator: str
-    is_false_positive: bool = False
-    evidence_ids: tuple[str, ...] = field(default_factory=tuple)
-
-    def __post_init__(self) -> None:
-        for value, name in (
-            (self.evaluation_id, "evaluation_id"),
-            (self.potential_agency_impact, "potential_agency_impact"),
-            (self.rationale, "rationale"),
-            (self.evaluator, "evaluator"),
-        ):
-            _require_text(value, name)
-        _require_aware(self.completed_at, "completed_at")
-        _require_enum(self.pain, PainRating, "pain")
-        for flag, name in (
-            (self.is_internet_reachable, "is_internet_reachable"),
-            (self.is_likely_exploitable, "is_likely_exploitable"),
-            (self.is_false_positive, "is_false_positive"),
-        ):
-            _require_bool(flag, name)
-        object.__setattr__(
-            self, "evidence_ids", _coerce_str_tuple(self.evidence_ids, "evidence_ids")
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class VulnerabilityCase:
-    case_id: str
-    title: str
-    description: str
-    status: CaseStatus
-    observation_ids: tuple[str, ...]
-    created_at: datetime
-    current_evaluation: Evaluation | None = None
-    evaluation_history: tuple[Evaluation, ...] = ()
-
-    def __post_init__(self) -> None:
-        _require_text(self.case_id, "case_id")
-        _require_text(self.title, "title")
-        _require_text(self.description, "description")
-        _require_aware(self.created_at, "created_at")
-        _require_enum(self.status, CaseStatus, "status")
-        object.__setattr__(
-            self,
-            "observation_ids",
-            _coerce_str_tuple(self.observation_ids, "observation_ids"),
-        )
-        if not self.observation_ids:
-            raise ValueError("a vulnerability case must contain at least one observation")
-        if len(set(self.observation_ids)) != len(self.observation_ids):
-            raise ValueError("observation_ids must not contain duplicates")
-        if self.current_evaluation is not None and not isinstance(
-            self.current_evaluation, Evaluation
-        ):
-            raise TypeError("current_evaluation must be an Evaluation or None")
-        history = tuple(self.evaluation_history)
-        for item in history:
-            if not isinstance(item, Evaluation):
-                raise TypeError("evaluation_history entries must be Evaluation instances")
-        object.__setattr__(self, "evaluation_history", history)
-
-    def with_evaluation(self, evaluation: Evaluation, *, reopen: bool = False) -> Self:
-        """Return a new case projection with the supplied current evaluation.
-
-        A closed or accepted case is a decision of record, so re-evaluating one requires
-        an explicit reopen. The displaced evaluation moves into `evaluation_history`.
-        Persistence will append the corresponding evaluation event before replacing the
-        current projection. The frozen model prevents accidental in-place history
-        mutation in the domain layer.
-        """
-
-        if not isinstance(evaluation, Evaluation):
-            raise TypeError(f"evaluation must be an Evaluation, got {type(evaluation).__name__}")
-        if self.status in {CaseStatus.ACCEPTED, CaseStatus.CLOSED} and not reopen:
-            raise ValueError(f"re-evaluating a {self.status.value} case requires reopen=True")
-        history = self.evaluation_history
-        if self.current_evaluation is not None:
-            history = (*history, self.current_evaluation)
-        return type(self)(
-            case_id=self.case_id,
-            title=self.title,
-            description=self.description,
-            status=CaseStatus.FALSE_POSITIVE if evaluation.is_false_positive else CaseStatus.ACTIVE,
-            observation_ids=self.observation_ids,
-            created_at=self.created_at,
-            current_evaluation=evaluation,
-            evaluation_history=history,
-        )

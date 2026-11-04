@@ -19,6 +19,7 @@ from complyroll.adapters import (
     load_cci_control_map,
 )
 from complyroll.models import Observation, ObservationDisposition, SourceSeverity
+from complyroll.terminal import TerminalArgumentParser, say, tolerate_unencodable_output
 
 SEVERITY_TO_CAT = {
     "high": "CAT I",
@@ -281,7 +282,7 @@ def render_json(findings: list[Finding], summary: dict) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = TerminalArgumentParser(
         prog="stigroll",
         description="Roll STIG checklists and SCAP results up to NIST 800-53 control families.",
     )
@@ -302,11 +303,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    tolerate_unencodable_output()
     args = build_parser().parse_args(argv)
     findings: list[Finding] = []
     for path in args.inputs:
         if not path.exists():
-            print(f"warning: {path} not found, skipping", file=sys.stderr)
+            say(f"warning: {path} not found, skipping", file=sys.stderr)
             continue
         result = ingest_stig_artifact(path)
         kind = ""
@@ -326,12 +328,12 @@ def main(argv: list[str] | None = None) -> int:
             # One that failed to parse says why, as a checklist does, and is never named as
             # the log or document it could not be read as.
             for diagnostic in result.errors:
-                print(
+                say(
                     f"warning: could not parse {path.name}: {diagnostic.message}",
                     file=sys.stderr,
                 )
             if not result.errors:
-                print(
+                say(
                     f"warning: {path.name} is {kind}; stigroll rolls up STIG checklists only, "
                     "skipping",
                     file=sys.stderr,
@@ -339,45 +341,48 @@ def main(argv: list[str] | None = None) -> int:
             continue
         for diagnostic in result.errors:
             if diagnostic.message == "JSON has no non-empty 'stigs' array":
-                print(
+                say(
                     f"warning: {path.name} parsed as JSON but has no 'stigs' key. "
                     "Is it a STIG Viewer checklist?",
                     file=sys.stderr,
                 )
             else:
-                print(
+                say(
                     f"warning: could not parse {path.name}: {diagnostic.message}",
                     file=sys.stderr,
                 )
         findings.extend(Finding.from_observation(item) for item in result.observations)
 
     if not findings:
-        print("error: no findings parsed from any input", file=sys.stderr)
+        say("error: no findings parsed from any input", file=sys.stderr)
         return 1
 
     if args.cci_list:
         if not args.cci_list.exists():
-            print(f"error: CCI list not found: {args.cci_list}", file=sys.stderr)
+            say(f"error: CCI list not found: {args.cci_list}", file=sys.stderr)
             return 1
         mapping_result = load_cci_control_map(args.cci_list)
-        if not mapping_result.successful:
+        mapping = mapping_result.mapping
+        # A successful result always carries its mapping; the explicit test survives -O.
+        if not mapping_result.successful or mapping is None:
             for diagnostic in mapping_result.errors:
-                print(
+                say(
                     f"error: could not parse {args.cci_list.name}: {diagnostic.message}",
                     file=sys.stderr,
                 )
+            if not mapping_result.errors:
+                # Every unsuccessful result names its error today, so this arm prints only if
+                # a loader change ever returns no mapping and no error.
+                say(
+                    f"error: could not parse {args.cci_list.name}: no mapping read", file=sys.stderr
+                )
             return 1
-        assert mapping_result.mapping is not None
         findings = [
             replace(
                 finding,
                 controls=tuple(
                     sorted(
-                        {
-                            control
-                            for cci in finding.ccis
-                            for control in mapping_result.mapping.controls_for(cci)
-                        }
+                        {control for cci in finding.ccis for control in mapping.controls_for(cci)}
                     )
                 ),
             )
@@ -394,8 +399,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.output:
         args.output.write_text(text, encoding="utf-8")
-        print(f"wrote {args.output}", file=sys.stderr)
+        say(f"wrote {args.output}", file=sys.stderr)
     else:
+        # The roll-up is a document, not a line: it is written as rendered, as -o writes it.
         print(text)
     return 0
 

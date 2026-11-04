@@ -72,16 +72,6 @@ class VulnerabilityGroup:
 
         return ", ".join(self.detection_sources)
 
-    @property
-    def parser_versions(self) -> tuple[tuple[str, str], ...]:
-        """Return the sorted parser name and version pairs behind this group."""
-
-        pairs = {
-            (observation.parser_name, observation.parser_version)
-            for observation in self.observations
-        }
-        return tuple(sorted(pairs))
-
 
 @dataclass(frozen=True, slots=True)
 class CorrelationResult:

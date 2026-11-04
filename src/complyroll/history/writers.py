@@ -218,7 +218,7 @@ class EvaluationOutcome:
     dispositions_skipped: int = 0
     identifications_appended: int = 0
     identifications_skipped: int = 0
-    warnings: tuple[str, ...] = ()
+    warnings: tuple[ReportDiagnostic, ...] = ()
 
     @property
     def appended(self) -> int:
@@ -924,8 +924,8 @@ def apply_evaluations(
     append, with every `evaluation_before_detection` ERROR the report would raise, in
     its order (`EvaluationOrderError`). An entry completed before a partly timestamped
     group's earliest known timestamp is applied, and the report's
-    `evaluation_before_partial_detection` WARNING joins `EvaluationOutcome.warnings`
-    without its level prefix. A case with no open group (`stale_case`) or no resolvable
+    `evaluation_before_partial_detection` WARNING joins `EvaluationOutcome.warnings`. A
+    case with no open group (`stale_case`) or no resolvable
     detection time is not checked, since no report prints a detection time for it.
 
     The fold, the checks, and every append run inside one store transaction. Uniqueness
@@ -964,8 +964,8 @@ def _apply_evaluations(
     matched = _match_cases(evaluation_set, cases)
     # The order check runs before the effective tracking id check, as the compiler orders
     # them, so a file refused for both prints the report's ordering lines.
-    warnings: list[str] = _require_evaluation_order(repository, cases, matched)
-    _require_unique_effective_ids(cases, matched)
+    warnings = _require_evaluation_order(repository, cases, matched)
+    _require_unique_effective_ids(repository, cases, matched)
     counters = dict.fromkeys(
         (
             "evaluations_appended",
@@ -1121,35 +1121,54 @@ def _match_cases(
 
 
 def _require_unique_effective_ids(
+    repository: EventRepository,
     cases: Sequence[CaseState],
     matched: Mapping[str, EvaluationInput],
 ) -> None:
-    """Refuse a run that would leave two cases sharing one effective tracking id.
+    """Refuse a run that would leave two cases published under one effective tracking id.
 
-    A case's effective id is the entry's `trackingId` when this run states one, else
-    the recorded `providerTrackingId`, else the correlation id. Every folded case
-    counts, including the ones this run does not touch, so an override recorded by an
-    earlier run still collides. `reports.vdt` refuses the same data, so accepting it
-    here would write history the report cannot compile.
+    A case counts for what a report would publish for it once this run is written. A case with
+    no current group publishes nothing, so it claims nothing, whether this run touches it or not.
+    A case this run touches claims the entry's `trackingId`, else the recorded
+    `providerTrackingId`, else its correlation id. A case it does not touch claims its override
+    only through a current evaluation, which is how an override reaches a report, else its
+    correlation id; a case holding an override no report reads, other than its own id, claims
+    nothing, because counting the correlation id it never claimed here would refuse a run that used
+    to pass.
+
+    So each claim is one `_stated_tracking_id` already gave, and this refuses no run it accepted
+    when it counted every folded case. It still sees no group a case does not hold, and `store
+    verify` names what that leaves (ADR 0008 amendment 2026-11-03). A line located at `recorded
+    history` means two current records already claim one id, so verify rejects that store too; a
+    line naming an entry is located at the entry.
     """
 
+    stated = {
+        case.tracking_id: _stated_tracking_id(case, matched.get(case.tracking_id)) for case in cases
+    }
+    # Every claim below is one of these, so with no duplicate here there is no group to read.
+    if len(set(stated.values())) == len(stated):
+        return
+    grouped = current_groups(repository)
     claimed: dict[str, tuple[CaseState, str]] = {}
     problems: list[str] = []
     for case in cases:
         entry = matched.get(case.tracking_id)
-        effective = case.effective_tracking_id
-        location = "recorded history"
-        if entry is not None:
-            location = entry.location
-            if entry.tracking_id is not None:
-                effective = entry.tracking_id
+        if case.tracking_id not in grouped:
+            continue
+        unread = case.current_evaluation is None and case.effective_tracking_id != case.tracking_id
+        if entry is None and unread:
+            continue
+        effective = stated[case.tracking_id]
+        location = "recorded history" if entry is None else entry.location
         previous = claimed.get(effective)
         if previous is None:
             claimed[effective] = (case, location)
             continue
         previous_case, previous_location = previous
+        where = previous_location if entry is None else location
         problems.append(
-            f"{location}: effective tracking id {shown(effective)} is claimed by "
+            f"{where}: effective tracking id {shown(effective)} is claimed by "
             f"{previous_location} (originally {previous_case.tracking_id}) and "
             f"{location} (originally {case.tracking_id}); an override may rename one "
             "case but may not merge two"
@@ -1158,24 +1177,32 @@ def _require_unique_effective_ids(
         raise EvaluationMatchError(problems)
 
 
+def _stated_tracking_id(case: CaseState, entry: EvaluationInput | None) -> str:
+    """Return the entry's override when it states one, else the id the case already holds."""
+
+    if entry is not None and entry.tracking_id is not None:
+        return entry.tracking_id
+    return case.effective_tracking_id
+
+
 def _require_evaluation_order(
     repository: EventRepository,
     cases: Sequence[CaseState],
     matched: Mapping[str, EvaluationInput],
-) -> list[str]:
+) -> list[ReportDiagnostic]:
     """Refuse a run that would leave an evaluation before its record's detection time.
 
     Observations are rehydrated once, and every matched entry is checked, whether or not
     it changes the case. Diagnostics follow the compiler's group order, so a refusal
     prints the lines `report vdt --db` would print. Returns the partial-detection
-    WARNINGs as warning text, `code: message [location]`.
+    WARNINGs.
     """
 
     if not matched:
         return []
     by_tracking_id = {case.tracking_id: case for case in cases}
     blocked: list[ReportDiagnostic] = []
-    warnings: list[str] = []
+    warnings: list[ReportDiagnostic] = []
     for tracking_id, group in current_groups(repository).items():
         entry = matched.get(tracking_id)
         case = by_tracking_id.get(tracking_id)
@@ -1192,7 +1219,7 @@ def _require_evaluation_order(
         if diagnostic.level is DiagnosticLevel.ERROR:
             blocked.append(diagnostic)
         else:
-            warnings.append(_unprefixed(diagnostic))
+            warnings.append(diagnostic)
     if blocked:
         raise EvaluationOrderError(blocked)
     return warnings
@@ -1235,20 +1262,18 @@ def _require_attestation_order(
         raise EvaluationOrderError(blocked)
 
 
-def _unprefixed(diagnostic: ReportDiagnostic) -> str:
-    """Return a diagnostic's rendered line without its level, as a writer warning."""
-
-    return diagnostic.render().removeprefix(f"{diagnostic.level.value}: ")
-
-
-def _identification_retained_warning(case: CaseState, entry: EvaluationInput) -> str:
+def _identification_retained_warning(case: CaseState, entry: EvaluationInput) -> ReportDiagnostic:
     """Explain that a tracking id override the file dropped stays in history."""
 
-    return (
-        f"identification_retained: {case.tracking_id}: {entry.location} states no trackingId, "
-        f"so the recorded override {shown(case.provider_tracking_id)} stands and the persisted "
-        "report keeps reporting it; ComplyRoll has no retraction event, and returning to the "
-        "correlation identifier is not something an evaluations file can ask for"
+    return ReportDiagnostic(
+        level=DiagnosticLevel.WARNING,
+        code="identification_retained",
+        message=(
+            f"{case.tracking_id}: {entry.location} states no trackingId, "
+            f"so the recorded override {shown(case.provider_tracking_id)} stands and the persisted "
+            "report keeps reporting it; ComplyRoll has no retraction event, and returning to the "
+            "correlation identifier is not something an evaluations file can ask for"
+        ),
     )
 
 
@@ -1256,13 +1281,17 @@ def _disposition_retained_warning(
     case: CaseState,
     entry: EvaluationInput,
     recorded: Mapping[str, Any],
-) -> str:
+) -> ReportDiagnostic:
     """Explain that a disposition the file dropped stays in history."""
 
-    return (
-        f"disposition_retained: {case.tracking_id}: {entry.location} states no disposition, "
-        f"so the recorded {recorded.get('status')} disposition stands; ComplyRoll has no "
-        "retraction event, and changing it needs a new disposition with a rationale"
+    return ReportDiagnostic(
+        level=DiagnosticLevel.WARNING,
+        code="disposition_retained",
+        message=(
+            f"{case.tracking_id}: {entry.location} states no disposition, "
+            f"so the recorded {recorded.get('status')} disposition stands; ComplyRoll has no "
+            "retraction event, and changing it needs a new disposition with a rationale"
+        ),
     )
 
 
@@ -1270,17 +1299,21 @@ def _reduction_retained_warning(
     case: CaseState,
     entry: EvaluationInput,
     retained: Sequence[Mapping[str, Any]],
-) -> str:
+) -> ReportDiagnostic:
     """Explain that PAIN reductions the file dropped stay in history."""
 
     described = ", ".join(
         f"PAIN {payload.get('rating')} at {payload.get('reducedAt')}" for payload in retained
     )
-    return (
-        f"reduction_retained: {case.tracking_id}: {entry.location} no longer states "
-        f"{len(retained)} recorded PAIN reduction(s) ({described}); ComplyRoll has no "
-        "retraction event, so the recorded reductions stand, and changing them needs a "
-        "new evaluation entry with a rationale"
+    return ReportDiagnostic(
+        level=DiagnosticLevel.WARNING,
+        code="reduction_retained",
+        message=(
+            f"{case.tracking_id}: {entry.location} no longer states "
+            f"{len(retained)} recorded PAIN reduction(s) ({described}); ComplyRoll has no "
+            "retraction event, so the recorded reductions stand, and changing them needs a "
+            "new evaluation entry with a rationale"
+        ),
     )
 
 

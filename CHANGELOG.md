@@ -6,6 +6,73 @@ All notable project changes will be documented here.
 
 ### Fixed
 
+- A store two records would publish under one tracking id now fails `store verify`, as the audit
+  fault `tracking_id_collision`, in the report's words, at the latest event recording an override
+  among the two, else at the latest observation among their observations. Every report already
+  refused such a store, and verify passed it. `cases evaluate` refuses to write one, but it accepts
+  an override naming a correlation id no case holds yet, and a later `ingest` then brings a group
+  with that id, with or without `cases correlate`. That route needs only the command line, on every
+  build from 0.3.0a0. A store holding a collision verified clean before and now exits 1; on that
+  route, `cases evaluate` with a new `trackingId` clears both the fault and the refusal. The message
+  now cuts an override past 200 characters of its quoted form, as other stored values are cut (ADR
+  0008 amendment 2026-11-03).
+- One crafted file holding two groups under one 64-bit correlation id stops every report and `cases
+  correlate` from then on. `store verify` passed such a store and now names it. `ingest` still
+  accepts the file, no override can part the two, and the remedy is a new store rebuilt from sources
+  without that file. A collision whose claimants hold a context key of only whitespace cannot be
+  cleared by a new override either, once a twin under a real name makes each source record
+  ambiguous, because no entry can then name them (the same amendment).
+- `cases evaluate` no longer refuses every file once one of two claimants of an id goes stale. It
+  counted every folded case, so an override naming a detection failure's id, or that failure's own
+  override, refused even an entry about an unrelated case at `recorded history` once the same bytes
+  were read under their right name, while `store verify` passed and every report succeeded. It now
+  counts what a report would publish, so a case with no current group claims nothing, and this adds
+  no refusal. A refusal at `recorded history` now means two current records already claim one id,
+  and verify rejects that store. A refusal naming an entry is located at that entry, where it could
+  read `recorded history` before (the same amendment).
+- A failure or coverage stream's observation whose `observed_at` has no UTC instant, such as
+  `0001-01-01T00:30:00+01:00`, ended `store verify`, every report from the store, `cases correlate`,
+  `cases coverage`, `cases evaluate`, `cases attest-detection --case` on an evaluated case, `ingest
+  --record-failed-imports` of a failed file when the clock is on a failure stream, and
+  `EventRepository.append` in an `OverflowError` traceback, because such an observation's identity
+  converts that clock. An artifact stream's was already named. `Observation` now refuses it as
+  `ObservationClockError`, a `ValueError`: `store verify` names it as the audit fault
+  `clock_out_of_range` at its sequence, those readers refuse it as `history_invalid`, and the
+  repository refuses it as `EventContractError`. No command writes such a record and 0.3.0a0 has no
+  such stream, so only a store written around the repository holds one (ADR 0008 amendment
+  2026-11-02).
+- The event contracts now refuse a JSON number stored as `1.0` or `1e+22` where they say `integer`,
+  even one equal to an integer: `pain`, `targetRating`, `rating`, `sizeBytes` and
+  `observationCount`. JSON Schema's `integer` admits it, so it passed its contract and
+  `EventRepository.append` stored it, and then every fold refused it. `store verify` stopped outside
+  its audit with `history_invalid`, or beside `event_metadata_invalid` named that fault alone. It is
+  now `payload_contract_invalid` at its sequence, alone and beside any other fault, and the
+  repository refuses it. Stored text in another spelling, such as `1e0`, is not the store's
+  canonical JSON and stays `payload_not_json`. A reader of the field still refuses it, in the
+  contract's words. For `pain`, `targetRating` and `rating` the reader's code changes from
+  `history_invalid` to `event_contract_invalid`; for `sizeBytes` and `observationCount` it stays
+  `history_invalid`. No command writes such a value, and a store holding one already failed `store
+  verify`, so this stops nothing that worked (the same amendment).
+- A case stream whose first event is not `case.created`, or that carries a second
+  `case.created`, is now the `store verify` audit fault `case_stream_mismatch`, at the first event
+  or at each later `case.created`, in the words every reader that folds the case refuses it with
+  ("case ... begins with ..., not 'case.created'", "case ... carries unexpected event
+  'case.created' at sequence N"). Alone, either used to stop `store verify` as `history_invalid`
+  outside the audit, and `audit_history` raised on it; beside a fault no reader refuses, such as
+  `event_metadata_invalid`, verify named that fault alone and passed over this one; beside any
+  other fault it was not looked for. `EventRepository.append` still accepts a second
+  `case.created`. The readers refuse both as before, as `history_invalid`, and
+  `AUDIT_FAULT_CODES` gains the code (ADR 0008 amendment 2026-10-26).
+- argparse's own usage errors no longer forge a line: an unrecognized or ambiguous argument was
+  echoed as typed, so a newline in one printed a line of its own. Both commands' parsers, and every
+  subcommand's, now print the error through the escape every other line passes through. The exit
+  code is still 2, and an error that carries no control character prints exactly as before.
+- The `stigroll` command prints its warnings, errors and `wrote` line through the same escape, so
+  a newline or ANSI escape in a file name no longer forges a line, and a stdout or stderr that
+  cannot encode a character writes it as a backslash escape instead of ending the run, as under
+  `PYTHONIOENCODING=ascii` with a non-ASCII file name in the CSV roll-up. The roll-up itself is
+  written as rendered, to stdout as to `-o`; its JSON is ASCII, and its UTF-8 output and the
+  `ubuntu-host.md`, `mixed.csv`, `mixed.json` and `mixed-mapped.json` goldens are unchanged.
 - A stored instant whose offset puts it outside the years `datetime` holds, such as an
   `observedAt` of `0001-01-01T00:30:00+01:00` on a case link, matched the contract pattern and
   then ended `store verify`, every report from the store and most `cases` commands in an
@@ -65,14 +132,14 @@ All notable project changes will be documented here.
   escapes; a tab is kept. This covers the diagnostics, the `ingest` summary, `validate`'s issue
   lines, `store verify`, and the actor and evaluator `cases history` prints, which a forged `error:`
   line used to reach both on the stateless path and from a store. JSON output already escaped them
-  and is unchanged, and no golden moved. Three paths are not covered: argparse's own usage errors,
-  the `stigroll` command, and Markdown report files, which carry stored text as written.
+  and is unchanged, and no golden moved. Markdown report files are not covered: they carry stored
+  text as written.
 - A stdout or stderr that cannot encode a character, as under `PYTHONIOENCODING=ascii`, no longer
   ends a `complyroll` run. `report vdt` to stdout crashed on the registered sign (U+00AE), and
   `ingest` crashed printing a non-ASCII file name after its store write had committed, so a saved
   write exited 1. A strict stream now writes such a character as a backslash escape, and a report on
   stdout spells it as a JSON `\u` escape, so it is the same document. UTF-8 output is byte for byte
-  what it was. The `stigroll` command is not covered and still ends on such a stream.
+  what it was.
 - A duplicate key in an evaluations file, in a report `validate` reads, in the rule source and in
   a schema document is now quoted as a repr cut at 200 characters, where it was echoed raw, so a
   newline in the key forged a stderr line and a long key flooded one.
@@ -314,6 +381,11 @@ All notable project changes will be documented here.
 
 ### Added
 
+- `complyroll.reports.REPORT_DIAGNOSTIC_CODES`, the closed set of 61 codes a diagnostic line
+  carries, as `AUDIT_FAULT_CODES` is for `store verify`. `tests/test_report_codes.py` reads the
+  source and holds every site its scan can read to the set and the set to what it finds. Its
+  docstring lists the shapes found that it cannot see, which is not a closed list. There is no
+  run-time check, so no new refusal (ADR 0015 amendment 2026-10-27).
 - CycloneDX SBOM adapter (ADR 0016). `*.cdx.json` files, and bare `.json` files whose `bomFormat` is
   `CycloneDX`, are read as CycloneDX 1.4 to 1.7 JSON under parser `complyroll.cyclonedx` version 1
   and source type `cyclonedx`. A vulnerability becomes one OPEN observation per affected package, on
@@ -634,6 +706,9 @@ All notable project changes will be documented here.
 
 ### Changed
 
+- `history.EvaluationOutcome.warnings` holds `ReportDiagnostic` objects rather than strings, so
+  `identification_retained`, `disposition_retained` and `reduction_retained` are held to the code
+  registry. What `cases evaluate` prints is unchanged, byte for byte.
 - A diagnostic about a record whose evaluation overrides `trackingId` names it by both ids,
   `<override> (<correlation id>)`, for example `ACME-123 (case-1f3e011db93cc89e)`. Some named only
   the correlation id, which the report does not show, and others only the override, which history
@@ -911,6 +986,15 @@ All notable project changes will be documented here.
   exits 1 with `error_diagnostic_unpublished` and writes nothing. No current input reaches the
   refusal, because every ERROR already stops the compile, so no observable behavior changes (ADR
   0017 Decision 2).
+
+### Removed
+
+- `complyroll.Evaluation` and `complyroll.VulnerabilityCase` (`models.Evaluation` and
+  `models.VulnerabilityCase`), with `VulnerabilityCase.with_evaluation`. No command or report
+  used them: reports read evaluations through `complyroll.reports.evaluations` and case state
+  through the fold in `complyroll.history`. Removed before 1.0 with no deprecation step.
+- `correlation.VulnerabilityGroup.parser_versions`, which nothing read; a report builds its parser
+  versions from its observations.
 
 ## 0.3.0a0 - 2026-08-23
 

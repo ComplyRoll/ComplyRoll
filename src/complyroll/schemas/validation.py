@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -12,7 +10,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from referencing.exceptions import Unresolvable
 
-from complyroll.store.sqlite import shown
+from complyroll.jsonsource import parse_json_source
 
 from .source import (
     SchemaBundle,
@@ -168,54 +166,13 @@ def _parse_report_json(content: bytes) -> Any:
         raise ReportDocumentError(
             f"report is {len(content)} bytes; maximum is {MAX_REPORT_BYTES} bytes"
         )
-
-    def reject_nonstandard_constant(value: str) -> None:
-        raise ReportDocumentError(f"non-standard JSON constant is prohibited: {value}")
-
-    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                # SECURITY: The key is untrusted text bound for a terminal, so it is quoted and cut.
-                raise ReportDocumentError(f"duplicate JSON object key is prohibited: {shown(key)}")
-            value[key] = item
-        return value
-
-    try:
-        value = json.loads(
-            content.decode("utf-8"),
-            parse_constant=reject_nonstandard_constant,
-            object_pairs_hook=reject_duplicate_keys,
-        )
-    except UnicodeDecodeError as exc:
-        raise ReportDocumentError("report must be UTF-8 JSON") from exc
-    except json.JSONDecodeError as exc:
-        raise ReportDocumentError(f"report contains malformed JSON: {exc}") from exc
-    except ReportDocumentError:
-        # The hooks above raise it, and it is a ValueError too.
-        raise
-    except ValueError as exc:
-        # The one other ValueError json.loads raises: an integer past the digit limit.
-        limit = sys.get_int_max_str_digits()
-        message = f"report contains an integer longer than {limit} digits"
-        raise ReportDocumentError(message) from exc
-    except RecursionError as exc:
-        raise ReportDocumentError("report exceeds the safe JSON recursion limit") from exc
-
-    values_seen = 0
-    stack: list[tuple[Any, int]] = [(value, 1)]
-    while stack:
-        current, depth = stack.pop()
-        values_seen += 1
-        if values_seen > MAX_REPORT_VALUES:
-            raise ReportDocumentError(f"report contains more than {MAX_REPORT_VALUES} JSON values")
-        if depth > MAX_REPORT_DEPTH:
-            raise ReportDocumentError(f"report exceeds {MAX_REPORT_DEPTH} levels of JSON nesting")
-        if isinstance(current, dict):
-            stack.extend((item, depth + 1) for item in current.values())
-        elif isinstance(current, list):
-            stack.extend((item, depth + 1) for item in current)
-    return value
+    return parse_json_source(
+        content,
+        subject="report",
+        error=ReportDocumentError,
+        max_values=MAX_REPORT_VALUES,
+        max_depth=MAX_REPORT_DEPTH,
+    )
 
 
 def _json_pointer(parts: Iterable[str | int]) -> str:

@@ -149,18 +149,20 @@ The standard-library ingestion layer currently enforces:
 - An input path that is a symbolic-link loop is refused by the read that meets it, as
   `artifact_read_failed` for an artifact, on every interpreter. The input-overwrite check follows
   links with `os.path.realpath`, which returns a loop's path where 3.11's `Path.resolve` raised
-- Every line the `complyroll` command prints as text passes through one function that spells C0
-  and C1 control characters, DEL, U+2028 and U+2029 as escapes (`\n`, `\r`, `\x1b`, `\u2028`), so
-  no file name, stored text or message that quotes either can forge a line or drive a terminal
-  through it. A tab is kept, and a backslash is not escaped, so the two characters `\n` and an
-  escaped newline print alike. JSON output already escapes these characters and is unchanged. A
-  stream that cannot encode a character, as under `PYTHONIOENCODING=ascii`, writes it as a
-  backslash escape, and JSON on stdout spells it as a JSON `\u` escape, so no `complyroll` output
-  ends a run; `ingest` used to exit 1 after its store write had committed. UTF-8 output is byte
-  for byte what it was. Three paths are not covered: argparse's own usage errors, which echo an
-  unrecognized argument as typed; the `stigroll` command, which prints file names raw and still
-  ends on a stream that cannot encode one; and Markdown report files, which carry stored text as
-  written. Treat each of them as untrusted text
+- Every line the `complyroll` and `stigroll` commands print as text that can carry input
+  (diagnostics, status and summary lines, and argparse's usage error message) passes through one
+  function that spells C0 and C1 control characters, DEL, U+2028
+  and U+2029 as escapes (`\n`, `\r`, `\x1b`, `\u2028`), so no argument, file name, stored text or
+  message that quotes one can forge a line or drive a terminal through it. A tab is kept, and a
+  backslash is not escaped, so the two characters `\n` and an escaped newline print alike. JSON
+  output already escapes these characters and is unchanged. A stream that cannot encode a
+  character, as under `PYTHONIOENCODING=ascii`, writes it as a backslash escape, and JSON on
+  stdout spells it as a JSON `\u` escape, so no output of either command ends a run; `ingest`
+  used to exit 1 after its store write had committed. UTF-8 output is byte for byte what it was.
+  Documents are not lines and are not covered: Markdown report files, and `stigroll`'s Markdown
+  and CSV roll-ups, on stdout as in a file, carry their text as written apart from the Markdown
+  table escapes and the CSV formula neutralization below. Help text and the usage block carry no
+  input. Treat them as untrusted text
 
 Callers may lower these limits for their environment. Raising them is an explicit caller decision.
 Compatibility CSV output neutralizes formula-leading cells, and Markdown table output escapes raw
@@ -304,6 +306,21 @@ those three match, and a test pins it.
   report only, since no other command computes a deadline. `store verify` names all three with
   the same predicate (ADR 0008 amendment 2026-10-25). A clock that computes, year 1 with no
   offset among them, is never refused.
+- `store verify` names two current groups a report would publish under one tracking id as
+  `tracking_id_collision`, by the report's own rule and in its words (ADR 0008 amendment
+  2026-11-03). `cases evaluate` refuses to write such a store, but a later `ingest` can leave one,
+  by bringing a group whose correlation id an override already names, or by one crafted file holding
+  two groups under one 64-bit correlation id. Every report refuses it either way. A new override
+  clears the first where an entry can name a claimant, which a context key of only whitespace can
+  prevent. The second has no repair: that file stops every report and `cases correlate` from then
+  on, verify names it, and the remedy is a new store rebuilt from sources without it.
+- A failure or coverage stream's observation names its clock in its identity, so one whose clock
+  has no UTC instant cannot be read at all. `Observation` and the repository refuse it, every
+  command that reads the stream refuses it as `history_invalid`, and `store verify` names it as
+  `clock_out_of_range` at its sequence (ADR 0008 amendment 2026-11-02). No command writes one.
+- The repository validates a contract's `integer` as a JSON integer. JSON Schema alone admits
+  `1.0`, which every fold refuses, so the repository refuses it and `store verify` names it as
+  `payload_contract_invalid` at its sequence (the same amendment).
 - A projection checkpoint must hold a non-negative integer count and a time with a timezone. The
   library's checkpoint reader and its compare-and-swap refuse any other row as
   `EventIntegrityError`, and `store verify` reports it as `projection_checkpoint_invalid`. No
@@ -315,10 +332,15 @@ those three match, and a test pins it.
   written. An append that would mark such a store refuses it as `store_unavailable` and names
   the record, rather than failing on SQLite's unique constraint.
 - `store verify` reports a case stream whose id names no tracking id
-  (`case_tracking_id_mismatch`) and a case that records a disposition and no evaluation
+  (`case_tracking_id_mismatch`), a case stream that does not hold exactly one `case.created` as
+  its first event, named at a first event of another type and at every later `case.created`
+  (`case_stream_mismatch`), and a case that records a disposition and no evaluation
   (`disposition_without_evaluation`). Every report from the store, `cases list`,
-  `cases evaluate` and `cases attest-detection` refuse the first as `history_invalid`, and every
-  report refuses the second.
+  `cases evaluate` and `cases attest-detection` refuse the first two as `history_invalid`, and
+  every report refuses the third. One path does not refuse: `cases attest-detection --case` on a
+  stream of the second kind that carries a source timestamp warns `attestation_not_applicable`,
+  appends nothing for that case and exits 0, since the attestation would change nothing and the
+  command names the case by the id it was given. `--all-missing` refuses such a stream.
 - Projection checkpoints are mutable but disposable; durable history remains the rebuild source.
 - A failure stream (ADR 0014) is appended in the same transaction that marks the store schema
   version 2, so the marker and the failure commit or roll back together. A hold, a failure stream

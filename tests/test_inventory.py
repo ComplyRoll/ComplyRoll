@@ -720,6 +720,23 @@ class InventoryRefusalTests(unittest.TestCase):
             "inventory: schema",
         )
 
+    def test_a_refusal_quotes_and_cuts_as_the_kev_reader_does(self) -> None:
+        # The inventory reader shares the KEV reader's excerpt and detail (CL-69).
+        accented = "\u00e9"
+        message = self.assert_refused(with_root("schema", accented * 100))
+        self.assertEqual(
+            message,
+            f"inventory: schema must be 'complyroll.inventory', got '{accented * 60}...",
+        )
+        text = PLAN_EXAMPLE.decode("utf-8").replace(
+            '"schemaVersion": 1,', f'"{accented}": 1, "{accented}": 1, "schemaVersion": 1,'
+        )
+        message = self.assert_refused(text.encode("utf-8"))
+        self.assertEqual(
+            message,
+            "inventory must be a JSON document: duplicate JSON object key is prohibited: '\\xe9'",
+        )
+
     def test_a_kev_catalog_is_refused_by_its_schema(self) -> None:
         message = self.assert_refused(KEV_CATALOG.read_bytes())
         self.assertEqual(message, "inventory: schema is required")

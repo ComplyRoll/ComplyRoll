@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
+from types import MappingProxyType
 from typing import Any
 
 from complyroll.models import Observation, ObservationDisposition, ObservationOrigin, ResourceRef
@@ -425,6 +426,28 @@ class CoverageResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FiledEvidence:
+    """What verifies each inventory entry by an as-of, filed once as `derive_coverage` files it.
+
+    Reading many clocks' evidence from one filing costs one pass over the observations, where
+    a `verifying_evidence` call per clock refiles them all each time (CL-73).
+    """
+
+    inventory: Inventory
+    verifying_by_entry: Mapping[ResourceRef, tuple[CoverageEvidence, ...]]
+
+    def verifying(self, *, rule_id: str, subject: ResourceRef) -> tuple[CoverageEvidence, ...]:
+        """Return what verifies one clock's subject, as `verifying_evidence` returns it."""
+        if rule_id == PSD_RULE:
+            name = subject.resource_id.removeprefix(SAMPLE_GROUP_PREFIX)
+            refs = [entry.ref for entry in self.inventory.entries if entry.sample_group == name]
+        else:
+            entry = self.inventory.entry_for(subject.resource_type, subject.resource_id)
+            refs = [] if entry is None else [entry.ref]
+        return _ordered(item for ref in refs for item in self.verifying_by_entry[ref])
+
+
+@dataclass(frozen=True, slots=True)
 class _Anchor:
     at: datetime
     evidence: CoverageEvidence
@@ -574,14 +597,20 @@ def verifying_evidence(
     alias names the same resource, so a gap recorded before a rename still reads its
     evidence. Ordered earliest first.
     """
+    return file_evidence(observations, inventory, as_of).verifying(rule_id=rule_id, subject=subject)
+
+
+def file_evidence(
+    observations: Iterable[Observation], inventory: Inventory, as_of: datetime
+) -> FiledEvidence:
+    """File every observation and attestation once, for many `FiledEvidence.verifying` reads."""
     collected = _collect(observations, inventory, _utc(as_of))[0]
-    if rule_id == PSD_RULE:
-        name = subject.resource_id.removeprefix(SAMPLE_GROUP_PREFIX)
-        refs = [entry.ref for entry in inventory.entries if entry.sample_group == name]
-    else:
-        entry = inventory.entry_for(subject.resource_type, subject.resource_id)
-        refs = [] if entry is None else [entry.ref]
-    return _ordered(item for ref in refs for _, item in collected[ref].verifying)
+    return FiledEvidence(
+        inventory=inventory,
+        verifying_by_entry=MappingProxyType(
+            {ref: tuple(item for _, item in found.verifying) for ref, found in collected.items()}
+        ),
+    )
 
 
 def _collect(
@@ -848,10 +877,12 @@ __all__ = [
     "CoverageWindow",
     "EntryClocks",
     "EvidenceKind",
+    "FiledEvidence",
     "ResourceCoverage",
     "RuleSummary",
     "UnregisteredResource",
     "derive_coverage",
     "entry_clocks",
+    "file_evidence",
     "verifying_evidence",
 ]

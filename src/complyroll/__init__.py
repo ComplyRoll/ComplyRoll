@@ -2,7 +2,6 @@
 
 from .models import (
     CaseStatus,
-    Evaluation,
     EvidenceArtifact,
     Observation,
     ObservationDisposition,
@@ -11,12 +10,10 @@ from .models import (
     ResourceRef,
     Sensitivity,
     SourceSeverity,
-    VulnerabilityCase,
 )
 
 __all__ = [
     "CaseStatus",
-    "Evaluation",
     "EvidenceArtifact",
     "Observation",
     "ObservationDisposition",
@@ -25,7 +22,6 @@ __all__ = [
     "ResourceRef",
     "Sensitivity",
     "SourceSeverity",
-    "VulnerabilityCase",
 ]
 
 __version__ = "0.3.0a0"

@@ -16,12 +16,29 @@ All notable project changes will be documented here.
   route, `cases evaluate` with a new `trackingId` clears both the fault and the refusal. The message
   now cuts an override past 200 characters of its quoted form, as other stored values are cut (ADR
   0008 amendment 2026-11-03).
-- One crafted file holding two groups under one 64-bit correlation id stops every report and `cases
-  correlate` from then on. `store verify` passed such a store and now names it. `ingest` still
-  accepts the file, no override can part the two, and the remedy is a new store rebuilt from sources
-  without that file. A collision whose claimants hold a context key of only whitespace cannot be
-  cleared by a new override either, once a twin under a real name makes each source record
-  ambiguous, because no entry can then name them (the same amendment).
+- `ingest` refuses a second identity under a tracking id already held, a new refusal. A tracking id
+  is 64 bits of SHA-256, so a laptop can build one file holding two identities under one id, and
+  that file would stop every report. A run bringing one, in one file, across two files
+  or against what the store holds, now exits 1 with one ERROR `tracking_id_held` per refused
+  identity and records nothing, with or without `--record-failed-imports`, and at a path with
+  nothing behind it no store is published. A genuine accident would meet the same refusal, about
+  3e-8 at a million records, and its only remedy today is a separate store. An earlier build or a
+  library caller can have left a pair, and an id the store holds twice is closed: any run bringing
+  either side is refused, a rerun of recorded bytes included. A live pair, two current groups, is
+  named by `store verify`, which passed it before, and refused by every report; `cases correlate`
+  says `store_conflict` when both groups meet in one correlate, and exits 0 and links the later side
+  onto the first's case when the first was already correlated. A latent pair has at most one side
+  current. Verify, every report and `cases correlate` name no collision in it, so verify's exit 0
+  does not mean no pair, nor that its reports are right: `report avi` can publish the current side
+  with the rationale written for the other. No override can part either kind, and the remedy is a
+  new store rebuilt from sources without that file. A run bringing neither side can still move which
+  readings are current, so verify's answer on such a store can change. No golden or id moves. Each
+  `ingest` reads the whole log once for this, about 0.6 s on 15000 observations. So a log the read
+  path refuses now stops a plain `ingest` as `store_integrity` with nothing recorded, as every
+  report does; it used to read only its own streams and pass such a store. A collision whose
+  claimants hold a context key of only whitespace cannot be cleared by a new override either, once a
+  twin under a real name makes each source record ambiguous, because no entry can then name them
+  (ADR 0008 amendments 2026-11-03).
 - `cases evaluate` no longer refuses every file once one of two claimants of an id goes stale. It
   counted every folded case, so an override naming a detection failure's id, or that failure's own
   override, refused even an entry about an unrelated case at `recorded history` once the same bytes

@@ -820,3 +820,107 @@ here; each needs its own ruling.
 The message now quotes an override through `shown`, cut past 200 characters of the quoted form, as
 other stored values are, on both sides. A plain override of up to 198 characters prints as before,
 and one heavy in escapes is cut sooner. No golden changes.
+
+## Amendment 2026-11-03 (second): `ingest` refuses a second identity under a held id
+
+The amendment above says "`ingest` accepts the file" and leaves refusing it to its own ruling. The
+ruling came the same day: `ingest` refuses a second identity under a tracking id already held, which
+keeps ids and goldens where they are, though it is a new refusal. This corrects that sentence, which
+stays as written above. An identity here is the group key a tracking id is derived from,
+`(source_type, source_record_id, context_key)`.
+
+The check runs in `_run_ingest`, inside the transaction and before anything is appended, just after
+`failure_read_elsewhere`, with its logic in `history.writers.tracking_id_refusals`. It is not in
+`record_ingest`: a run scans the log once, and library callers and test stores stay as they are.
+
+It maps each tracking id to the identities holding it, from every `observation.recorded` in the
+store: every stream kind, every disposition, current or superseded. A superseded reading counts
+because its case stream still exists, so `cases correlate` would link a second identity onto another
+identity's case. A non-open observation counts because identity does not depend on disposition, and
+a later scan can open it. It then walks this run's identities in listed order, each file's in file
+order, adding as it goes. An identity whose id has a set not holding it is refused, so a pair inside
+one file, across two files of a run and across two runs are all refused. An identity already in its
+id's set is fine, unless the store already held that id under two identities when the walk began.
+
+A run's identities include the system observation each failed reading or side record would mint,
+after that file's own, through `system_observation_for`, because a failure's id can be searched for
+too. That call can raise `ValueError`. Such a failure brings no identity to the walk, and
+`record_failure` meets the same error once the writes begin and refuses the run as
+`history_invalid`, as it always has. If another identity is refused first, the run names that one,
+and nothing is recorded either way.
+
+The refusal is one ERROR `tracking_id_held` per refused identity, located at the name of the file
+that first brought it. It names the id and both identities through `shown`, the holder being the
+first identity recorded or walked under that id, and ends "nothing was recorded by this run". The
+run exits 1, records nothing, and at a path with nothing behind it publishes no store.
+`--record-failed-imports` does not turn it into a failure, because it is not a failed reading: that
+run exits 1, not 3, and each pure failure then writes its own diagnostics after the refusal lines,
+as under `failure_read_elsewhere` (ADR 0014 Decision 13). `REPORT_DIAGNOSTIC_CODES` grows by one.
+
+An earlier build or a library caller can have left a store holding a pair, and no command changes
+what it holds. There are two kinds.
+
+A live pair is two current groups under one id. Verify names it and every report refuses it. `cases
+correlate` says `store_conflict` when both groups meet in one correlate. When the first was already
+correlated it exits 0 and links the later side onto the first's case, so its exit 0 clears nothing.
+No override can part the two, and the remedy is a new store rebuilt from sources without that file.
+
+A latent pair is both identities held with at most one current, because a side is not open or its
+reading is superseded. Verify, every report and `cases correlate` name no collision in it, so
+verify's exit 0 does not mean no pair, nor that its reports are right: a report puts the current
+side under whatever evaluation the id's case holds, so `report avi` can publish it with the
+acceptance rationale an operator wrote for the other side. One more current reading of the other
+side would make it live and stop every report, the outcome this check exists to prevent. The remedy
+is the same new store, rebuilt without the file holding one of them. Until a run brings either side
+or an election makes it live, nothing names the pair.
+
+So an id the store holds under two identities is closed, live or latent, overriding "an identity
+already in its id's set is fine" for that id alone. The ids are fixed before the walk, so a pair
+inside the run closes nothing. Any identity a run brings under a closed id is refused, a rerun of
+bytes already recorded included: mirroring `record_ingest`'s own test for that could drift, and a
+rerun's only cost is exit 1 on a store that holds a pair, with the pair named to the operator. A new
+identity keeps the words above. A restated side reads "tracking id X is already held by OTHER and
+IDENTITY, so a run may bring neither and nothing was recorded by this run", OTHER being the first
+holder that is not that identity. Each identity is named once a run. An id with one holder is as
+above, and a rerun of a lone holder passes.
+
+A run bringing no identity under that id passes, and it can still move which readings are current,
+because a reading of bytes the store already holds, under another parser or version, joins their
+election (ADR 0014, R1 to R6). So one file two adapters read can clear a live pair: recorded by an
+earlier build as CKLB with both sides in it, the same bytes named `.sarif` read as neither side,
+that reading wins, verify and every report then pass, and the store holds a latent pair. So "from
+then on" and "no repair through the command line" in the amendment above hold only until such a
+reading. The same election can bring a retired side back and make a latent pair live, which has
+been reproduced only with parser versions no shipped build has. This predates the check, which
+compares identities and does not weigh elections.
+
+The boundary the amendment above states covers the refusal: it is a refusal of a run's own input,
+not a store fault, so a refused run leaves verify's answer as it was. The amendment above says a
+code located at `recorded history` names the store's own collision and verify rejects that store.
+This code is located at the file that brought the identity, and a run bringing no identity under
+that id passes, so the refusal is of that run's input even on a closed id, where a restated side's
+line names two stored identities.
+
+A genuine accident would meet the same refusal, about 3e-8 at a million records. Neither file is
+wrong there, no option or override lets both in, and its only remedy today is a separate store.
+
+The three fields are read from the raw payloads through `EventRepository.read_all`, with no
+observation rehydrated, no new store API, no schema change and no new table. On a synthetic store of
+15000 observations an `ingest` took about 0.8 s before this and about 1.4 s after, nearly all of the
+difference being `read_all`'s check of each row. Rehydrating them took 5.7 s. A payload whose three
+fields are not all text is read past, and verify names it.
+
+A log the read path refuses stops the run as `store_integrity` with nothing recorded, as an `ingest`
+recording a failure already did and as every report does. This is a second new refusal on a plain
+`ingest`, which used to read only its own streams and pass such a store. Nothing is lost by it: no
+report can read that store and `store verify` names it. Reading past it would not hold either: once
+`read_all` trips on a page SQLite cannot read, the append in the same transaction fails too, under a
+message that blames the append. A file that does not open is refused at open, as it was.
+
+Left out, on purpose. `cases coverage` gets no check: its id needs a second preimage or control of
+the inventory, and a later crafted file is refused by this check. The id's width stays. An override
+onto a natural id stays as the amendment above describes it, because an override is no identity.
+`cases correlate` is not changed. `store verify` does not name a latent pair: no reader refuses one
+as a pair, and exit 1 would fail stores the reports still read. No golden, fixture, example,
+tracking id or store byte moves for a store with no pair, and a run on such a store reads exactly as
+it did.

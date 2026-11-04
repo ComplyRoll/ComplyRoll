@@ -30,7 +30,7 @@ from complyroll.adapters import (
     system_observation_for,
 )
 from complyroll.adapters.failures import DETECTION_FAILURE_RECORDED, failure_recorded_message
-from complyroll.correlation import VulnerabilityGroup, group_open_observations
+from complyroll.correlation import VulnerabilityGroup, group_open_observations, tracking_id_for
 from complyroll.events import (
     COVERAGE_RECORDED,
     FAILURE_HEAD_TYPES,
@@ -268,6 +268,122 @@ def content_digest(event_type: str, payload: Mapping[str, Any]) -> str:
     return canonical_payload_digest(
         {key: value for key, value in payload.items() if key not in excluded}
     )
+
+
+def _identities_held(repository: EventRepository) -> dict[str, list[tuple[str, str, str]]]:
+    """Map each tracking id to the identities `observation.recorded` holds, in log order.
+
+    Every stream kind and disposition counts, current or superseded: a superseded reading's case
+    stream still exists, and a later scan can open what is not open now. The three fields are read
+    from the raw payload, since rehydrating every observation costs seconds on each ingest. A log
+    the read path refuses raises here and stops the run as `store_integrity`, as it does a report.
+    """
+
+    identities: dict[tuple[str, str, str], None] = {}
+    for record in repository.read_all():
+        if record.event_type != OBSERVATION_RECORDED:
+            continue
+        source_type = record.payload.get("source_type")
+        source_record_id = record.payload.get("source_record_id")
+        context_key = record.payload.get("context_key")
+        # A payload of another shape is verify's to name, so it neither crashes nor refuses here.
+        if (
+            isinstance(source_type, str)
+            and isinstance(source_record_id, str)
+            and isinstance(context_key, str)
+        ):
+            identities[(source_type, source_record_id, context_key)] = None
+    held: dict[str, list[tuple[str, str, str]]] = {}
+    for identity in identities:
+        held.setdefault(tracking_id_for(*identity), []).append(identity)
+    return held
+
+
+def _observations_brought(
+    location: str,
+    result: IngestResult,
+    classification: FailureClassification | None,
+    *,
+    ingested_at: datetime,
+) -> tuple[Observation, ...]:
+    """Return what one reading would record: its observations, then the failure it mints."""
+
+    if classification is None:
+        return result.observations
+    # `record_failure` meets the same ValueError once the writes begin and refuses the run as
+    # `history_invalid`, so a failure that cannot be minted brings no identity here.
+    try:
+        minted = system_observation_for(
+            result, classification, name=location, observed_at=ingested_at
+        )
+    except ValueError:
+        return result.observations
+    return (*result.observations, minted)
+
+
+def tracking_id_refusals(
+    repository: EventRepository,
+    readings: Iterable[tuple[str, IngestResult, FailureClassification | None]],
+    *,
+    ingested_at: datetime,
+) -> tuple[ReportDiagnostic, ...]:
+    """Return one ERROR per identity a run may not bring, at the first file that brings it.
+
+    `readings` is each file's name, reading and failure classification, in listed order. The first
+    identity walked under an id holds it, so a second is refused in one file, across two files or
+    across two runs. An id the store already holds under two identities is closed: a run may bring
+    neither, a rerun included, because one more current reading of a pair no reader minds yet would
+    stop every report (ADR 0008 amendment 2026-11-03, second). It appends nothing. `ingest` calls it
+    once a run, inside the transaction of its writes, and `record_ingest` does not, so library
+    callers stay as they are.
+    """
+
+    held = _identities_held(repository)
+    # Fixed before the walk, so a pair inside this run closes nothing.
+    closed = {tracking_id for tracking_id, holders in held.items() if len(holders) > 1}
+    walked: set[tuple[str, str, str]] = set()
+    refusals: list[ReportDiagnostic] = []
+    for location, result, classification in readings:
+        for observation in _observations_brought(
+            location, result, classification, ingested_at=ingested_at
+        ):
+            identity = (
+                observation.source_type,
+                observation.source_record_id,
+                observation.context_key,
+            )
+            if identity in walked:
+                continue
+            walked.add(identity)
+            tracking_id = tracking_id_for(*identity)
+            holders = held.setdefault(tracking_id, [])
+            if identity in holders:
+                if tracking_id not in closed:
+                    continue
+                other = next(holder for holder in holders if holder != identity)
+                message = (
+                    f"tracking id {shown(tracking_id)} is already held by {shown(other)} and "
+                    f"{shown(identity)}, so a run may bring neither and nothing was recorded by "
+                    "this run"
+                )
+            elif holders:
+                message = (
+                    f"tracking id {shown(tracking_id)} is held by {shown(holders[0])}, so "
+                    f"{shown(identity)} would be a second identity under it and nothing was "
+                    "recorded by this run"
+                )
+            else:
+                holders.append(identity)
+                continue
+            refusals.append(
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="tracking_id_held",
+                    message=message,
+                    location=location,
+                )
+            )
+    return tuple(refusals)
 
 
 def record_ingest(

@@ -2596,9 +2596,17 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
         self.assertEqual(self.report("vdt")[0], 0)
 
     def ingest_the_crafted_file(self) -> None:
+        # `ingest` refuses this file now (CL-84), so it is written as an earlier build wrote it, to
+        # hold what a store that already has the pair still does.
         scan = colliding_scan(self.directory)
-        code, out, _ = run(["ingest", str(scan), "--db", self.database, "--as-of", self.AS_OF])
-        self.assertEqual((code, out), (0, f"{scan.name}: recorded 2 observation(s)\n"))
+        with SQLiteEventStore(self.database) as store:
+            outcome = record_ingest(
+                EventRepository(store),
+                ingest_stig_artifact(scan, ingested_at=WRITTEN_AT),
+                metadata=EventMetadata(actor="tester"),
+                ingested_at=WRITTEN_AT,
+            )
+        self.assertEqual((outcome.appended, outcome.observation_count), (True, 2))
 
     def assert_verify_names(self, *messages: str) -> None:
         code, out, err = run(["store", "verify", "--db", self.database])

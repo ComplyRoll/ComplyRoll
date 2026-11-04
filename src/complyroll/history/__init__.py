@@ -55,6 +55,7 @@ from .writers import (
     record_coverage_gaps,
     record_failure,
     record_ingest,
+    tracking_id_refusals,
 )
 
 __all__ = [
@@ -110,4 +111,5 @@ __all__ = [
     "rehydrate_observations",
     "summarize",
     "superseded_artifact_records",
+    "tracking_id_refusals",
 ]

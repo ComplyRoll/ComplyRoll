@@ -219,6 +219,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "store_missing",
     "store_unavailable",
     "tracking_id_collision",
+    "tracking_id_held",
     "unresolved_observation",
 )
 

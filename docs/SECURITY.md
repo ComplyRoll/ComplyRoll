@@ -309,11 +309,31 @@ those three match, and a test pins it.
 - `store verify` names two current groups a report would publish under one tracking id as
   `tracking_id_collision`, by the report's own rule and in its words (ADR 0008 amendment
   2026-11-03). `cases evaluate` refuses to write such a store, but a later `ingest` can leave one,
-  by bringing a group whose correlation id an override already names, or by one crafted file holding
-  two groups under one 64-bit correlation id. Every report refuses it either way. A new override
-  clears the first where an entry can name a claimant, which a context key of only whitespace can
-  prevent. The second has no repair: that file stops every report and `cases correlate` from then
-  on, verify names it, and the remedy is a new store rebuilt from sources without it.
+  by bringing a group whose correlation id an override already names. Every report refuses it. A new
+  override clears it where an entry can name a claimant, which a context key of only whitespace can
+  prevent.
+- `ingest` refuses a second identity under a tracking id already held, as `tracking_id_held` with
+  nothing recorded and exit 1 (ADR 0008 amendment 2026-11-03, second). A tracking id is 64 bits of
+  SHA-256, so one crafted file can hold two identities under one id, and an untrusted file must not
+  stop every report. The map reads every `observation.recorded`, so a file colliding with a recorded
+  failure, a coverage gap or a superseded reading is refused too. A genuine accident would meet the
+  same refusal, about 3e-8 at a million records, and its only remedy today is a separate store. An
+  earlier build or a library caller can have left a pair. A live pair is two current groups: verify
+  names it, every report refuses it, no override parts it, and `cases correlate` says
+  `store_conflict` or, when the first side was already correlated, exits 0 and links the later side
+  onto its case. The remedy is a new store rebuilt from sources without that file. A latent pair has
+  at most one side current. Verify, every report and `cases correlate` name no collision in it, so
+  verify's exit 0 does not mean no pair, nor that its reports are right: `report avi` can publish
+  the current side with the acceptance rationale written for the other. The same new store is its
+  remedy. `ingest` closes any id the store holds twice: a run bringing either side is refused, a
+  rerun included, so no such run can make a latent pair live. A run bringing no identity
+  under that id passes, and a reading of bytes the store already holds can still retire a side or
+  bring one back, so verify's answer on such a store can move either way (the same amendment). The
+  check reads the whole log, so a log
+  the read path refuses now stops a plain `ingest` as `store_integrity` with nothing recorded: no
+  report can read that store and verify names it. Library callers of `record_ingest` have no such
+  check. `cases coverage` has none either, because its id needs a second preimage or control of the
+  inventory.
 - A failure or coverage stream's observation names its clock in its identity, so one whose clock
   has no UTC instant cannot be read at all. `Observation` and the repository refuse it, every
   command that reads the stream refuses it as `history_invalid`, and `store verify` names it as

@@ -50,6 +50,7 @@ from .history import (
     record_coverage_gaps,
     record_failure,
     record_ingest,
+    tracking_id_refusals,
 )
 from .models import Observation
 from .policy import CertificationClass, CertificationProfile
@@ -561,9 +562,12 @@ def _run_ingest(args: argparse.Namespace) -> int:
         # and an existing store must not gain one artifact's history from a run the next
         # artifact stopped.
         parsed: list[_ParsedReading] = []
+        # Every reading in the order listed, the order the held tracking id check walks.
+        listed: list[tuple[str, IngestResult, FailureClassification | None]] = []
         for path in artifacts:
             result = ingest_stig_artifact(path, ingested_at=ingested_at)
             classification = classify_ingest(result) if args.record_failed_imports else None
+            listed.append((path.name, result, classification))
             if (
                 result.errors
                 and result.artifact is not None
@@ -594,6 +598,10 @@ def _run_ingest(args: argparse.Namespace) -> int:
         # durable (ADR 0008, second amendment).
         with _open_repository(target) as repository, repository.transaction():
             if failed and _refuse_failures_read_elsewhere(stderr, repository, failed):
+                return 1
+            refusals = tracking_id_refusals(repository, listed, ingested_at=ingested_at)
+            if refusals:
+                _write_diagnostics(stderr, refusals)
                 return 1
             # Each reading's lines and diagnostics, in the slot of its place in the list, so
             # the summary keeps listed order whatever order the side records' failures are

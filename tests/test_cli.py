@@ -7495,7 +7495,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         ]
 
     def readers(self, *, at_open: bool) -> dict[str, list[str]]:
-        """The commands under test; `plain ingest` and `cases history` join only at open."""
+        """The commands under test; `cases history` joins only at open."""
 
         database = str(self.database)
         commands = {f"report {kind}": self.report_reader(kind) for kind in self.REPORTS}
@@ -7530,16 +7530,16 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 "--as-of",
                 INGESTED_AT,
             ],
-        }
-        if at_open:
-            commands["plain ingest"] = [
+            "plain ingest": [
                 "ingest",
                 str(FIXTURES / "semgrep-code.sarif"),
                 "--db",
                 database,
                 "--as-of",
                 INGESTED_AT,
-            ]
+            ],
+        }
+        if at_open:
             commands["cases history"] = ["cases", "history", WINDOWS_CASE, "--db", database]
         return commands
 

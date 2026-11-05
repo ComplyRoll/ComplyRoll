@@ -62,7 +62,7 @@ from complyroll.reports import (
 )
 from complyroll.reports import checks as checks_module
 from complyroll.reports import markdown as markdown_module
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import records as records_module
 from complyroll.reports.evaluations import EvaluationMatch
 from complyroll.reports.gaps import (
     COVERAGE_GAP_RECORD_ID,
@@ -190,7 +190,7 @@ def compile_with(
         *(item for reading in readings for item in reading.observations),
         *system,
     )
-    matches = vdt_module._match_evaluations(group_open_observations(observations), evaluations)
+    matches = records_module._match_evaluations(group_open_observations(observations), evaluations)
     return compile_record_set(
         artifacts=tuple(compiled_artifact(reading) for reading in readings),
         observations=observations,
@@ -642,7 +642,7 @@ class GapEvaluationOrderTests(unittest.TestCase):
                 artifacts=(),
                 observations=observations,
                 ingest_diagnostics=(),
-                evaluations_by_tracking_id=vdt_module._match_evaluations(
+                evaluations_by_tracking_id=records_module._match_evaluations(
                     group_open_observations(observations), evaluations
                 ),
                 attestation=DetectionAttestation(default=DETECTED_AT),

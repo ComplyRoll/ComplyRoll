@@ -95,7 +95,7 @@ from complyroll.reports import (
 )
 from complyroll.reports import coverage as coverage_module
 from complyroll.reports import markdown as markdown_module
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import records as records_module
 from complyroll.reports.coverage import CoverageEvidence, EvidenceKind
 from complyroll.reports.gaps import (
     COVERAGE_GAP_RECORD_ID,
@@ -301,7 +301,7 @@ class CoverageStoreFixture(StoreFixture):
 
     def derived_gaps(self, as_of: datetime = AS_OF) -> tuple[Observation, ...]:
         """Return the gaps the store's evidence closes at as-of, before any is recorded."""
-        coverage = vdt_module.derive_report_coverage(
+        coverage = records_module.derive_report_coverage(
             rehydrate_observations(self.repository), INVENTORY, PROFILE, as_of
         )
         return coverage_gap_observations(coverage, ingested_at=as_of)
@@ -473,8 +473,8 @@ class CoverageWriterTests(CoverageStoreFixture):
         artifacts = [item for item in observations if item.origin is ObservationOrigin.ARTIFACT]
         self.assertEqual(len(observations) - len(artifacts), GAP_COUNT)
 
-        with_gaps = vdt_module.derive_report_coverage(observations, INVENTORY, PROFILE, AS_OF)
-        without = vdt_module.derive_report_coverage(artifacts, INVENTORY, PROFILE, AS_OF)
+        with_gaps = records_module.derive_report_coverage(observations, INVENTORY, PROFILE, AS_OF)
+        without = records_module.derive_report_coverage(artifacts, INVENTORY, PROFILE, AS_OF)
 
         self.assertEqual(with_gaps, without)
         self.assertEqual(len(with_gaps.windows), GAP_COUNT)
@@ -599,7 +599,7 @@ class CoverageWriterTests(CoverageStoreFixture):
         latest = self.store.latest_sequence
 
         with (
-            mock.patch.object(vdt_module, "select_policy", stripped_policy("VDR-TFR-PSD")),
+            mock.patch.object(records_module, "select_policy", stripped_policy("VDR-TFR-PSD")),
             self.assertRaises(ReportCompileError) as caught,
         ):
             self.record_gaps()
@@ -740,7 +740,7 @@ class CoverageCommandTests(PersistedStoreTestCase):
         self.refused([*COVERAGE_OPTIONS, "--calendar-tz", "Mars/Olympus"], "error: invalid_option:")
 
     def test_a_policy_without_a_coverage_rule_is_refused(self) -> None:
-        with mock.patch.object(vdt_module, "select_policy", stripped_policy("VDR-TFR-MVX")):
+        with mock.patch.object(records_module, "select_policy", stripped_policy("VDR-TFR-MVX")):
             self.refused(COVERAGE_OPTIONS, "error: coverage_rule_unavailable:")
 
     def test_a_missing_store_is_refused_and_no_store_is_created(self) -> None:
@@ -1489,7 +1489,7 @@ class GapDivergenceTests(CoverageStoreFixture):
                 for gap in stored_gaps(self.repository)
                 if gap.context_key.startswith("VDR-TFR-MVX:")
             ),
-            key=vdt_module._gap_order,
+            key=records_module._gap_order,
         )
         assert first.observed_at is not None
         evidence = CoverageEvidence(
@@ -1506,10 +1506,10 @@ class GapDivergenceTests(CoverageStoreFixture):
             "derives nor disproves"
         )
 
-        contradicted = vdt_module._underived_gap(
+        contradicted = records_module._underived_gap(
             first, "case-job", evidence, standing=standing, shared=True
         )
-        unmatched = vdt_module._underived_gap(
+        unmatched = records_module._underived_gap(
             first, "case-job", None, standing=standing, shared=True
         )
 
@@ -1622,7 +1622,7 @@ class GapReplayTests(CoverageStoreFixture):
         self.golden_store()
         self.record_gaps()
         self.correlate()
-        stateless = vdt_module.compile_record_set_from_artifacts(
+        stateless = records_module.compile_record_set_from_artifacts(
             list(ARTIFACTS), options=gap_options(as_of=later)
         )
         assert stateless.coverage is not None

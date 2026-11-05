@@ -73,7 +73,7 @@ from complyroll.reports import (
     load_inventory,
 )
 from complyroll.reports import markdown as markdown_module
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import records as records_module
 from complyroll.reports.coverage import derive_coverage
 from complyroll.reports.gaps import (
     COVERAGE_GAP_RECORD_ID,
@@ -359,7 +359,7 @@ class GapRecordSetTests(unittest.TestCase):
             calls.append(listed)
             return derive_coverage(listed, *args)
 
-        with mock.patch.object(vdt_module, "derive_coverage", side_effect=spy):
+        with mock.patch.object(records_module, "derive_coverage", side_effect=spy):
             compile_record_set_from_artifacts(list(ARTIFACTS), options=gap_options())
 
         self.assertEqual(len(calls), 1)

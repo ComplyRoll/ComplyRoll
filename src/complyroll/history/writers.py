@@ -61,7 +61,7 @@ from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, recor
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
 from complyroll.reports.model import ReportDiagnostic
-from complyroll.reports.vdt import coverage_diagnostics, derive_report_coverage
+from complyroll.reports.records import coverage_diagnostics, derive_report_coverage
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 

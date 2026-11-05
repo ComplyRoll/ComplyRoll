@@ -114,7 +114,7 @@ from complyroll.history.fold import (
 from complyroll.models import CaseStatus, Observation
 from complyroll.reports import EvaluationSet, load_evaluations, parse_evaluations
 from complyroll.reports import model as model_module
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import records as records_module
 from complyroll.reports.replay import compile_record_set_from_history
 from complyroll.store import (
     EventRecord,
@@ -3414,7 +3414,9 @@ class NumericVersionPredicateTests(unittest.TestCase):
     ) -> list[str]:
         """Return the versions in the order the report lists these failures."""
 
-        return [item.parser_version for item in vdt_module._ordered_detection_failures(failures)]
+        return [
+            item.parser_version for item in records_module._ordered_detection_failures(failures)
+        ]
 
     def test_the_report_decides_numeric_versions_per_digest(self) -> None:
         # One text version under another digest must not turn this digest's versions into
@@ -3463,7 +3465,7 @@ class NumericVersionPredicateTests(unittest.TestCase):
                     failures = [self.compiled_failure(version) for version in group]
 
                     elected = self.version_of(_newest_stream(views))
-                    listed = vdt_module._ordered_detection_failures(failures)[-1]
+                    listed = records_module._ordered_detection_failures(failures)[-1]
 
                     self.assertEqual(listed.parser_version, elected)
 

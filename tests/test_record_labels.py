@@ -95,7 +95,7 @@ from complyroll.reports import (
     project_avi,
 )
 from complyroll.reports import checks as checks_module
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import records as records_module
 from complyroll.reports.evaluations import record_label
 from complyroll.reports.replay import compile_record_set_from_history
 from complyroll.store import NewEvent
@@ -361,7 +361,7 @@ class StatelessRecordLabelTests(unittest.TestCase):
                 artifacts=(),
                 observations=observations,
                 ingest_diagnostics=(),
-                evaluations_by_tracking_id=vdt_module._match_evaluations(
+                evaluations_by_tracking_id=records_module._match_evaluations(
                     group_open_observations(observations), evaluations
                 ),
                 attestation=DetectionAttestation(default=DETECTED_AT),

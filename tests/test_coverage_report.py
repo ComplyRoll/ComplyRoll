@@ -58,7 +58,7 @@ from complyroll.reports import (
     load_inventory,
     parse_inventory,
 )
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import records as records_module
 from complyroll.reports.coverage import (
     COVERAGE_BASIS,
     MVX_RULE,
@@ -854,7 +854,7 @@ class CoverageRuleTests(CoverageFixture):
         for missing in COVERAGE_RULE_IDS:
             with (
                 self.subTest(missing=missing),
-                mock.patch.object(vdt_module, "select_policy", stripping(missing)),
+                mock.patch.object(records_module, "select_policy", stripping(missing)),
                 self.assertRaises(ReportCompileError) as caught,
             ):
                 compile_fixtures(artifacts=self.artifacts, inventory=self.inventory)
@@ -868,7 +868,7 @@ class CoverageRuleTests(CoverageFixture):
 
     def test_every_missing_rule_is_named_in_one_diagnostic(self) -> None:
         with (
-            mock.patch.object(vdt_module, "select_policy", stripping(*COVERAGE_RULE_IDS)),
+            mock.patch.object(records_module, "select_policy", stripping(*COVERAGE_RULE_IDS)),
             self.assertRaises(ReportCompileError) as caught,
         ):
             compile_fixtures(artifacts=self.artifacts, inventory=self.inventory)
@@ -880,7 +880,7 @@ class CoverageRuleTests(CoverageFixture):
         for kind in REPORT_KINDS:
             with (
                 self.subTest(report=kind),
-                mock.patch.object(vdt_module, "select_policy", stripping(*COVERAGE_RULE_IDS)),
+                mock.patch.object(records_module, "select_policy", stripping(*COVERAGE_RULE_IDS)),
             ):
                 report = compile_fixtures(artifacts=self.artifacts, kind=kind)
             self.assertEqual(report.to_json(), self.bare[kind].to_json())

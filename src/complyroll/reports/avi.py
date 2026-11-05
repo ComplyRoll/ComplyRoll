@@ -58,7 +58,7 @@ from .projection import (
     schema_provenance,
     validate_document,
 )
-from .vdt import compile_record_set_from_artifacts
+from .records import compile_record_set_from_artifacts
 
 _REPORT_NAME = "the Accepted Vulnerability Information report"
 

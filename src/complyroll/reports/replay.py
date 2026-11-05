@@ -42,7 +42,8 @@ from .model import (
     ReportDiagnostic,
     ReportOptions,
 )
-from .vdt import CompiledVdtReport, compile_record_set, project_vdt
+from .records import compile_record_set
+from .vdt import CompiledVdtReport, project_vdt
 
 if TYPE_CHECKING:  # pragma: no cover - imported for annotations only
     from complyroll.history import ArtifactHistory, ArtifactRecord, CaseState, FailureRecord

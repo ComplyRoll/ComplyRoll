@@ -92,8 +92,8 @@ PASS_THROUGH = frozenset(
         ("complyroll.cli", "_as_report_diagnostics"),
         ("complyroll.history.fold", "_diagnostics"),
         ("complyroll.reports.replay", "_ingest_diagnostics"),
-        ("complyroll.reports.vdt", "_collect_diagnostics"),
-        ("complyroll.reports.vdt", "_record_detection_failure"),
+        ("complyroll.reports.records", "_collect_diagnostics"),
+        ("complyroll.reports.records", "_record_detection_failure"),
     }
 )
 #: The functions that write a line opening with a level whose rest is no report code: the audit's

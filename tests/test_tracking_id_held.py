@@ -124,6 +124,20 @@ def closed_pair_line(restated: str, location: str) -> str:
     return closed_line(identity(other), identity(restated), location, COLLIDING_ID)
 
 
+def latent_line(
+    first: Identity, second: Identity, *, tracking_id: str = COLLIDING_ID, more: str = ""
+) -> str:
+    """Return the one line `store verify` names an id held twice by, with none of it live."""
+
+    return (
+        f"warning: tracking_id_latent_pair: tracking id {tracking_id!r} is held by {first!r} and "
+        f"{second!r}{more} with at most one current: a report can publish the current one under "
+        "any evaluation the id holds, even one written for another, and ingest refuses a run "
+        "bringing any of them; the remedy is a new store rebuilt from sources holding only one of "
+        "them"
+    )
+
+
 def short_ids() -> Any:
     """Cut every tracking id to its prefix, so any two identities collide with no search."""
 
@@ -1059,8 +1073,9 @@ class CorrelateOnALivePairTests(HeldIdFixture):
 class LatentPairTests(HeldIdFixture):
     """Both identities held with at most one current, and every reader passing.
 
-    Verify's exit 0 does not mean no pair. One more current reading would stop every report, which
-    is the outcome the check exists to prevent, so a run bringing either side is refused.
+    Verify exits 0 on it, with a warning (`LatentPairWarningTests`). One more current reading would
+    stop every report, which is the outcome the check exists to prevent, so a run bringing either
+    side is refused.
     """
 
     OPEN_LATER = {FIRST: "not_a_finding", SECOND: "open"}
@@ -1126,6 +1141,272 @@ class LatentPairTests(HeldIdFixture):
 
         self.assertEqual(verify_store(self.database)[0], 1)
         self.assertEqual(report_vdt(self.database)[0], 1)
+
+
+class LatentPairWarningTests(HeldIdFixture):
+    """`store verify` names a latent pair as a warning and still exits 0 (CL-92).
+
+    The line goes to standard error beside the unchanged `ok:` line, and only when verify otherwise
+    passes: with no `tracking_id_collision` no id has two current groups, so every id held twice
+    is latent, and a store with a fault says so once that fault is gone (ADR 0008 amendment
+    2026-11-04).
+    """
+
+    LINE = latent_line(identity(FIRST), identity(SECOND)) + "\n"
+
+    def latent_pair(self, statuses: Mapping[str, str] = LatentPairTests.OPEN_LATER) -> None:
+        path = scan_with_statuses(self.directory, "lab-old", statuses)
+        record_through_the_library(self.database, path)
+
+    def warnings_for(self, *holders: Identity) -> list[str]:
+        """Return the lines a log holding these identities gets, in the order it holds them."""
+
+        for holder in holders:
+            self.smuggle_identity(holder)
+        with SQLiteEventStore(self.database) as store:
+            warnings = history_writers.latent_pair_warnings(EventRepository(store))
+        return [warning.render() for warning in warnings]
+
+    def assert_warned(self) -> None:
+        code, out, err = verify_store(self.database)
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out, r"^ok: \d+ event\(s\) verified\n$")
+        self.assertEqual(err, self.LINE)
+
+    def test_verify_warns_and_exits_0_on_every_latent_shape(self) -> None:
+        shapes = (
+            LatentPairTests.OPEN_LATER,
+            LatentPairTests.OPEN_FIRST,
+            LatentPairTests.NEITHER_OPEN,
+        )
+        for number, statuses in enumerate(shapes):
+            with self.subTest(statuses=statuses):
+                self.database = self.directory / f"latent-{number}.db"
+                self.latent_pair(statuses)
+                self.assert_warned()
+                code, _, err = run(["cases", "correlate", "--db", str(self.database)])
+                self.assertEqual(code, 0, err)
+                self.assert_warned()
+
+    def test_a_store_with_no_pair_gets_no_warning(self) -> None:
+        self.stored(FIXTURES / "ubuntu-host.cklb")
+
+        code, _, err = verify_store(self.database)
+
+        self.assertEqual((code, err), (0, ""))
+
+    def test_one_identity_read_twice_is_no_pair(self) -> None:
+        self.stored(colliding_scan(self.directory, FIRST, host="lab-one"))
+        self.stored(colliding_scan(self.directory, FIRST, host="lab-two"))
+
+        code, _, err = verify_store(self.database)
+
+        self.assertEqual((code, err), (0, ""))
+
+    def test_a_live_pair_keeps_its_fault_and_gets_no_warning(self) -> None:
+        record_through_the_library(self.database, colliding_scan(self.directory))
+
+        code, _, err = verify_store(self.database)
+
+        self.assertEqual(code, 1, err)
+        self.assertIn(": tracking_id_collision: ", err)
+        self.assertNotIn("tracking_id_latent_pair", err)
+
+    def test_a_pair_beside_another_fault_waits_for_that_fault(self) -> None:
+        self.latent_pair()
+        self.smuggle({"source_type": 5, "source_record_id": "V-damaged", "context_key": "S"})
+
+        code, _, err = verify_store(self.database)
+
+        self.assertEqual(code, 1, err)
+        self.assertIn(": payload_contract_invalid: ", err)
+        self.assertNotIn("tracking_id_latent_pair", err)
+
+    def test_a_pair_beside_an_integrity_fault_waits_for_that_fault(self) -> None:
+        self.latent_pair()
+        tamper_with_one_payload(self.database)
+
+        code, _, err = verify_store(self.database)
+
+        self.assertEqual(code, 1, err)
+        self.assertIn(": payload_digest_mismatch: ", err)
+        self.assertNotIn("tracking_id_latent_pair", err)
+
+    def test_an_election_that_clears_a_live_pair_leaves_the_warning(self) -> None:
+        # One file two adapters read: an earlier build recorded both sides from it as CKLB, and the
+        # same bytes named `.sarif` read as neither side, which wins the election.
+        sarif = json.loads((FIXTURES / "grype-image.sarif").read_text(encoding="utf-8"))
+        cklb = json.loads(colliding_scan(self.directory).read_text(encoding="utf-8"))
+        earlier, later = self.directory / "scan.cklb", self.directory / "scan.sarif"
+        for path in (earlier, later):
+            path.write_text(json.dumps({**sarif, **cklb}), encoding="utf-8")
+        record_through_the_library(self.database, earlier)
+        self.assertEqual(verify_store(self.database)[0], 1)
+
+        self.stored(later)
+
+        self.assert_warned()
+
+    def test_a_refused_run_leaves_the_warning_as_it_was(self) -> None:
+        self.latent_pair()
+        path = colliding_scan(self.directory, FIRST, host="lab-first")
+
+        self.assert_refused(path, lines=[closed_pair_line(FIRST, path.name)])
+
+        self.assert_warned()
+
+    def test_only_verify_says_it(self) -> None:
+        self.latent_pair()
+
+        for code, _, err in (
+            report_vdt(self.database),
+            run(["cases", "correlate", "--db", str(self.database)]),
+            self.ingest(FIXTURES / "ubuntu-host.cklb"),
+        ):
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("tracking_id_latent_pair", err)
+
+    def test_verify_changes_no_store_byte(self) -> None:
+        self.latent_pair()
+        before = self.database.read_bytes()
+
+        self.assert_warned()
+
+        self.assertEqual(self.database.read_bytes(), before)
+
+    def test_every_id_held_twice_gets_one_line_in_log_order(self) -> None:
+        later, earlier, lone, later_twin, earlier_twin = (
+            ("cklb", name, "S") for name in ("b-1", "a-1", "c-1", "b-2", "a-2")
+        )
+
+        def by_letter(source_type: str, source_record_id: str, context_key: str) -> str:
+            return f"case-{source_record_id[0]}"
+
+        with mock.patch.object(history_writers, "tracking_id_for", by_letter):
+            lines = self.warnings_for(later, earlier, lone, later_twin, earlier_twin)
+
+        self.assertEqual(
+            lines,
+            [
+                latent_line(later, later_twin, tracking_id="case-b"),
+                latent_line(earlier, earlier_twin, tracking_id="case-a"),
+            ],
+        )
+
+    def test_holders_past_two_are_counted_on_one_line(self) -> None:
+        holders = [("cklb", f"V-{number}", "S") for number in range(5)]
+
+        with short_ids():
+            lines = self.warnings_for(*holders)
+
+        self.assertEqual(
+            lines, [latent_line(*holders[:2], tracking_id=SHORT_ID, more=" and 3 more")]
+        )
+
+    def test_a_failure_and_an_artifact_are_a_pair(self) -> None:
+        code, _, err = self.ingest(TRUNCATED_FIXTURE, flags=["--record-failed-imports"])
+        self.assertEqual(code, 3, err)
+        side = identity("V-side")
+        record_through_the_library(
+            self.database, scan_with_statuses(self.directory, "lab", {"V-side": "not_a_finding"})
+        )
+
+        with short_ids():
+            code, _, err = verify_store(self.database)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            err,
+            latent_line(failure_identity(TRUNCATED_FIXTURE), side, tracking_id=SHORT_ID) + "\n",
+        )
+
+    def test_a_coverage_gap_holds_its_id_here_too(self) -> None:
+        # Every gap collides under `short_ids`, which is a live pair, so this asks the scan itself.
+        SQLiteEventStore(self.database).close()
+        code, _, err = run(["cases", "coverage", "--db", str(self.database), *COVERAGE_OPTIONS])
+        self.assertEqual(code, 3, err)
+        with SQLiteEventStore(self.database) as store:
+            (gap, *_) = [
+                record.payload
+                for record in EventRepository(store).read_all()
+                if record.event_type == "observation.recorded"
+            ]
+        holder = (gap["source_type"], gap["source_record_id"], gap["context_key"])
+        self.assertEqual(holder[0], "complyroll.coverage")
+
+        with short_ids(), SQLiteEventStore(self.database) as store:
+            (warning,) = history_writers.latent_pair_warnings(EventRepository(store))
+
+        self.assertIn(repr(holder), warning.render())
+
+    def test_an_order_fault_hides_the_pair_until_it_is_fixed(self) -> None:
+        # An evaluation of the first side, its reading superseded, then the second side detected
+        # after that evaluation: verify and every report name the order, not the pair.
+        first = ingest_stig_artifact(
+            colliding_scan(self.directory, FIRST, host="a"), ingested_at=WRITTEN_AT
+        )
+        second = ingest_stig_artifact(
+            colliding_scan(self.directory, SECOND, host="b", completed_at="2026-08-20T00:00:00Z"),
+            ingested_at=WRITTEN_AT,
+        )
+
+        def evaluation(rule: str, completed_at: str) -> Any:
+            return evaluations_for(
+                {
+                    "match": {"sourceRecordId": rule},
+                    "completedAt": completed_at,
+                    "disposition": "accepted",
+                    "acceptanceRationale": f"for {rule}",
+                }
+            )
+
+        with SQLiteEventStore(self.database) as store:
+            repository = EventRepository(store)
+            record_ingest(repository, first, metadata=METADATA, ingested_at=WRITTEN_AT)
+            correlate_cases(repository, metadata=METADATA, now=WRITTEN_AT)
+            apply_evaluations(
+                repository,
+                evaluation(FIRST, "2026-08-11T12:00:00Z"),
+                metadata=METADATA,
+                now=WRITTEN_AT,
+            )
+            record_ingest(
+                repository,
+                replace(reread_with_timestamp(first, WRITTEN_AT), observations=()),
+                metadata=METADATA,
+                ingested_at=WRITTEN_AT,
+            )
+            record_ingest(repository, second, metadata=METADATA, ingested_at=WRITTEN_AT)
+
+        code, _, err = verify_store(self.database)
+        self.assertEqual(code, 1, err)
+        self.assertIn(": evaluation_before_detection: ", err)
+        self.assertNotIn("tracking_id_latent_pair", err)
+
+        with SQLiteEventStore(self.database) as store:
+            apply_evaluations(
+                EventRepository(store),
+                evaluation(FIRST, "2026-08-20T06:00:00Z"),
+                metadata=METADATA,
+                now=WRITTEN_AT,
+            )
+
+        self.assert_warned()
+
+    def test_a_long_or_hostile_identity_is_quoted_and_cut(self) -> None:
+        with short_ids():
+            (line,) = self.warnings_for(
+                ("cklb", "V-1\nerror: forged" + "x" * 5000, "S"), ("cklb", "\x1b[31mV-2", "S")
+            )
+
+        self.assertNotIn("\n", line)
+        self.assertNotIn("\x1b", line)
+        self.assertLess(len(line), 1000)
+
+    def test_the_code_is_in_the_closed_set_and_the_scan_sees_it(self) -> None:
+        self.assertIn("tracking_id_latent_pair", REPORT_DIAGNOSTIC_CODES)
+        sites = scan_codes().codes["tracking_id_latent_pair"]
+        self.assertTrue(any("history/writers.py" in site for site in sites), sites)
 
 
 class DamagedStoreTests(HeldIdFixture):

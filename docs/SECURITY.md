@@ -322,14 +322,16 @@ those three match, and a test pins it.
   names it, every report refuses it, no override parts it, and `cases correlate` says
   `store_conflict` or, when the first side was already correlated, exits 0 and links the later side
   onto its case. The remedy is a new store rebuilt from sources without that file. A latent pair has
-  at most one side current. Verify, every report and `cases correlate` name no collision in it, so
-  verify's exit 0 does not mean no pair, nor that its reports are right: `report avi` can publish
-  the current side with the acceptance rationale written for the other. The same new store is its
-  remedy. `ingest` closes any id the store holds twice: a run bringing either side is refused, a
-  rerun included, so no such run can make a latent pair live. A run bringing no identity
-  under that id passes, and a reading of bytes the store already holds can still retire a side or
-  bring one back, so verify's answer on such a store can move either way (the same amendment). The
-  check reads the whole log, so a log
+  at most one side current. Every report and `cases correlate` name no collision in it, and `report
+  avi` can publish the current side with the acceptance rationale written for the other. On a store
+  with no fault `store verify` names it as WARNING `tracking_id_latent_pair` and exits 0, so its
+  exit 0 with no warning means no pair; beside a fault it says so once the fault is gone (ADR 0008
+  amendment 2026-11-04). The same new store is its remedy. `ingest` closes any id the store holds
+  twice: a run bringing either side is refused, a rerun included, so no such run can make a latent
+  pair live. A run bringing no identity under that id passes, and a reading of bytes the store
+  already holds can still retire a side or bring one back, so verify's answer on such a store can
+  move either way (ADR 0008 amendments 2026-11-03, second, and 2026-11-04). The check reads the
+  whole log, so a log
   the read path refuses now stops a plain `ingest` as `store_integrity` with nothing recorded: no
   report can read that store and verify names it. Library callers of `record_ingest` have no such
   check. `cases coverage` has none either, because its id needs a second preimage or control of the

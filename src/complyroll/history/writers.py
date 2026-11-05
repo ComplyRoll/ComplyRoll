@@ -299,6 +299,36 @@ def _identities_held(repository: EventRepository) -> dict[str, list[tuple[str, s
     return held
 
 
+def latent_pair_warnings(repository: EventRepository) -> tuple[ReportDiagnostic, ...]:
+    """Return one WARNING per id the log holds under two identities, in log order.
+
+    `store verify` calls it on a store it otherwise passes, where no `tracking_id_collision` means
+    no id has two current groups, so each pair here has at most one side current and no other
+    reader names it (ADR 0008 amendment 2026-11-04).
+    """
+
+    warnings: list[ReportDiagnostic] = []
+    for tracking_id, holders in _identities_held(repository).items():
+        if len(holders) < 2:
+            continue
+        # Two name the pair and a count stands for the rest, so one line stays short however many.
+        named = " and ".join(map(shown, holders[:2]))
+        more = f" and {len(holders) - 2} more" if len(holders) > 2 else ""
+        warnings.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.WARNING,
+                code="tracking_id_latent_pair",
+                message=(
+                    f"tracking id {shown(tracking_id)} is held by {named}{more} with at most one "
+                    "current: a report can publish the current one under any evaluation the id "
+                    "holds, even one written for another, and ingest refuses a run bringing any of "
+                    "them; the remedy is a new store rebuilt from sources holding only one of them"
+                ),
+            )
+        )
+    return tuple(warnings)
+
+
 def _observations_brought(
     location: str,
     result: IngestResult,

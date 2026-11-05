@@ -46,6 +46,7 @@ from .history import (
     case_history,
     correlate_cases,
     fold_all_cases,
+    latent_pair_warnings,
     reading_elsewhere,
     record_coverage_gaps,
     record_failure,
@@ -1113,7 +1114,11 @@ def _run_store_verify(args: argparse.Namespace) -> int:
             # meaningful, so an intact log is audited once more against the contracts,
             # stream kinds, artifact counts, and metadata rules that give its events
             # meaning (ADR 0008, second amendment).
-            faults = audit_history(EventRepository(store))
+            repository = EventRepository(store)
+            faults = audit_history(repository)
+            # With no fault no id has two current groups, so an id held twice is a latent pair,
+            # which no reader refuses: a warning, and verify still passes (ADR 0008, 2026-11-04).
+            warnings = () if faults else latent_pair_warnings(repository)
 
         if faults:
             for domain_fault in faults:
@@ -1124,6 +1129,8 @@ def _run_store_verify(args: argparse.Namespace) -> int:
                 file=stderr,
             )
             return 1
+        for warning in warnings:
+            _say(warning.render(), file=stderr)
         _say(report.render())
         return 0
 

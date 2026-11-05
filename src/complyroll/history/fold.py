@@ -58,9 +58,9 @@ from complyroll.models import (
     ObservationClockError,
     PainRating,
 )
+from complyroll.reports.checks import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
-from complyroll.reports.vdt import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 

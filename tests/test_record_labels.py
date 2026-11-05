@@ -94,6 +94,7 @@ from complyroll.reports import (
     compile_record_set_from_artifacts,
     project_avi,
 )
+from complyroll.reports import checks as checks_module
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.evaluations import record_label
 from complyroll.reports.replay import compile_record_set_from_history
@@ -955,7 +956,7 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
             with self.subTest(length=len(observation_id)):
                 self.assertIn(
                     f"observation {observation_id} has source time",
-                    vdt_module.observation_clock_message(
+                    checks_module.observation_clock_message(
                         observation_id,
                         datetime(1, 1, 1, tzinfo=UTC),
                         "has no UTC instant",

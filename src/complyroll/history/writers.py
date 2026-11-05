@@ -55,18 +55,13 @@ from complyroll.events import (
 )
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.policy import CertificationProfile
+from complyroll.reports.checks import clock_problem, observation_clock_message, system_record_kind
 from complyroll.reports.coverage import CoverageResult
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, record_label
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
 from complyroll.reports.model import ReportDiagnostic
-from complyroll.reports.vdt import (
-    clock_problem,
-    coverage_diagnostics,
-    derive_report_coverage,
-    observation_clock_message,
-    system_record_kind,
-)
+from complyroll.reports.vdt import coverage_diagnostics, derive_report_coverage
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 

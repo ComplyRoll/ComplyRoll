@@ -32,9 +32,7 @@ from complyroll.policy import (
     load_bundled_rule_source_snapshot,
     select_policy,
 )
-from complyroll.reports.model import DetectionAttestation, ReportDiagnostic, evaluation_location
-from complyroll.reports.replay import case_evaluations
-from complyroll.reports.vdt import (
+from complyroll.reports.checks import (
     CLOCK_OUT_OF_RANGE,
     TRACKING_ID_COLLISION,
     clock_problem,
@@ -48,6 +46,8 @@ from complyroll.reports.vdt import (
     tracking_id_collision_message,
     tracking_id_collisions,
 )
+from complyroll.reports.model import DetectionAttestation, ReportDiagnostic, evaluation_location
+from complyroll.reports.replay import case_evaluations
 
 from .fold import (
     CaseState,

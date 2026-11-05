@@ -60,6 +60,7 @@ from complyroll.reports import (
     parse_evaluations,
     project_vdt,
 )
+from complyroll.reports import checks as checks_module
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.evaluations import EvaluationMatch
 from complyroll.reports.gaps import (
@@ -664,7 +665,7 @@ class GapEvaluationOrderTests(unittest.TestCase):
 
     def test_the_system_remedy_branches_by_source_type(self) -> None:
         def remedy(detected_source: str, source_type: str | None) -> str:
-            diagnostic = vdt_module.evaluation_order_diagnostic(
+            diagnostic = checks_module.evaluation_order_diagnostic(
                 tracking_id="case-0000000000000000",
                 location="here",
                 detected_at=GAP_CLOSED_AT,
@@ -848,12 +849,12 @@ class ReservedSourceTypeTableTests(unittest.TestCase):
 
     def test_every_minted_reserved_type_has_a_kind_a_remedy_and_a_sentence(self) -> None:
         types = sorted(minted_reserved_types())
-        kinds = [vdt_module.system_record_kind(source_type) for source_type in types]
+        kinds = [checks_module.system_record_kind(source_type) for source_type in types]
         self.assertEqual(len(set(kinds)), len(types))
         for source_type, kind in zip(types, kinds, strict=True):
             with self.subTest(source_type=source_type):
                 self.assertNotEqual(kind, "system record")
-                diagnostic = vdt_module.evaluation_order_diagnostic(
+                diagnostic = checks_module.evaluation_order_diagnostic(
                     tracking_id="case-0000000000000000",
                     location="here",
                     detected_at=GAP_CLOSED_AT,

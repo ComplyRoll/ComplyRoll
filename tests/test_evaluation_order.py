@@ -86,8 +86,8 @@ from complyroll.reports import (
     compile_record_set_from_artifacts,
     parse_evaluations,
 )
+from complyroll.reports.model import CompiledRecordSet
 from complyroll.reports.replay import compile_record_set_from_history
-from complyroll.reports.vdt import CompiledRecordSet
 from complyroll.store import NewEvent, SQLiteEventStore
 
 # *--- Fixtures ---*

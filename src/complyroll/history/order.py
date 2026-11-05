@@ -32,17 +32,15 @@ from complyroll.policy import (
     load_bundled_rule_source_snapshot,
     select_policy,
 )
+from complyroll.reports.model import DetectionAttestation, ReportDiagnostic, evaluation_location
 from complyroll.reports.replay import case_evaluations
 from complyroll.reports.vdt import (
     CLOCK_OUT_OF_RANGE,
     TRACKING_ID_COLLISION,
-    DetectionAttestation,
-    ReportDiagnostic,
     clock_problem,
     detection_clock,
     detection_clock_message,
     evaluation_clock_message,
-    evaluation_location,
     evaluation_order_diagnostic,
     observation_clock_message,
     published_tracking_id,

@@ -27,7 +27,7 @@ from complyroll.models import CaseStatus, PainRating
 from complyroll.schemas import ReportSchema, SchemaValidationResult
 
 from .evaluations import EvaluationSet
-from .vdt import (
+from .model import (
     EXTENSION_KEY,
     AcceptedVulnerability,
     CompiledRecordSet,
@@ -35,6 +35,8 @@ from .vdt import (
     ReportDiagnostic,
     ReportMetadata,
     ReportOptions,
+)
+from .vdt import (
     _accepted,
     _attested_instant,
     _common_extension,

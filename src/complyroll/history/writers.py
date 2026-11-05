@@ -59,8 +59,8 @@ from complyroll.reports.coverage import CoverageResult
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, record_label
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
+from complyroll.reports.model import ReportDiagnostic
 from complyroll.reports.vdt import (
-    ReportDiagnostic,
     clock_problem,
     coverage_diagnostics,
     derive_report_coverage,

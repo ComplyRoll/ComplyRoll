@@ -113,6 +113,7 @@ from complyroll.history.fold import (
 )
 from complyroll.models import CaseStatus, Observation
 from complyroll.reports import EvaluationSet, load_evaluations, parse_evaluations
+from complyroll.reports import model as model_module
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.replay import compile_record_set_from_history
 from complyroll.store import (
@@ -3392,10 +3393,10 @@ class NumericVersionPredicateTests(unittest.TestCase):
         *,
         sha256: str = "a" * 64,
         observed_at: datetime = INGESTED_AT,
-    ) -> vdt_module.CompiledDetectionFailure:
+    ) -> model_module.CompiledDetectionFailure:
         """Build one report failure entry differing from its siblings only as asked."""
 
-        return vdt_module.CompiledDetectionFailure(
+        return model_module.CompiledDetectionFailure(
             name="host.sarif",
             sha256=sha256,
             size_bytes=1,
@@ -3408,7 +3409,9 @@ class NumericVersionPredicateTests(unittest.TestCase):
             tracking_id=SPARE_CASE,
         )
 
-    def listed_versions(self, failures: Sequence[vdt_module.CompiledDetectionFailure]) -> list[str]:
+    def listed_versions(
+        self, failures: Sequence[model_module.CompiledDetectionFailure]
+    ) -> list[str]:
         """Return the versions in the order the report lists these failures."""
 
         return [item.parser_version for item in vdt_module._ordered_detection_failures(failures)]

@@ -27,7 +27,7 @@ from complyroll.schemas import ReportSchema, SchemaValidationResult
 
 from .avi import _accepted_info
 from .evaluations import EvaluationSet
-from .vdt import (
+from .model import (
     EXTENSION_KEY,
     AcceptedVulnerability,
     CompiledRecordSet,
@@ -35,10 +35,12 @@ from .vdt import (
     ReportDiagnostic,
     ReportMetadata,
     ReportOptions,
+    iso,
+)
+from .vdt import (
     _accepted,
     _attested_instant,
     _common_extension,
-    _iso,
     _require_acceptance_rationales,
     _schema_provenance,
     _validate_document,
@@ -161,7 +163,7 @@ def _build_historical_document(
     options = metadata.options
     return {
         "certificationPackageOverviewUri": options.package_uri,
-        "generatedAt": _iso(options.as_of),
+        "generatedAt": iso(options.as_of),
         "activeVulnerabilities": [record.to_official_dict() for record in active],
         "acceptedVulnerabilities": [_accepted_info(item) for item in accepted],
         EXTENSION_KEY: _common_extension(records, metadata, diagnostics),

@@ -34,17 +34,15 @@ from complyroll.models import Observation
 from .avi import CompiledAviReport, project_avi
 from .evaluations import EvaluationInput, EvaluationMatch
 from .historical import CompiledHistoricalReport, project_historical
-from .vdt import (
+from .model import (
     CompiledArtifact,
     CompiledRecordSet,
-    CompiledVdtReport,
     DetectionAttestation,
     ReportCompileError,
     ReportDiagnostic,
     ReportOptions,
-    compile_record_set,
-    project_vdt,
 )
+from .vdt import CompiledVdtReport, compile_record_set, project_vdt
 
 if TYPE_CHECKING:  # pragma: no cover - imported for annotations only
     from complyroll.history import ArtifactHistory, ArtifactRecord, CaseState, FailureRecord

@@ -72,6 +72,7 @@ from complyroll.reports import (
     load_evaluations,
     load_inventory,
 )
+from complyroll.reports import markdown as markdown_module
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.coverage import derive_coverage
 from complyroll.reports.gaps import (
@@ -534,7 +535,7 @@ class GapWindowKeyTests(unittest.TestCase):
 
         block = coverage.to_dict(gap_records=recorded)
         lines: list[str] = []
-        vdt_module._write_coverage(
+        markdown_module.write_coverage(
             lines.append, replace(self.flagged.metadata, coverage_gap_records=recorded)
         )
 

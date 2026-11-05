@@ -94,6 +94,7 @@ from complyroll.reports import (
     parse_inventory,
 )
 from complyroll.reports import coverage as coverage_module
+from complyroll.reports import markdown as markdown_module
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.coverage import CoverageEvidence, EvidenceKind
 from complyroll.reports.gaps import (
@@ -879,8 +880,8 @@ class GapAwareReportTests(CoverageStoreFixture):
         for rule, label, closed, _ in GAP_WINDOWS:
             self.assertIn(
                 f"- **info** coverage_gap_unrecorded: "
-                f"{vdt_module._cell(unrecorded_message(rule, label, closed))} "
-                f"[{vdt_module._cell(f'example-boundary {label}')}]",
+                f"{markdown_module._cell(unrecorded_message(rule, label, closed))} "
+                f"[{markdown_module._cell(f'example-boundary {label}')}]",
                 diagnostics,
             )
         assert_markdown_carries_the_json(self, report)
@@ -953,7 +954,7 @@ class GapDivergenceTests(CoverageStoreFixture):
         # The group's first window still carries its case; the second is in none.
         self.assertIn(case, tracking_ids(report))
         self.assertIn(
-            f"coverage_gap_unrecorded: {vdt_module._cell(note['message'])}",
+            f"coverage_gap_unrecorded: {markdown_module._cell(note['message'])}",
             markdown_section(report.to_markdown(), "Diagnostics"),
         )
         assert_markdown_carries_the_json(self, report)
@@ -1037,7 +1038,7 @@ class GapDivergenceTests(CoverageStoreFixture):
         diagnostics = markdown_section(report.to_markdown(), "Diagnostics")
         for item in notes:
             self.assertIn(
-                f"- **info** coverage_gap_contradicted: {vdt_module._cell(item['message'])} "
+                f"- **info** coverage_gap_contradicted: {markdown_module._cell(item['message'])} "
                 f"[{COVERAGE_GAP_RECORD_ID}]",
                 diagnostics,
             )
@@ -1199,7 +1200,7 @@ class GapDivergenceTests(CoverageStoreFixture):
                 # The case stays in the report: nothing disproves the gap.
                 self.assertIn(case, tracking_ids(report))
                 self.assertIn(
-                    f"- **info** coverage_gap_unmatched: {vdt_module._cell(note['message'])} "
+                    f"- **info** coverage_gap_unmatched: {markdown_module._cell(note['message'])} "
                     f"[{COVERAGE_GAP_RECORD_ID}]",
                     markdown_section(report.to_markdown(), "Diagnostics"),
                 )
@@ -1332,7 +1333,7 @@ class GapDivergenceTests(CoverageStoreFixture):
         diagnostics = markdown_section(report.to_markdown(), "Diagnostics")
         for code, message in notes:
             self.assertIn(
-                f"- **info** {code}: {vdt_module._cell(message)} [{COVERAGE_GAP_RECORD_ID}]",
+                f"- **info** {code}: {markdown_module._cell(message)} [{COVERAGE_GAP_RECORD_ID}]",
                 diagnostics,
             )
         assert_markdown_carries_the_json(self, report)
@@ -1372,7 +1373,7 @@ class GapDivergenceTests(CoverageStoreFixture):
         self.assertNotIn("false positive", message)
         self.assertIn(case, tracking_ids(report))
         self.assertIn(
-            f"- **info** coverage_gap_contradicted: {vdt_module._cell(message)} "
+            f"- **info** coverage_gap_contradicted: {markdown_module._cell(message)} "
             f"[{COVERAGE_GAP_RECORD_ID}]",
             markdown_section(report.to_markdown(), "Diagnostics"),
         )
@@ -1426,7 +1427,7 @@ class GapDivergenceTests(CoverageStoreFixture):
                 diagnostics = markdown_section(report.to_markdown(), "Diagnostics")
                 for message in messages:
                     self.assertIn(
-                        f"- **info** coverage_gap_contradicted: {vdt_module._cell(message)} "
+                        f"- **info** coverage_gap_contradicted: {markdown_module._cell(message)} "
                         f"[{COVERAGE_GAP_RECORD_ID}]",
                         diagnostics,
                     )

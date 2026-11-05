@@ -27,6 +27,17 @@ from complyroll.models import CaseStatus, PainRating
 from complyroll.schemas import ReportSchema, SchemaValidationResult
 
 from .evaluations import EvaluationSet
+from .markdown import (
+    write_attestation_section,
+    write_coverage,
+    write_diagnostics_section,
+    write_footer,
+    write_header,
+    write_inputs,
+    write_kev_summary,
+    write_provenance,
+    write_vulnerability_table,
+)
 from .model import (
     EXTENSION_KEY,
     AcceptedVulnerability,
@@ -47,18 +58,7 @@ from .projection import (
     schema_provenance,
     validate_document,
 )
-from .vdt import (
-    _write_attestation_section,
-    _write_coverage,
-    _write_diagnostics_section,
-    _write_footer,
-    _write_header,
-    _write_inputs,
-    _write_kev_summary,
-    _write_provenance,
-    _write_vulnerability_table,
-    compile_record_set_from_artifacts,
-)
+from .vdt import compile_record_set_from_artifacts
 
 _REPORT_NAME = "the Accepted Vulnerability Information report"
 
@@ -241,13 +241,13 @@ def _render_avi_markdown(report: CompiledAviReport) -> str:
     lines: list[str] = []
     write = lines.append
 
-    _write_header(
+    write_header(
         write,
         metadata.options,
         title="Accepted Vulnerability Information Report",
         period=True,
     )
-    _write_provenance(write, metadata)
+    write_provenance(write, metadata)
 
     write("## Summary")
     write("")
@@ -257,13 +257,13 @@ def _render_avi_markdown(report: CompiledAviReport) -> str:
     write(f"| Excluded by report period | {metadata.excluded_by_period} |")
     write(f"| Active, not reported here | {report.active_not_reported} |")
     write(f"| Overdue | {sum(1 for item in records if item.is_overdue)} |")
-    _write_kev_summary(write, records, metadata.options)
+    write_kev_summary(write, records, metadata.options)
     for rating in PainRating:
         count = sum(1 for item in records if item.current_rating is rating)
         write(f"| Current PAIN {rating.name} | {count} |")
     write("")
 
-    _write_vulnerability_table(
+    write_vulnerability_table(
         write,
         records,
         heading="Accepted vulnerabilities",
@@ -272,11 +272,11 @@ def _render_avi_markdown(report: CompiledAviReport) -> str:
         as_of=metadata.options.as_of,
         rationales=rationales,
     )
-    _write_attestation_section(write, records, metadata)
-    _write_inputs(write, metadata)
-    _write_coverage(write, metadata)
-    _write_diagnostics_section(write, report.diagnostics)
-    _write_footer(write)
+    write_attestation_section(write, records, metadata)
+    write_inputs(write, metadata)
+    write_coverage(write, metadata)
+    write_diagnostics_section(write, report.diagnostics)
+    write_footer(write)
     return "\n".join(lines) + "\n"
 
 

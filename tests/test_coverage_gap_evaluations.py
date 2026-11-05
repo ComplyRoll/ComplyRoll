@@ -61,6 +61,7 @@ from complyroll.reports import (
     project_vdt,
 )
 from complyroll.reports import checks as checks_module
+from complyroll.reports import markdown as markdown_module
 from complyroll.reports import vdt as vdt_module
 from complyroll.reports.evaluations import EvaluationMatch
 from complyroll.reports.gaps import (
@@ -864,7 +865,7 @@ class ReservedSourceTypeTableTests(unittest.TestCase):
                 )
                 assert diagnostic is not None
                 self.assertIn(f"; a {kind} is detected when", diagnostic.message)
-                sentence = vdt_module._system_detection_sentence({source_type})
+                sentence = markdown_module._system_detection_sentence({source_type})
                 self.assertIn(f"or, for a {kind}, from the instant", sentence)
                 self.assertEqual(sentence.count(", for a "), 1)
 

@@ -27,6 +27,17 @@ from complyroll.schemas import ReportSchema, SchemaValidationResult
 
 from .avi import _accepted_info
 from .evaluations import EvaluationSet
+from .markdown import (
+    write_attestation_section,
+    write_coverage,
+    write_diagnostics_section,
+    write_footer,
+    write_header,
+    write_inputs,
+    write_kev_summary,
+    write_provenance,
+    write_vulnerability_table,
+)
 from .model import (
     EXTENSION_KEY,
     AcceptedVulnerability,
@@ -45,18 +56,7 @@ from .projection import (
     schema_provenance,
     validate_document,
 )
-from .vdt import (
-    _write_attestation_section,
-    _write_coverage,
-    _write_diagnostics_section,
-    _write_footer,
-    _write_header,
-    _write_inputs,
-    _write_kev_summary,
-    _write_provenance,
-    _write_vulnerability_table,
-    compile_record_set_from_artifacts,
-)
+from .vdt import compile_record_set_from_artifacts
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,8 +184,8 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
     lines: list[str] = []
     write = lines.append
 
-    _write_header(write, metadata.options, title="Historical VER Activity Report", period=False)
-    _write_provenance(write, metadata)
+    write_header(write, metadata.options, title="Historical VER Activity Report", period=False)
+    write_provenance(write, metadata)
 
     write("## Summary")
     write("")
@@ -200,13 +200,13 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
     write(f"| Evaluated | {sum(1 for item in population if item.is_evaluated)} |")
     write(f"| Not yet evaluated | {sum(1 for item in population if not item.is_evaluated)} |")
     write(f"| Overdue | {sum(1 for item in population if item.is_overdue)} |")
-    _write_kev_summary(write, population, metadata.options)
+    write_kev_summary(write, population, metadata.options)
     for rating in PainRating:
         count = sum(1 for item in population if item.current_rating is rating)
         write(f"| Current PAIN {rating.name} | {count} |")
     write("")
 
-    _write_vulnerability_table(
+    write_vulnerability_table(
         write,
         active,
         heading="Active vulnerabilities",
@@ -214,7 +214,7 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
         details_heading="Active vulnerability details",
         as_of=metadata.options.as_of,
     )
-    _write_vulnerability_table(
+    write_vulnerability_table(
         write,
         accepted,
         heading="Accepted vulnerabilities",
@@ -223,11 +223,11 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
         as_of=metadata.options.as_of,
         rationales=rationales,
     )
-    _write_attestation_section(write, _population(report), metadata)
-    _write_inputs(write, metadata)
-    _write_coverage(write, metadata)
-    _write_diagnostics_section(write, report.diagnostics)
-    _write_footer(write)
+    write_attestation_section(write, _population(report), metadata)
+    write_inputs(write, metadata)
+    write_coverage(write, metadata)
+    write_diagnostics_section(write, report.diagnostics)
+    write_footer(write)
     return "\n".join(lines) + "\n"
 
 

@@ -854,6 +854,12 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def coverage_label(ref: ResourceRef) -> str:
+    """Return a resource as `type:id`; a type never holds a colon, so it reads one way."""
+
+    return f"{ref.resource_type}:{ref.resource_id}"
+
+
 __all__ = [
     "COVERAGE_BASIS",
     "CYCLONEDX_SCOPE_RECORD_ID",
@@ -881,6 +887,7 @@ __all__ = [
     "ResourceCoverage",
     "RuleSummary",
     "UnregisteredResource",
+    "coverage_label",
     "derive_coverage",
     "entry_clocks",
     "file_evidence",

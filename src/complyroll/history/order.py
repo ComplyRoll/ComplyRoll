@@ -8,8 +8,8 @@
 The history writers refuse what a report from the store would refuse, so a writer
 resolves a case's detection time exactly as the compiler does: from the current open
 observation group (never from the case's links, which lag the group until `cases
-correlate` runs), through `reports.vdt.resolve_detection_time`, and states the result
-with `reports.vdt.evaluation_order_diagnostic`. The lines a writer prints are therefore
+correlate` runs), through `reports.checks.resolve_detection_time`, and states the result
+with `reports.checks.evaluation_order_diagnostic`. The lines a writer prints are therefore
 the lines `report vdt --db` prints for the same record (ADR 0007 and ADR 0008
 amendments 2026-10-14). `store verify` reads the same resolution back as an audit fault,
 for an inversion that arrived around the writers, such as through `ingest`.
@@ -32,17 +32,13 @@ from complyroll.policy import (
     load_bundled_rule_source_snapshot,
     select_policy,
 )
-from complyroll.reports.replay import case_evaluations
-from complyroll.reports.vdt import (
+from complyroll.reports.checks import (
     CLOCK_OUT_OF_RANGE,
     TRACKING_ID_COLLISION,
-    DetectionAttestation,
-    ReportDiagnostic,
     clock_problem,
     detection_clock,
     detection_clock_message,
     evaluation_clock_message,
-    evaluation_location,
     evaluation_order_diagnostic,
     observation_clock_message,
     published_tracking_id,
@@ -50,6 +46,8 @@ from complyroll.reports.vdt import (
     tracking_id_collision_message,
     tracking_id_collisions,
 )
+from complyroll.reports.model import DetectionAttestation, ReportDiagnostic, evaluation_location
+from complyroll.reports.replay import case_evaluations
 
 from .fold import (
     CaseState,
@@ -204,7 +202,7 @@ def tracking_id_collision_faults(repository: EventRepository) -> tuple[HistoryFa
     not read `CaseState.effective_tracking_id`, and a stale case has no group to claim with. A
     correlation id is 64 bits, so one file can hold two groups under one id; each still claims,
     which is why this walks the groups and not `current_groups`, a mapping that keeps one of them.
-    `reports.vdt.tracking_id_collisions` decides and words it for both sides. A fault
+    `reports.checks.tracking_id_collisions` decides and words it for both sides. A fault
     sits at the latest event recording an override among its two claimants, else at the latest
     observation among their observations: the event that brought it, until a later scan of either
     moves it. The rule reads no clock and no report option, so the fault holds at every as-of and
@@ -242,7 +240,7 @@ def tracking_id_collision_faults(repository: EventRepository) -> tuple[HistoryFa
 def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
     """Return every clock in history some reader refuses as `clock_out_of_range`, as faults.
 
-    One predicate, `reports.vdt.clock_problem`, decides both sides. An observation whose
+    One predicate, `reports.checks.clock_problem`, decides both sides. An observation whose
     source time has no UTC instant is a fault at its own sequence: the report, coverage and
     `cases correlate` each convert it. A group's detection time, resolved with the cases'
     recorded attestations as a report from the store resolves it, is a fault when its

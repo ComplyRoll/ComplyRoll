@@ -72,7 +72,8 @@ from complyroll.reports import (
     load_evaluations,
     load_inventory,
 )
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import markdown as markdown_module
+from complyroll.reports import records as records_module
 from complyroll.reports.coverage import derive_coverage
 from complyroll.reports.gaps import (
     COVERAGE_GAP_RECORD_ID,
@@ -128,7 +129,7 @@ GAP_WINDOWS = (
 )
 #: The window keys a gap-unaware run must never carry.
 WINDOW_KEYS = {"recorded", "trackingId"}
-#: The sentences `_write_attestation_section` prints when no attestation was needed.
+#: The sentences `write_attestation_section` prints when no attestation was needed.
 ARTIFACT_ONLY_SENTENCE = (
     "Every reported vulnerability carried a detection time from its source artifact. "
     "No attestation was needed."
@@ -358,7 +359,7 @@ class GapRecordSetTests(unittest.TestCase):
             calls.append(listed)
             return derive_coverage(listed, *args)
 
-        with mock.patch.object(vdt_module, "derive_coverage", side_effect=spy):
+        with mock.patch.object(records_module, "derive_coverage", side_effect=spy):
             compile_record_set_from_artifacts(list(ARTIFACTS), options=gap_options())
 
         self.assertEqual(len(calls), 1)
@@ -534,7 +535,7 @@ class GapWindowKeyTests(unittest.TestCase):
 
         block = coverage.to_dict(gap_records=recorded)
         lines: list[str] = []
-        vdt_module._write_coverage(
+        markdown_module.write_coverage(
             lines.append, replace(self.flagged.metadata, coverage_gap_records=recorded)
         )
 

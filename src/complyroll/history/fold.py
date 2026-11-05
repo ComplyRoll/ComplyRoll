@@ -58,9 +58,9 @@ from complyroll.models import (
     ObservationClockError,
     PainRating,
 )
+from complyroll.reports.checks import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
-from complyroll.reports.vdt import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 
@@ -680,7 +680,7 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     One more fault is checked under the same conditions, for history an earlier build wrote:
 
     - `clock_out_of_range`: a clock some reader cannot compute with, by
-      `reports.vdt.clock_problem`, the predicate the readers refuse it with. It is an
+      `reports.checks.clock_problem`, the predicate the readers refuse it with. It is an
       observation whose source time has no UTC instant (every reader that converts it
       refuses it), at the observation, or a group's detection time whose VER-TFR-EVU
       deadline overflows under either class, at the earliest observation or the

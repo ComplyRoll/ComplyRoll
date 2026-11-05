@@ -60,7 +60,8 @@ from complyroll.reports.kev import (
     kev_clock,
     start_instant,
 )
-from complyroll.reports.vdt import _kev_clause, _kev_line, _kev_rule
+from complyroll.reports.markdown import _kev_line
+from complyroll.reports.records import _kev_clause, _kev_rule
 
 # *--- Fixtures ---*
 

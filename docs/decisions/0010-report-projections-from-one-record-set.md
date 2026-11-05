@@ -209,3 +209,75 @@ No JSON byte moved and no detail or AVI golden moved: no golden compiles an acce
 outside its period. Three historical Markdown twins moved in their Summary rows alone
 (`historical-fixtures`, `historical-kev`, `historical-coverage-gaps`); `historical-failed`
 holds no accepted record and is unchanged.
+
+## Amendment 2026-11-04: the compiler module is split, with no behavior change
+
+Cleanup item CL-72, decided by the maintainer. `reports/vdt.py` had grown to 3795 lines holding the
+record compile, what the reports share and the detail report itself, so `avi` and
+`historical` imported its private names and `history/` imported a report module. Decision 1 stands
+as written: one record set, three projections. Only the modules they live in changed.
+
+| Module | Holds | Names |
+|---|---|---|
+| `reports.model` | constants, diagnostics, options and the compiled record types | `DISCLAIMER`, `EXTENSION_KEY`, `GENERATOR_NAME`, `FINAL_DISPOSITIONS`, `ACTIVE_STATUSES`, `ReportDiagnostic`, `REPORT_DIAGNOSTIC_CODES`, `ReportCompileError`, `ReportOptions`, `DetectionAttestation`, `CompiledDeadline`, `CompiledArtifact`, `CompiledDetectionFailure`, `CompiledVulnerability`, `AcceptedVulnerability`, `ReportMetadata`, `CompiledReport`, `CompiledRecordSet`, `evaluation_location`, `iso`, `require_aware`, `_require_absolute_http_uri` |
+| `reports.checks` | clock, order, tracking id and record-kind rules shared with `history/` | `_EVALUATION_RULE`, `_RESPONSE_RULE`, `_ACCEPTANCE_RULE`, `_SYSTEM_RECORD_KINDS`, `system_record_kind`, `CLOCK_OUT_OF_RANGE`, `EvaluatedClock`, `clock_problem`, `_clock_deadlines`, `detection_clock_message`, `evaluation_clock_message`, `observation_clock_message`, `detection_clock`, `resolve_detection_time`, `_ORDER_REMEDIES`, `_SYSTEM_ORDER_REMEDIES`, `evaluation_order_diagnostic`, `_is_system_group`, `TRACKING_ID_COLLISION`, `TrackingIdClaim`, `ClaimT`, `published_tracking_id`, `tracking_id_collisions`, `tracking_id_collision_message` |
+| `reports.records` | the record compile: ingest, evaluation match, KEV, coverage, deadlines | `_KEV_RULE`, `_CVE_PREFIX`, `compile_record_set_from_artifacts`, `compile_record_set`, `_artifact_order`, `_diagnostic_order`, `_unresolved_order`, `_Reading`, `_ingest_all`, `_collect_diagnostics`, `_warn_duplicates`, `_record_detection_failure`, `_ElectedReading`, `_elect_reading`, `_require_artifact`, `_match_evaluations`, `_matches`, `_detection_failure`, `_ordered_detection_failures`, `_is_numeric_version`, `_numeric_version`, `_require_unique_tracking_ids`, `_require_kev_catalog_by_as_of`, `_kev_rule`, `_kev_diagnostics`, `_kev_location`, `derive_report_coverage`, `_coverage`, `_selects`, `_coverage_belongs`, `_window_gap_ids`, `_coverage_gap_divergences`, `_disproving_evidence`, `_underived_gap`, `_gap_window`, `_gap_order`, `coverage_diagnostics`, `_records_carry`, `_build_record`, `_canonical_reductions`, `_describe`, `_compute_deadlines`, `_compiled`, `_kev_deadline`, `_kev_clause`, `_explanation`, `_optional_adoption_notice`, `_obtain_dates`, `_reachability`, `_exploitability`, `_parser_versions` |
+| `reports.projection` | period, acceptance, extension block and schema check helpers the report projections share | `attested_instant`, `attestation_groups`, `report_period`, `require_acceptance_rationales`, `_acceptance_rationale`, `accepted_vulnerability`, `period_exclusion_reason`, `schema_provenance`, `validate_document`, `common_extension`, `report_period_block`, `_attestation_block` |
+| `reports.markdown` | the section writers the three Markdown twins share | `_RECORDED_WINDOW_NOTE`, `write_kev_summary`, `write_header`, `write_provenance`, `_vulnerability_row`, `write_vulnerability_table`, `write_attestation_section`, `_system_detection_sentence`, `write_inputs`, `_write_detection_failures`, `write_coverage`, `_coverage_resource_row`, `_write_coverage_evidence`, `_coverage_evidence`, `_coverage_ref`, `_drift_label`, `_optional_iso`, `write_diagnostics_section`, `write_footer`, `_disposition_label`, `_write_detail`, `_KEV_TAILS`, `_kev_line`, `_write_observation_ids`, `_flag`, `_cell` |
+| `reports.vdt` | the Vulnerability Detail Report and nothing else | `CompiledVdtReport`, `compile_vdt_report`, `compile_records`, `project_vdt`, `_select_for_period`, `_keeps_open_kev_work`, `_build_document`, `_render_markdown` |
+
+`coverage_label` joined `reports.coverage`, the one thing that would otherwise tie `markdown` to
+`records`. The coverage group stays in `reports.records` because one patch of `select_policy` has to
+cover every reader of it in the compile, and `history/` could not be free of the pipeline anyway:
+`fold` and `order` read `reports.replay`, which imports it. What `history/` read from `reports.vdt`
+now comes from `model`, `checks` and two names of `records`. `model` and `checks` import nothing
+from `records`, `projection`, `markdown` or `vdt`. Moving them below `reports/` would also take
+`coverage`, `evaluations`, `gaps`, `inventory` and `kev`. That move is not scheduled.
+
+No behavior moved. Each definition was cut by script and compared by AST with the module before the
+split: identical after the rename table below, apart from three docstrings and one comment that
+named or pointed at something that moved, with every other string constant byte for byte and every
+other comment token for token. No golden, fixture or example changed.
+
+A name became public only where another `src` module imports it, so 23 names changed spelling. Every
+other name kept its spelling, and a name only tests reach stayed private where it landed.
+
+| Before the split | Now |
+|---|---|
+| `_accepted` | `reports.projection.accepted_vulnerability` |
+| `_accepted_info` | `reports.avi.accepted_info` |
+| `_attestation_groups` | `reports.projection.attestation_groups` |
+| `_attested_instant` | `reports.projection.attested_instant` |
+| `_common_extension` | `reports.projection.common_extension` |
+| `_coverage_label` | `reports.coverage.coverage_label` |
+| `_iso` | `reports.model.iso` |
+| `_period_exclusion_reason` | `reports.projection.period_exclusion_reason` |
+| `_report_period` | `reports.projection.report_period` |
+| `_report_period_block` | `reports.projection.report_period_block` |
+| `_require_acceptance_rationales` | `reports.projection.require_acceptance_rationales` |
+| `_require_aware` | `reports.model.require_aware` |
+| `_schema_provenance` | `reports.projection.schema_provenance` |
+| `_validate_document` | `reports.projection.validate_document` |
+| `_write_attestation_section` | `reports.markdown.write_attestation_section` |
+| `_write_coverage` | `reports.markdown.write_coverage` |
+| `_write_diagnostics_section` | `reports.markdown.write_diagnostics_section` |
+| `_write_footer` | `reports.markdown.write_footer` |
+| `_write_header` | `reports.markdown.write_header` |
+| `_write_inputs` | `reports.markdown.write_inputs` |
+| `_write_kev_summary` | `reports.markdown.write_kev_summary` |
+| `_write_provenance` | `reports.markdown.write_provenance` |
+| `_write_vulnerability_table` | `reports.markdown.write_vulnerability_table` |
+
+`_accepted` is not `accepted` because `project_historical` binds a local of that name and reads the
+function in the same scope.
+
+`complyroll.reports` exports what it did, each name the same object. `reports.vdt.__all__` is
+`CompiledVdtReport`, `compile_records`, `compile_vdt_report` and `project_vdt`, and nothing is
+re-exported for what left. `vdt.py` imports only what it reads, so a moved name it still reads, such
+as `ReportOptions`, can still be imported from it, and that is no promise. A name it does not read
+is gone, so a test still patching `select_policy` on that module raises `AttributeError` rather than
+rebinding a name nothing reads there.
+
+ADRs 0008, 0012, 0013, 0014 and 0015 and the sections above cite `reports.vdt`, `vdt.py` lines and
+the old spellings as they stood when written, and they stay unchanged. These two tables are where a
+reader following one of those citations lands.

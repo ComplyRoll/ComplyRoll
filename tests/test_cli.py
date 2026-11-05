@@ -58,7 +58,7 @@ from complyroll.history import (
     record_ingest,
 )
 from complyroll.models import Observation
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import records as records_module
 from complyroll.store import MAX_EVENT_JSON_BYTES, EventRecord, NewEvent, SQLiteEventStore
 from complyroll.terminal import terminal_text
 
@@ -1457,12 +1457,12 @@ class RecordFailedImportsTests(unittest.TestCase):
     def test_only_the_flag_turns_recorded_failures_into_exit_3(self) -> None:
         # Until `ingest` records failures into a store, the only report that carries them
         # without the flag is this one: the compile is made to record them regardless.
-        real = vdt_module._ingest_all
+        real = records_module._ingest_all
 
         def recording(*args: Any, **kwargs: Any) -> Any:
             return real(*args, **{**kwargs, "record_failed_imports": True})
 
-        with patch.object(vdt_module, "_ingest_all", recording):
+        with patch.object(records_module, "_ingest_all", recording):
             code, out, _ = run(with_failed_artifacts(REPORT_ARGUMENTS))
 
         self.assertEqual(code, 0)
@@ -7946,7 +7946,7 @@ CLI_DRIFT_WARNING = (
 def stripped_policy(*rule_ids: str) -> Callable[..., Any]:
     """Return a `select_policy` that drops the named rules from what it selects."""
 
-    real = vdt_module.select_policy
+    real = records_module.select_policy
 
     def select(snapshot: Any, profile: Any) -> Any:
         policy = real(snapshot, profile)
@@ -8124,7 +8124,7 @@ class InventoryReportCommandTests(unittest.TestCase):
         for kind, argv in self.COMMANDS:
             with (
                 self.subTest(report=kind),
-                patch.object(vdt_module, "select_policy", stripped_policy("VDR-TFR-PSD")),
+                patch.object(records_module, "select_policy", stripped_policy("VDR-TFR-PSD")),
             ):
                 json_path = self.workspace / "report.json"
 
@@ -8147,7 +8147,7 @@ class InventoryReportCommandTests(unittest.TestCase):
             with (
                 self.subTest(report=kind),
                 patch.object(
-                    vdt_module,
+                    records_module,
                     "select_policy",
                     stripped_policy(
                         "VDR-TFR-MVX", "VDR-TFR-NMV", "VDR-TFR-PCD", "VDR-TFR-PDD", "VDR-TFR-PSD"

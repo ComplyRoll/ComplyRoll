@@ -94,7 +94,8 @@ from complyroll.reports import (
     compile_record_set_from_artifacts,
     project_avi,
 )
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import checks as checks_module
+from complyroll.reports import records as records_module
 from complyroll.reports.evaluations import record_label
 from complyroll.reports.replay import compile_record_set_from_history
 from complyroll.store import NewEvent
@@ -360,7 +361,7 @@ class StatelessRecordLabelTests(unittest.TestCase):
                 artifacts=(),
                 observations=observations,
                 ingest_diagnostics=(),
-                evaluations_by_tracking_id=vdt_module._match_evaluations(
+                evaluations_by_tracking_id=records_module._match_evaluations(
                     group_open_observations(observations), evaluations
                 ),
                 attestation=DetectionAttestation(default=DETECTED_AT),
@@ -955,7 +956,7 @@ class PersistedRecordLabelTests(HistoryOrderFixture):
             with self.subTest(length=len(observation_id)):
                 self.assertIn(
                     f"observation {observation_id} has source time",
-                    vdt_module.observation_clock_message(
+                    checks_module.observation_clock_message(
                         observation_id,
                         datetime(1, 1, 1, tzinfo=UTC),
                         "has no UTC instant",

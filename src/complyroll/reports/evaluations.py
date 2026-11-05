@@ -120,7 +120,7 @@ class EvaluationMatch:
     def ambiguity_remedy(self, candidates: Sequence[MatchCandidate]) -> str:
         """Name the match keys this entry leaves out, and each candidate's value of them.
 
-        `reports.vdt` and `history.writers` both end an ambiguity with it, so the two paths
+        `reports.records` and `history.writers` both end an ambiguity with it, so the two paths
         print one text. Records and cases are keyed by the full triple, so an entry stating
         all three keys selects at most one and at least one key is always missing here. The
         candidates are named in tracking id order, the first `MAX_NAMED_CANDIDATES` of them
@@ -143,9 +143,9 @@ class EvaluationMatch:
     def context_key_required(self, tracking_id: str, *, kind: str) -> str:
         """Explain why this match, short of the full triple, cannot select a system record.
 
-        `reports.vdt` and `history.writers` both refuse it with this text, so the stateless
+        `reports.records` and `history.writers` both refuse it with this text, so the stateless
         and persisted paths name the refusal the same way (ADR 0014 Decision 10, ADR 0015
-        Decision 23). `kind` names the record, from `reports.vdt.system_record_kind` of its
+        Decision 23). `kind` names the record, from `reports.checks.system_record_kind` of its
         source type. The remedy names every key the match leaves out, "contextKey",
         "sourceType", or "contextKey and sourceType"; the callers refuse only a match that
         leaves one out.

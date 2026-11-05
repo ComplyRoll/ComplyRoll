@@ -55,18 +55,13 @@ from complyroll.events import (
 )
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.policy import CertificationProfile
+from complyroll.reports.checks import clock_problem, observation_clock_message, system_record_kind
 from complyroll.reports.coverage import CoverageResult
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, record_label
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
-from complyroll.reports.vdt import (
-    ReportDiagnostic,
-    clock_problem,
-    coverage_diagnostics,
-    derive_report_coverage,
-    observation_clock_message,
-    system_record_kind,
-)
+from complyroll.reports.model import ReportDiagnostic
+from complyroll.reports.records import coverage_diagnostics, derive_report_coverage
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 
@@ -1243,7 +1238,7 @@ def _match_cases(
             )
             continue
         case = candidates[0]
-        # The same refusal, in the same order, as `reports.vdt._match_evaluations`.
+        # The same refusal, in the same order, as `reports.records._match_evaluations`.
         if case.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX) and (
             entry.match.context_key is None or entry.match.source_type is None
         ):
@@ -1493,7 +1488,7 @@ def _any_link_is_timestamped(records: Sequence[EventRecord]) -> bool:
 
 
 def _matches(entry: EvaluationInput, case: CaseState) -> bool:
-    """Select a case exactly as `reports.vdt._matches` selects a group."""
+    """Select a case exactly as `reports.records._matches` selects a group."""
 
     if entry.match.source_record_id != case.source_record_id:
         return False

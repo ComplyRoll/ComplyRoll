@@ -34,13 +34,7 @@ from .kev import (
     load_kev_catalog,
     parse_kev_catalog,
 )
-from .replay import (
-    compile_avi_report_from_history,
-    compile_historical_report_from_history,
-    compile_record_set_from_history,
-    compile_vdt_report_from_history,
-)
-from .vdt import (
+from .model import (
     ACTIVE_STATUSES,
     DISCLAIMER,
     EXTENSION_KEY,
@@ -52,19 +46,21 @@ from .vdt import (
     CompiledDetectionFailure,
     CompiledRecordSet,
     CompiledReport,
-    CompiledVdtReport,
     CompiledVulnerability,
     DetectionAttestation,
     ReportCompileError,
     ReportDiagnostic,
     ReportMetadata,
     ReportOptions,
-    compile_record_set,
-    compile_record_set_from_artifacts,
-    compile_records,
-    compile_vdt_report,
-    project_vdt,
 )
+from .records import compile_record_set, compile_record_set_from_artifacts
+from .replay import (
+    compile_avi_report_from_history,
+    compile_historical_report_from_history,
+    compile_record_set_from_history,
+    compile_vdt_report_from_history,
+)
+from .vdt import CompiledVdtReport, compile_records, compile_vdt_report, project_vdt
 
 __all__ = [
     "ACTIVE_STATUSES",

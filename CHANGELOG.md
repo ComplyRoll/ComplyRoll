@@ -1010,6 +1010,16 @@ All notable project changes will be documented here.
   exits 1 with `error_diagnostic_unpublished` and writes nothing. No current input reaches the
   refusal, because every ERROR already stops the compile, so no observable behavior changes (ADR
   0017 Decision 2).
+- `complyroll.reports.vdt` is split into `reports.model`, `reports.checks`, `reports.records`,
+  `reports.projection` and `reports.markdown`, so `avi` and `historical` stop importing private
+  names and `history/` stops importing the VDT module directly (CL-72). No report, store or CLI
+  behavior changes and no golden moves: every moved definition compares equal by AST with the module
+  before the split, after a rename table, with every string other than a docstring byte for byte.
+  `complyroll.reports` exports what it did, each name the same object. `reports.vdt.__all__` is now
+  `CompiledVdtReport`, `compile_records`, `compile_vdt_report` and `project_vdt`. A direct
+  `from complyroll.reports.vdt import X` of any other name breaks if `vdt.py` no longer reads `X`,
+  and works only by accident if it does. 23 private helpers took public names; the package is
+  pre-release, so there is no shim. ADR 0010 amendment 2026-11-04 maps old names to new homes.
 
 ### Removed
 

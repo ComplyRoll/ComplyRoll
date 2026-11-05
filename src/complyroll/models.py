@@ -399,7 +399,7 @@ class Observation:
             _require_text(self.context_key, "context_key")
             # The identity recipe converts this clock, whose OverflowError is no ValueError and
             # passed every reader's refusal. An artifact observation's identity does not name
-            # its clock, so that clock is left for `reports.vdt.clock_problem` to name.
+            # its clock, so that clock is left for `reports.checks.clock_problem` to name.
             try:
                 self.observed_at.astimezone(UTC)
             except OverflowError as exc:

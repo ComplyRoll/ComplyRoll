@@ -102,7 +102,7 @@ from complyroll.reports import (
     load_kev_catalog,
     parse_inventory,
 )
-from complyroll.reports import vdt as vdt_module
+from complyroll.reports import records as records_module
 from complyroll.store import SQLiteEventStore
 
 # Versions after the shipped SARIF parser, for a fixture re-read under another version.
@@ -2610,7 +2610,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         self.assertEqual((history.superseded, history.superseded_failures), ((), ()))
 
         replayed = self.replay()
-        with mock.patch.object(vdt_module, "ingest_stig_artifact", failed):
+        with mock.patch.object(records_module, "ingest_stig_artifact", failed):
             stateless = self.flagged((INVOCATION,))
 
         # The same system record on both paths, at the scanner's clock.
@@ -2705,7 +2705,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         )
 
         replayed = self.replay()
-        with mock.patch.object(vdt_module, "ingest_stig_artifact", read_by_version_2):
+        with mock.patch.object(records_module, "ingest_stig_artifact", read_by_version_2):
             stateless = self.flagged((INVOCATION,))
 
         for report in (replayed, stateless):
@@ -2936,7 +2936,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
                 ingest_stig_artifact(path, ingested_at=ingested_at), "complyroll.other", "1"
             )
 
-        with mock.patch.object(vdt_module, "ingest_stig_artifact", read_by_other):
+        with mock.patch.object(records_module, "ingest_stig_artifact", read_by_other):
             stateless = self.flagged((INVOCATION,), as_of=self.AS_OF)
 
         (entry,) = stateless.document["x-complyroll"]["detectionFailures"]
@@ -3011,7 +3011,7 @@ class FailedImportDivergenceTests(FailureStoreFixture):
         def read_by_version_2(path: Path, *, ingested_at: datetime) -> IngestResult:
             return execution_failure
 
-        with mock.patch.object(vdt_module, "ingest_stig_artifact", read_by_version_2):
+        with mock.patch.object(records_module, "ingest_stig_artifact", read_by_version_2):
             stateless = self.flagged((INVOCATION,), as_of=INGESTED_AT)
 
         (entry,) = stateless.document["x-complyroll"]["detectionFailures"]

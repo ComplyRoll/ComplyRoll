@@ -62,8 +62,9 @@ from complyroll.reports import (
     project_historical,
     project_vdt,
 )
-from complyroll.reports import vdt as vdt_module
-from complyroll.reports.vdt import _describe
+from complyroll.reports import markdown as markdown_module
+from complyroll.reports import records as records_module
+from complyroll.reports.records import _describe
 from complyroll.schemas import ReportSchema, validate_bundled_report
 
 MIXED_TIMESTAMP_XCCDF = """<?xml version="1.0" encoding="UTF-8"?>
@@ -438,7 +439,7 @@ def markdown_subsection(section: str, heading: str) -> str:
 def coverage_label(item: Mapping[str, object]) -> str:
     """Return the Markdown cell a resource reference prints as: `type:id`, cell-escaped."""
 
-    return vdt_module._cell(f"{item['resourceType']}:{item['resourceId']}")
+    return markdown_module._cell(f"{item['resourceType']}:{item['resourceId']}")
 
 
 def coverage_instant(value: object) -> str:
@@ -455,7 +456,7 @@ def coverage_evidence(test: unittest.TestCase, evidence: object, cell: str, wher
         return
     assert isinstance(evidence, dict)
     if evidence["kind"] == "attestation":
-        test.assertIn(f"attested: {vdt_module._cell(evidence['reference'])}", cell, where)
+        test.assertIn(f"attested: {markdown_module._cell(evidence['reference'])}", cell, where)
     else:
         test.assertIn(
             f"observation {evidence['observationId']} ({evidence['disposition']})", cell, where
@@ -525,8 +526,8 @@ def assert_coverage_markdown(
                 "attested" if item["attested"] else "machine",
                 ", ".join(coverage_label(alias) for alias in item["aliases"]) or "n/a",
                 {True: "yes", False: "no", None: "n/a"}.get(drift, str(drift)),
-                vdt_module._cell(item["sampleGroup"] or "n/a"),
-                vdt_module._cell(item["job"] or "n/a"),
+                markdown_module._cell(item["sampleGroup"] or "n/a"),
+                markdown_module._cell(item["job"] or "n/a"),
                 item["expectedSince"],
                 coverage_instant(item["decommissionedAt"]),
                 coverage_instant(item["lastExamined"]),
@@ -592,7 +593,7 @@ def assert_coverage_markdown(
                 cells[9:],
                 (
                     "yes" if window["recorded"] else "no",
-                    vdt_module._cell(window["trackingId"] or "n/a"),
+                    markdown_module._cell(window["trackingId"] or "n/a"),
                 ),
                 f"window {window['contextKey']} record",
             )
@@ -600,7 +601,7 @@ def assert_coverage_markdown(
             cells[:7],
             (
                 window["ruleId"],
-                vdt_module._cell(window["contextKey"]),
+                markdown_module._cell(window["contextKey"]),
                 window["force"],
                 window["anchor"],
                 window["anchorAt"],
@@ -3281,7 +3282,7 @@ class DuplicateBytesOrderTests(unittest.TestCase):
             assert result.artifact is not None
             return replace(result, artifact=replace(result.artifact, name=renames[path.name]))
 
-        with mock.patch.object(vdt_module, "ingest_stig_artifact", renamed):
+        with mock.patch.object(records_module, "ingest_stig_artifact", renamed):
             overlong = self.compile_named(("b.xml", "a.xml"))
         cases = (
             (

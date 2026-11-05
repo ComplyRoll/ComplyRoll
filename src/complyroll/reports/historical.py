@@ -25,9 +25,20 @@ from typing import Any
 from complyroll.models import CaseStatus, PainRating
 from complyroll.schemas import ReportSchema, SchemaValidationResult
 
-from .avi import _accepted_info
+from .avi import accepted_info
 from .evaluations import EvaluationSet
-from .vdt import (
+from .markdown import (
+    write_attestation_section,
+    write_coverage,
+    write_diagnostics_section,
+    write_footer,
+    write_header,
+    write_inputs,
+    write_kev_summary,
+    write_provenance,
+    write_vulnerability_table,
+)
+from .model import (
     EXTENSION_KEY,
     AcceptedVulnerability,
     CompiledRecordSet,
@@ -35,24 +46,17 @@ from .vdt import (
     ReportDiagnostic,
     ReportMetadata,
     ReportOptions,
-    _accepted,
-    _attested_instant,
-    _common_extension,
-    _iso,
-    _require_acceptance_rationales,
-    _schema_provenance,
-    _validate_document,
-    _write_attestation_section,
-    _write_coverage,
-    _write_diagnostics_section,
-    _write_footer,
-    _write_header,
-    _write_inputs,
-    _write_kev_summary,
-    _write_provenance,
-    _write_vulnerability_table,
-    compile_record_set_from_artifacts,
+    iso,
 )
+from .projection import (
+    accepted_vulnerability,
+    attested_instant,
+    common_extension,
+    require_acceptance_rationales,
+    schema_provenance,
+    validate_document,
+)
+from .records import compile_record_set_from_artifacts
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,10 +117,12 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
     if not isinstance(record_set, CompiledRecordSet):
         raise TypeError("record_set must be a CompiledRecordSet")
 
-    _require_acceptance_rationales(record_set.records)
+    require_acceptance_rationales(record_set.records)
     records = record_set.records
     active = tuple(item for item in records if item.status is not CaseStatus.ACCEPTED)
-    accepted = tuple(_accepted(item) for item in records if item.status is CaseStatus.ACCEPTED)
+    accepted = tuple(
+        accepted_vulnerability(item) for item in records if item.status is CaseStatus.ACCEPTED
+    )
     diagnostics = tuple(record_set.diagnostics)
     attested = tuple(
         sorted(item.tracking_id for item in records if item.detected_at_source == "attestation")
@@ -126,19 +132,19 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
         options=record_set.options,
         artifacts=record_set.artifacts,
         rules_provenance=record_set.rules_provenance,
-        schema_provenance=_schema_provenance(ReportSchema.HISTORICAL_ACTIVITY),
+        schema_provenance=schema_provenance(ReportSchema.HISTORICAL_ACTIVITY),
         generator_version=record_set.generator_version,
         parser_versions=record_set.parser_versions,
         attestation_applied_to=attested,
         excluded_by_period=0,
-        attestation_detected_at=_attested_instant(records),
+        attestation_detected_at=attested_instant(records),
         detection_failures=record_set.detection_failures,
         coverage=record_set.coverage,
         coverage_gaps=record_set.coverage_gaps,
         coverage_gap_records=record_set.coverage_gap_records,
     )
     document = _build_historical_document(records, active, accepted, metadata, diagnostics)
-    validation = _validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)
+    validation = validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)
     return CompiledHistoricalReport(
         document=document,
         active=active,
@@ -161,10 +167,10 @@ def _build_historical_document(
     options = metadata.options
     return {
         "certificationPackageOverviewUri": options.package_uri,
-        "generatedAt": _iso(options.as_of),
+        "generatedAt": iso(options.as_of),
         "activeVulnerabilities": [record.to_official_dict() for record in active],
-        "acceptedVulnerabilities": [_accepted_info(item) for item in accepted],
-        EXTENSION_KEY: _common_extension(records, metadata, diagnostics),
+        "acceptedVulnerabilities": [accepted_info(item) for item in accepted],
+        EXTENSION_KEY: common_extension(records, metadata, diagnostics),
     }
 
 
@@ -178,8 +184,8 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
     lines: list[str] = []
     write = lines.append
 
-    _write_header(write, metadata.options, title="Historical VER Activity Report", period=False)
-    _write_provenance(write, metadata)
+    write_header(write, metadata.options, title="Historical VER Activity Report", period=False)
+    write_provenance(write, metadata)
 
     write("## Summary")
     write("")
@@ -194,13 +200,13 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
     write(f"| Evaluated | {sum(1 for item in population if item.is_evaluated)} |")
     write(f"| Not yet evaluated | {sum(1 for item in population if not item.is_evaluated)} |")
     write(f"| Overdue | {sum(1 for item in population if item.is_overdue)} |")
-    _write_kev_summary(write, population, metadata.options)
+    write_kev_summary(write, population, metadata.options)
     for rating in PainRating:
         count = sum(1 for item in population if item.current_rating is rating)
         write(f"| Current PAIN {rating.name} | {count} |")
     write("")
 
-    _write_vulnerability_table(
+    write_vulnerability_table(
         write,
         active,
         heading="Active vulnerabilities",
@@ -208,7 +214,7 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
         details_heading="Active vulnerability details",
         as_of=metadata.options.as_of,
     )
-    _write_vulnerability_table(
+    write_vulnerability_table(
         write,
         accepted,
         heading="Accepted vulnerabilities",
@@ -217,11 +223,11 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
         as_of=metadata.options.as_of,
         rationales=rationales,
     )
-    _write_attestation_section(write, _population(report), metadata)
-    _write_inputs(write, metadata)
-    _write_coverage(write, metadata)
-    _write_diagnostics_section(write, report.diagnostics)
-    _write_footer(write)
+    write_attestation_section(write, _population(report), metadata)
+    write_inputs(write, metadata)
+    write_coverage(write, metadata)
+    write_diagnostics_section(write, report.diagnostics)
+    write_footer(write)
     return "\n".join(lines) + "\n"
 
 

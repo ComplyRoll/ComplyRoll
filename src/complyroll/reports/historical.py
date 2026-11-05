@@ -37,13 +37,15 @@ from .model import (
     ReportOptions,
     iso,
 )
+from .projection import (
+    accepted_vulnerability,
+    attested_instant,
+    common_extension,
+    require_acceptance_rationales,
+    schema_provenance,
+    validate_document,
+)
 from .vdt import (
-    _accepted,
-    _attested_instant,
-    _common_extension,
-    _require_acceptance_rationales,
-    _schema_provenance,
-    _validate_document,
     _write_attestation_section,
     _write_coverage,
     _write_diagnostics_section,
@@ -115,10 +117,12 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
     if not isinstance(record_set, CompiledRecordSet):
         raise TypeError("record_set must be a CompiledRecordSet")
 
-    _require_acceptance_rationales(record_set.records)
+    require_acceptance_rationales(record_set.records)
     records = record_set.records
     active = tuple(item for item in records if item.status is not CaseStatus.ACCEPTED)
-    accepted = tuple(_accepted(item) for item in records if item.status is CaseStatus.ACCEPTED)
+    accepted = tuple(
+        accepted_vulnerability(item) for item in records if item.status is CaseStatus.ACCEPTED
+    )
     diagnostics = tuple(record_set.diagnostics)
     attested = tuple(
         sorted(item.tracking_id for item in records if item.detected_at_source == "attestation")
@@ -128,19 +132,19 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
         options=record_set.options,
         artifacts=record_set.artifacts,
         rules_provenance=record_set.rules_provenance,
-        schema_provenance=_schema_provenance(ReportSchema.HISTORICAL_ACTIVITY),
+        schema_provenance=schema_provenance(ReportSchema.HISTORICAL_ACTIVITY),
         generator_version=record_set.generator_version,
         parser_versions=record_set.parser_versions,
         attestation_applied_to=attested,
         excluded_by_period=0,
-        attestation_detected_at=_attested_instant(records),
+        attestation_detected_at=attested_instant(records),
         detection_failures=record_set.detection_failures,
         coverage=record_set.coverage,
         coverage_gaps=record_set.coverage_gaps,
         coverage_gap_records=record_set.coverage_gap_records,
     )
     document = _build_historical_document(records, active, accepted, metadata, diagnostics)
-    validation = _validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)
+    validation = validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)
     return CompiledHistoricalReport(
         document=document,
         active=active,
@@ -166,7 +170,7 @@ def _build_historical_document(
         "generatedAt": iso(options.as_of),
         "activeVulnerabilities": [record.to_official_dict() for record in active],
         "acceptedVulnerabilities": [_accepted_info(item) for item in accepted],
-        EXTENSION_KEY: _common_extension(records, metadata, diagnostics),
+        EXTENSION_KEY: common_extension(records, metadata, diagnostics),
     }
 
 

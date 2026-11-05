@@ -36,16 +36,18 @@ from .model import (
     ReportMetadata,
     ReportOptions,
 )
+from .projection import (
+    accepted_vulnerability,
+    attested_instant,
+    common_extension,
+    period_exclusion_reason,
+    report_period,
+    report_period_block,
+    require_acceptance_rationales,
+    schema_provenance,
+    validate_document,
+)
 from .vdt import (
-    _accepted,
-    _attested_instant,
-    _common_extension,
-    _period_exclusion_reason,
-    _report_period,
-    _report_period_block,
-    _require_acceptance_rationales,
-    _schema_provenance,
-    _validate_document,
     _write_attestation_section,
     _write_coverage,
     _write_diagnostics_section,
@@ -122,8 +124,8 @@ def project_avi(record_set: CompiledRecordSet) -> CompiledAviReport:
         raise TypeError("record_set must be a CompiledRecordSet")
 
     options = record_set.options
-    period = _report_period(options, _REPORT_NAME)
-    _require_acceptance_rationales(record_set.records)
+    period = report_period(options, _REPORT_NAME)
+    require_acceptance_rationales(record_set.records)
     diagnostics = list(record_set.diagnostics)
     reported, excluded, active = _select_accepted(record_set.records, period, diagnostics)
     records = tuple(item.vulnerability for item in reported)
@@ -135,12 +137,12 @@ def project_avi(record_set: CompiledRecordSet) -> CompiledAviReport:
         options=options,
         artifacts=record_set.artifacts,
         rules_provenance=record_set.rules_provenance,
-        schema_provenance=_schema_provenance(ReportSchema.ACCEPTED_VULNERABILITY),
+        schema_provenance=schema_provenance(ReportSchema.ACCEPTED_VULNERABILITY),
         generator_version=record_set.generator_version,
         parser_versions=record_set.parser_versions,
         attestation_applied_to=attested,
         excluded_by_period=excluded,
-        attestation_detected_at=_attested_instant(records),
+        attestation_detected_at=attested_instant(records),
         detection_failures=record_set.detection_failures,
         coverage=record_set.coverage,
         coverage_gaps=record_set.coverage_gaps,
@@ -149,7 +151,7 @@ def project_avi(record_set: CompiledRecordSet) -> CompiledAviReport:
     document = _build_avi_document(
         tuple(reported), metadata, tuple(diagnostics), active_not_reported=active
     )
-    validation = _validate_document(ReportSchema.ACCEPTED_VULNERABILITY, document)
+    validation = validate_document(ReportSchema.ACCEPTED_VULNERABILITY, document)
     return CompiledAviReport(
         document=document,
         accepted=tuple(reported),
@@ -181,7 +183,7 @@ def _select_accepted(
         if record.status is not CaseStatus.ACCEPTED:
             active += 1
             continue
-        reason = _period_exclusion_reason(record, period, state="is accepted")
+        reason = period_exclusion_reason(record, period, state="is accepted")
         if reason is not None:
             excluded += 1
             diagnostics.append(
@@ -193,7 +195,7 @@ def _select_accepted(
                 )
             )
             continue
-        reported.append(_accepted(record))
+        reported.append(accepted_vulnerability(record))
     return reported, excluded, active
 
 
@@ -219,12 +221,12 @@ def _build_avi_document(
 ) -> dict[str, Any]:
     options = metadata.options
     records = tuple(item.vulnerability for item in accepted)
-    extension = _common_extension(records, metadata, diagnostics)
+    extension = common_extension(records, metadata, diagnostics)
     extension["excludedByPeriod"] = metadata.excluded_by_period
     extension["activeNotReported"] = active_not_reported
     return {
         "certificationPackageOverviewUri": options.package_uri,
-        "reportPeriod": _report_period_block(options),
+        "reportPeriod": report_period_block(options),
         "acceptedVulnerabilities": [_accepted_info(item) for item in accepted],
         EXTENSION_KEY: extension,
     }

@@ -6,9 +6,10 @@
 """Compile source artifacts into the record set every report reads from (ADR 0010).
 
 `compile_record_set` turns normalized inputs into the period-agnostic record set, so one
-vulnerability is compiled once however many reports describe it. It fails closed: an
-artifact that does not ingest, a vulnerability with no detection time, or an evaluation
-that matches nothing stops the run with diagnostics and no output.
+vulnerability is compiled once however many reports describe it.
+`compile_record_set_from_artifacts` is the stateless path, and it fails closed: an artifact
+that does not ingest, a vulnerability with no detection time, or an evaluation that matches
+nothing stops the run with diagnostics and no output.
 """
 
 # *--- Imports ---*
@@ -1389,7 +1390,7 @@ def _build_record(
     is_accepted = status is CaseStatus.ACCEPTED
     final_disposition = None if status is None else FINAL_DISPOSITIONS.get(status)
     if status is not None and status not in ACTIVE_STATUSES and not is_accepted:
-        if final_disposition is None:  # pragma: no cover - table above is exhaustive
+        if final_disposition is None:  # pragma: no cover - FINAL_DISPOSITIONS is exhaustive
             raise AssertionError(f"unmapped case status: {status}")
     disposition_recorded = final_disposition is not None
 

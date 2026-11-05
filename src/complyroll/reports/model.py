@@ -232,7 +232,7 @@ class ReportOptions:
         """Return the report period as `(from, to)`, both inclusive.
 
         Raises `ValueError` when the options carry no period. Report projections
-        that need one call `_report_period` instead, which turns the same condition
+        that need one call `report_period` instead, which turns the same condition
         into a compile diagnostic.
         """
 

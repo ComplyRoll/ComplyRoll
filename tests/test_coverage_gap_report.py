@@ -129,7 +129,7 @@ GAP_WINDOWS = (
 )
 #: The window keys a gap-unaware run must never carry.
 WINDOW_KEYS = {"recorded", "trackingId"}
-#: The sentences `_write_attestation_section` prints when no attestation was needed.
+#: The sentences `write_attestation_section` prints when no attestation was needed.
 ARTIFACT_ONLY_SENTENCE = (
     "Every reported vulnerability carried a detection time from its source artifact. "
     "No attestation was needed."

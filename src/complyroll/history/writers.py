@@ -1238,7 +1238,7 @@ def _match_cases(
             )
             continue
         case = candidates[0]
-        # The same refusal, in the same order, as `reports.vdt._match_evaluations`.
+        # The same refusal, in the same order, as `reports.records._match_evaluations`.
         if case.source_type.startswith(RESERVED_SOURCE_TYPE_PREFIX) and (
             entry.match.context_key is None or entry.match.source_type is None
         ):
@@ -1488,7 +1488,7 @@ def _any_link_is_timestamped(records: Sequence[EventRecord]) -> bool:
 
 
 def _matches(entry: EvaluationInput, case: CaseState) -> bool:
-    """Select a case exactly as `reports.vdt._matches` selects a group."""
+    """Select a case exactly as `reports.records._matches` selects a group."""
 
     if entry.match.source_record_id != case.source_record_id:
         return False

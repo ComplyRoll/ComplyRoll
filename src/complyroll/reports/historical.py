@@ -25,7 +25,7 @@ from typing import Any
 from complyroll.models import CaseStatus, PainRating
 from complyroll.schemas import ReportSchema, SchemaValidationResult
 
-from .avi import _accepted_info
+from .avi import accepted_info
 from .evaluations import EvaluationSet
 from .markdown import (
     write_attestation_section,
@@ -169,7 +169,7 @@ def _build_historical_document(
         "certificationPackageOverviewUri": options.package_uri,
         "generatedAt": iso(options.as_of),
         "activeVulnerabilities": [record.to_official_dict() for record in active],
-        "acceptedVulnerabilities": [_accepted_info(item) for item in accepted],
+        "acceptedVulnerabilities": [accepted_info(item) for item in accepted],
         EXTENSION_KEY: common_extension(records, metadata, diagnostics),
     }
 

@@ -42,7 +42,7 @@ _SYSTEM_RECORD_KINDS = {
 def system_record_kind(source_type: str) -> str:
     """Name the record of one reserved source type, or "system record" for any other.
 
-    `reports.vdt` and `history.writers` name a refusal with it, so both paths agree.
+    `reports.records` and `history.writers` name a refusal with it, so both paths agree.
     """
 
     return _SYSTEM_RECORD_KINDS.get(source_type, "system record")

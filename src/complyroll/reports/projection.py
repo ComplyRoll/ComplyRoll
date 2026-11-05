@@ -1,9 +1,9 @@
 # ******************************************************************************
 # *Title: Report Projection*
 # *Author: Kyle Versluis*
-# *Description: Period, acceptance and document helpers every report shares.*
+# *Description: Period, acceptance and document helpers the reports share.*
 # ******************************************************************************
-"""Period, acceptance, extension block and schema check all three reports share."""
+"""Period, acceptance, extension block and schema check helpers the projections share."""
 
 # *--- Imports ---*
 
@@ -45,7 +45,7 @@ def attested_instant(records: Sequence[CompiledVulnerability]) -> datetime | Non
     operator's `trackingId` override renames a record after its detection time is
     resolved, so `record.tracking_id` is no longer a key into the attestation map
     while `record.original_tracking_id` is; resolving the shared instant from the
-    resolved records leaves no key to get wrong. `_attestation_groups` reads the same
+    resolved records leaves no key to get wrong. `attestation_groups` reads the same
     field, so the scalar form and the grouped form describe one set of facts.
     """
 

@@ -199,7 +199,7 @@ def _select_accepted(
     return reported, excluded, active
 
 
-def _accepted_info(item: AcceptedVulnerability) -> dict[str, Any]:
+def accepted_info(item: AcceptedVulnerability) -> dict[str, Any]:
     """Return the official `acceptedVulnerabilityInfo` object for one accepted record.
 
     The extension stays inside `vulnerabilityDetail`, where every projection publishes
@@ -227,7 +227,7 @@ def _build_avi_document(
     return {
         "certificationPackageOverviewUri": options.package_uri,
         "reportPeriod": report_period_block(options),
-        "acceptedVulnerabilities": [_accepted_info(item) for item in accepted],
+        "acceptedVulnerabilities": [accepted_info(item) for item in accepted],
         EXTENSION_KEY: extension,
     }
 
@@ -280,4 +280,4 @@ def _render_avi_markdown(report: CompiledAviReport) -> str:
     return "\n".join(lines) + "\n"
 
 
-__all__ = ["CompiledAviReport", "compile_avi_report", "project_avi"]
+__all__ = ["CompiledAviReport", "accepted_info", "compile_avi_report", "project_avi"]

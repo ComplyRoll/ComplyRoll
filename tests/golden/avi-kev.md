@@ -13,7 +13,7 @@
 | Rules dataset | https://github.com/FedRAMP/rules at 58487bda77d76d9ce334304ec2e779ece7cc7d54 (version 2026.09.13.02, updated 2026-09-13) | 64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8 |
 | Report schema | https://github.com/FedRAMP/schemas at 5156719aa7d0def16cf66f6197db9d6c0024e0e7 (https://fedramp.gov/schemas/fedramp-accepted-vulnerability-info-schema-2026-06-24.json version 0.1.1) | 2b0b758205b7cae4695a758a6a1b0a98d128972913aad2afdb9bc2e2207192d0 |
 | KEV catalog | kev-catalog.json, CISA KEV catalog version 2026.09.14, released 2026-09-14T17:00:00.123400Z, 11 entries | 40c6d1465ca52c5ddb3b7bf1a6d92cfe884e33b4d2e90ac4551090e66d6c49fd |
-| Generator | complyroll 0.3.0a0 | n/a |
+| Generator | complyroll 0.4.0a0 | n/a |
 
 ## Summary
 

@@ -169,10 +169,14 @@ Target: 3 to 4 weeks
 - CISA KEV enrichment. **Complete, 2026-09-25** (ADR 0012).
 - HDF adapter (InSpec exec-json, native and `saf convert`). **Complete, 2026-09-29** (ADR 0013).
 - Initial cloud, container, or CSPM JSON adapter selected from design-partner demand.
-- Git/deployment change-event ingestion.
+- Git/deployment change-event ingestion. **Contract shipped, 2026-11-08** (ADR 0018): a
+  provider-supplied change file is read per run with `--changes`, beside `--inventory`. Source
+  adapters are not built, and recording changes in the store is still to come.
 - Expected-resource versus observed-resource coverage checks. **Complete, 2026-10-16** (ADR 0015).
 - Scanner and validation freshness checks. **Complete, 2026-10-16** (ADR 0015).
-- Change-triggered detection jobs.
+- Change-triggered detection jobs. **Request document shipped, 2026-11-08** (ADR 0018): ComplyRoll
+  runs no scanner, so `changes pending` writes the resources a declared change still waits on for
+  the pipeline that does. An unmet window becoming a case is still to come.
 - CI-friendly exit criteria and a reference GitHub Actions workflow. **Complete, 2026-10-20**
   (ADR 0017). Overdue and KEV clocks do not fail a job yet.
 - Response-process and attestation failures: a broken remediation or response workflow, and a
@@ -204,7 +208,9 @@ Target: 3 to 4 weeks
   and the stateless and persisted reports carry it; a gap records an absence of verification, not
   a vulnerability).
 - New or significantly changed resources can trigger a scoped detection request.
-- A case can group equivalent observations while retaining every affected resource.
+- A case can group equivalent observations while retaining every affected resource. **Met,
+  2026-11-08** (shipped since ADR 0001: correlation keeps every distinct affected resource of a
+  group, `correlation/__init__.py`, pinned by `tests/test_correlation.py`).
 
 ## Phase 3: KSI validation and Security Decision Record evidence
 

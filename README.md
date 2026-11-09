@@ -45,6 +45,7 @@ catalog the operator supplies.
 | `complyroll report vdt\|avi\|historical` | Compiles the Vulnerability Detail, Accepted Vulnerability Information, or Historical VER Activity report, with a Markdown twin rendered from the same records |
 | `--kev FILE` | Matches each record's CVE identifiers to a CISA KEV catalog the operator supplies and carries the catalog's due date as the `VDR-TFR-KEV` clock, without fetching anything |
 | `--inventory FILE` | Shows when detection last reached each resource the operator declares |
+| `--changes FILE`, `complyroll changes pending` | Shows whether detection reached each resource a declared change touched, after the change, and writes the resources still waiting as a document for the pipeline that owns the scanner |
 | `--record-failed-imports` | Records an artifact that cannot be parsed or holds no usable content, or a failed scanner invocation, as a system observation and a vulnerability of its own (`VDR-CSO-FAV`), and exits 3; `ingest` refuses with `failure_read_elsewhere`, appending nothing, a failure whose bytes the store already holds an outranking reading of |
 | `--record-coverage-gaps`, `complyroll cases coverage` | Record each coverage window that closed with no verification as a system observation of its own and a vulnerability case (`VDR-CSO-FAV`), on a report run or into a store, and exit 3; windows of one rule whose entries name the same `job` share a case, the windows of one sample group share a case, and every other window is a case of its own |
 | `complyroll ingest`, `cases`, and `report --db` | Record the same work as append-only history and rebuild each report from it, byte-identical to the stateless report |
@@ -53,7 +54,7 @@ catalog the operator supplies.
 | `stigroll FILE...` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output |
 | `complyroll.adapters`, `.policy`, `.schemas`, `.store` | Ingest an artifact, calculate a deadline with its rule provenance, validate a report, or open the event store from Python |
 
-Not yet built, among others: failures in the response process, change integration, SPDX and cloud
+Not yet built, among others: failures in the response process, stored changes, SPDX and cloud
 sources, and KSI and SDR evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. A coverage
 gap records that no verification reached a resource in time, not that the resource is vulnerable.
 A SARIF log with no results ingests as a PASS observation of the scope it names, which is
@@ -100,6 +101,37 @@ cmp report.json report-from-history.json && cmp report.md report-from-history.md
 The report includes internal resource identifiers and provider rationale, so redact it before
 sharing with an agency. [`examples/README.md`][examples] continues from here with the other two
 reports, SARIF, KEV, coverage and coverage gaps, HDF, failed imports, and the Python API.
+
+## Declaring changes from git
+
+`--changes` reads ComplyRoll's own `complyroll.changes` document, described in
+[`docs/DATA_MODEL.md`][data-model]; there is no git adapter. This worked example, which needs
+`jq`, writes that document from `git log --format` for a repository whose commits name their
+resources in `Resource:` trailers, such as `Resource: image:registry.example.test/api:2.1`, and
+mark a change that is not significant with `Significant: false`:
+
+```bash
+format='%H%x09%cI%x09%(trailers:key=Resource,valueonly,separator=%x1F)%x09'
+format+='%(trailers:key=Significant,valueonly,separator=%x1F)%x09%s'
+git log --no-merges --since=2026-09-01 --format="$format" |
+jq -Rn '{
+  schema: "complyroll.changes", schemaVersion: 1, name: "git-changes",
+  changes: [inputs | split("\t") | select(.[2] != "") | {
+    changeId: ("git-" + .[0][:12]),
+    kind: "modified",
+    occurredAt: .[1],
+    source: {tool: "git", reference: ("commit " + .[0])},
+    resources: [.[2] | split("\u001f") | unique[]
+      | capture("^(?<resourceType>[^:]+):(?<resourceId>.+)$")],
+    significant: (.[3] != "false"),
+    rationale: (.[4:] | join("\t"))[:512]
+  }]
+}' > changes.json
+```
+
+It is an example to adapt, not a parser. It calls every commit a modification, sets no `detectBy`
+window, and takes the subject line as the rationale, so a commit it should not count is yours to
+filter. ComplyRoll refuses a file that breaks the contract and never repairs one.
 
 ## For independent assessors
 

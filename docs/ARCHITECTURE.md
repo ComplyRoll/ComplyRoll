@@ -43,7 +43,6 @@ Planned adapters:
 
 - SPDX
 - Cloud, container, and CSPM sources
-- Change and deployment events
 - KSI validation runs
 
 Report inputs, which are not adapters and produce no observations:
@@ -57,6 +56,12 @@ Report inputs, which are not adapters and produce no observations:
   a report option, so both paths measure coverage against it identically. The report names it by
   the SHA-256 of the bytes that were read (ADR 0015). `cases coverage` reads it the same way to
   record coverage gaps, and the store keeps those gap records, never the inventory.
+- The provider's declared changes, supplied per run with `--changes` as a native
+  `complyroll.changes` document. It is read locally through a bounded reader and needs an
+  inventory, because a change is read against one. The report names it by the SHA-256 of the bytes
+  that were read, and `changes pending` writes the resources still waiting as a document for the
+  pipeline that owns the scanner (ADR 0018). No adapter for git, Terraform, Kubernetes, or a
+  deployment record is built.
 
 ### Observation ledger
 

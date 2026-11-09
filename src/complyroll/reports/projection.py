@@ -285,6 +285,10 @@ def common_extension(
     # is byte-identical to one compiled before coverage existed (ADR 0015).
     if metadata.coverage is not None:
         extension["coverage"] = metadata.coverage.to_dict(gap_records=metadata.coverage_gap_records)
+    # Only a run given a change file carries the key, so a run without one moves no byte
+    # (ADR 0018).
+    if metadata.changes is not None:
+        extension["changes"] = metadata.changes.to_dict()
     return extension
 
 

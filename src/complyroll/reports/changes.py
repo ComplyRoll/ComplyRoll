@@ -27,6 +27,9 @@ from .changes_input import Change, ChangeKind, ChangeSet
 # NOTE: The coverage block's filing, group stop rule and formatters, shared so a change row
 # reads evidence, a group and an instant exactly as a coverage clock does.
 from .coverage import (
+    CYCLONEDX_SCOPE_RECORD_ID,
+    CYCLONEDX_SOURCE_TYPE,
+    PACKAGE_RESOURCE_TYPE,
     PSD_RULE,
     SAMPLE_GROUP_PREFIX,
     SAMPLE_GROUP_TYPE,
@@ -109,6 +112,13 @@ class ChangeObligation:
     kev_at_activation: bool | None = None
     kev_tracking_ids: tuple[str, ...] = ()
 
+    def age_seconds(self, as_of: datetime) -> int | None:
+        """Return how long a waiting row has waited; no other row has an age."""
+        # A waiting row with no window never closes, so its age is the signal it prints.
+        if self.status not in WAITING_STATUSES:
+            return None
+        return int((as_of - self.change.occurred_at).total_seconds())
+
 
 @dataclass(frozen=True, slots=True)
 class UnregisteredChangeResource:
@@ -142,9 +152,21 @@ class ChangeProjection:
         """Return the rows a request document carries: the resources still waiting."""
         return tuple(row for row in self.obligations if row.status in WAITING_STATUSES)
 
+    @property
+    def declared(self) -> tuple[Change, ...]:
+        """Return the changes at or before as-of, the ones this projection measured."""
+        return tuple(
+            change for change in self.change_set.changes if change.occurred_at <= self.as_of
+        )
+
+    @property
+    def summary(self) -> dict[ObligationStatus, int]:
+        """Return the count of obligations per status, every status present."""
+        counts = Counter(row.status for row in self.obligations)
+        return {status: counts[status] for status in ObligationStatus}
+
     def to_dict(self) -> dict[str, Any]:
         """Return the `x-complyroll.changes` block; keys are sorted when the JSON is written."""
-        counts = Counter(row.status for row in self.obligations)
         change_set = self.change_set
         provenance = self.provenance
         return {
@@ -165,12 +187,8 @@ class ChangeProjection:
                 "changeCount": change_set.change_count,
             },
             "inventorySha256": self.inventory.sha256,
-            "summary": {status.value: counts[status] for status in ObligationStatus},
-            "changes": [
-                _change_row(change, self.force)
-                for change in change_set.changes
-                if change.occurred_at <= self.as_of
-            ],
+            "summary": {status.value: count for status, count in self.summary.items()},
+            "changes": [_change_row(change, self.force) for change in self.declared],
             "obligations": [
                 _obligation_row(row, self.force, self.as_of) for row in self.obligations
             ],
@@ -553,21 +571,27 @@ class _KevFindings:
         self._catalog = catalog
         self._digests: dict[str, str] = {}
         self._findings: defaultdict[tuple[str, ResourceRef], list[Observation]] = defaultdict(list)
-        self._held: dict[tuple[str, ResourceRef, date], tuple[str, ...]] = {}
+        # A CycloneDX row sits on a package, so it counts only for its own BOM's scope.
+        self._scopes: set[str] = set()
+        self._package_rows: defaultdict[str, list[Observation]] = defaultdict(list)
+        self._held: dict[tuple[str, ResourceRef, date, bool], tuple[str, ...]] = {}
         for observation in observations:
             if observation.origin is not ObservationOrigin.ARTIFACT:
                 continue
-            self._digests[observation.observation_id] = observation.source_artifact_digest
+            digest = observation.source_artifact_digest
+            self._digests[observation.observation_id] = digest
+            if _is_bom_scope(observation):
+                self._scopes.add(observation.observation_id)
+            visible = observation.observed_at is None or _utc(observation.observed_at) <= cutoff
+            if not visible or observation.disposition is not ObservationDisposition.OPEN:
+                continue
+            if _is_bom_package_row(observation):
+                self._package_rows[digest].append(observation)
             entry = inventory.entry_for(
                 observation.resource.resource_type, observation.resource.resource_id
             )
-            visible = observation.observed_at is None or _utc(observation.observed_at) <= cutoff
-            if (
-                entry is not None
-                and visible
-                and observation.disposition is ObservationDisposition.OPEN
-            ):
-                self._findings[(observation.source_artifact_digest, entry.ref)].append(observation)
+            if entry is not None:
+                self._findings[(digest, entry.ref)].append(observation)
 
     def tracking_ids(
         self, change: Change, entry: InformationResource, verification: CoverageEvidence
@@ -577,18 +601,22 @@ class _KevFindings:
             self._digests[verification.reference],
             entry.ref,
             change.occurred_at.astimezone(UTC).date(),
+            verification.reference in self._scopes,
         )
         held = self._held.get(key)
         if held is None:
             held = self._held[key] = self._matched(*key)
         return held
 
-    def _matched(self, digest: str, ref: ResourceRef, listed_by: date) -> tuple[str, ...]:
+    def _matched(
+        self, digest: str, ref: ResourceRef, listed_by: date, verified_by_bom: bool
+    ) -> tuple[str, ...]:
+        package_rows = self._package_rows.get(digest, ()) if verified_by_bom else ()
         return tuple(
             sorted(
                 {
                     tracking_id_for(item.source_type, item.source_record_id, item.context_key)
-                    for item in self._findings.get((digest, ref), ())
+                    for item in (*self._findings.get((digest, ref), ()), *package_rows)
                     if self._catalog.matches(item.source_identifiers, on_or_before=listed_by)
                 }
             )
@@ -596,6 +624,20 @@ class _KevFindings:
 
 
 # *--- Helper Functions ---*
+
+
+def _is_bom_scope(observation: Observation) -> bool:
+    return (
+        observation.source_type == CYCLONEDX_SOURCE_TYPE
+        and observation.source_record_id == CYCLONEDX_SCOPE_RECORD_ID
+    )
+
+
+def _is_bom_package_row(observation: Observation) -> bool:
+    return (
+        observation.source_type == CYCLONEDX_SOURCE_TYPE
+        and observation.resource.resource_type == PACKAGE_RESOURCE_TYPE
+    )
 
 
 def _lifecycle(named: _Named) -> tuple[datetime, datetime | None]:
@@ -623,12 +665,6 @@ def _change_row(change: Change, force: RuleForce) -> dict[str, Any]:
 
 
 def _obligation_row(row: ChangeObligation, force: RuleForce, as_of: datetime) -> dict[str, Any]:
-    # A waiting row with no window never closes, so its age is the signal it prints.
-    age_seconds = (
-        int((as_of - row.change.occurred_at).total_seconds())
-        if row.status in WAITING_STATUSES
-        else None
-    )
     return {
         "changeId": row.change.change_id,
         **_ref_dict(row.resource),
@@ -640,7 +676,7 @@ def _obligation_row(row: ChangeObligation, force: RuleForce, as_of: datetime) ->
         "evidence": None if row.evidence is None else row.evidence.to_dict(),
         "standIn": None if row.stand_in is None else _ref_dict(row.stand_in),
         "lagSeconds": row.lag_seconds,
-        "ageSeconds": age_seconds,
+        "ageSeconds": row.age_seconds(as_of),
         "late": row.late,
         "windowClosedAt": _instant_text(row.window_closed_at),
         "resumedAt": _instant_text(row.resumed_at),

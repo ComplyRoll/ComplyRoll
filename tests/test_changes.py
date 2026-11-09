@@ -998,6 +998,144 @@ class KevTests(unittest.TestCase):
         expected = sorted(tracking_id_for("sarif", record, "ctx") for record in ("R-a", "R-b"))
         self.assertEqual(list(row.kev_tracking_ids), expected)
 
+    # A CycloneDX vulnerability row sits on a package resource, so without call 13 an image
+    # whose own BOM lists a KEV read an affirmative false.
+    def bom(self, digest: str = DIGEST) -> Observation:
+        return observation(
+            at=T + HOUR,
+            source_type=CYCLONEDX_SOURCE_TYPE,
+            record=CYCLONEDX_SCOPE_RECORD_ID,
+            digest=digest,
+        )
+
+    def package_row(self, digest: str = DIGEST, **fields: Any) -> Observation:
+        values: dict[str, Any] = {
+            "at": T + HOUR,
+            "disposition": OPEN,
+            "resource_type": "package",
+            "record": CVE,
+            "digest": digest,
+            "identifiers": (CVE,),
+            "source_type": CYCLONEDX_SOURCE_TYPE,
+            "context": "pkg-ctx",
+        }
+        return observation("image:web|deb/openssl@3", **{**values, **fields})
+
+    def test_kev_true_on_cyclonedx_package_row_in_the_verifying_bom(self) -> None:
+        projection = run(
+            [host()], [self.created()], [self.bom(), self.package_row()], kev=catalog()
+        )
+        row = only(projection)
+        self.assertIs(row.status, ObligationStatus.DETECTED)
+        self.assertIs(row.kev_at_activation, True)
+        self.assertEqual(
+            row.kev_tracking_ids,
+            (tracking_id_for(CYCLONEDX_SOURCE_TYPE, CVE, "pkg-ctx"),),
+        )
+        self.assertEqual(codes(projection), ["kev_at_activation"])
+
+    def test_package_row_of_another_artifact_is_not_counted(self) -> None:
+        row = only(
+            run(
+                [host()],
+                [self.created()],
+                [self.bom(), self.package_row(OTHER_DIGEST)],
+                kev=catalog(),
+            )
+        )
+        self.assertIs(row.status, ObligationStatus.DETECTED)
+        self.assertIs(row.kev_at_activation, False)
+
+    def test_package_row_needs_a_bom_scope_verification(self) -> None:
+        # The same digest, but the verification is an ordinary finding, so no BOM verified it.
+        verification = observation(at=T + HOUR, record="R-verify")
+        row = only(
+            run([host()], [self.created()], [verification, self.package_row()], kev=catalog())
+        )
+        self.assertIs(row.status, ObligationStatus.DETECTED)
+        self.assertIs(row.kev_at_activation, False)
+
+    def test_package_row_of_another_source_type_is_not_counted(self) -> None:
+        row = only(
+            run(
+                [host()],
+                [self.created()],
+                [self.bom(), self.package_row(source_type="sarif")],
+                kev=catalog(),
+            )
+        )
+        self.assertIs(row.kev_at_activation, False)
+
+    def test_package_row_that_is_not_open_is_not_counted(self) -> None:
+        row = only(
+            run(
+                [host()],
+                [self.created()],
+                [self.bom(), self.package_row(disposition=PASS)],
+                kev=catalog(),
+            )
+        )
+        self.assertIs(row.kev_at_activation, False)
+
+    def test_package_row_after_as_of_is_not_counted(self) -> None:
+        row = only(
+            run(
+                [host()],
+                [self.created()],
+                [self.bom(), self.package_row(at=AS_OF + SECOND)],
+                kev=catalog(),
+            )
+        )
+        self.assertIs(row.kev_at_activation, False)
+
+    def test_a_bom_row_on_another_resource_type_is_not_counted(self) -> None:
+        row = only(
+            run(
+                [host()],
+                [self.created()],
+                [self.bom(), self.package_row(resource_type="image")],
+                kev=catalog(),
+            )
+        )
+        self.assertIs(row.kev_at_activation, False)
+
+    def test_a_scope_record_id_from_another_source_type_is_no_bom(self) -> None:
+        verification = observation(at=T + HOUR, record=CYCLONEDX_SCOPE_RECORD_ID)
+        row = only(
+            run([host()], [self.created()], [verification, self.package_row()], kev=catalog())
+        )
+        self.assertIs(row.status, ObligationStatus.DETECTED)
+        self.assertIs(row.kev_at_activation, False)
+
+    def test_bom_and_finding_verifications_keep_their_own_answers(self) -> None:
+        # One digest and one change day, so only whether a BOM verified can tell them apart.
+        finding = observation(at=T + HOUR, record="R-first")
+        later_bom = dataclasses.replace(self.bom(), observed_at=T + 3 * HOUR)
+        first = self.created(occurredAt=text(T))
+        second = change("CHG-2", kind="created", occurredAt=text(T + 2 * HOUR))
+        projection = run(
+            [host()],
+            [first, second],
+            [finding, later_bom, self.package_row(at=T + 3 * HOUR)],
+            kev=catalog(),
+        )
+        by_change = {row.change.change_id: row for row in projection.obligations}
+        self.assertIs(by_change["CHG-1"].kev_at_activation, False)
+        self.assertIs(by_change["CHG-2"].kev_at_activation, True)
+
+    def test_package_row_listed_after_the_change_is_not_counted(self) -> None:
+        later_listing = T.date() + timedelta(days=1)
+        row = only(
+            run(
+                [host()],
+                [self.created()],
+                [self.bom(), self.package_row()],
+                kev=catalog(date_added=later_listing),
+            )
+        )
+        self.assertIs(row.kev_at_activation, False)
+        self.assertEqual(row.kev_tracking_ids, ())
+
     def test_one_artifact_is_matched_once_per_change_date(self) -> None:
         findings = [
             observation(at=T + HOUR, disposition=OPEN, record=f"R-{index}", identifiers=(CVE,))

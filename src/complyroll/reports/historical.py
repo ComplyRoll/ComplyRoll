@@ -29,6 +29,7 @@ from .avi import accepted_info
 from .evaluations import EvaluationSet
 from .markdown import (
     write_attestation_section,
+    write_changes,
     write_coverage,
     write_diagnostics_section,
     write_footer,
@@ -142,6 +143,7 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
         coverage=record_set.coverage,
         coverage_gaps=record_set.coverage_gaps,
         coverage_gap_records=record_set.coverage_gap_records,
+        changes=record_set.changes,
     )
     document = _build_historical_document(records, active, accepted, metadata, diagnostics)
     validation = validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)
@@ -226,6 +228,7 @@ def _render_historical_markdown(report: CompiledHistoricalReport) -> str:
     write_attestation_section(write, _population(report), metadata)
     write_inputs(write, metadata)
     write_coverage(write, metadata)
+    write_changes(write, metadata)
     write_diagnostics_section(write, report.diagnostics)
     write_footer(write)
     return "\n".join(lines) + "\n"

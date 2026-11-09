@@ -1,0 +1,878 @@
+{
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "reportPeriod": {
+    "from": "2026-09-01T00:00:00Z",
+    "to": "2026-09-30T23:59:59Z"
+  },
+  "vulnerabilities": [
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T02:00:00.123456Z",
+        "detectionSource": "CodeQL"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-04716522daa6f550",
+      "vulnerabilityDescription": "js/unused-local-variable: Unused variable, import, function or class",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T02:00:00.123456Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T02:00:00.123456Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+            "resourceType": "file"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T02:00:00.123456Z",
+        "detectionSource": "CodeQL"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-d2b9f5abf1fe44ac",
+      "vulnerabilityDescription": "js/xss-through-dom: DOM text reinterpreted as HTML",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T02:00:00.123456Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T02:00:00.123456Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": null,
+        "observationIds": [
+          "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+            "resourceType": "file"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CWE-116",
+          "CWE-79"
+        ],
+        "untimestampedObservationIds": []
+      }
+    }
+  ],
+  "x-complyroll": {
+    "artifacts": [
+      {
+        "name": "clean-run.sarif",
+        "observationCount": 1,
+        "parser": "complyroll.sarif",
+        "parserVersion": "2",
+        "sha256": "ee91754fbc49a575b46ed7cf7b11d118ec457a41d6bd8ef640b92956682e4c19",
+        "sizeBytes": 1227
+      },
+      {
+        "name": "codeql-repo.sarif",
+        "observationCount": 3,
+        "parser": "complyroll.sarif",
+        "parserVersion": "2",
+        "sha256": "bf5a9a4d1bbb530ac3a7c1759cd40a77c8d8c1a1cda0ab2634b4f46deb8a5bb9",
+        "sizeBytes": 9419
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "changes": {
+      "asOf": "2026-09-03T12:00:00Z",
+      "basis": "VDR-CSO-DAC states no timeframe, so a window here is only the provider's own detectBy, and a change without a window is tracked but never lapses. Changes are measured against the provider-supplied inventory named by its SHA-256 digest, so a resource it omits is listed as unregistered and opens no obligation. An obligation closes only on a verification at or after the change and at or before as-of; evidence that determined no status examines a resource without verifying it, and untimed evidence never satisfies one. A created change and a new entry's coverage clocks overlap on purpose, under different rules. A detected status is not a compliance finding.",
+      "changes": [
+        {
+          "changeId": "CHG-2001",
+          "detectBy": "2026-08-20T00:00:00Z",
+          "force": "SHOULD",
+          "job": "nightly-image-scan",
+          "kind": "modified",
+          "occurredAt": "2026-08-10T00:00:00Z",
+          "rationale": "Base layer rebuilt after the last image scan.",
+          "significant": true,
+          "source": {
+            "reference": "push 8842",
+            "tool": "registry"
+          }
+        },
+        {
+          "changeId": "CHG-2002",
+          "detectBy": null,
+          "force": "SHOULD",
+          "job": null,
+          "kind": "modified",
+          "occurredAt": "2026-08-28T00:00:00Z",
+          "rationale": "Template engine swapped across the UI sample.",
+          "significant": true,
+          "source": {
+            "reference": "CR-2026-204",
+            "tool": "ticket"
+          }
+        },
+        {
+          "changeId": "CHG-2003",
+          "detectBy": "2026-09-01T01:00:00Z",
+          "force": "SHOULD",
+          "job": "nightly-codeql",
+          "kind": "modified",
+          "occurredAt": "2026-09-01T00:10:00Z",
+          "rationale": "Render path change with a one-hour scan window the nightly run missed.",
+          "significant": true,
+          "source": {
+            "reference": "commit 0c4d9aa",
+            "tool": "git"
+          }
+        },
+        {
+          "changeId": "CHG-2004",
+          "detectBy": "2026-09-05T00:00:00Z",
+          "force": "SHOULD",
+          "job": "nightly-codeql",
+          "kind": "modified",
+          "occurredAt": "2026-09-01T00:30:00Z",
+          "rationale": "Sanitizer helper rewritten.",
+          "significant": true,
+          "source": {
+            "reference": "commit 5ab10c2",
+            "tool": "git"
+          }
+        },
+        {
+          "changeId": "CHG-2005",
+          "detectBy": "2026-09-10T00:00:00Z",
+          "force": "SHOULD",
+          "job": "nightly-codeql",
+          "kind": "modified",
+          "occurredAt": "2026-09-01T00:40:00Z",
+          "rationale": "Legacy renderer touched; the scan could not resolve its data flow.",
+          "significant": true,
+          "source": {
+            "reference": "commit 77e9d31",
+            "tool": "git"
+          }
+        },
+        {
+          "changeId": "CHG-2006",
+          "detectBy": "2026-09-09T00:00:00Z",
+          "force": "SHOULD",
+          "job": "nightly-codeql",
+          "kind": "modified",
+          "occurredAt": "2026-09-02T09:00:00Z",
+          "rationale": "Helper follow-up after the nightly scan; no scan has run since.",
+          "significant": true,
+          "source": {
+            "reference": "commit e8812f0",
+            "tool": "git"
+          }
+        }
+      ],
+      "force": "SHOULD",
+      "input": {
+        "changeCount": 6,
+        "name": "timed-changes",
+        "sha256": "72757cd6671011f642de47c2c1d854693fc375be55a884dbd5a6f333c4d6f48c",
+        "sizeBytes": 3063
+      },
+      "inventorySha256": "49e3d4806d4bd6cd9e918b2751b5aeb1c9fe8473398b104799fb27fb62b35c2e",
+      "later": [],
+      "obligations": [
+        {
+          "ageSeconds": 2116800,
+          "changeId": "CHG-2001",
+          "entry": {
+            "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+            "resourceType": "image"
+          },
+          "evidence": null,
+          "force": "SHOULD",
+          "kevAtActivation": null,
+          "kevTrackingIds": [],
+          "lagSeconds": null,
+          "late": false,
+          "matchedAs": {
+            "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+            "resourceType": "image"
+          },
+          "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+          "resourceType": "image",
+          "resumedAt": null,
+          "sampleGroup": null,
+          "standIn": null,
+          "status": "lapsed",
+          "untimed": 0,
+          "windowClosedAt": "2026-08-20T00:00:00Z"
+        },
+        {
+          "ageSeconds": null,
+          "changeId": "CHG-2002",
+          "entry": null,
+          "evidence": {
+            "at": "2026-09-01T02:00:00.123456Z",
+            "disposition": "open",
+            "kind": "observation",
+            "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
+            "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+            "resourceType": "file"
+          },
+          "force": "SHOULD",
+          "kevAtActivation": null,
+          "kevTrackingIds": [],
+          "lagSeconds": 352800,
+          "late": false,
+          "matchedAs": null,
+          "resourceId": "sample-group/webapp-ui",
+          "resourceType": "logical",
+          "resumedAt": null,
+          "sampleGroup": "webapp-ui",
+          "standIn": {
+            "resourceId": "src/ui/render.js",
+            "resourceType": "file"
+          },
+          "status": "detected",
+          "untimed": 0,
+          "windowClosedAt": null
+        },
+        {
+          "ageSeconds": null,
+          "changeId": "CHG-2003",
+          "entry": {
+            "resourceId": "src/ui/render.js",
+            "resourceType": "file"
+          },
+          "evidence": {
+            "at": "2026-09-01T02:00:00.123456Z",
+            "disposition": "open",
+            "kind": "observation",
+            "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
+            "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+            "resourceType": "file"
+          },
+          "force": "SHOULD",
+          "kevAtActivation": null,
+          "kevTrackingIds": [],
+          "lagSeconds": 6600,
+          "late": true,
+          "matchedAs": {
+            "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+            "resourceType": "file"
+          },
+          "resourceId": "src/ui/render.js",
+          "resourceType": "file",
+          "resumedAt": "2026-09-01T02:00:00.123456Z",
+          "sampleGroup": "webapp-ui",
+          "standIn": null,
+          "status": "detected",
+          "untimed": 0,
+          "windowClosedAt": "2026-09-01T01:00:00Z"
+        },
+        {
+          "ageSeconds": null,
+          "changeId": "CHG-2004",
+          "entry": {
+            "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+            "resourceType": "file"
+          },
+          "evidence": {
+            "at": "2026-09-01T02:00:00.123456Z",
+            "disposition": "open",
+            "kind": "observation",
+            "observationId": "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f",
+            "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+            "resourceType": "file"
+          },
+          "force": "SHOULD",
+          "kevAtActivation": null,
+          "kevTrackingIds": [],
+          "lagSeconds": 5400,
+          "late": false,
+          "matchedAs": {
+            "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+            "resourceType": "file"
+          },
+          "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+          "resourceType": "file",
+          "resumedAt": null,
+          "sampleGroup": null,
+          "standIn": null,
+          "status": "detected",
+          "untimed": 0,
+          "windowClosedAt": null
+        },
+        {
+          "ageSeconds": 213600,
+          "changeId": "CHG-2005",
+          "entry": {
+            "resourceId": "https://github.com/example/webapp/src/ui/legacy.js",
+            "resourceType": "file"
+          },
+          "evidence": null,
+          "force": "SHOULD",
+          "kevAtActivation": null,
+          "kevTrackingIds": [],
+          "lagSeconds": null,
+          "late": false,
+          "matchedAs": {
+            "resourceId": "https://github.com/example/webapp/src/ui/legacy.js",
+            "resourceType": "file"
+          },
+          "resourceId": "https://github.com/example/webapp/src/ui/legacy.js",
+          "resourceType": "file",
+          "resumedAt": null,
+          "sampleGroup": null,
+          "standIn": null,
+          "status": "undetermined",
+          "untimed": 0,
+          "windowClosedAt": null
+        },
+        {
+          "ageSeconds": 97200,
+          "changeId": "CHG-2006",
+          "entry": {
+            "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+            "resourceType": "file"
+          },
+          "evidence": null,
+          "force": "SHOULD",
+          "kevAtActivation": null,
+          "kevTrackingIds": [],
+          "lagSeconds": null,
+          "late": false,
+          "matchedAs": {
+            "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+            "resourceType": "file"
+          },
+          "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+          "resourceType": "file",
+          "resumedAt": null,
+          "sampleGroup": null,
+          "standIn": null,
+          "status": "pending",
+          "untimed": 0,
+          "windowClosedAt": null
+        }
+      ],
+      "provenance": {
+        "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+        "datasetLastUpdated": "2026-09-13",
+        "datasetVersion": "2026.09.13.02",
+        "repository": "https://github.com/FedRAMP/rules",
+        "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+      },
+      "rule": "VDR-CSO-DAC",
+      "summary": {
+        "detected": 3,
+        "lapsed": 1,
+        "logged": 0,
+        "pending": 1,
+        "retired": 0,
+        "undetermined": 1,
+        "unregistered": 0
+      },
+      "unregistered": []
+    },
+    "coverage": {
+      "asOf": "2026-09-03T12:00:00Z",
+      "basis": "VDR-TFR-MVX is read from detection results until Phase 3 validation runs exist. Coverage is measured against the provider-supplied inventory named by its SHA-256 digest, so an observed resource the inventory omits is listed as unregistered and is never expected. Evidence that determined no status (NOT_REVIEWED, ERROR or UNKNOWN) examines a resource without verifying it, untimed evidence never anchors a clock, and a non-machine resource is verified only by an operator attestation. A current status is not a compliance finding.",
+      "inventory": {
+        "entries": 5,
+        "name": "timed-boundary",
+        "sha256": "49e3d4806d4bd6cd9e918b2751b5aeb1c9fe8473398b104799fb27fb62b35c2e",
+        "sizeBytes": 1526
+      },
+      "later": [],
+      "resources": [
+        {
+          "afterDecommission": [],
+          "aliases": [],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-09-01T02:00:00.123456Z",
+              "contextKey": "file:https://github.com/example/webapp/src/ui/helpers.js",
+              "dueAt": "2026-09-04T02:00:00.123456Z",
+              "evidence": {
+                "at": "2026-09-01T02:00:00.123456Z",
+                "disposition": "open",
+                "kind": "observation",
+                "observationId": "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f",
+                "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+                "resourceType": "file"
+              },
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "current"
+            },
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-09-01T02:00:00.123456Z",
+              "contextKey": "file:https://github.com/example/webapp/src/ui/helpers.js",
+              "dueAt": "2026-10-01T02:00:00.123456Z",
+              "evidence": {
+                "at": "2026-09-01T02:00:00.123456Z",
+                "disposition": "open",
+                "kind": "observation",
+                "observationId": "obs-5eed8cd90893738613d23955692bf60df48eb1b6c3ec34d5df5ee2354a1b096f",
+                "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+                "resourceType": "file"
+              },
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PCD",
+              "standIn": null,
+              "status": "current"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": false,
+          "examined": 1,
+          "expectedSince": "2026-09-01T00:00:00Z",
+          "job": "nightly-codeql",
+          "lastExamined": "2026-09-01T02:00:00.123456Z",
+          "lastVerified": "2026-09-01T02:00:00.123456Z",
+          "machineBased": true,
+          "resourceId": "https://github.com/example/webapp/src/ui/helpers.js",
+          "resourceType": "file",
+          "sampleGroup": null,
+          "untimed": 0,
+          "untimedEvidence": []
+        },
+        {
+          "afterDecommission": [],
+          "aliases": [],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "file:https://github.com/example/webapp/src/ui/index.js",
+              "dueAt": "2026-09-04T00:00:00Z",
+              "evidence": null,
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "missing"
+            },
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "file:https://github.com/example/webapp/src/ui/index.js",
+              "dueAt": "2026-09-15T00:00:00Z",
+              "evidence": null,
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PDD",
+              "standIn": null,
+              "status": "missing"
+            },
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-09-01T02:00:00.123456Z",
+              "contextKey": "logical:sample-group/webapp-ui",
+              "dueAt": "2026-09-04T02:00:00.123456Z",
+              "evidence": {
+                "at": "2026-09-01T02:00:00.123456Z",
+                "disposition": "open",
+                "kind": "observation",
+                "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
+                "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+                "resourceType": "file"
+              },
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PSD",
+              "standIn": {
+                "resourceId": "src/ui/render.js",
+                "resourceType": "file"
+              },
+              "status": "current"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": true,
+          "examined": 0,
+          "expectedSince": "2026-09-01T00:00:00Z",
+          "job": null,
+          "lastExamined": null,
+          "lastVerified": null,
+          "machineBased": true,
+          "resourceId": "https://github.com/example/webapp/src/ui/index.js",
+          "resourceType": "file",
+          "sampleGroup": "webapp-ui",
+          "untimed": 0,
+          "untimedEvidence": []
+        },
+        {
+          "afterDecommission": [],
+          "aliases": [],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "file:https://github.com/example/webapp/src/ui/legacy.js",
+              "dueAt": "2026-09-04T00:00:00Z",
+              "evidence": null,
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "undetermined"
+            },
+            {
+              "anchor": "declared",
+              "anchorAt": "2026-09-01T00:00:00Z",
+              "contextKey": "file:https://github.com/example/webapp/src/ui/legacy.js",
+              "dueAt": "2026-09-15T00:00:00Z",
+              "evidence": null,
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PDD",
+              "standIn": null,
+              "status": "undetermined"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": true,
+          "examined": 1,
+          "expectedSince": "2026-09-01T00:00:00Z",
+          "job": "nightly-codeql",
+          "lastExamined": "2026-09-01T02:00:00.123456Z",
+          "lastVerified": null,
+          "machineBased": true,
+          "resourceId": "https://github.com/example/webapp/src/ui/legacy.js",
+          "resourceType": "file",
+          "sampleGroup": null,
+          "untimed": 0,
+          "untimedEvidence": []
+        },
+        {
+          "afterDecommission": [],
+          "aliases": [
+            {
+              "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+              "resourceType": "file"
+            }
+          ],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-09-01T02:00:00.123456Z",
+              "contextKey": "file:src/ui/render.js",
+              "dueAt": "2026-09-04T02:00:00.123456Z",
+              "evidence": {
+                "at": "2026-09-01T02:00:00.123456Z",
+                "disposition": "open",
+                "kind": "observation",
+                "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
+                "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+                "resourceType": "file"
+              },
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "current"
+            },
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-09-01T02:00:00.123456Z",
+              "contextKey": "file:src/ui/render.js",
+              "dueAt": "2026-09-15T02:00:00.123456Z",
+              "evidence": {
+                "at": "2026-09-01T02:00:00.123456Z",
+                "disposition": "open",
+                "kind": "observation",
+                "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
+                "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+                "resourceType": "file"
+              },
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PDD",
+              "standIn": null,
+              "status": "current"
+            },
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-09-01T02:00:00.123456Z",
+              "contextKey": "logical:sample-group/webapp-ui",
+              "dueAt": "2026-09-04T02:00:00.123456Z",
+              "evidence": {
+                "at": "2026-09-01T02:00:00.123456Z",
+                "disposition": "open",
+                "kind": "observation",
+                "observationId": "obs-fdcb47349a49f24da9ed9ef671d72a2302f8c726e5fe17cee8524e7f15ba12df",
+                "resourceId": "https://github.com/example/webapp/src/ui/render.js",
+                "resourceType": "file"
+              },
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PSD",
+              "standIn": {
+                "resourceId": "src/ui/render.js",
+                "resourceType": "file"
+              },
+              "status": "current"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": true,
+          "examined": 1,
+          "expectedSince": "2026-09-01T00:00:00Z",
+          "job": "nightly-codeql",
+          "lastExamined": "2026-09-01T02:00:00.123456Z",
+          "lastVerified": "2026-09-01T02:00:00.123456Z",
+          "machineBased": true,
+          "resourceId": "src/ui/render.js",
+          "resourceType": "file",
+          "sampleGroup": "webapp-ui",
+          "untimed": 0,
+          "untimedEvidence": []
+        },
+        {
+          "afterDecommission": [],
+          "aliases": [],
+          "attested": false,
+          "clocks": [
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-08-05T10:00:00Z",
+              "contextKey": "image:registry.example.test/synthetic/example-service:1.4.0",
+              "dueAt": "2026-08-08T10:00:00Z",
+              "evidence": {
+                "at": "2026-08-05T10:00:00Z",
+                "disposition": "pass",
+                "kind": "observation",
+                "observationId": "obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",
+                "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+                "resourceType": "image"
+              },
+              "force": "MUST",
+              "ruleId": "VDR-TFR-MVX",
+              "standIn": null,
+              "status": "stale"
+            },
+            {
+              "anchor": "verification",
+              "anchorAt": "2026-08-05T10:00:00Z",
+              "contextKey": "image:registry.example.test/synthetic/example-service:1.4.0",
+              "dueAt": "2026-08-19T10:00:00Z",
+              "evidence": {
+                "at": "2026-08-05T10:00:00Z",
+                "disposition": "pass",
+                "kind": "observation",
+                "observationId": "obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",
+                "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+                "resourceType": "image"
+              },
+              "force": "SHOULD",
+              "ruleId": "VDR-TFR-PDD",
+              "standIn": null,
+              "status": "stale"
+            }
+          ],
+          "decommissionedAt": null,
+          "driftLikely": true,
+          "examined": 1,
+          "expectedSince": "2026-08-01T00:00:00Z",
+          "job": "nightly-image-scan",
+          "lastExamined": "2026-08-05T10:00:00Z",
+          "lastVerified": "2026-08-05T10:00:00Z",
+          "machineBased": true,
+          "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+          "resourceType": "image",
+          "sampleGroup": null,
+          "untimed": 0,
+          "untimedEvidence": []
+        }
+      ],
+      "summary": [
+        {
+          "current": 2,
+          "expected": 5,
+          "force": "MUST",
+          "missing": 1,
+          "ruleId": "VDR-TFR-MVX",
+          "stale": 1,
+          "unanchored": 0,
+          "undetermined": 1
+        },
+        {
+          "current": 0,
+          "expected": 0,
+          "force": "MUST",
+          "missing": 0,
+          "ruleId": "VDR-TFR-NMV",
+          "stale": 0,
+          "unanchored": 0,
+          "undetermined": 0
+        },
+        {
+          "current": 1,
+          "expected": 1,
+          "force": "SHOULD",
+          "missing": 0,
+          "ruleId": "VDR-TFR-PCD",
+          "stale": 0,
+          "unanchored": 0,
+          "undetermined": 0
+        },
+        {
+          "current": 1,
+          "expected": 4,
+          "force": "SHOULD",
+          "missing": 1,
+          "ruleId": "VDR-TFR-PDD",
+          "stale": 1,
+          "unanchored": 0,
+          "undetermined": 1
+        },
+        {
+          "current": 1,
+          "expected": 1,
+          "force": "SHOULD",
+          "missing": 0,
+          "ruleId": "VDR-TFR-PSD",
+          "stale": 0,
+          "unanchored": 0,
+          "undetermined": 0
+        }
+      ],
+      "unregistered": [],
+      "windows": [
+        {
+          "anchor": "declared",
+          "anchorAt": "2026-08-01T00:00:00Z",
+          "closedAt": "2026-08-04T00:00:00Z",
+          "contextKey": "image:registry.example.test/synthetic/example-service:1.4.0",
+          "evidence": null,
+          "force": "MUST",
+          "resumedAt": "2026-08-05T10:00:00Z",
+          "ruleId": "VDR-TFR-MVX",
+          "standIn": null
+        },
+        {
+          "anchor": "verification",
+          "anchorAt": "2026-08-05T10:00:00Z",
+          "closedAt": "2026-08-08T10:00:00Z",
+          "contextKey": "image:registry.example.test/synthetic/example-service:1.4.0",
+          "evidence": {
+            "at": "2026-08-05T10:00:00Z",
+            "disposition": "pass",
+            "kind": "observation",
+            "observationId": "obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",
+            "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+            "resourceType": "image"
+          },
+          "force": "MUST",
+          "resumedAt": null,
+          "ruleId": "VDR-TFR-MVX",
+          "standIn": null
+        },
+        {
+          "anchor": "verification",
+          "anchorAt": "2026-08-05T10:00:00Z",
+          "closedAt": "2026-08-19T10:00:00Z",
+          "contextKey": "image:registry.example.test/synthetic/example-service:1.4.0",
+          "evidence": {
+            "at": "2026-08-05T10:00:00Z",
+            "disposition": "pass",
+            "kind": "observation",
+            "observationId": "obs-bcc0abe46ca6b0be67b4ab860b40daa91654dc1db853876ddc12ba5077e10178",
+            "resourceId": "registry.example.test/synthetic/example-service:1.4.0",
+            "resourceType": "image"
+          },
+          "force": "SHOULD",
+          "resumedAt": null,
+          "ruleId": "VDR-TFR-PDD",
+          "standIn": null
+        }
+      ]
+    },
+    "detectionTimeAttestation": null,
+    "diagnostics": [
+      {
+        "code": "baseline_state_ignored",
+        "level": "info",
+        "location": "codeql-repo.sarif",
+        "message": "baselineState is recorded as metadata and never changes a disposition (3 occurrences: runs[0].results[0], runs[0].results[1], runs[0].results[2])"
+      },
+      {
+        "code": "run_clean",
+        "level": "info",
+        "location": "clean-run.sarif",
+        "message": "run reports no results (1 occurrence: runs[0])"
+      },
+      {
+        "code": "unresolved_observation",
+        "level": "warning",
+        "location": "codeql-repo.sarif",
+        "message": "js/xss-through-dom on https://github.com/example/webapp/src/ui/legacy.js has disposition unknown and was not reported as a vulnerability"
+      },
+      {
+        "code": "change_precedes_expected_since",
+        "level": "warning",
+        "location": "timed-changes CHG-2002 logical:sample-group/webapp-ui",
+        "message": "change CHG-2002 occurred before logical:sample-group/webapp-ui's expectedSince 2026-09-01T00:00:00Z; the obligation runs from occurredAt as the provider stated it, and the two statements disagree"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "excludedByPeriod": 0,
+    "generatedAt": "2026-09-03T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.4.0a0"
+    },
+    "parserVersions": {
+      "complyroll.sarif": "2"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-vulnerability-detail-report-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "5e9499e8cb9d0367c888ce41040175270fc9f007ae4f61d0ced34cca81cfe497"
+    }
+  }
+}

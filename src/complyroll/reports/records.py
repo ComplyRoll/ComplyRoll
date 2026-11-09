@@ -59,6 +59,8 @@ from complyroll.policy import (
 )
 from complyroll.policy.source import RuleSourceSnapshot
 
+from .changes import DAC_RULE, ChangeProjection, derive_changes
+from .changes_input import ChangeSet
 from .checks import (
     CLOCK_OUT_OF_RANGE,
     TRACKING_ID_COLLISION,
@@ -235,6 +237,13 @@ def compile_record_set(
         raise ValueError("coverage must be derived from these options' inventory, as-of and policy")
     if gap_aware and coverage is None:
         raise ValueError("a gap-aware compile needs an inventory")
+    # After coverage, which has refused any out-of-range clock by name; a coverage gap in
+    # these observations is a system record, so it never satisfies a change.
+    changes = (
+        None
+        if options.changes is None or inventory is None
+        else _changes(observations, options.changes, inventory, policy, options)
+    )
 
     compiled: list[CompiledVulnerability] = []
     # Each record with no detection time, as (correlation id, label), named in id order.
@@ -374,6 +383,8 @@ def compile_record_set(
         diagnostics.extend(
             _coverage_gap_divergences(coverage, window_ids, gap_tracking, gap_labels, observations)
         )
+    if changes is not None:
+        diagnostics.extend(changes.warnings)
     return CompiledRecordSet(
         records=tuple(compiled),
         artifacts=tuple(sorted(artifacts, key=_artifact_order)),
@@ -386,6 +397,7 @@ def compile_record_set(
         coverage=coverage,
         coverage_gaps=tuple(sorted(set(gap_tracking.values()))),
         coverage_gap_records=gap_records,
+        changes=changes,
     )
 
 
@@ -1097,6 +1109,40 @@ def _coverage(
     if unusable:
         raise ReportCompileError(unusable)
     return derive_coverage(observations, inventory, policy, as_of)
+
+
+def _changes(
+    observations: Sequence[Observation],
+    change_set: ChangeSet,
+    inventory: Inventory,
+    policy: SelectedPolicy,
+    options: ReportOptions,
+) -> ChangeProjection:
+    """Return the change projection, or stop the run when the policy lacks its rule."""
+
+    if not _selects(policy, DAC_RULE):
+        raise ReportCompileError(
+            (
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="change_rule_unavailable",
+                    message=(
+                        "a change file was supplied, but the Class "
+                        f"{policy.profile.certification_class.value} policy selects no "
+                        f"{DAC_RULE} rule, so no change can be read against it"
+                    ),
+                    location=change_set.name,
+                ),
+            )
+        )
+    return derive_changes(
+        observations,
+        change_set,
+        inventory,
+        policy,
+        options.as_of,
+        kev_catalog=options.kev_catalog,
+    )
 
 
 def _selects(policy: SelectedPolicy, rule_id: str) -> bool:

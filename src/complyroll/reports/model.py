@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 from urllib.parse import urlsplit
 
 from complyroll.adapters import DiagnosticLevel
@@ -20,10 +20,16 @@ from complyroll.models import CaseStatus, PainRating, ResourceRef
 from complyroll.policy import CertificationClass, CertificationProfile, PolicyProvenance
 from complyroll.schemas import SchemaProvenance
 
+from .changes_input import ChangeSet
 from .coverage import CoverageResult, CoverageWindow
 from .evaluations import EvaluationInput, record_label
 from .inventory import Inventory
 from .kev import KevCatalog, KevClock
+
+# NOTE: `changes` imports `ReportDiagnostic` from this module, so its projection is a
+# type-only import here.
+if TYPE_CHECKING:
+    from .changes import ChangeProjection
 
 # *--- Configuration ---*
 
@@ -93,6 +99,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "change_after_decommission",
     "change_precedes_expected_since",
     "change_resource_unregistered",
+    "change_rule_unavailable",
     "clock_out_of_range",
     "closed_without_disposition",
     "coverage_gap_contradicted",
@@ -181,7 +188,8 @@ class ReportOptions:
     coverage block measured against it (ADR 0015); without one, nothing reads the coverage
     rules and no report changes. `record_coverage_gaps` makes each window of that block a
     system record of the run, so it needs the inventory; only a compile from artifacts
-    reads it (ADR 0015).
+    reads it (ADR 0015). `changes` is a per-run input read against that inventory, so it
+    needs one too (ADR 0018).
     """
 
     certification_class: CertificationClass
@@ -194,6 +202,7 @@ class ReportOptions:
     kev_catalog: KevCatalog | None = None
     inventory: Inventory | None = None
     record_coverage_gaps: bool = False
+    changes: ChangeSet | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.certification_class, CertificationClass):
@@ -219,6 +228,10 @@ class ReportOptions:
             raise ValueError(
                 "record_coverage_gaps needs an inventory, whose coverage windows the gaps record"
             )
+        if self.changes is not None and not isinstance(self.changes, ChangeSet):
+            raise TypeError("changes must be a ChangeSet")
+        if self.changes is not None and self.inventory is None:
+            raise ValueError("changes needs an inventory, which every change is read against")
         # Constructing the profile validates the calendar timezone at the boundary.
         CertificationProfile(
             self.certification_class,
@@ -547,6 +560,7 @@ class ReportMetadata:
     coverage: CoverageResult | None = None
     coverage_gaps: tuple[str, ...] = ()
     coverage_gap_records: Mapping[CoverageWindow, str | None] | None = None
+    changes: ChangeProjection | None = None
 
     @property
     def attestation(self) -> datetime | None:
@@ -595,7 +609,9 @@ class CompiledRecordSet:
     it whole, since coverage is measured at as-of and never selected by a period.
     `coverage_gaps` names every coverage gap record in the set the same way, and only a
     gap-aware compile sets `coverage_gap_records`: each window of `coverage` mapped to the
-    tracking id of the record carrying its gap, or None when the set holds none.
+    tracking id of the record carrying its gap, or None when the set holds none. `changes`
+    is the change projection when the options carry a change file, published whole at as-of
+    as coverage is.
     """
 
     records: tuple[CompiledVulnerability, ...]
@@ -609,6 +625,7 @@ class CompiledRecordSet:
     coverage: CoverageResult | None = None
     coverage_gaps: tuple[str, ...] = ()
     coverage_gap_records: Mapping[CoverageWindow, str | None] | None = None
+    changes: ChangeProjection | None = None
 
 
 # *--- Helper Functions ---*

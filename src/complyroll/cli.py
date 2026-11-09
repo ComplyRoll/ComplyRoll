@@ -67,6 +67,7 @@ from .reports import (
     compile_historical_report_from_history,
     compile_vdt_report,
     compile_vdt_report_from_history,
+    load_changes,
     load_evaluations,
     load_inventory,
     load_kev_catalog,
@@ -460,6 +461,16 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         metavar="FILE",
         help=(
             "information resource inventory JSON to measure coverage against "
+            "(read locally, never stored)"
+        ),
+    )
+    # Appends for the reason `--kev` does: a second change file is refused, not silently kept.
+    parser.add_argument(
+        "--changes",
+        action="append",
+        metavar="FILE",
+        help=(
+            "declared change file JSON to read detection obligations from; needs --inventory "
             "(read locally, never stored)"
         ),
     )
@@ -1146,6 +1157,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     evaluations_path = Path(args.evaluations) if args.evaluations else None
     kev_paths = [Path(item) for item in (args.kev or ())]
     inventory_paths = [Path(item) for item in (args.inventory or ())]
+    changes_paths = [Path(item) for item in (args.changes or ())]
 
     conflict = _report_source_conflict(args, command.name)
     if conflict is not None:
@@ -1161,6 +1173,19 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             stderr,
             "invalid_option",
             f"report {command.name} takes one --inventory file, not {len(inventory_paths)}",
+        )
+    if len(changes_paths) > 1:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} takes one --changes file, not {len(changes_paths)}",
+        )
+    if changes_paths and not inventory_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} --changes needs --inventory: a change is read against "
+            "the inventory or not at all",
         )
     if args.record_coverage_gaps and not inventory_paths:
         return _fail(
@@ -1195,6 +1220,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
                 *artifacts,
                 *kev_paths,
                 *inventory_paths,
+                *changes_paths,
                 *(item for item in (evaluations_path, database) if item),
             ),
         )
@@ -1202,6 +1228,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
         # refused as the input it is rather than as one more bad option.
         kev_catalog = load_kev_catalog(kev_paths[0]) if kev_paths else None
         inventory = load_inventory(inventory_paths[0]) if inventory_paths else None
+        change_set = load_changes(changes_paths[0]) if changes_paths else None
         options = ReportOptions(
             certification_class=CertificationClass(args.certification_class),
             package_uri=args.package_uri,
@@ -1215,6 +1242,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             kev_catalog=kev_catalog,
             inventory=inventory,
             record_coverage_gaps=args.record_coverage_gaps,
+            changes=change_set,
         )
         evaluations = load_evaluations(evaluations_path) if evaluations_path else None
     except ReportInputError as exc:
@@ -1263,7 +1291,8 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     `--record-failed-imports` is on it because a store already recorded or refused its
     failures when `ingest` read them (ADR 0014). `--record-coverage-gaps` is on it because
     a report run never records a gap into a store; what a store holds is its own record
-    (ADR 0015).
+    (ADR 0015). `--changes` is on it because a store records its changes as it records its
+    artifacts (ADR 0018).
     """
 
     named = [
@@ -1274,6 +1303,7 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
             ("--detected-at", args.detected_at is not None),
             ("--record-failed-imports", args.record_failed_imports),
             ("--record-coverage-gaps", args.record_coverage_gaps),
+            ("--changes", bool(args.changes)),
         )
         if present
     ]

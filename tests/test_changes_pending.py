@@ -328,17 +328,42 @@ class DetectionRequestDocumentTests(PendingBase):
         self.assertEqual([item["changeId"] for item in document["requests"]], ["CHG-2"])
 
     def test_parity_every_waiting_row_has_one_entry_and_no_other_row_has_one(self) -> None:
+        # The one exclusion: a waiting status on a resource decommissioned at or before as-of
+        # stays in the block and leaves the request (build-plan call 14).
+        document = json.loads(TIMED_INVENTORY.read_text(encoding="utf-8"))
+        for entry in document["resources"]:
+            if entry["resourceId"] == IMAGE:
+                entry["decommissionedAt"] = "2026-08-25T00:00:00Z"
+        gone = self.workspace / "inventory-decommissioned.json"
+        gone.write_text(json.dumps(document), encoding="utf-8")
+        gone_argv = [
+            str(gone) if item == str(TIMED_INVENTORY) else item for item in timed_changes_argv()
+        ]
         runs = (
-            ("timed", timed_changes_argv(), pending_argv()),
-            ("example", list(CHANGES_ARGUMENTS), example_argv()),
+            ("timed", timed_changes_argv(), pending_argv(), frozenset()),
+            ("example", list(CHANGES_ARGUMENTS), example_argv(), frozenset()),
+            ("decommissioned", gone_argv, pending_argv(inventory=gone), frozenset({IMAGE})),
         )
         seen: set[str] = set()
-        for name, report_argv, request_argv in runs:
+        for name, report_argv, request_argv, excluded in runs:
             with self.subTest(run=name):
                 block = self.request(report_argv)["x-complyroll"]["changes"]
                 document = self.request(request_argv)
 
-                waiting = [row for row in block["obligations"] if row["status"] in WAITING]
+                waiting = [
+                    row
+                    for row in block["obligations"]
+                    if row["status"] in WAITING and row["resourceId"] not in excluded
+                ]
+                # The exclusion has to bite, or this run proves nothing about it.
+                self.assertEqual(
+                    {
+                        row["resourceId"]
+                        for row in block["obligations"]
+                        if row["status"] in WAITING and row["resourceId"] in excluded
+                    },
+                    excluded,
+                )
                 self.assertTrue(waiting)
                 self.assertEqual(
                     Counter(rows_of(document)),

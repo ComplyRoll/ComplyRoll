@@ -249,7 +249,7 @@ No evidence was observed after a resource was decommissioned.
 
 Changes declared in example-changes (7 changes, 2877 bytes, SHA-256 e4317ce14eeef8f457b78704b1d8401082ebd746ef593345bd306c288f9b49fd), read against the inventory with SHA-256 553f46343b7896851926232f9920ce16e708483495002852050277243fb1b84f as of 2026-08-21T12:00:00Z, under VDR-CSO-DAC (SHOULD) from rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54.
 
-VDR-CSO-DAC states no timeframe, so a window here is only the provider's own detectBy, and a change without a window is tracked but never lapses. Changes are measured against the provider-supplied inventory named by its SHA-256 digest, so a resource it omits is listed as unregistered and opens no obligation. An obligation closes only on a verification at or after the change and at or before as-of; evidence that determined no status examines a resource without verifying it, and untimed evidence never satisfies one. A created change and a new entry's coverage clocks overlap on purpose, under different rules. A detected status is not a compliance finding.
+VDR-CSO-DAC states no timeframe, so a window here is only the provider's own detectBy, and a change without a window is tracked but never lapses. Changes are measured against the provider-supplied inventory named by its SHA-256 digest, so a resource it omits is listed as unregistered and opens no obligation. A detection obligation is satisfied only by a verification at or after the change and at or before as-of; an examination that verified nothing does not satisfy one, and neither does untimed evidence. A created change and a new entry's coverage clocks overlap on purpose, under different rules. A detected status is not a compliance finding.
 
 ### Obligations by status
 

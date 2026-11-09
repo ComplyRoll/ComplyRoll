@@ -42,7 +42,7 @@ because the artifacts are one run of positional arguments.
 | `cases correlate`, `attest-detection`, `evaluate`, `list`, `history` | store | success; `attest-detection` and `evaluate` may print `warning:` lines | a refusal, a missing store, a mapped domain exception | never |
 | `cases coverage` | store | this run recorded no gap, including a rerun that finds every gap already recorded | a missing or second inventory, a missing store, a parse failure | this run recorded at least one gap |
 | `report vdt\|avi\|historical` | stateless | published with no flagged record; `--inventory` alone; an execution-class failure without the flag (WARNING) | a pre-flight refusal; a `ReportCompileError`, which carries every ERROR; a publish failure; `error_diagnostic_unpublished` | published, and `--record-failed-imports` with a failure or `--record-coverage-gaps` with a gap, once with both; a record outside the report period still counts (ADR 0015 Decision 31) |
-| `changes pending` | stateless | the request was written, whether or not anything is waiting; also with a failure noted by `--record-failed-imports` | a refusal; a missing or second input; a failed reading without the flag; a `ReportCompileError`; a publish failure | never |
+| `changes pending` | stateless | the request was written, whether or not anything is waiting; also an execution-class failure without the flag, which stays WARNING `execution_unsuccessful`, and a failure noted by `--record-failed-imports` | a refusal; a missing or second input; a failed reading without the flag; a `ReportCompileError`; a publish failure | never |
 | `report ... --db` | store | published, even when the store holds failures and gaps | the same refusals, and either record flag beside `--db` | never |
 | `store verify` | store | `ok: N event(s) verified`, failures and gaps included; may print `warning:` lines | an integrity or domain fault, a missing store | never |
 | `validate` | file | `valid: ID VERSION SHA256` | unreadable, too large, malformed, or schema-invalid; schema issue lines carry no `error:` prefix; `x-complyroll` is never read | never |
@@ -249,8 +249,8 @@ says so with one of three INFO notes, in the report's diagnostics and on standar
 `complyroll.changes` JSON document naming what changed, when, and which resources it touched. It
 needs `--inventory`, because a change is read against the inventory or not at all, and it is read
 locally and never stored. Each report gains the `x-complyroll.changes` block and a Markdown
-`## Changes` section, which give each change and resource a status from the evidence after the
-change. A run without the flag produces exactly the bytes it produced before
+`## Changes` section, which give each change and resource a status from the evidence at or after
+the change. A run without the flag produces exactly the bytes it produced before
 ([ADR 0018](decisions/0018-change-triggered-detection.md)). The format, the block, and each status
 are described in [`DATA_MODEL.md`](DATA_MODEL.md).
 

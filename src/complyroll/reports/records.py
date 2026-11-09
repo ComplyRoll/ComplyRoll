@@ -176,9 +176,11 @@ def derive_changes_from_artifacts(
 ) -> tuple[ChangeProjection, tuple[ReportDiagnostic, ...]]:
     """Ingest artifacts and project the options' change file, with no report around it.
 
-    The request document's front half: the same reading, refusals and projection as a report
-    with the same flags, so a request and a report's block cannot disagree (ADR 0018). The
-    diagnostics are the ingest's, in the report's order, then the projection's warnings.
+    The request document's front half: the same reading of the artifacts, the same refusals
+    about reading them, and the same projection as a report with the same flags, so a request
+    and a report's block cannot disagree (ADR 0018). It builds no record, so a refusal about
+    one, such as `detection_time_missing`, does not apply. The diagnostics are the ingest's,
+    in the report's order, then the projection's warnings.
     """
 
     if not isinstance(options, ReportOptions):
@@ -412,6 +414,11 @@ def compile_record_set(
         raise ReportCompileError(errors)
 
     _require_unique_tracking_ids(compiled)
+    if changes is not None:
+        # An evaluation may rename a record, and a change row names it as the record does.
+        changes = changes.with_published_tracking_ids(
+            {record.original_tracking_id: record.tracking_id for record in compiled}
+        )
     if catalog is not None:
         diagnostics.extend(_kev_diagnostics(catalog, compiled, kev_incomplete, options))
     if coverage is not None:

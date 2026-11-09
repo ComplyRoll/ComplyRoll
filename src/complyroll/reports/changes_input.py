@@ -53,7 +53,8 @@ from .kev import detail, excerpt, json_type
 
 CHANGES_SCHEMA = "complyroll.changes"
 CHANGES_SCHEMA_VERSION = 1
-# The inventory's bounds: every valid document nests five levels deep.
+# The inventory's bounds. `parse_json_bounded` counts the root as level 1 and a scalar as a
+# level, so a valid document reaches level 6.
 MAX_CHANGES_BYTES = 8 * 1024 * 1024
 MAX_CHANGES = 20_000
 MAX_CHANGE_RESOURCES = 1_000

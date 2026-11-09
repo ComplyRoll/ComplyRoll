@@ -30,6 +30,8 @@ from test_cli import (
     FIXTURES,
     GOLDEN,
     HISTORICAL_ARGUMENTS,
+    KEV_ARGUMENTS,
+    KEV_EVALUATIONS,
     REPORT_ARGUMENTS,
     TIMED_CHANGES,
     TIMED_INVENTORY,
@@ -718,6 +720,78 @@ class ChangesFlagTests(unittest.TestCase):
         self.assertIn("warning: kev_at_activation: change CHG-3001 activated image:", err)
         section = changes_section(markdown_path.read_text(encoding="utf-8"))
         self.assertIn(f"| yes | {row['kevTrackingIds'][0]} |", section)
+
+    def test_kev_tracking_id_follows_an_evaluation_override(self) -> None:
+        web = "registry.example.test/kev/web:2.3.1/usr/lib/libexample-net.so.4"
+        inventory_path = self.workspace / "inventory.json"
+        inventory_path.write_text(
+            json.dumps(
+                {
+                    "schema": "complyroll.inventory",
+                    "schemaVersion": 1,
+                    "name": "kev-inventory",
+                    "resources": [
+                        {
+                            "resourceType": "image",
+                            "resourceId": web,
+                            "machineBased": True,
+                            "driftLikely": True,
+                            "expectedSince": "2026-01-01T00:00:00Z",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        changes = self.write_changes(
+            change_file(
+                change_entry(
+                    "CHG-1",
+                    kind="created",
+                    occurredAt="2026-09-01T00:00:00Z",
+                    resources=[{"resourceType": "image", "resourceId": web}],
+                )
+            )
+        )
+        evaluations = json.loads(KEV_EVALUATIONS.read_text(encoding="utf-8"))
+        evaluations["evaluations"] = [{**evaluations["evaluations"][0], "trackingId": "PROV-7"}]
+        evaluations_path = self.workspace / "evaluations.json"
+        evaluations_path.write_text(json.dumps(evaluations), encoding="utf-8")
+
+        code, out, err = run(
+            [
+                "report",
+                "vdt",
+                str(FIXTURES / "kev-image-web.sarif"),
+                *KEV_ARGUMENTS,
+                "--as-of",
+                "2026-09-15T12:00:00Z",
+                "--from",
+                "2026-09-01T00:00:00Z",
+                "--to",
+                "2026-09-30T23:59:59Z",
+                "--kev",
+                str(FIXTURES / "kev-catalog.json"),
+                "--inventory",
+                str(inventory_path),
+                "--changes",
+                str(changes),
+                "--evaluations",
+                str(evaluations_path),
+            ]
+        )
+
+        self.assertEqual(code, 0, msg=err)
+        document = json.loads(out)
+        row = document["x-complyroll"]["changes"]["obligations"][0]
+        self.assertIs(row["kevAtActivation"], True)
+        self.assertIn("PROV-7", row["kevTrackingIds"])
+        published = {
+            record["providerTrackingId"]
+            for record in document["vulnerabilities"]
+            if "providerTrackingId" in record
+        }
+        self.assertLessEqual(set(row["kevTrackingIds"]), published)
 
 
 class ChangeOptionTests(unittest.TestCase):

@@ -8970,13 +8970,14 @@ class UsageErrorTextTests(unittest.TestCase):
         self.assertEqual(terminal_text("a\u2028b\u2029c"), "a\\u2028b\\u2029c")
 
     def test_an_ordinary_usage_error_keeps_argparses_bytes(self) -> None:
-        code, err = usage_error(["version", "--nope\tx"])
+        # A wide terminal keeps the usage on one line: where argparse wraps it differs by version.
+        with patch.dict(os.environ, {"COLUMNS": "200"}):
+            code, err = usage_error(["version", "--nope\tx"])
 
         self.assertEqual(code, 2)
         self.assertEqual(
             err,
-            "usage: complyroll [-h]\n"
-            "                  {version,plan,ingest,cases,report,changes,store,validate} ...\n"
+            "usage: complyroll [-h] {version,plan,ingest,cases,report,changes,store,validate} ...\n"
             "complyroll: error: unrecognized arguments: --nope\tx\n",
         )
 

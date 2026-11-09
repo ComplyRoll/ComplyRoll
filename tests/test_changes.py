@@ -15,7 +15,7 @@ import json
 import random
 import unittest
 from collections.abc import Iterable, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from functools import cache
 from typing import Any
 from unittest import mock
@@ -36,6 +36,7 @@ from complyroll.policy import (
     load_bundled_policy,
 )
 from complyroll.reports import KevCatalog, KevEntry, parse_changes, parse_inventory
+from complyroll.reports import changes as changes_module
 from complyroll.reports.changes import (
     CHANGE_BASIS,
     DAC_RULE,
@@ -44,6 +45,7 @@ from complyroll.reports.changes import (
     ChangeProjection,
     ObligationStatus,
     derive_changes,
+    detection_request,
 )
 from complyroll.reports.changes_input import ChangeSet
 from complyroll.reports.coverage import (
@@ -69,6 +71,8 @@ OTHER_DIGEST = "b" * 64
 PASS = ObservationDisposition.PASS
 OPEN = ObservationDisposition.OPEN
 CVE = "CVE-2026-0001"
+UNLISTED_CVE = "CVE-2026-9999"
+DAY = timedelta(days=1)
 LAB = ResourceRef("lab-01", "host")
 GROUP_REF = ResourceRef("sample-group/web", "logical")
 ALIAS = {"resourceType": "host", "resourceId": "lab-01.internal"}
@@ -201,16 +205,23 @@ def policy(class_name: str = "B") -> SelectedPolicy:
     return load_bundled_policy(profile)
 
 
-def catalog(date_added: date = date(2026, 8, 1), cve_id: str = CVE) -> KevCatalog:
+def catalog(
+    date_added: date = date(2026, 8, 1),
+    cve_id: str = CVE,
+    *,
+    released: datetime = datetime(2026, 9, 1, tzinfo=UTC),
+    also: Sequence[KevEntry] = (),
+) -> KevCatalog:
     entry = KevEntry(cve_id=cve_id, date_added=date_added, due_date=date(2026, 8, 22))
+    entries = tuple(sorted((entry, *also), key=lambda item: item.cve_id))
     return KevCatalog(
         name="kev.json",
         sha256="c" * 64,
         size_bytes=1,
         catalog_version="2026.09.01",
-        date_released=datetime(2026, 9, 1, tzinfo=UTC),
-        declared_count=1,
-        entries=(entry,),
+        date_released=released,
+        declared_count=len(entries),
+        entries=entries,
     )
 
 
@@ -440,6 +451,17 @@ class EvidenceTests(unittest.TestCase):
             with self.subTest(disposition=disposition):
                 row = only(run([host()], [change()], [observation(disposition=disposition)]))
                 self.assertIs(row.status, ObligationStatus.UNDETERMINED)
+
+    def test_examined_before_and_after_the_change_is_undetermined(self) -> None:
+        before = observation(
+            at=T - HOUR, disposition=ObservationDisposition.NOT_REVIEWED, record="R-before"
+        )
+        after = observation(
+            at=T + HOUR, disposition=ObservationDisposition.NOT_REVIEWED, record="R-after"
+        )
+        for evidence in ([before, after], [after, before]):
+            row = only(run([host()], [change()], evidence))
+            self.assertIs(row.status, ObligationStatus.UNDETERMINED)
 
     def test_every_verifying_disposition_satisfies(self) -> None:
         for disposition in (OPEN, PASS, ObservationDisposition.NOT_APPLICABLE):
@@ -762,10 +784,89 @@ class LifecycleTests(unittest.TestCase):
         self.assertIs(only(projection).status, ObligationStatus.RETIRED)
         self.assertEqual(codes(projection), ["change_after_decommission"])
 
+    def test_lapsed_row_of_a_decommissioned_entry_stays_in_the_block_and_leaves_the_request(
+        self,
+    ) -> None:
+        projection = run(
+            [host(decommissionedAt=text(T + 2 * HOUR))],
+            [change(detectBy=text(T + HOUR))],
+        )
+        row = only(projection)
+        self.assertIs(row.status, ObligationStatus.LAPSED)
+        block = projection.to_dict()
+        self.assertEqual(block["summary"]["lapsed"], 1)
+        self.assertEqual(block["obligations"][0]["status"], "lapsed")
+        self.assertEqual(projection.waiting, ())
+        request = detection_request(projection)
+        self.assertEqual(request["requests"], [])
+        self.assertEqual(
+            request["summary"],
+            {"pending": 0, "byStatus": {"lapsed": 0, "undetermined": 0, "pending": 0}},
+        )
+
+    def test_an_undetermined_row_decommissioned_at_as_of_is_not_waiting(self) -> None:
+        at = T + 2 * HOUR
+        examined = observation(
+            at=T + HOUR, disposition=ObservationDisposition.NOT_REVIEWED, record="R-after"
+        )
+        projection = run(
+            [host(decommissionedAt=text(at))], [change(detectBy=text(at))], [examined], as_of=at
+        )
+        self.assertIs(only(projection).status, ObligationStatus.UNDETERMINED)
+        self.assertEqual(projection.waiting, ())
+        self.assertEqual(detection_request(projection)["summary"]["byStatus"]["undetermined"], 0)
+
+    def test_a_pending_row_decommissioned_at_as_of_is_not_waiting(self) -> None:
+        # The window closes at the decommission and neither has passed, so the status is pending.
+        at = T + HOUR
+        projection = run([host(decommissionedAt=text(at))], [change(detectBy=text(at))], as_of=at)
+        self.assertIs(only(projection).status, ObligationStatus.PENDING)
+        self.assertEqual(projection.waiting, ())
+
+    def test_a_decommission_after_as_of_still_waits(self) -> None:
+        projection = run([host(decommissionedAt=text(AS_OF + HOUR))], [change()])
+        row = only(projection)
+        self.assertIs(row.status, ObligationStatus.PENDING)
+        self.assertEqual(projection.waiting, (row,))
+
+    def test_a_lapsed_group_leaves_the_request_only_once_every_member_is_decommissioned(
+        self,
+    ) -> None:
+        gone = host("web-1", sampleGroup="web", decommissionedAt=text(T + 2 * HOUR))
+        for name, members, waiting in (
+            ("one member left", [gone, host("web-2", sampleGroup="web")], 1),
+            (
+                "every member gone",
+                [gone, host("web-2", sampleGroup="web", decommissionedAt=text(T + 3 * HOUR))],
+                0,
+            ),
+        ):
+            with self.subTest(name):
+                projection = run(members, [change("CHG-1", GROUP_PAIR, detectBy=text(T + HOUR))])
+                self.assertIs(only(projection).status, ObligationStatus.LAPSED)
+                self.assertEqual(len(projection.waiting), waiting)
+                self.assertEqual(detection_request(projection)["summary"]["pending"], waiting)
+
     def test_expected_since_after_as_of_leaves_the_obligation_standing(self) -> None:
         projection = run([host(expectedSince=text(AS_OF + HOUR))], [change()])
         self.assertIs(only(projection).status, ObligationStatus.PENDING)
         self.assertEqual(codes(projection), ["change_precedes_expected_since"])
+
+
+class OrderTests(unittest.TestCase):
+    def test_unregistered_pairs_sort_by_pair_not_by_first_sighting(self) -> None:
+        projection = run([host()], [change("CHG-1", pair("zz-gone")), change("CHG-2", pair("aa"))])
+        self.assertEqual(
+            [item.resource.resource_id for item in projection.unregistered], ["aa", "zz-gone"]
+        )
+
+    def test_one_changes_rows_sort_by_the_entry_not_by_its_spelling(self) -> None:
+        # The alias sorts before `middle` and its entry after it, so spelling order is wrong.
+        entries = [host("zeta", aliases=[pair("alpha-alias")]), host("middle")]
+        projection = run(entries, [change("CHG-1", pair("alpha-alias"), pair("middle"))])
+        self.assertEqual(
+            [row.resource.resource_id for row in projection.obligations], ["middle", "zeta"]
+        )
 
 
 # *--- Warnings ---*
@@ -897,9 +998,137 @@ class KevTests(unittest.TestCase):
         self.assertEqual(only(projection).kev_tracking_ids, ())
         self.assertEqual(projection.warnings, ())
 
-    def test_kev_false_with_no_finding_in_the_catalog(self) -> None:
+    def test_kev_null_on_an_artifact_with_no_cve_finding(self) -> None:
+        # A clean run is no proof the scope is free of vulnerabilities (ADR 0015).
         row = only(run([host()], [self.created()], [observation(at=T + HOUR)], kev=catalog()))
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIs(row.status, ObligationStatus.DETECTED)
+        self.assertIsNone(row.kev_at_activation)
+        self.assertEqual(row.kev_tracking_ids, ())
+
+    def test_kev_false_needs_an_open_cve_finding(self) -> None:
+        def answer(*evidence: Observation) -> bool | None:
+            return only(run([host()], [self.created()], evidence, kev=catalog())).kev_at_activation
+
+        unlisted = observation(
+            at=T + HOUR, disposition=OPEN, record="R-cve", identifiers=(UNLISTED_CVE,)
+        )
+        self.assertIs(answer(unlisted), False)
+        # One co-first artifact with an open CVE finding is enough, whatever the others hold.
+        clean = observation(at=T + HOUR, record="R-clean", digest=OTHER_DIGEST)
+        self.assertIs(answer(clean, unlisted), False)
+        no_cve = observation(at=T + HOUR, disposition=OPEN, identifiers=("GHSA-xxxx-yyyy-zzzz",))
+        self.assertIsNone(answer(no_cve))
+        not_open = observation(at=T + HOUR, disposition=PASS, identifiers=(UNLISTED_CVE,))
+        self.assertIsNone(answer(not_open))
+
+    def test_kev_null_when_a_cve_may_have_been_cut_from_a_finding(self) -> None:
+        cut = dataclasses.replace(
+            observation(at=T + HOUR, disposition=OPEN, identifiers=(UNLISTED_CVE,)),
+            source_metadata=(("truncated", '["source_identifiers"]'),),
+        )
+        row = only(run([host()], [self.created()], [cut], kev=catalog()))
+        self.assertIs(row.status, ObligationStatus.DETECTED)
+        self.assertIsNone(row.kev_at_activation)
+
+    def test_kev_null_when_the_catalog_predates_the_change(self) -> None:
+        finding = observation(at=T + HOUR, disposition=OPEN, identifiers=(UNLISTED_CVE,))
+        row = only(run([host()], [self.created()], [finding], kev=catalog(released=T - DAY)))
+        self.assertIs(row.status, ObligationStatus.DETECTED)
+        self.assertIsNone(row.kev_at_activation)
+        self.assertEqual(row.kev_tracking_ids, ())
+
+    def test_kev_release_and_change_dates_are_read_in_utc(self) -> None:
+        # 23:30 at -05:00 on the 1st is the 2nd in UTC, and 23:00 at -05:00 on the 2nd the 3rd.
+        minus_five = timezone(timedelta(hours=-5))
+        released = datetime(2026, 9, 1, 23, 30, tzinfo=minus_five)
+        finding = observation(at=T + 3 * DAY, disposition=OPEN, identifiers=(UNLISTED_CVE,))
+        for occurred_at, expected in (
+            (datetime(2026, 9, 2, 1, tzinfo=UTC), False),
+            (datetime(2026, 9, 2, 23, tzinfo=minus_five), None),
+        ):
+            with self.subTest(occurred_at=occurred_at):
+                created = self.created(occurredAt=text(occurred_at))
+                row = only(run([host()], [created], [finding], kev=catalog(released=released)))
+                self.assertIs(row.kev_at_activation, expected)
+
+    def test_kev_true_with_a_stale_catalog_that_lists_it(self) -> None:
+        finding = observation(
+            at=T + HOUR, disposition=OPEN, record="R-kev", identifiers=(CVE,), context="ctx-9"
+        )
+        row = only(run([host()], [self.created()], [finding], kev=catalog(released=T - 30 * DAY)))
+        self.assertIs(row.kev_at_activation, True)
+        self.assertEqual(row.kev_tracking_ids, (tracking_id_for("sarif", "R-kev", "ctx-9"),))
+
+    def test_kev_true_when_any_co_first_artifact_matches(self) -> None:
+        # One record id on both, so only the digest decides which observation sorts first.
+        for kev_digest, clean_digest in ((DIGEST, OTHER_DIGEST), (OTHER_DIGEST, DIGEST)):
+            with self.subTest(kev_digest=kev_digest[:4]):
+                clean = observation(at=T + HOUR, record="R-1", digest=clean_digest)
+                finding = observation(
+                    at=T + HOUR,
+                    disposition=OPEN,
+                    record="R-1",
+                    identifiers=(CVE,),
+                    digest=kev_digest,
+                    context="ctx-9",
+                )
+                row = only(run([host()], [self.created()], [clean, finding], kev=catalog()))
+                self.assertIs(row.kev_at_activation, True)
+                self.assertEqual(row.kev_tracking_ids, (tracking_id_for("sarif", "R-1", "ctx-9"),))
+
+    def test_kev_tracking_ids_are_the_union_of_the_co_first_artifacts(self) -> None:
+        records = [
+            observation(
+                at=T + HOUR,
+                disposition=OPEN,
+                record=record,
+                identifiers=(CVE,),
+                digest=digest,
+                context="ctx",
+            )
+            for record, digest in (("R-b", DIGEST), ("R-a", OTHER_DIGEST))
+        ]
+        row = only(run([host()], [self.created()], records, kev=catalog()))
+        self.assertEqual(
+            list(row.kev_tracking_ids),
+            sorted(tracking_id_for("sarif", record, "ctx") for record in ("R-a", "R-b")),
+        )
+
+    def test_a_bom_co_first_with_a_clean_artifact_still_speaks_for_the_entry(self) -> None:
+        clean = observation(at=T + HOUR, record="R-clean", digest=OTHER_DIGEST)
+        row = only(
+            run([host()], [self.created()], [clean, self.bom(), self.package_row()], kev=catalog())
+        )
+        self.assertIs(row.kev_at_activation, True)
+
+    def test_two_changes_either_side_of_date_added_read_false_then_true(self) -> None:
+        finding = observation(at=T + HOUR, disposition=OPEN, identifiers=(CVE,))
+        before = self.created(occurredAt=text(T - DAY))
+        on_the_day = change("CHG-2", kind="created", occurredAt=text(T))
+        projection = run(
+            [host()], [before, on_the_day], [finding], kev=catalog(date_added=T.date())
+        )
+        by_change = {row.change.change_id: row for row in projection.obligations}
+        self.assertIs(by_change["CHG-1"].kev_at_activation, False)
+        self.assertEqual(by_change["CHG-1"].kev_tracking_ids, ())
+        self.assertIs(by_change["CHG-2"].kev_at_activation, True)
+
+    def test_a_finding_under_two_cves_counts_from_the_earlier_listing(self) -> None:
+        later = KevEntry(cve_id=UNLISTED_CVE, date_added=T.date() + DAY, due_date=date(2026, 10, 1))
+        finding = observation(at=T + HOUR, disposition=OPEN, identifiers=(CVE, UNLISTED_CVE))
+        row = only(run([host()], [self.created()], [finding], kev=catalog(also=(later,))))
+        self.assertIs(row.kev_at_activation, True)
+
+    def test_one_tracking_id_counts_from_its_earliest_listing(self) -> None:
+        later = KevEntry(cve_id=UNLISTED_CVE, date_added=T.date() + DAY, due_date=date(2026, 10, 1))
+        one = observation(at=T + HOUR, disposition=OPEN, record="R-1", identifiers=(CVE,))
+        two = observation(
+            at=T + 2 * HOUR, disposition=OPEN, record="R-1", identifiers=(UNLISTED_CVE,)
+        )
+        for evidence in ([one, two], [two, one]):
+            row = only(run([host()], [self.created()], evidence, kev=catalog(also=(later,))))
+            self.assertIs(row.kev_at_activation, True)
+            self.assertEqual(len(row.kev_tracking_ids), 1)
 
     def test_kev_null_without_catalog(self) -> None:
         finding = observation(at=T + HOUR, disposition=OPEN, identifiers=(CVE,))
@@ -941,7 +1170,7 @@ class KevTests(unittest.TestCase):
         )
         for evidence in ([verification, finding], [finding, verification]):
             row = only(run([host()], [self.created()], evidence, kev=catalog()))
-            self.assertIs(row.kev_at_activation, False)
+            self.assertIsNone(row.kev_at_activation)
 
     def test_kev_null_on_a_retired_row(self) -> None:
         finding = observation(at=T + HOUR, disposition=OPEN, identifiers=(CVE,))
@@ -966,7 +1195,7 @@ class KevTests(unittest.TestCase):
                 kev=catalog(),
             )
         )
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_a_finding_spelled_by_an_alias_is_the_same_resource(self) -> None:
         finding = observation("lab-01.internal", at=T + HOUR, disposition=OPEN, identifiers=(CVE,))
@@ -977,7 +1206,7 @@ class KevTests(unittest.TestCase):
         verification = observation(at=T + HOUR, record="R-verify")
         finding = observation(at=T + HOUR, disposition=PASS, record="R-kev", identifiers=(CVE,))
         row = only(run([host()], [self.created()], [verification, finding], kev=catalog()))
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_a_finding_after_as_of_is_not_flagged(self) -> None:
         verification = observation(at=T + HOUR, record="R-verify")
@@ -985,7 +1214,7 @@ class KevTests(unittest.TestCase):
             at=AS_OF + SECOND, disposition=OPEN, record="R-kev", identifiers=(CVE,)
         )
         row = only(run([host()], [self.created()], [verification, finding], kev=catalog()))
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_tracking_ids_are_sorted_and_distinct(self) -> None:
         records = [
@@ -1044,7 +1273,7 @@ class KevTests(unittest.TestCase):
             )
         )
         self.assertIs(row.status, ObligationStatus.DETECTED)
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_package_row_needs_a_bom_scope_verification(self) -> None:
         # The same digest, but the verification is an ordinary finding, so no BOM verified it.
@@ -1053,7 +1282,7 @@ class KevTests(unittest.TestCase):
             run([host()], [self.created()], [verification, self.package_row()], kev=catalog())
         )
         self.assertIs(row.status, ObligationStatus.DETECTED)
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_package_row_of_another_source_type_is_not_counted(self) -> None:
         row = only(
@@ -1064,7 +1293,7 @@ class KevTests(unittest.TestCase):
                 kev=catalog(),
             )
         )
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_package_row_that_is_not_open_is_not_counted(self) -> None:
         row = only(
@@ -1075,7 +1304,7 @@ class KevTests(unittest.TestCase):
                 kev=catalog(),
             )
         )
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_package_row_after_as_of_is_not_counted(self) -> None:
         row = only(
@@ -1086,7 +1315,7 @@ class KevTests(unittest.TestCase):
                 kev=catalog(),
             )
         )
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_a_bom_row_on_another_resource_type_is_not_counted(self) -> None:
         row = only(
@@ -1097,7 +1326,7 @@ class KevTests(unittest.TestCase):
                 kev=catalog(),
             )
         )
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_a_scope_record_id_from_another_source_type_is_no_bom(self) -> None:
         verification = observation(at=T + HOUR, record=CYCLONEDX_SCOPE_RECORD_ID)
@@ -1105,7 +1334,7 @@ class KevTests(unittest.TestCase):
             run([host()], [self.created()], [verification, self.package_row()], kev=catalog())
         )
         self.assertIs(row.status, ObligationStatus.DETECTED)
-        self.assertIs(row.kev_at_activation, False)
+        self.assertIsNone(row.kev_at_activation)
 
     def test_bom_and_finding_verifications_keep_their_own_answers(self) -> None:
         # One digest and one change day, so only whether a BOM verified can tell them apart.
@@ -1120,8 +1349,23 @@ class KevTests(unittest.TestCase):
             kev=catalog(),
         )
         by_change = {row.change.change_id: row for row in projection.obligations}
-        self.assertIs(by_change["CHG-1"].kev_at_activation, False)
+        self.assertIsNone(by_change["CHG-1"].kev_at_activation)
         self.assertIs(by_change["CHG-2"].kev_at_activation, True)
+
+    def test_a_bom_scope_counts_beside_another_observation_of_its_digest(self) -> None:
+        # Records either side of the scope's id, so the scope need not sort last among its peers.
+        for record in ("aaa-finding", "zzz-finding"):
+            with self.subTest(record=record):
+                other = observation(at=T + HOUR, record=record)
+                row = only(
+                    run(
+                        [host()],
+                        [self.created()],
+                        [other, self.bom(), self.package_row()],
+                        kev=catalog(),
+                    )
+                )
+                self.assertIs(row.kev_at_activation, True)
 
     def test_package_row_listed_after_the_change_is_not_counted(self) -> None:
         later_listing = T.date() + timedelta(days=1)
@@ -1136,17 +1380,37 @@ class KevTests(unittest.TestCase):
         self.assertIs(row.kev_at_activation, False)
         self.assertEqual(row.kev_tracking_ids, ())
 
-    def test_one_artifact_is_matched_once_per_change_date(self) -> None:
+    def test_kev_matching_reads_each_finding_once(self) -> None:
         findings = [
             observation(at=T + HOUR, disposition=OPEN, record=f"R-{index}", identifiers=(CVE,))
             for index in range(5)
         ]
-        changes = [self.created(change_id=f"CHG-{index}") for index in range(300)]
+        # Distinct days either side of the listing, so a memo keyed by date would miss each time.
+        changes = [
+            self.created(change_id=f"CHG-{index}", occurredAt=text(T - index * DAY))
+            for index in range(100)
+        ]
         real = KevCatalog.matches
         with mock.patch.object(KevCatalog, "matches", autospec=True, side_effect=real) as spy:
             projection = run([host()], changes, findings, kev=catalog())
         self.assertEqual(spy.call_count, len(findings))
-        self.assertTrue(all(row.kev_at_activation for row in projection.obligations))
+        self.assertEqual({row.kev_at_activation for row in projection.obligations}, {True, False})
+
+    def test_co_first_evidence_is_read_once_per_instant(self) -> None:
+        findings = [
+            observation(at=T + HOUR, disposition=OPEN, record=f"R-{index}", identifiers=(CVE,))
+            for index in range(200)
+        ]
+        changes = [
+            self.created(change_id=f"CHG-{index}", occurredAt=text(T - index * DAY))
+            for index in range(100)
+        ]
+        real = changes_module._Subject.verifying_at
+        with mock.patch.object(
+            changes_module._Subject, "verifying_at", autospec=True, side_effect=real
+        ) as spy:
+            run([host()], changes, findings, kev=catalog())
+        self.assertEqual(spy.call_count, 1)
 
 
 # *--- Policy And Shape ---*
@@ -1177,6 +1441,21 @@ class ProjectionTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(PolicyRuleNotFoundError, DAC_RULE):
             run([host()], [change()], selected=stripped)
+
+    def test_published_tracking_ids_replace_the_row_ids_and_stay_sorted(self) -> None:
+        records = [
+            observation(
+                at=T + HOUR, disposition=OPEN, record=record, identifiers=(CVE,), context="c"
+            )
+            for record in ("R-a", "R-b")
+        ]
+        projection = run([host()], [change(kind="created")], records, kev=catalog())
+        low, high = only(projection).kev_tracking_ids
+        self.assertLess(low, high)
+        renamed = projection.with_published_tracking_ids({low: "zzz-provider"})
+        self.assertEqual(only(renamed).kev_tracking_ids, (high, "zzz-provider"))
+        self.assertIs(only(renamed).kev_at_activation, True)
+        self.assertEqual(only(projection).kev_tracking_ids, (low, high))
 
     def test_as_of_must_be_aware(self) -> None:
         with self.assertRaises(ValueError):

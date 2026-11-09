@@ -33,15 +33,18 @@ plan, so 10 through 13 belong to those later sections and Decision 14 lands here
 
 ComplyRoll runs no scanner and fetches nothing. A request is therefore three things it can do
 locally: record the change as a provider-stated fact, project for each resource the change touched
-whether detection reached it after the change, and write the resources still waiting as a document
-a pipeline consumes.
+whether detection reached it at or after the change, and write the resources still waiting as a
+document a pipeline consumes.
 
 The document is `complyroll.detection-request` version 1, written by `changes pending` (Decision
 9). It lists only the resources that still need detection: per change, the `changeId`, `kind`,
 `occurredAt`, `detectBy`, the `job` the provider expects to act and the `source`, and for each
 waiting resource its `resourceType`, `resourceId`, inventory `aliases`, `sampleGroup` and `status`.
-A resource that is `detected` is left out of the request and listed in the report block instead. A
-change with no waiting resource has no request entry.
+A resource that is `detected` is left out of the request and listed in the report block instead.
+So is a row whose entry or group is decommissioned at or before as-of, whatever its status: no scan
+can clear it, so it is not waiting, and it leaves the request and its counts. It stays in the block
+with its status, as `lapsed` where the window closed first, so the closed window stays a recorded
+fact. A change with no waiting resource has no request entry.
 
 The document also carries `schema`, `schemaVersion`, `rule`, `force`, `provenance` (the pinned
 rules source the force was read from, in the block's shape), `asOf`, `input`, `inventorySha256`
@@ -54,7 +57,9 @@ block already carries the evidence trail an assessor reads.
 ## Decision 2: a native change contract first, no source adapter
 
 The input is a JSON document of ComplyRoll's own, `complyroll.changes` version 1, read by a bounded
-reader that refuses and never repairs, as the inventory is (ADR 0015 Decision 5). No adapter for
+reader that refuses and never repairs, as the inventory is (ADR 0015 Decision 5), with one
+exception: `rationale` goes through `diagnostic_text`, which removes control and invisible format
+characters other than tab and newline. No adapter for
 git, Terraform, Kubernetes or a deployment record ships. The README carries one shell recipe that
 writes the contract from `git log --format` for a repository whose commits name their resources,
 as a worked example and not a parser. Every input is untrusted and bounded, and every fixture is
@@ -115,8 +120,9 @@ rather than be dropped or refused.
 
 ## Decision 4: the provider states significance and the sample; ComplyRoll records both
 
-No significance score is derived. `significant` and `rationale` are copied into the block as
-written, and only a change that is `created`, or `modified` with `significant: true`, opens an
+No significance score is derived. `significant` and `rationale` are copied into the block, the
+rationale as the reader cleaned it, and only a change that is `created`, or `modified` with
+`significant: true`, opens an
 obligation on each resource it names. A `modified` change with `significant: false` is recorded and
 listed with status `logged`, and never opens one.
 
@@ -130,7 +136,7 @@ Why: the PAIN rule in `AGENTS.md` forbids deriving a judgment from a single fiel
 and "representative" are the provider's judgments under a SHOULD. Recording the rationale beside
 the claim is what lets an assessor check it.
 
-## Decision 5: the obligation closes on a verification after the change; the window is provider-set
+## Decision 5: a verification at or after the change satisfies it; the window is provider-set
 
 An obligation is `(change, resource)`. It is satisfied by the first verification of that resource
 observed at or after `occurredAt` and at or before as-of, in ADR 0015 Decision 7's sense: an
@@ -156,7 +162,8 @@ The entry's lifecycle bounds the obligation the way it bounds a coverage clock (
 
 - A change whose `occurredAt` is after as-of is listed under `later` with its resources and nothing
   else: no row, no summary count, no warning, no request entry. An AVI or historical run at a past
-  as-of never carries a future change in its block or its request.
+  as-of never carries a future change in its rows, summary, request or gaps; only the block's
+  `later` list names it.
 - A decommission counts only at or before as-of. A decommission after as-of has not happened at
   as-of, so the obligation runs on.
 - A change on an entry whose `decommissionedAt` is before `occurredAt` reads `retired`, opens
@@ -198,8 +205,9 @@ the first satisfying verification:
 `retired` stands before `detected`, and a `retired` row still carries the first satisfying
 verification when one exists, so no fact is lost. A `detected` row names the evidence, the stand-in
 for a group and the lag from `occurredAt`. The request document carries exactly the `lapsed`,
-`undetermined` and `pending` rows. A `detected` status is not a compliance finding, and the basis
-text says so.
+`undetermined` and `pending` rows, less the rows of a resource decommissioned at or before as-of
+(Decision 1, which outranks "exactly" here). A `detected` status is not a compliance finding, and
+the basis text says so.
 
 Why: each status claims only what the evidence shows. A late verification is still detection, so
 the request stops asking for it, while the closed window it missed stays a recorded fact.
@@ -214,7 +222,7 @@ count per status, one row per change at or before as-of, one row per obligation,
 and `later` lists, and fixed basis text. AVI and historical carry the same block, measured at as-of
 and never selected by a period. The request document is derived from the same obligation rows, so
 a parity test holds every `pending`, `undetermined` and `lapsed` row to one request entry and every
-other row to none. No official field holds any of it.
+other row to none, with the one exclusion Decision 1 names. No official field holds any of it.
 
 Why: an assessor needs the evidence that closed each obligation, and the pipeline needs only the
 open ones. One derivation feeding both keeps them from disagreeing.
@@ -229,12 +237,29 @@ before `occurredAt`, the block's row gains `kevAtActivation: true` with the trac
 WARNING `kev_at_activation` names the change and the resource, once per obligation. A CVE that
 joined the catalog after the change was not a KEV at activation and is not flagged.
 
-`kevAtActivation` is `null` unless the question applies and can be answered: `--kev` given, a
-`created` change, a machine-based entry, status `detected`. Then it is `true` or `false`. A
+`kevAtActivation` is `null` unless the question applies: `--kev` given, a `created` change, a
+machine-based entry, status `detected`. A finding is in scope when it sits on the entry, and a
 CycloneDX vulnerability row sits on a `package` resource, so a BOM's own KEV would otherwise read as
-an affirmative `false` for the image it verified. When the satisfying verification is a CycloneDX
-scope observation, the OPEN rows of that same artifact digest whose source type is CycloneDX and
-whose resource is a `package` count as findings on the verified entry.
+if the image it verified had none. When the satisfying verification is a CycloneDX scope
+observation, the OPEN rows of that same artifact digest whose source type is CycloneDX and whose
+resource is a `package` count as findings on the verified entry.
+
+Where the question applies, every artifact holding a verification at the first satisfying instant
+answers together, with no tie-break, since several can verify at one instant:
+
+- `true` when any of them carries a finding in scope the catalog listed on or before `occurredAt`'s
+  UTC date. A stale catalog can still say `true`. `kevTrackingIds` is the sorted union across them,
+  each id as its record publishes it, so an evaluation's override reaches the row. The block is not
+  selected by a period (Decision 7), so that record can fall outside one report's selection.
+- `false` only when none says `true`, at least one carries an OPEN CVE-bearing finding in scope, no
+  finding in scope may have lost a CVE from its identifier list, and the catalog's release date is
+  on or after `occurredAt`'s UTC date.
+- `null` otherwise. A clean run shows no CVE to check (ADR 0015: a clean run is never proof the
+  scope is free of vulnerabilities), a cut identifier list may hide one, and a catalog older than
+  the change cannot show what was listed at the change.
+
+`false` says only that the findings these artifacts carried were not listed. It is no claim that
+the resource carries no KEV.
 
 Why: the KEV finding is already a record with its own `VDR-TFR-KEV` clock, and a second case for the
 same finding would double it. The diagnostic makes the activation visible without a new record type.
@@ -247,8 +272,10 @@ same finding would double it. The diagnostic makes the activation visible withou
 - `changes pending ARTIFACT... --changes FILE --inventory FILE --class B|C --as-of T [--calendar-tz
   NAME] [--kev FILE] [--record-failed-imports] [--output PATH]` writes the request document to
   standard output or `--output`. It takes the same artifact positionals as `report`, because the
-  obligations are read against the same evidence, and it refuses what `report` refuses about those
-  inputs. It runs no coverage clock, so a dataset that lacks a coverage rule does not stop it.
+  obligations are read against the same evidence, and it refuses what `report` refuses about reading
+  those artifacts. It builds no record, so a refusal about one, such as `detection_time_missing`,
+  does not apply. It runs no coverage clock, so a dataset that lacks a coverage rule does not stop
+  it.
   `--record-failed-imports` has its `report` meaning: a mintable failure is noted on standard error
   and the run continues, and without the flag a failed reading exits 1 and writes nothing. It takes
   no `--evaluations` or `--detected-at`, since neither moves a source time and so neither moves a

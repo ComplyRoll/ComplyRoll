@@ -45,7 +45,7 @@ catalog the operator supplies.
 | `complyroll report vdt\|avi\|historical` | Compiles the Vulnerability Detail, Accepted Vulnerability Information, or Historical VER Activity report, with a Markdown twin rendered from the same records |
 | `--kev FILE` | Matches each record's CVE identifiers to a CISA KEV catalog the operator supplies and carries the catalog's due date as the `VDR-TFR-KEV` clock, without fetching anything |
 | `--inventory FILE` | Shows when detection last reached each resource the operator declares |
-| `--changes FILE`, `complyroll changes pending` | Shows whether detection reached each resource a declared change touched, after the change, and writes the resources still waiting as a document for the pipeline that owns the scanner |
+| `--changes FILE`, `complyroll changes pending` | Shows whether detection reached each resource a declared change touched, at or after the change, and writes the resources still waiting as a document for the pipeline that owns the scanner |
 | `--record-failed-imports` | Records an artifact that cannot be parsed or holds no usable content, or a failed scanner invocation, as a system observation and a vulnerability of its own (`VDR-CSO-FAV`), and exits 3; `ingest` refuses with `failure_read_elsewhere`, appending nothing, a failure whose bytes the store already holds an outranking reading of |
 | `--record-coverage-gaps`, `complyroll cases coverage` | Record each coverage window that closed with no verification as a system observation of its own and a vulnerability case (`VDR-CSO-FAV`), on a report run or into a store, and exit 3; windows of one rule whose entries name the same `job` share a case, the windows of one sample group share a case, and every other window is a case of its own |
 | `complyroll ingest`, `cases`, and `report --db` | Record the same work as append-only history and rebuild each report from it, byte-identical to the stateless report |
@@ -131,7 +131,7 @@ jq -Rn '{
 
 It is an example to adapt, not a parser. It calls every commit a modification, sets no `detectBy`
 window, and takes the subject line as the rationale, so a commit it should not count is yours to
-filter. ComplyRoll refuses a file that breaks the contract and never repairs one.
+filter. ComplyRoll refuses a file that breaks the contract; the only text it cleans is `rationale`.
 
 ## For independent assessors
 

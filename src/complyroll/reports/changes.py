@@ -9,10 +9,10 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
@@ -43,7 +43,9 @@ from .coverage import (
     file_evidence,
 )
 from .inventory import InformationResource, Inventory, _ref_key
-from .kev import KevCatalog
+
+# NOTE: The catalog's own prefix rule, so CVE-bearing here means what a match reads.
+from .kev import _CVE_PREFIX, KevCatalog, cve_may_be_missing
 from .model import ReportDiagnostic
 
 # *--- Configuration ---*
@@ -64,9 +66,9 @@ CHANGE_BASIS = (
     f"{DAC_RULE} states no timeframe, so a window here is only the provider's own detectBy, and "
     "a change without a window is tracked but never lapses. Changes are measured against the "
     "provider-supplied inventory named by its SHA-256 digest, so a resource it omits is listed "
-    "as unregistered and opens no obligation. An obligation closes only on a verification at "
-    "or after the change and at or before as-of; evidence that determined no status examines "
-    "a resource without verifying it, and untimed evidence never satisfies one. A created "
+    "as unregistered and opens no obligation. A detection obligation is satisfied only by a "
+    "verification at or after the change and at or before as-of; an examination that verified "
+    "nothing does not satisfy one, and neither does untimed evidence. A created "
     "change and a new entry's coverage clocks overlap on purpose, under different rules. A "
     "detected status is not a compliance finding."
 )
@@ -85,7 +87,8 @@ class ObligationStatus(str, Enum):
     PENDING = "pending"
 
 
-# The resources still waiting for detection: exactly what a request document asks for.
+# The statuses that wait for detection. A request asks for these rows unless the resource
+# is decommissioned by as-of, since no scan can reach it then (ADR 0018).
 WAITING_STATUSES = frozenset(
     {ObligationStatus.LAPSED, ObligationStatus.UNDETERMINED, ObligationStatus.PENDING}
 )
@@ -114,6 +117,8 @@ class ChangeObligation:
     # True or False only when the question applies and can be answered, else None.
     kev_at_activation: bool | None = None
     kev_tracking_ids: tuple[str, ...] = ()
+    # Decommissioned at or before as-of: the status stands, and the request leaves the row out.
+    decommissioned: bool = False
 
     def age_seconds(self, as_of: datetime) -> int | None:
         """Return how long a waiting row has waited; no other row has an age."""
@@ -152,8 +157,12 @@ class ChangeProjection:
 
     @property
     def waiting(self) -> tuple[ChangeObligation, ...]:
-        """Return the rows a request document carries: the resources still waiting."""
-        return tuple(row for row in self.obligations if row.status in WAITING_STATUSES)
+        """Return the rows a request document carries: the resources a scan can still reach."""
+        return tuple(
+            row
+            for row in self.obligations
+            if row.status in WAITING_STATUSES and not row.decommissioned
+        )
 
     @property
     def declared(self) -> tuple[Change, ...]:
@@ -167,6 +176,23 @@ class ChangeProjection:
         """Return the count of obligations per status, every status present."""
         counts = Counter(row.status for row in self.obligations)
         return {status: counts[status] for status in ObligationStatus}
+
+    def with_published_tracking_ids(self, published: Mapping[str, str]) -> ChangeProjection:
+        """Return this projection with each KEV id as its compiled record publishes it."""
+        return replace(
+            self,
+            obligations=tuple(
+                replace(
+                    row,
+                    kev_tracking_ids=tuple(
+                        sorted({published.get(value, value) for value in row.kev_tracking_ids})
+                    ),
+                )
+                if row.kev_tracking_ids
+                else row
+                for row in self.obligations
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return the `x-complyroll.changes` block; keys are sorted when the JSON is written."""
@@ -223,6 +249,12 @@ class _Subject:
         return (
             None if index == len(self.instants) else (self.instants[index], self.verifying[index])
         )
+
+    def verifying_at(self, instant: datetime) -> tuple[CoverageEvidence, ...]:
+        """Return every verification at exactly one instant, however it ties."""
+        return self.verifying[
+            bisect_left(self.instants, instant) : bisect_right(self.instants, instant)
+        ]
 
 
 # *--- Derivation ---*
@@ -368,7 +400,9 @@ def _obligation(
     # Retired keeps its evidence so no fact is lost; a logged row claims none.
     keeps_evidence = status in (ObligationStatus.DETECTED, ObligationStatus.RETIRED)
     evidence = verification if keeps_evidence else None
-    kev_ids = _kev_ids(kev, change, named.entry, verification, status)
+    kev_at_activation, kev_ids = _kev_at_activation(
+        kev, change, named.entry, subject, verified_at, status
+    )
     return ChangeObligation(
         change=change,
         resource=named.resource,
@@ -393,29 +427,31 @@ def _obligation(
         window_closed_at=detect_by if late or status is ObligationStatus.LAPSED else None,
         resumed_at=verified_at if late else None,
         untimed=subject.untimed,
-        kev_at_activation=None if kev_ids is None else bool(kev_ids),
-        kev_tracking_ids=kev_ids or (),
+        kev_at_activation=kev_at_activation,
+        kev_tracking_ids=kev_ids,
+        decommissioned=decommissioned_at is not None,
     )
 
 
-def _kev_ids(
+def _kev_at_activation(
     kev: _KevFindings | None,
     change: Change,
     entry: InformationResource | None,
-    verification: CoverageEvidence | None,
+    subject: _Subject,
+    verified_at: datetime | None,
     status: ObligationStatus,
-) -> tuple[str, ...] | None:
-    """Return the KEV tracking ids at activation, or None when the question does not apply."""
+) -> tuple[bool | None, tuple[str, ...]]:
+    """Return the activation flag and its tracking ids; None means no answer, not a clean one."""
     if (
         kev is None
         or status is not ObligationStatus.DETECTED
         or change.kind is not ChangeKind.CREATED
         or entry is None
         or not entry.machine_based
-        or verification is None
+        or verified_at is None
     ):
-        return None
-    return kev.tracking_ids(change, entry, verification)
+        return None, ()
+    return kev.at_activation(change, entry, subject, verified_at)
 
 
 def _row_warnings(
@@ -461,7 +497,7 @@ def _row_warnings(
                 row.resource,
                 f"change {change.change_id} activated {label} with "
                 f"{len(row.kev_tracking_ids)} open finding(s) the KEV catalog listed on or "
-                f"before the change, in the artifact that verified it ({AKE_RULE})",
+                f"before the change, in an artifact that first verified it ({AKE_RULE})",
             )
         )
     return warnings
@@ -500,7 +536,7 @@ def _warning(
 def detection_request(projection: ChangeProjection) -> dict[str, Any]:
     """Return the request document: only the resources still waiting, per change."""
     waiting = projection.waiting
-    counts = projection.summary
+    counts = Counter(row.status for row in waiting)
     # The rows are in change order, so the first row of a change places its whole request.
     by_change: dict[str, list[ChangeObligation]] = {}
     for row in waiting:
@@ -599,8 +635,23 @@ class _Subjects:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _KevScope:
+    """One artifact's findings in one scope, each read against the catalog once."""
+
+    # Ascending together: the day the catalog first listed a tracking id, and that id.
+    listed_days: tuple[date, ...]
+    tracking_ids: tuple[str, ...]
+    bears_cve: bool
+    may_miss_cve: bool
+
+    def listed_by(self, day: date) -> tuple[str, ...]:
+        """Return the tracking ids the catalog had listed by a day."""
+        return self.tracking_ids[: bisect_right(self.listed_days, day)]
+
+
 class _KevFindings:
-    """Open findings per artifact digest and entry, matched against the catalog per day."""
+    """Open findings per artifact digest and entry, each read once and bisected per change."""
 
     def __init__(
         self,
@@ -610,19 +661,22 @@ class _KevFindings:
         cutoff: datetime,
     ) -> None:
         self._catalog = catalog
+        self._released_on = catalog.date_released.astimezone(UTC).date()
         self._digests: dict[str, str] = {}
         self._findings: defaultdict[tuple[str, ResourceRef], list[Observation]] = defaultdict(list)
         # A CycloneDX row sits on a package, so it counts only for its own BOM's scope.
-        self._scopes: set[str] = set()
+        self._bom_scopes: set[str] = set()
         self._package_rows: defaultdict[str, list[Observation]] = defaultdict(list)
-        self._held: dict[tuple[str, ResourceRef, date, bool], tuple[str, ...]] = {}
+        self._entry_scopes: dict[tuple[str, ResourceRef], _KevScope] = {}
+        self._package_scopes: dict[str, _KevScope] = {}
+        self._first_scopes: dict[tuple[ResourceRef, datetime], tuple[_KevScope, ...]] = {}
         for observation in observations:
             if observation.origin is not ObservationOrigin.ARTIFACT:
                 continue
             digest = observation.source_artifact_digest
             self._digests[observation.observation_id] = digest
             if _is_bom_scope(observation):
-                self._scopes.add(observation.observation_id)
+                self._bom_scopes.add(observation.observation_id)
             visible = observation.observed_at is None or _utc(observation.observed_at) <= cutoff
             if not visible or observation.disposition is not ObservationDisposition.OPEN:
                 continue
@@ -634,33 +688,93 @@ class _KevFindings:
             if entry is not None:
                 self._findings[(digest, entry.ref)].append(observation)
 
-    def tracking_ids(
-        self, change: Change, entry: InformationResource, verification: CoverageEvidence
-    ) -> tuple[str, ...]:
-        """Return the sorted tracking ids of KEV findings in the artifact that verified it."""
-        key = (
-            self._digests[verification.reference],
-            entry.ref,
-            change.occurred_at.astimezone(UTC).date(),
-            verification.reference in self._scopes,
+    def at_activation(
+        self,
+        change: Change,
+        entry: InformationResource,
+        subject: _Subject,
+        verified_at: datetime,
+    ) -> tuple[bool | None, tuple[str, ...]]:
+        """Answer from every artifact that first verified the entry, with no tie-break.
+
+        One listed finding says true, even from a stale catalog. False needs an open CVE
+        finding, a catalog released by the change's day, and no finding whose list may have
+        lost a CVE, so a clean run, an older catalog or a cut list says None: none of them
+        can answer, and false is never proof of no KEV.
+        """
+        changed_on = change.occurred_at.astimezone(UTC).date()
+        scopes = self._scopes_of(entry.ref, subject, verified_at)
+        listed = {tracking_id for scope in scopes for tracking_id in scope.listed_by(changed_on)}
+        if listed:
+            return True, tuple(sorted(listed))
+        answerable = self._released_on >= changed_on and not any(
+            scope.may_miss_cve for scope in scopes
         )
-        held = self._held.get(key)
+        if answerable and any(scope.bears_cve for scope in scopes):
+            return False, ()
+        return None, ()
+
+    # NOTE: Keyed by the verification instant, because many changes can share one first scan
+    # and one scan can hold every finding of an artifact, so a row must not walk them.
+    def _scopes_of(
+        self, ref: ResourceRef, subject: _Subject, verified_at: datetime
+    ) -> tuple[_KevScope, ...]:
+        key = (ref, verified_at)
+        held = self._first_scopes.get(key)
         if held is None:
-            held = self._held[key] = self._matched(*key)
+            held = self._first_scopes[key] = self._read_scopes(
+                ref, subject.verifying_at(verified_at)
+            )
         return held
 
-    def _matched(
-        self, digest: str, ref: ResourceRef, listed_by: date, verified_by_bom: bool
-    ) -> tuple[str, ...]:
-        package_rows = self._package_rows.get(digest, ()) if verified_by_bom else ()
-        return tuple(
-            sorted(
-                {
-                    tracking_id_for(item.source_type, item.source_record_id, item.context_key)
-                    for item in (*self._findings.get((digest, ref), ()), *package_rows)
-                    if self._catalog.matches(item.source_identifiers, on_or_before=listed_by)
-                }
+    def _read_scopes(
+        self, ref: ResourceRef, verifying: Iterable[CoverageEvidence]
+    ) -> tuple[_KevScope, ...]:
+        verified_by_bom: dict[str, bool] = {}
+        for item in verifying:
+            digest = self._digests[item.reference]
+            verified_by_bom[digest] = (
+                verified_by_bom.get(digest, False) or item.reference in self._bom_scopes
             )
+        scopes = [self._entry_scope(digest, ref) for digest in verified_by_bom]
+        scopes.extend(self._package_scope(digest) for digest, bom in verified_by_bom.items() if bom)
+        return tuple(scopes)
+
+    def _entry_scope(self, digest: str, ref: ResourceRef) -> _KevScope:
+        key = (digest, ref)
+        held = self._entry_scopes.get(key)
+        if held is None:
+            held = self._entry_scopes[key] = self._read(self._findings.get(key, ()))
+        return held
+
+    def _package_scope(self, digest: str) -> _KevScope:
+        held = self._package_scopes.get(digest)
+        if held is None:
+            held = self._package_scopes[digest] = self._read(self._package_rows.get(digest, ()))
+        return held
+
+    def _read(self, findings: Iterable[Observation]) -> _KevScope:
+        """Read each finding once: the earliest day the catalog lists any of its CVEs."""
+        earliest: dict[str, date] = {}
+        bears_cve = False
+        may_miss_cve = False
+        for item in findings:
+            bears_cve = bears_cve or any(
+                value.startswith(_CVE_PREFIX) for value in item.source_identifiers
+            )
+            may_miss_cve = may_miss_cve or cve_may_be_missing(item)
+            listings = self._catalog.matches(item.source_identifiers, on_or_before=date.max)
+            if not listings:
+                continue
+            listed_on = min(entry.date_added for entry in listings)
+            tracking_id = tracking_id_for(item.source_type, item.source_record_id, item.context_key)
+            earliest[tracking_id] = min(listed_on, earliest.get(tracking_id, listed_on))
+        ordered = sorted((day, tracking_id) for tracking_id, day in earliest.items())
+        return _KevScope(
+            listed_days=tuple(day for day, _ in ordered),
+            tracking_ids=tuple(tracking_id for _, tracking_id in ordered),
+            bears_cve=bears_cve,
+            may_miss_cve=may_miss_cve,
         )
 
 

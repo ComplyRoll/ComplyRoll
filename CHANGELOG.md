@@ -9,7 +9,7 @@ All notable project changes will be documented here.
 - `report vdt|avi|historical` take `--changes FILE`, a provider-supplied `complyroll.changes`
   document read against `--inventory`, stateless only. Each report gains an
   `x-complyroll.changes` block and a Markdown `## Changes` section that give each change and
-  resource a status from the evidence after the change: `unregistered`, `retired`, `logged`,
+  resource a status from the evidence at or after the change: `unregistered`, `retired`, `logged`,
   `detected`, `lapsed`, `undetermined`, or `pending`. The window is the provider's own `detectBy`,
   because the pinned dataset states no timeframe for `VDR-CSO-DAC`. `VDR-CSO-AKE` is a diagnostic
   only, `kev_at_activation`. A run without the flag produces the bytes it produced before, and no

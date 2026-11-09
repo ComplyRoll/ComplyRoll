@@ -254,14 +254,14 @@ are the pinned dataset's own text.
 
 | Rule | Force | Statement | ComplyRoll |
 |---|---|---|---|
-| `VDR-CSO-DAC`, Detect After Changes | SHOULD | Providers SHOULD automatically perform vulnerability detection on representative samples of new or significantly changed information resources. | Each declared change and resource gets a status from the evidence after the change, and `changes pending` writes the resources still waiting as a document for the provider's pipeline. The window is the provider's own `detectBy`; none is read from the dataset and none is invented. |
+| `VDR-CSO-DAC`, Detect After Changes | SHOULD | Providers SHOULD automatically perform vulnerability detection on representative samples of new or significantly changed information resources. | Each declared change and resource gets a status from the evidence at or after the change, and `changes pending` writes the resources still waiting as a document for the provider's pipeline. The window is the provider's own `detectBy`; none is read from the dataset and none is invented. |
 | `VDR-CSO-AKE`, Avoid KEVs | SHOULD NOT | Providers SHOULD NOT deploy or otherwise activate new machine-based information resources with Known Exploited Vulnerabilities. | A diagnostic and a row flag only: `kevAtActivation` and WARNING `kev_at_activation`, on a `created` change of a machine-based resource whose verifying artifact carries an open KEV-listed finding. No separate case, because the finding already has its own `VDR-TFR-KEV` clock. |
 | `KSI-CMT-LMC`, Logging Changes | Not stated | Modifications to the cloud service offering are logged and monitored. | The change file is the provider's log of what changed and why, and a non-significant change is still listed with status `logged`. Evidence toward the indicator, never proof of it. |
 | `KSI-CMT-VTD`, Validating Throughout Deployment | Not stated | Persistent testing and validation of changes throughout deployment is automated. | A status per change shows whether detection reached a resource after it changed. Evidence toward the indicator, never proof of it. |
 
 Significance and the representative sample are the provider's judgments under a SHOULD, so
-ComplyRoll records `significant` and `rationale` as written and derives neither. A `detected` status
-says a detection process reached a resource after the change, not that the resource is free of
+ComplyRoll records `significant` and `rationale` and derives neither. A `detected` status says a
+detection process reached a resource at or after the change, not that the resource is free of
 vulnerabilities or that the rule is met. A change without `detectBy` is tracked but never lapses.
 
 ## SBOM evidence

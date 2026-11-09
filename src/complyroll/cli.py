@@ -572,7 +572,7 @@ def _add_changes_pending_arguments(pending: argparse.ArgumentParser) -> None:
         "--calendar-tz",
         default="UTC",
         metavar="NAME",
-        help="IANA calendar used for month and year arithmetic (default: UTC)",
+        help="IANA calendar of the profile; no request date depends on it (default: UTC)",
     )
     pending.add_argument(
         "--kev",
@@ -1448,8 +1448,8 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     `--record-failed-imports` is on it because a store already recorded or refused its
     failures when `ingest` read them (ADR 0014). `--record-coverage-gaps` is on it because
     a report run never records a gap into a store; what a store holds is its own record
-    (ADR 0015). `--changes` is on it because a store records its changes as it records its
-    artifacts (ADR 0018).
+    (ADR 0015). `--changes` is on it because a compile from a store does not read a change
+    file (ADR 0018).
     """
 
     named = [

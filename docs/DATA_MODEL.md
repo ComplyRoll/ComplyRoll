@@ -390,12 +390,14 @@ never stored. Its fields:
 | `source` | Required object: `tool` (name rule) and `reference` (identity text, at most 512 characters) |
 | `resources` | Required array of 1 to `MAX_CHANGE_RESOURCES` (1,000) `resourceType` and `resourceId` pairs |
 | `significant` | Required JSON boolean, on a `created` change too |
-| `rationale` | Required, 1 to 512 printable characters; why the provider calls the change significant or not |
+| `rationale` | Required, 1 to 512 characters, cleaned through `diagnostic_text`; why the provider calls the change significant or not |
 | `detectBy` | Optional instant, not before `occurredAt`; the provider's window for detection after this change |
 | `job` | Optional, the name rule; the detection process expected to reach the resources |
 
 The reader refuses and never repairs, under the inventory's rules for identity text, names, and
-instants. Unknown keys are refused at every level. A JSON null reads as absent on every optional
+instants, with one exception: `rationale` passes through `diagnostic_text`, which removes control
+and invisible format characters other than tab and newline.
+Unknown keys are refused at every level. A JSON null reads as absent on every optional
 field. A resource pair follows the identity text rule, with no colon in the type and no repeated
 pair in a change, and `resourceType` `package` is refused, as the inventory refuses it. The file is
 read through the bounded reader at `MAX_CHANGES_BYTES` (8 MiB) and JSON depth 16. Changes sort by
@@ -441,18 +443,34 @@ the first status that applies:
 | `undetermined` | Examined since the change with nothing verified, and the window open or absent |
 | `pending` | Nothing examined since the change, and the window open or absent |
 
-A change without `detectBy` never lapses: it stays waiting and prints its age. A `detected` status
+A waiting obligation without `detectBy` never lapses and prints its age. A `detected` status
 is not a compliance finding, and an obligation's row is evidence toward `KSI-CMT-LMC` and
 `KSI-CMT-VTD`, never proof of either. WARNING codes on a run with a change file:
 `change_resource_unregistered`, `change_after_decommission`, `change_precedes_expected_since`, and
 `kev_at_activation`, each located at `<changes name> <changeId> <type>:<id>`. A dataset that lacks
 `VDR-CSO-DAC` refuses the run with ERROR `change_rule_unavailable`.
 
+`kevAtActivation` answers only with `--kev`, on a `created` change of a machine-based entry whose
+row is `detected`. Every other row prints `null`. The answer comes from every artifact with a
+verification at the first satisfying instant, and a finding counts when it sits on the entry or,
+where the verification is a CycloneDX scope observation, on a `package` in that same BOM:
+
+| Value | Meaning |
+|---|---|
+| `true` | Any of those artifacts carries a finding the catalog listed on or before `occurredAt`'s UTC date, which a stale catalog can still show. `kevTrackingIds` is the sorted union, each id as its record publishes it; the block is not selected by a period, so that record can fall outside one report |
+| `false` | None of those findings was listed, at least one is an OPEN CVE-bearing finding, no finding's identifier list may have lost a CVE, and the catalog's release date is on or after `occurredAt`'s UTC date |
+| `null` | The question cannot be answered: a clean run has no CVE to check, a cut identifier list may hide one, and a catalog older than the change cannot show what was listed at the change |
+
+`false` is no claim that the resource carries no KEV. It says only that the findings those artifacts
+carried were not listed.
+
 ### The detection request
 
 `changes pending` writes a `complyroll.detection-request` version 1 document from the same
 obligation rows, so it cannot disagree with the block. It lists only the rows still waiting, which
-are the `lapsed`, `undetermined`, and `pending` ones:
+are the `lapsed`, `undetermined`, and `pending` ones, less the rows of a resource decommissioned at
+or before as-of. No scan can clear such a row, so it leaves the request and its counts and stays
+in the block with its status:
 
 | Key | Content |
 |---|---|

@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 from test_cli import (
     AVI_ARGUMENTS,
+    CHANGES_ARGUMENTS,
     COVERAGE_ARGUMENTS,
     CYCLONEDX_COVERAGE_ARGUMENTS,
     EXAMPLE_INVENTORY,
@@ -36,6 +37,7 @@ from test_cli import (
     kev_argv,
     run,
     timed_argv,
+    timed_changes_argv,
     with_failed_artifacts,
 )
 from test_coverage import host
@@ -77,6 +79,8 @@ GOLDEN_RUNS: dict[str, Sequence[str]] = {
     "vdt-coverage": COVERAGE_ARGUMENTS,
     "vdt-coverage-timed": timed_argv(),
     "vdt-cyclonedx-coverage": CYCLONEDX_COVERAGE_ARGUMENTS,
+    "vdt-changes": CHANGES_ARGUMENTS,
+    "vdt-changes-timed": timed_changes_argv(),
 }
 #: The four system goldens, each cut by a run that records its records and exits 3.
 SYSTEM_RUNS: dict[str, Sequence[str]] = {

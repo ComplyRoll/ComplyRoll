@@ -1,0 +1,98 @@
+{
+  "schema": "complyroll.changes",
+  "schemaVersion": 1,
+  "name": "timed-changes",
+  "changes": [
+    {
+      "changeId": "CHG-2001",
+      "kind": "modified",
+      "occurredAt": "2026-08-10T00:00:00Z",
+      "source": {"tool": "registry", "reference": "push 8842"},
+      "resources": [
+        {
+          "resourceType": "image",
+          "resourceId": "registry.example.test/synthetic/example-service:1.4.0"
+        }
+      ],
+      "significant": true,
+      "rationale": "Base layer rebuilt after the last image scan.",
+      "detectBy": "2026-08-20T00:00:00Z",
+      "job": "nightly-image-scan"
+    },
+    {
+      "changeId": "CHG-2002",
+      "kind": "modified",
+      "occurredAt": "2026-08-28T00:00:00Z",
+      "source": {"tool": "ticket", "reference": "CR-2026-204"},
+      "resources": [
+        {"resourceType": "logical", "resourceId": "sample-group/webapp-ui"}
+      ],
+      "significant": true,
+      "rationale": "Template engine swapped across the UI sample."
+    },
+    {
+      "changeId": "CHG-2003",
+      "kind": "modified",
+      "occurredAt": "2026-09-01T00:10:00Z",
+      "source": {"tool": "git", "reference": "commit 0c4d9aa"},
+      "resources": [
+        {
+          "resourceType": "file",
+          "resourceId": "https://github.com/example/webapp/src/ui/render.js"
+        }
+      ],
+      "significant": true,
+      "rationale": "Render path change with a one-hour scan window the nightly run missed.",
+      "detectBy": "2026-09-01T01:00:00Z",
+      "job": "nightly-codeql"
+    },
+    {
+      "changeId": "CHG-2004",
+      "kind": "modified",
+      "occurredAt": "2026-09-01T00:30:00Z",
+      "source": {"tool": "git", "reference": "commit 5ab10c2"},
+      "resources": [
+        {
+          "resourceType": "file",
+          "resourceId": "https://github.com/example/webapp/src/ui/helpers.js"
+        }
+      ],
+      "significant": true,
+      "rationale": "Sanitizer helper rewritten.",
+      "detectBy": "2026-09-05T00:00:00Z",
+      "job": "nightly-codeql"
+    },
+    {
+      "changeId": "CHG-2005",
+      "kind": "modified",
+      "occurredAt": "2026-09-01T00:40:00Z",
+      "source": {"tool": "git", "reference": "commit 77e9d31"},
+      "resources": [
+        {
+          "resourceType": "file",
+          "resourceId": "https://github.com/example/webapp/src/ui/legacy.js"
+        }
+      ],
+      "significant": true,
+      "rationale": "Legacy renderer touched; the scan could not resolve its data flow.",
+      "detectBy": "2026-09-10T00:00:00Z",
+      "job": "nightly-codeql"
+    },
+    {
+      "changeId": "CHG-2006",
+      "kind": "modified",
+      "occurredAt": "2026-09-02T09:00:00Z",
+      "source": {"tool": "git", "reference": "commit e8812f0"},
+      "resources": [
+        {
+          "resourceType": "file",
+          "resourceId": "https://github.com/example/webapp/src/ui/helpers.js"
+        }
+      ],
+      "significant": true,
+      "rationale": "Helper follow-up after the nightly scan; no scan has run since.",
+      "detectBy": "2026-09-09T00:00:00Z",
+      "job": "nightly-codeql"
+    }
+  ]
+}

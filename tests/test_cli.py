@@ -150,6 +150,12 @@ COVERAGE_ARGUMENTS = (*REPORT_ARGUMENTS, "--inventory", str(EXAMPLE_INVENTORY))
 TIMED_INVENTORY = FIXTURES / "inventory-timed.json"
 TIMED_ARTIFACTS = (str(FIXTURES / "codeql-repo.sarif"), str(FIXTURES / "clean-run.sarif"))
 TIMED_AS_OF = "2026-09-03T12:00:00Z"
+#: The synthetic change file the `vdt-changes` golden was cut with (ADR 0018).
+EXAMPLE_CHANGES = EXAMPLES / "changes.json"
+#: The `vdt-changes` run: the `vdt-coverage` run plus the example change file.
+CHANGES_ARGUMENTS = (*COVERAGE_ARGUMENTS, "--changes", str(EXAMPLE_CHANGES))
+#: The change file the `vdt-changes-timed` golden reads over the timed coverage run.
+TIMED_CHANGES = FIXTURES / "changes-timed.json"
 #: The `vdt-cyclonedx-coverage` run: a timed and an untimed syft inventory, a clean grype
 #: match, a trivy match and the spec corners over an inventory of their images (ADR 0016).
 CYCLONEDX_INVENTORY = FIXTURES / "inventory-cyclonedx.json"
@@ -195,6 +201,12 @@ def timed_argv(kind: str = "vdt", *, inventory: bool = True, db: Path | None = N
     if inventory:
         argv += ["--inventory", str(TIMED_INVENTORY)]
     return argv
+
+
+def timed_changes_argv(kind: str = "vdt") -> list[str]:
+    """Build the timed coverage run plus the change file its golden reads (ADR 0018)."""
+
+    return [*timed_argv(kind), "--changes", str(TIMED_CHANGES)]
 
 
 #: The synthetic CISA KEV catalog and the run the three KEV goldens were cut with. Every
@@ -1300,6 +1312,8 @@ class RecordFailedImportsTests(unittest.TestCase):
             "vdt-coverage": COVERAGE_ARGUMENTS,
             "vdt-coverage-timed": timed_argv(),
             "vdt-cyclonedx-coverage": CYCLONEDX_COVERAGE_ARGUMENTS,
+            "vdt-changes": CHANGES_ARGUMENTS,
+            "vdt-changes-timed": timed_changes_argv(),
         }
         compiled = {
             "vdt-sarif": compile_sarif_golden(record_failed_imports=True),
@@ -8403,6 +8417,136 @@ class CoverageGoldenTests(unittest.TestCase):
         self.assertIn("VDR-TFR-MVX MUST missing (6 untimed)", markdown)
 
 
+class ChangesGoldenTests(unittest.TestCase):
+    """The `vdt-changes` goldens: the two coverage runs plus a change file (ADR 0018)."""
+
+    RUNS = (
+        ("vdt-changes", "vdt-coverage", CHANGES_ARGUMENTS),
+        ("vdt-changes-timed", "vdt-coverage-timed", timed_changes_argv()),
+    )
+    CHANGE_CODES = frozenset(
+        {
+            "change_after_decommission",
+            "change_precedes_expected_since",
+            "change_resource_unregistered",
+            "kev_at_activation",
+        }
+    )
+
+    @staticmethod
+    def golden(name: str) -> dict[str, Any]:
+        return json.loads((GOLDEN / f"{name}.json").read_text(encoding="utf-8"))
+
+    @classmethod
+    def statuses(cls, name: str) -> dict[tuple[str, str], str]:
+        block = cls.golden(name)["x-complyroll"]["changes"]
+        return {(row["changeId"], row["resourceId"]): row["status"] for row in block["obligations"]}
+
+    def test_each_run_reproduces_its_golden_pair(self) -> None:
+        for name, _, argv in self.RUNS:
+            with self.subTest(golden=name), tempfile.TemporaryDirectory() as directory:
+                json_path = Path(directory) / "report.json"
+                markdown_path = Path(directory) / "report.md"
+
+                code, out, err = run(
+                    [*argv, "-o", str(json_path), "--markdown", str(markdown_path)]
+                )
+
+                self.assertEqual(code, 0, msg=err)
+                self.assertEqual(out, "")
+                self.assertEqual(json_path.read_bytes(), (GOLDEN / f"{name}.json").read_bytes())
+                self.assertEqual(markdown_path.read_bytes(), (GOLDEN / f"{name}.md").read_bytes())
+
+    def test_each_golden_validates_against_the_official_schema(self) -> None:
+        for name, _, _ in self.RUNS:
+            with self.subTest(golden=name):
+                code, out, err = run(
+                    ["validate", str(GOLDEN / f"{name}.json"), "--schema", "vulnerability-detail"]
+                )
+
+                self.assertEqual(code, 0, msg=err)
+                self.assertTrue(out.startswith("valid: "), out)
+
+    def test_only_the_block_and_its_diagnostics_differ_from_the_coverage_run(self) -> None:
+        for name, coverage_name, _ in self.RUNS:
+            with self.subTest(golden=name):
+                document = self.golden(name)
+                coverage = self.golden(coverage_name)
+                extension = document.pop("x-complyroll")
+                coverage_extension = coverage.pop("x-complyroll")
+                self.assertEqual(document, coverage)
+                self.assertEqual(extension.pop("changes")["rule"], "VDR-CSO-DAC")
+                self.assertEqual(
+                    [
+                        item
+                        for item in extension.pop("diagnostics")
+                        if item["code"] not in self.CHANGE_CODES
+                    ],
+                    coverage_extension.pop("diagnostics"),
+                )
+                self.assertEqual(extension, coverage_extension)
+
+    def test_the_example_golden_shows_what_its_file_reaches(self) -> None:
+        block = self.golden("vdt-changes")["x-complyroll"]["changes"]
+        self.assertEqual(
+            self.statuses("vdt-changes"),
+            {
+                ("CHG-1001", "lab-win-01"): "lapsed",
+                ("CHG-1002", "ubuntu-web-01"): "pending",
+                ("CHG-1003", "lab-win-01"): "logged",
+                ("CHG-1004", "sample-group/ir-runbooks"): "detected",
+                ("CHG-1005", "lab-ubuntu-99"): "unregistered",
+                ("CHG-1006", "lab-rhel-01"): "retired",
+            },
+        )
+        self.assertEqual(
+            block["input"]["sha256"], hashlib.sha256(EXAMPLE_CHANGES.read_bytes()).hexdigest()
+        )
+        self.assertEqual(
+            block["inventorySha256"], hashlib.sha256(EXAMPLE_INVENTORY.read_bytes()).hexdigest()
+        )
+        self.assertEqual(
+            block["unregistered"],
+            [{"resourceType": "host", "resourceId": "lab-ubuntu-99", "changeIds": ["CHG-1005"]}],
+        )
+        self.assertEqual([item["changeId"] for item in block["later"]], ["CHG-1007"])
+        rows = {row["changeId"]: row for row in block["obligations"]}
+        self.assertEqual(
+            rows["CHG-1002"]["matchedAs"], {"resourceType": "host", "resourceId": "lab-ubuntu-01"}
+        )
+        self.assertEqual(
+            rows["CHG-1004"]["standIn"],
+            {"resourceType": "logical", "resourceId": "incident-response-procedure"},
+        )
+        self.assertEqual(block["summary"]["pending"], 1)
+        self.assertEqual(block["summary"]["detected"], 1)
+
+    def test_the_timed_golden_shows_every_status_the_plan_named(self) -> None:
+        block = self.golden("vdt-changes-timed")["x-complyroll"]["changes"]
+        helpers = "https://github.com/example/webapp/src/ui/helpers.js"
+        self.assertEqual(
+            self.statuses("vdt-changes-timed"),
+            {
+                ("CHG-2001", "registry.example.test/synthetic/example-service:1.4.0"): "lapsed",
+                ("CHG-2002", "sample-group/webapp-ui"): "detected",
+                ("CHG-2003", "src/ui/render.js"): "detected",
+                ("CHG-2004", helpers): "detected",
+                ("CHG-2005", "https://github.com/example/webapp/src/ui/legacy.js"): "undetermined",
+                ("CHG-2006", helpers): "pending",
+            },
+        )
+        rows = {row["changeId"]: row for row in block["obligations"]}
+        self.assertEqual(
+            rows["CHG-2002"]["standIn"], {"resourceType": "file", "resourceId": "src/ui/render.js"}
+        )
+        self.assertEqual(rows["CHG-2001"]["windowClosedAt"], "2026-08-20T00:00:00Z")
+        self.assertTrue(rows["CHG-2003"]["late"])
+        self.assertEqual(rows["CHG-2003"]["windowClosedAt"], "2026-09-01T01:00:00Z")
+        self.assertEqual(rows["CHG-2003"]["resumedAt"], "2026-09-01T02:00:00.123456Z")
+        self.assertFalse(rows["CHG-2004"]["late"])
+        self.assertEqual(rows["CHG-2006"]["ageSeconds"], 97200)
+
+
 class PersistedCoverageGoldenTests(PersistedStoreTestCase):
     """The documented sequence plus `--inventory` rebuilds the coverage goldens."""
 
@@ -8826,12 +8970,14 @@ class UsageErrorTextTests(unittest.TestCase):
         self.assertEqual(terminal_text("a\u2028b\u2029c"), "a\\u2028b\\u2029c")
 
     def test_an_ordinary_usage_error_keeps_argparses_bytes(self) -> None:
-        code, err = usage_error(["version", "--nope\tx"])
+        # A wide terminal keeps the usage on one line: where argparse wraps it differs by version.
+        with patch.dict(os.environ, {"COLUMNS": "200"}):
+            code, err = usage_error(["version", "--nope\tx"])
 
         self.assertEqual(code, 2)
         self.assertEqual(
             err,
-            "usage: complyroll [-h] {version,plan,ingest,cases,report,store,validate} ...\n"
+            "usage: complyroll [-h] {version,plan,ingest,cases,report,changes,store,validate} ...\n"
             "complyroll: error: unrecognized arguments: --nope\tx\n",
         )
 

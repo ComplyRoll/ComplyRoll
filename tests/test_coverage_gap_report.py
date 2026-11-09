@@ -22,6 +22,7 @@ from unittest import mock
 
 from test_cli import (
     AVI_ARGUMENTS,
+    CHANGES_ARGUMENTS,
     COVERAGE_ARGUMENTS,
     CYCLONEDX_COVERAGE_ARGUMENTS,
     EXAMPLE_INVENTORY,
@@ -32,6 +33,7 @@ from test_cli import (
     kev_argv,
     run,
     timed_argv,
+    timed_changes_argv,
     with_failed_artifacts,
 )
 from test_coverage import derive, host, inventory_of, policy, resource_of
@@ -718,6 +720,8 @@ class GoldenRegistryTests(unittest.TestCase):
             "vdt-coverage": (COVERAGE_ARGUMENTS, 0),
             "vdt-coverage-timed": (timed_argv(), 0),
             "vdt-cyclonedx-coverage": (CYCLONEDX_COVERAGE_ARGUMENTS, 0),
+            "vdt-changes": (CHANGES_ARGUMENTS, 0),
+            "vdt-changes-timed": (timed_changes_argv(), 0),
             "vdt-failed": (failed_vdt, 3),
             "historical-failed": (failed_historical, 3),
         }

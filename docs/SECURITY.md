@@ -117,6 +117,14 @@ The standard-library ingestion layer currently enforces:
   count, never its bytes. `cases coverage` reads it through the same reader, and each gap record
   it stores carries the clock's resource pair, the entry's `job`, and the inventory's SHA-256,
   never the bytes
+- For a change file supplied with `--changes` (ADR 0018), 8 MiB maximum (`MAX_CHANGES_BYTES`), at
+  most 20,000 changes (`MAX_CHANGES`) and 1,000 resources per change (`MAX_CHANGE_RESOURCES`), and
+  16 levels of JSON nesting, with the standard 500,000-value bound unchanged. The change file is
+  untrusted input, read through the same bounded reader as an artifact and validated field by field
+  before any value is used. Unknown keys are refused at every level, and `rationale` is the one
+  field repaired rather than refused, through `diagnostic_text`. ComplyRoll never fetches it and
+  never writes it to the event store, and a report or a detection request records its SHA-256,
+  size, and change count, never its bytes
 - The inventory is validated field by field before any value is used. Unknown keys are refused at
   every level, and every field is type-checked before any pattern runs. Identity text takes the
   adapters' rule and is refused, never repaired: over 512 characters, or holding a control,
@@ -434,6 +442,11 @@ an agency. Audience-specific views are a later slice.
 A report compiled with `--inventory` carries more of the same: every inventory resource and alias,
 the `job` and `sampleGroup` names, the operator's attestation references, and the observed
 resources the inventory omits. Redact the coverage block and its Markdown section the same way.
+
+A report compiled with `--changes` carries each change's `source.reference`, `rationale`, and
+`job`, and every resource a change names, and the request document from `changes pending` carries
+the `source.reference`, the `job`, and the resource names. Redact the changes block, its Markdown
+section, and the request the same way.
 
 ## Authorization and trust-center publishing
 

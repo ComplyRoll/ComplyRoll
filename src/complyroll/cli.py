@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import re
 import shutil
@@ -67,12 +68,15 @@ from .reports import (
     compile_historical_report_from_history,
     compile_vdt_report,
     compile_vdt_report_from_history,
+    load_changes,
     load_evaluations,
     load_inventory,
     load_kev_catalog,
     parse_rfc3339,
 )
+from .reports.changes import detection_request
 from .reports.gaps import COVERAGE_GAP_SOURCE_TYPE
+from .reports.records import derive_changes_from_artifacts
 from .schemas import (
     MAX_REPORT_BYTES,
     ReportDocumentError,
@@ -116,6 +120,10 @@ DEFAULT_ACTOR = _default_actor()
 #: its output: a detection process failure (ADR 0014) or a coverage gap (ADR 0015), so a
 #: pipeline can tell it from a clean run (0) and a refusal (1).
 EXIT_DETECTION_FAILURES = 3
+
+#: `ReportOptions` requires a package URI and a request document has no use for one, so this
+#: fixed placeholder fills the field and reaches no output (ADR 0018).
+_REQUEST_PACKAGE_URI = "https://complyroll.invalid/changes-pending"
 
 #: The `cases list` columns, each with whether its values are right-aligned numbers.
 CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
@@ -347,6 +355,22 @@ def build_parser() -> argparse.ArgumentParser:
             period=command.period,
         )
 
+    changes = subparsers.add_parser("changes", help="work with declared changes")
+    change_commands = changes.add_subparsers(dest="changes_command", required=True)
+    pending_description = (
+        "Write a detection request: the resources a declared change still waits on, for the "
+        "pipeline that owns the scanner. Reads the same evidence as report; exits 0 whether "
+        "or not anything is waiting, so read the document's summary.pending. It is not a "
+        "FedRAMP determination."
+    )
+    _add_changes_pending_arguments(
+        change_commands.add_parser(
+            "pending",
+            help="write the resources a declared change still waits on",
+            description=pending_description,
+        )
+    )
+
     store = subparsers.add_parser("store", help="inspect the event store")
     store_commands = store.add_subparsers(dest="store_command", required=True)
     verify = store_commands.add_parser(
@@ -463,6 +487,16 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
             "(read locally, never stored)"
         ),
     )
+    # Appends for the reason `--kev` does: a second change file is refused, not silently kept.
+    parser.add_argument(
+        "--changes",
+        action="append",
+        metavar="FILE",
+        help=(
+            "declared change file JSON to read detection obligations from; needs --inventory "
+            "(read locally, never stored)"
+        ),
+    )
     parser.add_argument(
         "--detected-at",
         metavar="RFC3339",
@@ -499,6 +533,61 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
     parser.add_argument("--markdown", metavar="FILE", help="also write the human-readable twin")
 
 
+def _add_changes_pending_arguments(pending: argparse.ArgumentParser) -> None:
+    """Add the `changes pending` arguments, whose flags mean what they mean on `report`."""
+
+    pending.add_argument(
+        "artifacts",
+        nargs="+",
+        metavar="ARTIFACT",
+        help="CKLB, CKL, XCCDF, ARF, SARIF, HDF, or CycloneDX file",
+    )
+    # Each input appends for the reason it does on `report`: a second file is refused.
+    pending.add_argument(
+        "--changes",
+        action="append",
+        metavar="FILE",
+        help="declared change file JSON to read (read locally, never stored)",
+    )
+    pending.add_argument(
+        "--inventory",
+        action="append",
+        metavar="FILE",
+        help="information resource inventory JSON every change is read against",
+    )
+    pending.add_argument(
+        "--class",
+        dest="certification_class",
+        required=True,
+        choices=[item.value for item in CertificationClass],
+        help="certification class whose rules are read",
+    )
+    pending.add_argument(
+        "--as-of",
+        required=True,
+        metavar="RFC3339",
+        help="instant the changes and the evidence are read at",
+    )
+    pending.add_argument(
+        "--calendar-tz",
+        default="UTC",
+        metavar="NAME",
+        help="IANA calendar of the profile; no request date depends on it (default: UTC)",
+    )
+    pending.add_argument(
+        "--kev",
+        action="append",
+        metavar="FILE",
+        help="CISA KEV catalog JSON feed to apply (read locally, never fetched)",
+    )
+    pending.add_argument(
+        "--record-failed-imports",
+        action="store_true",
+        help="note a detection process failure on standard error and continue instead of stopping",
+    )
+    pending.add_argument("-o", "--output", metavar="FILE", help="write JSON here instead of stdout")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _tolerate_unencodable_output()
     args = build_parser().parse_args(argv)
@@ -520,6 +609,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "report":
         return _run_report(args, _REPORT_COMMAND_BY_NAME[args.report_command])
+
+    if args.command == "changes":
+        if args.changes_command == "pending":
+            return _run_changes_pending(args)
+        raise AssertionError(f"unhandled changes command: {args.changes_command}")
 
     if args.command == "store":
         if args.store_command == "verify":
@@ -1146,6 +1240,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     evaluations_path = Path(args.evaluations) if args.evaluations else None
     kev_paths = [Path(item) for item in (args.kev or ())]
     inventory_paths = [Path(item) for item in (args.inventory or ())]
+    changes_paths = [Path(item) for item in (args.changes or ())]
 
     conflict = _report_source_conflict(args, command.name)
     if conflict is not None:
@@ -1162,6 +1257,19 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             "invalid_option",
             f"report {command.name} takes one --inventory file, not {len(inventory_paths)}",
         )
+    if len(changes_paths) > 1:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} takes one --changes file, not {len(changes_paths)}",
+        )
+    if changes_paths and not inventory_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} --changes needs --inventory: a change is read against "
+            "the inventory or not at all",
+        )
     if args.record_coverage_gaps and not inventory_paths:
         return _fail(
             stderr,
@@ -1177,16 +1285,9 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     # Both destination refusals are decided from the paths alone, so they run here rather
     # than at publication time: a run that was never going to be allowed to write its
     # outputs should not parse an artifact or open a store before it says so.
-    linked = _symlink_destination((output, markdown))
+    linked = _refuse_symlink_output(stderr, (output, markdown))
     if linked is not None:
-        return _fail(
-            stderr,
-            "output_is_symlink",
-            "the output destination is a symbolic link; publishing replaces a destination "
-            "and restores it from a copy of its bytes, which would keep the content and "
-            "lose the link",
-            location=str(linked),
-        )
+        return linked
 
     try:
         _refuse_input_overwrite(
@@ -1195,6 +1296,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
                 *artifacts,
                 *kev_paths,
                 *inventory_paths,
+                *changes_paths,
                 *(item for item in (evaluations_path, database) if item),
             ),
         )
@@ -1202,6 +1304,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
         # refused as the input it is rather than as one more bad option.
         kev_catalog = load_kev_catalog(kev_paths[0]) if kev_paths else None
         inventory = load_inventory(inventory_paths[0]) if inventory_paths else None
+        change_set = load_changes(changes_paths[0]) if changes_paths else None
         options = ReportOptions(
             certification_class=CertificationClass(args.certification_class),
             package_uri=args.package_uri,
@@ -1215,6 +1318,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             kev_catalog=kev_catalog,
             inventory=inventory,
             record_coverage_gaps=args.record_coverage_gaps,
+            changes=change_set,
         )
         evaluations = load_evaluations(evaluations_path) if evaluations_path else None
     except ReportInputError as exc:
@@ -1249,6 +1353,87 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     return _persisted_run(stderr, compile_and_publish)
 
 
+def _run_changes_pending(args: argparse.Namespace) -> int:
+    stderr = sys.stderr
+    artifacts = [Path(item) for item in args.artifacts]
+    output = Path(args.output) if args.output else None
+    kev_paths = [Path(item) for item in (args.kev or ())]
+    inventory_paths = [Path(item) for item in (args.inventory or ())]
+    changes_paths = [Path(item) for item in (args.changes or ())]
+
+    refused = _pending_option_refusal(kev_paths, inventory_paths, changes_paths)
+    if refused is not None:
+        return _fail(stderr, "invalid_option", refused)
+    # Both destination refusals need only the paths, so nothing is read before them.
+    linked = _refuse_symlink_output(stderr, (output,))
+    if linked is not None:
+        return linked
+
+    try:
+        _refuse_input_overwrite(
+            outputs=(output,),
+            inputs=(*artifacts, *kev_paths, *inventory_paths, *changes_paths),
+        )
+        kev_catalog = load_kev_catalog(kev_paths[0]) if kev_paths else None
+        inventory = load_inventory(inventory_paths[0])
+        change_set = load_changes(changes_paths[0])
+        options = ReportOptions(
+            certification_class=CertificationClass(args.certification_class),
+            package_uri=_REQUEST_PACKAGE_URI,
+            as_of=parse_rfc3339(args.as_of, "--as-of"),
+            calendar_timezone=args.calendar_tz,
+            kev_catalog=kev_catalog,
+            inventory=inventory,
+            changes=change_set,
+        )
+    except ReportInputError as exc:
+        return _fail(stderr, "invalid_input", str(exc))
+    except (TypeError, ValueError) as exc:
+        return _fail(stderr, "invalid_option", str(exc))
+
+    def derive_and_publish() -> int:
+        projection, diagnostics = derive_changes_from_artifacts(
+            artifacts, options=options, record_failed_imports=args.record_failed_imports
+        )
+        # A request holds no system record, so its status never says one was recorded.
+        return _publish_rendered(
+            stderr,
+            diagnostics,
+            lambda: (
+                json.dumps(
+                    detection_request(projection), indent=2, sort_keys=True, ensure_ascii=False
+                )
+                + "\n"
+            ),
+            output=output,
+        )
+
+    return _persisted_run(stderr, derive_and_publish)
+
+
+def _pending_option_refusal(
+    kev_paths: Sequence[Path],
+    inventory_paths: Sequence[Path],
+    changes_paths: Sequence[Path],
+) -> str | None:
+    """Return why a `changes pending` run names the wrong inputs, or None when it is fine."""
+
+    if len(kev_paths) > 1:
+        return f"changes pending takes one --kev catalog, not {len(kev_paths)}"
+    if len(inventory_paths) > 1:
+        return f"changes pending takes one --inventory file, not {len(inventory_paths)}"
+    if len(changes_paths) > 1:
+        return f"changes pending takes one --changes file, not {len(changes_paths)}"
+    if not changes_paths:
+        return "changes pending needs --changes: a request is read from a change file or not at all"
+    if not inventory_paths:
+        return (
+            "changes pending --changes needs --inventory: a change is read against the "
+            "inventory or not at all"
+        )
+    return None
+
+
 def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str | None:
     """Return why a `report` run names the wrong sources, or None when it is fine.
 
@@ -1263,7 +1448,8 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     `--record-failed-imports` is on it because a store already recorded or refused its
     failures when `ingest` read them (ADR 0014). `--record-coverage-gaps` is on it because
     a report run never records a gap into a store; what a store holds is its own record
-    (ADR 0015).
+    (ADR 0015). `--changes` is on it because a compile from a store does not read a change
+    file (ADR 0018).
     """
 
     named = [
@@ -1274,6 +1460,7 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
             ("--detected-at", args.detected_at is not None),
             ("--record-failed-imports", args.record_failed_imports),
             ("--record-coverage-gaps", args.record_coverage_gaps),
+            ("--changes", bool(args.changes)),
         )
         if present
     ]
@@ -1293,11 +1480,30 @@ def _publish(
 ) -> int:
     """Write one compiled report to its destinations, all of them or none."""
 
-    _write_diagnostics(stderr, report.diagnostics)
+    return _publish_rendered(
+        stderr,
+        report.diagnostics,
+        report.to_json,
+        output=output,
+        twin=None if markdown is None else (markdown, report.to_markdown),
+    )
+
+
+def _publish_rendered(
+    stderr: TextIO,
+    diagnostics: Sequence[ReportDiagnostic],
+    render_json: Callable[[], str],
+    *,
+    output: Path | None,
+    twin: tuple[Path, Callable[[], str]] | None = None,
+) -> int:
+    """Write one document, and its twin if it has one, all of them or none."""
+
+    _write_diagnostics(stderr, diagnostics)
 
     # A written report never carries an ERROR (ADR 0017 Decision 2). Every ERROR the
     # compiler builds raises `ReportCompileError` first, so no current input gets here.
-    errors = sum(1 for item in report.diagnostics if item.level is DiagnosticLevel.ERROR)
+    errors = sum(1 for item in diagnostics if item.level is DiagnosticLevel.ERROR)
     if errors:
         return _fail(
             stderr,
@@ -1307,15 +1513,16 @@ def _publish(
 
     # Render everything before writing anything, so a failed second write cannot
     # leave a half-published pair of reports behind (ADR 0007 amendment).
-    json_text = report.to_json()
+    json_text = render_json()
     targets: list[tuple[Path, str]] = []
     if output is not None:
         targets.append((output, json_text))
-    if markdown is not None:
-        targets.append((markdown, report.to_markdown()))
+    if twin is not None:
+        destination, render_twin = twin
+        targets.append((destination, render_twin()))
 
-    # A symbolic-link destination is refused in `_run_report`, before anything is
-    # parsed or opened, because the paths are all that decision needs.
+    # A symbolic-link destination is refused before anything is parsed or opened, because
+    # the paths are all that decision needs.
     try:
         _write_all_or_nothing(targets)
     except OutputRollbackError as exc:
@@ -1670,6 +1877,22 @@ def _symlink_destination(destinations: Sequence[Path | None]) -> Path | None:
         if destination is not None and destination.is_symlink():
             return destination
     return None
+
+
+def _refuse_symlink_output(stream: TextIO, destinations: Sequence[Path | None]) -> int | None:
+    """Refuse a run with a symbolic-link destination, or return None when it has none."""
+
+    linked = _symlink_destination(destinations)
+    if linked is None:
+        return None
+    return _fail(
+        stream,
+        "output_is_symlink",
+        "the output destination is a symbolic link; publishing replaces a destination "
+        "and restores it from a copy of its bytes, which would keep the content and "
+        "lose the link",
+        location=str(linked),
+    )
 
 
 def _write_all_or_nothing(targets: Sequence[tuple[Path, str]]) -> None:

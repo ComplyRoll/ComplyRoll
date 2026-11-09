@@ -369,6 +369,122 @@ record at replay. A recorded stream is never rewritten, so after an edited inven
 `inventorySha256` stays the first run's. A store that holds a coverage stream is schema version
 4, and one that never records a gap stays at its version.
 
+## Declared changes and detection requests
+
+A change file is the provider's statement of what changed: a `complyroll.changes` JSON document
+supplied per run with `--changes`, read against the inventory (ADR 0018). It is read locally and
+never stored. Its fields:
+
+| Top level | Rule |
+|---|---|
+| `schema` | `complyroll.changes`; checked first |
+| `schemaVersion` | The JSON integer 1 |
+| `name` | 1 to 128 printable ASCII characters with no leading or trailing space |
+| `changes` | An array of at most `MAX_CHANGES` (20,000) entries |
+
+| Change field | Rule |
+|---|---|
+| `changeId` | Required, the name rule, unique in the file |
+| `kind` | Required, `created` or `modified` |
+| `occurredAt` | Required instant |
+| `source` | Required object: `tool` (name rule) and `reference` (identity text, at most 512 characters) |
+| `resources` | Required array of 1 to `MAX_CHANGE_RESOURCES` (1,000) `resourceType` and `resourceId` pairs |
+| `significant` | Required JSON boolean, on a `created` change too |
+| `rationale` | Required, 1 to 512 characters, cleaned through `diagnostic_text`; why the provider calls the change significant or not |
+| `detectBy` | Optional instant, not before `occurredAt`; the provider's window for detection after this change |
+| `job` | Optional, the name rule; the detection process expected to reach the resources |
+
+The reader refuses and never repairs, under the inventory's rules for identity text, names, and
+instants, with one exception: `rationale` passes through `diagnostic_text`, which removes control
+and invisible format characters other than tab and newline.
+Unknown keys are refused at every level. A JSON null reads as absent on every optional
+field. A resource pair follows the identity text rule, with no colon in the type and no repeated
+pair in a change, and `resourceType` `package` is refused, as the inventory refuses it. The file is
+read through the bounded reader at `MAX_CHANGES_BYTES` (8 MiB) and JSON depth 16. Changes sort by
+`occurredAt`, then `changeId`, and each change's resources by pair, so file order never reaches an
+output. The file's identity is the SHA-256 of its raw bytes, taken before a BOM is stripped.
+
+ComplyRoll derives no significance and no window. Only a change that is `created`, or `modified`
+with `significant: true`, opens an obligation on each resource it names, and `detectBy` is the only
+due date, because the pinned dataset states no timeframe for `VDR-CSO-DAC`.
+
+### The changes block
+
+The report-level `x-complyroll` gains `changes` on a run given a change file, built from one
+`ChangeProjection` in `complyroll.reports.changes`. All three reports carry the same block, and no
+period selects from it, because it is measured at as-of:
+
+| Key | Content |
+|---|---|
+| `rule`, `force` | `VDR-CSO-DAC` and the force read from the pinned dataset |
+| `provenance` | The pinned rules source, version, and digest the force was read from |
+| `asOf` | The run's as-of instant in UTC; evidence and changes after it are never measured |
+| `input` | `name`, `sizeBytes`, `sha256`, and `changeCount`: the file's identity, never its bytes |
+| `inventorySha256` | The inventory every change was read against |
+| `summary` | A count of obligations per status, all seven present |
+| `changes` | One row per change at or before as-of, as declared, with its force |
+| `obligations` | One row per (change, resource), in change order |
+| `unregistered` | Each pair no entry names, with the `changeIds` that named it |
+| `later` | Each change after as-of, with its `changeId`, `occurredAt`, and resource pairs |
+| `basis` | Fixed text saying what a status can and cannot claim |
+
+An obligation row carries `changeId`, `resourceType`, `resourceId`, `entry`, `sampleGroup`,
+`matchedAs`, `status`, `force`, `evidence`, `standIn`, `lagSeconds`, `ageSeconds`, `late`,
+`windowClosedAt`, `resumedAt`, `untimed`, `kevAtActivation`, and `kevTrackingIds`. Each row takes
+the first status that applies:
+
+| Status | Meaning |
+|---|---|
+| `unregistered` | No inventory entry or sample group carries the pair; no obligation opens |
+| `retired` | The entry was decommissioned at or before as-of, before the change or inside its window |
+| `logged` | A `modified` change with `significant: false`; recorded and never an obligation |
+| `detected` | A verification at or after the change and at or before as-of; `late` when it came after `detectBy` |
+| `lapsed` | `detectBy` passed with nothing verified since the change |
+| `undetermined` | Examined since the change with nothing verified, and the window open or absent |
+| `pending` | Nothing examined since the change, and the window open or absent |
+
+A waiting obligation without `detectBy` never lapses and prints its age. A `detected` status
+is not a compliance finding, and an obligation's row is evidence toward `KSI-CMT-LMC` and
+`KSI-CMT-VTD`, never proof of either. WARNING codes on a run with a change file:
+`change_resource_unregistered`, `change_after_decommission`, `change_precedes_expected_since`, and
+`kev_at_activation`, each located at `<changes name> <changeId> <type>:<id>`. A dataset that lacks
+`VDR-CSO-DAC` refuses the run with ERROR `change_rule_unavailable`.
+
+`kevAtActivation` answers only with `--kev`, on a `created` change of a machine-based entry whose
+row is `detected`. Every other row prints `null`. The answer comes from every artifact with a
+verification at the first satisfying instant, and a finding counts when it sits on the entry or,
+where the verification is a CycloneDX scope observation, on a `package` in that same BOM:
+
+| Value | Meaning |
+|---|---|
+| `true` | Any of those artifacts carries a finding the catalog listed on or before `occurredAt`'s UTC date, which a stale catalog can still show. `kevTrackingIds` is the sorted union, each id as its record publishes it; the block is not selected by a period, so that record can fall outside one report |
+| `false` | None of those findings was listed, at least one is an OPEN CVE-bearing finding, no finding's identifier list may have lost a CVE, and the catalog's release date is on or after `occurredAt`'s UTC date |
+| `null` | The question cannot be answered: a clean run has no CVE to check, a cut identifier list may hide one, and a catalog older than the change cannot show what was listed at the change |
+
+`false` is no claim that the resource carries no KEV. It says only that the findings those artifacts
+carried were not listed.
+
+### The detection request
+
+`changes pending` writes a `complyroll.detection-request` version 1 document from the same
+obligation rows, so it cannot disagree with the block. It lists only the rows still waiting, which
+are the `lapsed`, `undetermined`, and `pending` ones, less the rows of a resource decommissioned at
+or before as-of. No scan can clear such a row, so it leaves the request and its counts and stays
+in the block with its status:
+
+| Key | Content |
+|---|---|
+| `schema`, `schemaVersion` | `complyroll.detection-request` and 1 |
+| `rule`, `force`, `provenance` | As in the block |
+| `asOf`, `input`, `inventorySha256` | As in the block |
+| `summary` | `pending`, the count of every waiting row, and `byStatus`, the split across the three statuses |
+| `requests` | One entry per change with a waiting resource, in change order |
+
+A request entry carries `changeId`, `kind`, `occurredAt`, `detectBy`, `job`, `source`, and
+`resources`, and each resource carries `resourceType`, `resourceId`, `aliases`, `sampleGroup`, and
+`status`. A sample group row names the group by its `logical:sample-group/<name>` pair and carries
+no aliases.
+
 ## Report extension (x-complyroll)
 
 Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
@@ -383,7 +499,7 @@ recorded, not that it was recorded by `dueAt`, and no field reports lateness, AD
 (`observationIds`, `resources`), the detection-time source (`detectedAtSource`: `artifact`,
 `artifact-partial`, `attestation`, or `system` for a detection process failure or a coverage
 gap), and the evaluator and rationale (`evaluator`, `rationale`). The KEV keys,
-`detectionFailures`, and `coverage` described above live under the same key.
+`detectionFailures`, `coverage`, and `changes` described above live under the same key.
 
 The JSON is the complete machine record. The Markdown twin renders the same records for a reader,
 with a detail section per vulnerability, and a parity test checks that the twin states every

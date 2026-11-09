@@ -59,6 +59,8 @@ from complyroll.policy import (
 )
 from complyroll.policy.source import RuleSourceSnapshot
 
+from .changes import DAC_RULE, ChangeProjection, derive_changes
+from .changes_input import ChangeSet
 from .checks import (
     CLOCK_OUT_OF_RANGE,
     TRACKING_ID_COLLISION,
@@ -166,6 +168,48 @@ def compile_record_set_from_artifacts(
     )
 
 
+def derive_changes_from_artifacts(
+    artifact_paths: Sequence[Path],
+    *,
+    options: ReportOptions,
+    record_failed_imports: bool = False,
+) -> tuple[ChangeProjection, tuple[ReportDiagnostic, ...]]:
+    """Ingest artifacts and project the options' change file, with no report around it.
+
+    The request document's front half: the same reading of the artifacts, the same refusals
+    about reading them, and the same projection as a report with the same flags, so a request
+    and a report's block cannot disagree (ADR 0018). It builds no record, so a refusal about
+    one, such as `detection_time_missing`, does not apply. The diagnostics are the ingest's,
+    in the report's order, then the projection's warnings.
+    """
+
+    if not isinstance(options, ReportOptions):
+        raise TypeError("options must be a ReportOptions")
+    change_set = options.changes
+    inventory = options.inventory
+    if change_set is None or inventory is None:
+        raise ValueError("deriving a change projection needs a change set and an inventory")
+
+    ingest_diagnostics: list[ReportDiagnostic] = []
+    _, observations = _ingest_all(
+        artifact_paths,
+        options,
+        ingest_diagnostics,
+        record_failed_imports=record_failed_imports,
+    )
+    # The report path meets these two refusals on its way to the projection. Without them a
+    # late catalog is applied and an unusable clock ends the run in the derivation.
+    if options.kev_catalog is not None:
+        _require_kev_catalog_by_as_of(options.kev_catalog, options)
+    _refuse_unusable_clocks(observations)
+    policy = select_policy(load_bundled_rule_source_snapshot(), options.profile)
+    projection = _changes(observations, change_set, inventory, policy, options)
+    return projection, (
+        *sorted(ingest_diagnostics, key=_diagnostic_order),
+        *projection.warnings,
+    )
+
+
 def compile_record_set(
     *,
     artifacts: Sequence[CompiledArtifact],
@@ -235,6 +279,13 @@ def compile_record_set(
         raise ValueError("coverage must be derived from these options' inventory, as-of and policy")
     if gap_aware and coverage is None:
         raise ValueError("a gap-aware compile needs an inventory")
+    # After coverage, which has refused any out-of-range clock by name; a coverage gap in
+    # these observations is a system record, so it never satisfies a change.
+    changes = (
+        None
+        if options.changes is None or inventory is None
+        else _changes(observations, options.changes, inventory, policy, options)
+    )
 
     compiled: list[CompiledVulnerability] = []
     # Each record with no detection time, as (correlation id, label), named in id order.
@@ -363,6 +414,11 @@ def compile_record_set(
         raise ReportCompileError(errors)
 
     _require_unique_tracking_ids(compiled)
+    if changes is not None:
+        # An evaluation may rename a record, and a change row names it as the record does.
+        changes = changes.with_published_tracking_ids(
+            {record.original_tracking_id: record.tracking_id for record in compiled}
+        )
     if catalog is not None:
         diagnostics.extend(_kev_diagnostics(catalog, compiled, kev_incomplete, options))
     if coverage is not None:
@@ -374,6 +430,8 @@ def compile_record_set(
         diagnostics.extend(
             _coverage_gap_divergences(coverage, window_ids, gap_tracking, gap_labels, observations)
         )
+    if changes is not None:
+        diagnostics.extend(changes.warnings)
     return CompiledRecordSet(
         records=tuple(compiled),
         artifacts=tuple(sorted(artifacts, key=_artifact_order)),
@@ -386,6 +444,7 @@ def compile_record_set(
         coverage=coverage,
         coverage_gaps=tuple(sorted(set(gap_tracking.values()))),
         coverage_gap_records=gap_records,
+        changes=changes,
     )
 
 
@@ -1079,8 +1138,15 @@ def _coverage(
                 ),
             )
         )
-    # Coverage converts every observation's clock to UTC, so one that cannot be is refused
-    # here, named, rather than ending the run in the derivation.
+    _refuse_unusable_clocks(observations)
+    return derive_coverage(observations, inventory, policy, as_of)
+
+
+def _refuse_unusable_clocks(observations: Sequence[Observation]) -> None:
+    """Stop the run on an observation clock the projections cannot convert to UTC."""
+
+    # Each projection converts every observation's clock to UTC, so one that cannot be is
+    # refused here, named, rather than ending the run in the derivation.
     unusable = tuple(
         ReportDiagnostic(
             level=DiagnosticLevel.ERROR,
@@ -1096,7 +1162,40 @@ def _coverage(
     )
     if unusable:
         raise ReportCompileError(unusable)
-    return derive_coverage(observations, inventory, policy, as_of)
+
+
+def _changes(
+    observations: Sequence[Observation],
+    change_set: ChangeSet,
+    inventory: Inventory,
+    policy: SelectedPolicy,
+    options: ReportOptions,
+) -> ChangeProjection:
+    """Return the change projection, or stop the run when the policy lacks its rule."""
+
+    if not _selects(policy, DAC_RULE):
+        raise ReportCompileError(
+            (
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code="change_rule_unavailable",
+                    message=(
+                        "a change file was supplied, but the Class "
+                        f"{policy.profile.certification_class.value} policy selects no "
+                        f"{DAC_RULE} rule, so no change can be read against it"
+                    ),
+                    location=change_set.name,
+                ),
+            )
+        )
+    return derive_changes(
+        observations,
+        change_set,
+        inventory,
+        policy,
+        options.as_of,
+        kev_catalog=options.kev_catalog,
+    )
 
 
 def _selects(policy: SelectedPolicy, rule_id: str) -> bool:
@@ -1654,5 +1753,6 @@ __all__ = [
     "compile_record_set",
     "compile_record_set_from_artifacts",
     "coverage_diagnostics",
+    "derive_changes_from_artifacts",
     "derive_report_coverage",
 ]

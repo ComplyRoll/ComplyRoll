@@ -1,6 +1,17 @@
 """Report compilers that turn source observations into official-format projections."""
 
 from .avi import CompiledAviReport, compile_avi_report, project_avi
+from .changes_input import (
+    MAX_CHANGE_RESOURCES,
+    MAX_CHANGES,
+    MAX_CHANGES_BYTES,
+    Change,
+    ChangeKind,
+    ChangeSet,
+    ChangeSource,
+    load_changes,
+    parse_changes,
+)
 from .evaluations import (
     CLOSED_DISPOSITIONS,
     MAX_EVALUATIONS_BYTES,
@@ -69,6 +80,9 @@ __all__ = [
     "EXTENSION_KEY",
     "FINAL_DISPOSITIONS",
     "KEV_STALE_AFTER",
+    "MAX_CHANGES",
+    "MAX_CHANGES_BYTES",
+    "MAX_CHANGE_RESOURCES",
     "MAX_EVALUATIONS_BYTES",
     "MAX_INVENTORY_BYTES",
     "MAX_INVENTORY_RESOURCES",
@@ -76,6 +90,10 @@ __all__ = [
     "MAX_KEV_ENTRIES",
     "REPORT_DIAGNOSTIC_CODES",
     "AcceptedVulnerability",
+    "Change",
+    "ChangeKind",
+    "ChangeSet",
+    "ChangeSource",
     "CompiledArtifact",
     "CompiledAviReport",
     "CompiledDeadline",
@@ -112,9 +130,11 @@ __all__ = [
     "compile_records",
     "compile_vdt_report",
     "compile_vdt_report_from_history",
+    "load_changes",
     "load_evaluations",
     "load_inventory",
     "load_kev_catalog",
+    "parse_changes",
     "parse_evaluations",
     "parse_inventory",
     "parse_kev_catalog",

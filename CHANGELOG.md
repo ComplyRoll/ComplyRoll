@@ -2,6 +2,28 @@
 
 All notable project changes will be documented here.
 
+## Unreleased
+
+### Added
+
+- `report vdt|avi|historical` take `--changes FILE`, a provider-supplied `complyroll.changes`
+  document read against `--inventory`, stateless only. Each report gains an
+  `x-complyroll.changes` block and a Markdown `## Changes` section that give each change and
+  resource a status from the evidence at or after the change: `unregistered`, `retired`, `logged`,
+  `detected`, `lapsed`, `undetermined`, or `pending`. The window is the provider's own `detectBy`,
+  because the pinned dataset states no timeframe for `VDR-CSO-DAC`. `VDR-CSO-AKE` is a diagnostic
+  only, `kev_at_activation`. A run without the flag produces the bytes it produced before, and no
+  existing golden moves (ADR 0018).
+- `changes pending` writes a `complyroll.detection-request` document: the resources a declared
+  change still waits on, for the pipeline that owns the scanner. ComplyRoll runs no scanner. It
+  exits 0 whether or not anything is waiting, and `summary.pending` is the signal (ADR 0018).
+
+### Changed
+
+- `docs/BUILD_PLAN.md` marks the exit criterion "A case can group equivalent observations while
+  retaining every affected resource" Met, which has been true since ADR 0001. No code changed for
+  it.
+
 ## 0.4.0a0 - 2026-11-05
 
 ### Fixed

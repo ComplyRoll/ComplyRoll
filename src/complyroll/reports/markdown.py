@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 
 from complyroll.models import CaseStatus, ResourceRef
 
+from .changes import CHANGE_BASIS, DAC_RULE, ChangeObligation, ChangeProjection
+from .changes_input import Change
 from .coverage import (
     COVERAGE_BASIS,
     CoverageEvidence,
@@ -500,6 +502,149 @@ def _optional_iso(value: datetime | None) -> str:
     return "n/a" if value is None else iso(value)
 
 
+# *--- Changes ---*
+
+
+def write_changes(write: Callable[[str], None], metadata: ReportMetadata) -> None:
+    """Write the Changes section, the twin of `x-complyroll.changes` (ADR 0018).
+
+    Every summary count, declared change, obligation, unregistered resource and later change
+    the block carries is written here, from the same projection. Nothing is written when the
+    run was given no change file.
+    """
+
+    changes = metadata.changes
+    if changes is None:
+        return
+    change_set = changes.change_set
+    write("## Changes")
+    write("")
+    write(
+        f"Changes declared in {_cell(change_set.name)} ({change_set.change_count} changes, "
+        f"{change_set.size_bytes} bytes, SHA-256 {change_set.sha256}), read against the "
+        f"inventory with SHA-256 {changes.inventory.sha256} as of {iso(changes.as_of)}, under "
+        f"{DAC_RULE} ({changes.force.value}) from rules dataset commit "
+        f"{changes.provenance.commit}."
+    )
+    write("")
+    write(CHANGE_BASIS)
+    write("")
+
+    write("### Obligations by status")
+    write("")
+    write("| Status | Obligations |")
+    write("|---|---:|")
+    for status, count in changes.summary.items():
+        write(f"| {status.value} | {count} |")
+    write("")
+
+    write("### Declared changes")
+    write("")
+    if not changes.declared:
+        write("No change occurred at or before as-of.")
+    else:
+        write(
+            "| Change | Kind | Occurred at | Source | Significant | Rationale | Detect by | Job "
+            "| Force |"
+        )
+        write("|---|---|---|---|---|---|---|---|---|")
+        for change in changes.declared:
+            write(_declared_change_row(change, changes))
+    write("")
+
+    write("### Obligations")
+    write("")
+    if not changes.obligations:
+        write("No obligation is measured at this as-of.")
+    else:
+        write(
+            "| Change | Resource | Entry | Sample group | Matched as | Status | Force | Evidence "
+            "| Stand-in | Lag seconds | Age seconds | Late | Window closed | Resumed | Untimed "
+            "| KEV at activation | KEV tracking IDs |"
+        )
+        write("|---|---|---|---|---|---|---|---|---|---:|---:|---|---|---|---:|---|---|")
+        for row in changes.obligations:
+            write(_change_obligation_row(row, changes))
+    write("")
+
+    write("### Unregistered resources")
+    write("")
+    if not changes.unregistered:
+        write("Every resource a change names is in the inventory.")
+    else:
+        write("| Resource | Changes |")
+        write("|---|---|")
+        for item in changes.unregistered:
+            names = ", ".join(_cell(value) for value in item.change_ids)
+            write(f"| {_coverage_ref(item.resource)} | {names} |")
+    write("")
+
+    write("### Changes after as-of")
+    write("")
+    if not changes.later:
+        write("No change occurred after as-of.")
+    else:
+        write("| Change | Occurred at | Resources |")
+        write("|---|---|---|")
+        for change in changes.later:
+            resources = ", ".join(_coverage_ref(ref) for ref in change.resources)
+            write(f"| {_cell(change.change_id)} | {iso(change.occurred_at)} | {resources} |")
+    write("")
+
+
+def _declared_change_row(change: Change, changes: ChangeProjection) -> str:
+    return (
+        "| "
+        + " | ".join(
+            (
+                _cell(change.change_id),
+                change.kind.value,
+                iso(change.occurred_at),
+                _cell(f"{change.source.tool}: {change.source.reference}"),
+                _flag(change.significant),
+                _cell(change.rationale),
+                _optional_iso(change.detect_by),
+                _cell(change.job or "n/a"),
+                changes.force.value,
+            )
+        )
+        + " |"
+    )
+
+
+def _change_obligation_row(row: ChangeObligation, changes: ChangeProjection) -> str:
+    kev = row.kev_at_activation
+    return (
+        "| "
+        + " | ".join(
+            (
+                _cell(row.change.change_id),
+                _coverage_ref(row.resource),
+                _coverage_ref(None if row.entry is None else row.entry.ref),
+                _cell(row.sample_group or "n/a"),
+                _coverage_ref(row.matched_as),
+                row.status.value,
+                changes.force.value,
+                _coverage_evidence(row.evidence),
+                _coverage_ref(row.stand_in),
+                _optional_int(row.lag_seconds),
+                _optional_int(row.age_seconds(changes.as_of)),
+                _flag(row.late),
+                _optional_iso(row.window_closed_at),
+                _optional_iso(row.resumed_at),
+                str(row.untimed),
+                "n/a" if kev is None else _flag(kev),
+                ", ".join(_cell(value) for value in row.kev_tracking_ids) or "n/a",
+            )
+        )
+        + " |"
+    )
+
+
+def _optional_int(value: int | None) -> str:
+    return "n/a" if value is None else str(value)
+
+
 # *--- Diagnostics and Footer ---*
 
 
@@ -730,6 +875,7 @@ def _cell(value: str) -> str:
 
 __all__ = [
     "write_attestation_section",
+    "write_changes",
     "write_coverage",
     "write_diagnostics_section",
     "write_footer",

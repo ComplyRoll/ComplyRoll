@@ -32,6 +32,7 @@ from complyroll.schemas import ReportSchema, SchemaValidationResult
 from .evaluations import EvaluationInput, EvaluationSet
 from .markdown import (
     write_attestation_section,
+    write_changes,
     write_coverage,
     write_diagnostics_section,
     write_footer,
@@ -181,6 +182,7 @@ def project_vdt(record_set: CompiledRecordSet) -> CompiledVdtReport:
         coverage=record_set.coverage,
         coverage_gaps=record_set.coverage_gaps,
         coverage_gap_records=record_set.coverage_gap_records,
+        changes=record_set.changes,
     )
     document = _build_document(tuple(records), metadata, tuple(diagnostics))
     validation = validate_document(ReportSchema.VULNERABILITY_DETAIL, document)
@@ -350,6 +352,7 @@ def _render_markdown(report: CompiledVdtReport) -> str:
     write_attestation_section(write, records, metadata)
     write_inputs(write, metadata)
     write_coverage(write, metadata)
+    write_changes(write, metadata)
     write_diagnostics_section(write, report.diagnostics)
     write_footer(write)
     return "\n".join(lines) + "\n"

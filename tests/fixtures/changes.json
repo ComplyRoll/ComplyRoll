@@ -1,0 +1,34 @@
+{
+  "schema": "complyroll.changes",
+  "schemaVersion": 1,
+  "name": "fixture-changes",
+  "changes": [
+    {
+      "changeId": "FIX-1",
+      "kind": "created",
+      "occurredAt": "2026-09-01T00:00:00Z",
+      "source": {"tool": "fixture", "reference": "synthetic record 1"},
+      "resources": [
+        {"resourceType": "host", "resourceId": "fixture-host-b"},
+        {"resourceType": "host", "resourceId": "fixture-host-a"}
+      ],
+      "significant": false,
+      "rationale": "Every optional field set, resources out of order.",
+      "detectBy": "2026-09-02T00:00:00Z",
+      "job": "fixture-scan"
+    },
+    {
+      "changeId": "FIX-2",
+      "kind": "modified",
+      "occurredAt": "2026-09-01T00:00:00Z",
+      "source": {"tool": "fixture", "reference": "synthetic record 2"},
+      "resources": [
+        {"resourceType": "image", "resourceId": "registry.example.test/synthetic/fixture:1"}
+      ],
+      "significant": true,
+      "rationale": "Null reads as absent on the optional fields.",
+      "detectBy": null,
+      "job": null
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "schema": "complyroll.changes",
+  "schemaVersion": 1,
+  "name": "example-changes",
+  "changes": [
+    {
+      "changeId": "CHG-1001",
+      "kind": "created",
+      "occurredAt": "2026-07-01T00:00:00Z",
+      "source": {"tool": "terraform", "reference": "apply run 4411"},
+      "resources": [
+        {"resourceType": "host", "resourceId": "lab-win-01"}
+      ],
+      "significant": true,
+      "rationale": "New Windows host joined the boundary.",
+      "detectBy": "2026-07-08T00:00:00Z",
+      "job": "weekly-stig-checklist"
+    },
+    {
+      "changeId": "CHG-1002",
+      "kind": "modified",
+      "occurredAt": "2026-08-10T15:30:00Z",
+      "source": {"tool": "git", "reference": "commit 7f3c2e1"},
+      "resources": [
+        {"resourceType": "host", "resourceId": "lab-ubuntu-01"}
+      ],
+      "significant": true,
+      "rationale": "Kernel and OpenSSL upgrade on the web host, named by its old alias.",
+      "detectBy": "2026-08-31T00:00:00Z",
+      "job": "weekly-stig-checklist"
+    },
+    {
+      "changeId": "CHG-1003",
+      "kind": "modified",
+      "occurredAt": "2026-08-12T09:00:00Z",
+      "source": {"tool": "git", "reference": "commit 91aa04d"},
+      "resources": [
+        {"resourceType": "host", "resourceId": "lab-win-01"}
+      ],
+      "significant": false,
+      "rationale": "Log rotation interval only; no package or service changed."
+    },
+    {
+      "changeId": "CHG-1004",
+      "kind": "modified",
+      "occurredAt": "2026-08-01T00:00:00Z",
+      "source": {"tool": "ticket", "reference": "CR-2026-118"},
+      "resources": [
+        {"resourceType": "logical", "resourceId": "sample-group/ir-runbooks"}
+      ],
+      "significant": true,
+      "rationale": "Escalation paths rewritten across the runbook sample."
+    },
+    {
+      "changeId": "CHG-1005",
+      "kind": "created",
+      "occurredAt": "2026-08-15T12:00:00Z",
+      "source": {"tool": "terraform", "reference": "apply run 4502"},
+      "resources": [
+        {"resourceType": "host", "resourceId": "lab-ubuntu-99"}
+      ],
+      "significant": true,
+      "rationale": "Temporary build host; not yet in the inventory."
+    },
+    {
+      "changeId": "CHG-1006",
+      "kind": "modified",
+      "occurredAt": "2026-08-14T00:00:00Z",
+      "source": {"tool": "git", "reference": "commit c04d7b2"},
+      "resources": [
+        {"resourceType": "host", "resourceId": "lab-rhel-01"}
+      ],
+      "significant": true,
+      "rationale": "Configuration push reached a host already retired."
+    },
+    {
+      "changeId": "CHG-1007",
+      "kind": "created",
+      "occurredAt": "2026-09-01T00:00:00Z",
+      "source": {"tool": "terraform", "reference": "apply run 4610"},
+      "resources": [
+        {"resourceType": "host", "resourceId": "lab-ubuntu-03"}
+      ],
+      "significant": true,
+      "rationale": "Second web host joined the boundary."
+    }
+  ]
+}

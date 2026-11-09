@@ -8975,7 +8975,8 @@ class UsageErrorTextTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(
             err,
-            "usage: complyroll [-h] {version,plan,ingest,cases,report,store,validate} ...\n"
+            "usage: complyroll [-h]\n"
+            "                  {version,plan,ingest,cases,report,changes,store,validate} ...\n"
             "complyroll: error: unrecognized arguments: --nope\tx\n",
         )
 

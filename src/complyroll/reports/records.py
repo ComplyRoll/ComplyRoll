@@ -168,6 +168,46 @@ def compile_record_set_from_artifacts(
     )
 
 
+def derive_changes_from_artifacts(
+    artifact_paths: Sequence[Path],
+    *,
+    options: ReportOptions,
+    record_failed_imports: bool = False,
+) -> tuple[ChangeProjection, tuple[ReportDiagnostic, ...]]:
+    """Ingest artifacts and project the options' change file, with no report around it.
+
+    The request document's front half: the same reading, refusals and projection as a report
+    with the same flags, so a request and a report's block cannot disagree (ADR 0018). The
+    diagnostics are the ingest's, in the report's order, then the projection's warnings.
+    """
+
+    if not isinstance(options, ReportOptions):
+        raise TypeError("options must be a ReportOptions")
+    change_set = options.changes
+    inventory = options.inventory
+    if change_set is None or inventory is None:
+        raise ValueError("deriving a change projection needs a change set and an inventory")
+
+    ingest_diagnostics: list[ReportDiagnostic] = []
+    _, observations = _ingest_all(
+        artifact_paths,
+        options,
+        ingest_diagnostics,
+        record_failed_imports=record_failed_imports,
+    )
+    # The report path meets these two refusals on its way to the projection. Without them a
+    # late catalog is applied and an unusable clock ends the run in the derivation.
+    if options.kev_catalog is not None:
+        _require_kev_catalog_by_as_of(options.kev_catalog, options)
+    _refuse_unusable_clocks(observations)
+    policy = select_policy(load_bundled_rule_source_snapshot(), options.profile)
+    projection = _changes(observations, change_set, inventory, policy, options)
+    return projection, (
+        *sorted(ingest_diagnostics, key=_diagnostic_order),
+        *projection.warnings,
+    )
+
+
 def compile_record_set(
     *,
     artifacts: Sequence[CompiledArtifact],
@@ -1091,8 +1131,15 @@ def _coverage(
                 ),
             )
         )
-    # Coverage converts every observation's clock to UTC, so one that cannot be is refused
-    # here, named, rather than ending the run in the derivation.
+    _refuse_unusable_clocks(observations)
+    return derive_coverage(observations, inventory, policy, as_of)
+
+
+def _refuse_unusable_clocks(observations: Sequence[Observation]) -> None:
+    """Stop the run on an observation clock the projections cannot convert to UTC."""
+
+    # Each projection converts every observation's clock to UTC, so one that cannot be is
+    # refused here, named, rather than ending the run in the derivation.
     unusable = tuple(
         ReportDiagnostic(
             level=DiagnosticLevel.ERROR,
@@ -1108,7 +1155,6 @@ def _coverage(
     )
     if unusable:
         raise ReportCompileError(unusable)
-    return derive_coverage(observations, inventory, policy, as_of)
 
 
 def _changes(
@@ -1700,5 +1746,6 @@ __all__ = [
     "compile_record_set",
     "compile_record_set_from_artifacts",
     "coverage_diagnostics",
+    "derive_changes_from_artifacts",
     "derive_report_coverage",
 ]

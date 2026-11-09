@@ -106,6 +106,8 @@ def compile_record_set_from_history(
     has recorded gaps, so with an inventory the report is gap aware, each window naming the
     recorded gap that carries it or none. A store that never recorded a gap reads exactly
     as the stateless run without the flag, whatever the build that reads it.
+    `options.changes` is refused too: a store never read that file, so a block built here
+    would claim an input the history does not hold (ADR 0018).
     """
 
     if not isinstance(options, ReportOptions):
@@ -114,6 +116,11 @@ def compile_record_set_from_history(
         raise ValueError(
             "record_coverage_gaps applies only to a compile from artifacts; a report from "
             "history never records a coverage gap"
+        )
+    if options.changes is not None:
+        raise ValueError(
+            "changes applies only to a compile from artifacts; a store never read this "
+            "change file, so a report from history cannot name it as its input"
         )
     # Imported here because `complyroll.history` reads the report layer's evaluation
     # shapes, so a module-level import would close a cycle whenever history is the

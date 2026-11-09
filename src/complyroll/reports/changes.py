@@ -56,6 +56,9 @@ CHANGE_AFTER_DECOMMISSION = "change_after_decommission"
 CHANGE_PRECEDES_EXPECTED_SINCE = "change_precedes_expected_since"
 KEV_AT_ACTIVATION = "kev_at_activation"
 
+DETECTION_REQUEST_SCHEMA = "complyroll.detection-request"
+DETECTION_REQUEST_SCHEMA_VERSION = 1
+
 # Every change block prints this text unchanged, so no status reads as more than it is.
 CHANGE_BASIS = (
     f"{DAC_RULE} states no timeframe, so a window here is only the provider's own detectBy, and "
@@ -167,25 +170,12 @@ class ChangeProjection:
 
     def to_dict(self) -> dict[str, Any]:
         """Return the `x-complyroll.changes` block; keys are sorted when the JSON is written."""
-        change_set = self.change_set
-        provenance = self.provenance
         return {
             "rule": DAC_RULE,
             "force": self.force.value,
-            "provenance": {
-                "repository": provenance.repository,
-                "commit": provenance.commit,
-                "datasetVersion": provenance.dataset_version,
-                "datasetLastUpdated": provenance.dataset_last_updated,
-                "sha256": provenance.dataset_sha256,
-            },
+            "provenance": _provenance_dict(self.provenance),
             "asOf": _instant_text(self.as_of),
-            "input": {
-                "name": change_set.name,
-                "sizeBytes": change_set.size_bytes,
-                "sha256": change_set.sha256,
-                "changeCount": change_set.change_count,
-            },
+            "input": _input_dict(self.change_set),
             "inventorySha256": self.inventory.sha256,
             "summary": {status.value: count for status, count in self.summary.items()},
             "changes": [_change_row(change, self.force) for change in self.declared],
@@ -504,6 +494,57 @@ def _warning(
     )
 
 
+# *--- Detection Request ---*
+
+
+def detection_request(projection: ChangeProjection) -> dict[str, Any]:
+    """Return the request document: only the resources still waiting, per change."""
+    waiting = projection.waiting
+    counts = projection.summary
+    # The rows are in change order, so the first row of a change places its whole request.
+    by_change: dict[str, list[ChangeObligation]] = {}
+    for row in waiting:
+        by_change.setdefault(row.change.change_id, []).append(row)
+    return {
+        "schema": DETECTION_REQUEST_SCHEMA,
+        "schemaVersion": DETECTION_REQUEST_SCHEMA_VERSION,
+        "rule": DAC_RULE,
+        "force": projection.force.value,
+        "provenance": _provenance_dict(projection.provenance),
+        "asOf": _instant_text(projection.as_of),
+        "input": _input_dict(projection.change_set),
+        "inventorySha256": projection.inventory.sha256,
+        "summary": {
+            "pending": len(waiting),
+            "byStatus": {status.value: counts[status] for status in WAITING_STATUSES},
+        },
+        "requests": [_request(rows) for rows in by_change.values()],
+    }
+
+
+def _request(rows: Sequence[ChangeObligation]) -> dict[str, Any]:
+    change = rows[0].change
+    return {
+        "changeId": change.change_id,
+        "kind": change.kind.value,
+        "occurredAt": _instant_text(change.occurred_at),
+        "detectBy": _instant_text(change.detect_by),
+        "job": change.job,
+        "source": _source_dict(change),
+        "resources": [_requested_resource(row) for row in rows],
+    }
+
+
+def _requested_resource(row: ChangeObligation) -> dict[str, Any]:
+    return {
+        **_ref_dict(row.resource),
+        # A group row names no entry; its members are the inventory's to list.
+        "aliases": [] if row.entry is None else [_ref_dict(alias) for alias in row.entry.aliases],
+        "sampleGroup": row.sample_group,
+        "status": row.status.value,
+    }
+
+
 # *--- Evidence Readers ---*
 
 
@@ -650,12 +691,35 @@ def _lifecycle(named: _Named) -> tuple[datetime, datetime | None]:
     )
 
 
+def _provenance_dict(provenance: PolicyProvenance) -> dict[str, Any]:
+    return {
+        "repository": provenance.repository,
+        "commit": provenance.commit,
+        "datasetVersion": provenance.dataset_version,
+        "datasetLastUpdated": provenance.dataset_last_updated,
+        "sha256": provenance.dataset_sha256,
+    }
+
+
+def _input_dict(change_set: ChangeSet) -> dict[str, Any]:
+    return {
+        "name": change_set.name,
+        "sizeBytes": change_set.size_bytes,
+        "sha256": change_set.sha256,
+        "changeCount": change_set.change_count,
+    }
+
+
+def _source_dict(change: Change) -> dict[str, str]:
+    return {"tool": change.source.tool, "reference": change.source.reference}
+
+
 def _change_row(change: Change, force: RuleForce) -> dict[str, Any]:
     return {
         "changeId": change.change_id,
         "kind": change.kind.value,
         "occurredAt": _instant_text(change.occurred_at),
-        "source": {"tool": change.source.tool, "reference": change.source.reference},
+        "source": _source_dict(change),
         "significant": change.significant,
         "rationale": change.rationale,
         "detectBy": _instant_text(change.detect_by),
@@ -693,6 +757,8 @@ __all__ = [
     "CHANGE_PRECEDES_EXPECTED_SINCE",
     "CHANGE_RESOURCE_UNREGISTERED",
     "DAC_RULE",
+    "DETECTION_REQUEST_SCHEMA",
+    "DETECTION_REQUEST_SCHEMA_VERSION",
     "KEV_AT_ACTIVATION",
     "WAITING_STATUSES",
     "ChangeObligation",
@@ -700,4 +766,5 @@ __all__ = [
     "ObligationStatus",
     "UnregisteredChangeResource",
     "derive_changes",
+    "detection_request",
 ]

@@ -435,16 +435,49 @@ class FiledEvidence:
 
     inventory: Inventory
     verifying_by_entry: Mapping[ResourceRef, tuple[CoverageEvidence, ...]]
+    examined_by_entry: Mapping[ResourceRef, tuple[CoverageEvidence, ...]] = field(
+        default_factory=lambda: MappingProxyType({}), kw_only=True
+    )
+    untimed_by_entry: Mapping[ResourceRef, tuple[CoverageEvidence, ...]] = field(
+        default_factory=lambda: MappingProxyType({}), kw_only=True
+    )
+    # NOTE: Indexed once, so reading many sample groups never walks the inventory per group.
+    _members: Mapping[str, tuple[ResourceRef, ...]] = field(
+        init=False, compare=False, hash=False, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        members: defaultdict[str, list[ResourceRef]] = defaultdict(list)
+        for entry in self.inventory.entries:
+            if entry.sample_group is not None:
+                members[entry.sample_group].append(entry.ref)
+        object.__setattr__(
+            self,
+            "_members",
+            MappingProxyType({name: tuple(refs) for name, refs in members.items()}),
+        )
 
     def verifying(self, *, rule_id: str, subject: ResourceRef) -> tuple[CoverageEvidence, ...]:
         """Return what verifies one clock's subject, as `verifying_evidence` returns it."""
-        if rule_id == PSD_RULE:
-            name = subject.resource_id.removeprefix(SAMPLE_GROUP_PREFIX)
-            refs = [entry.ref for entry in self.inventory.entries if entry.sample_group == name]
-        else:
-            entry = self.inventory.entry_for(subject.resource_type, subject.resource_id)
-            refs = [] if entry is None else [entry.ref]
+        refs = self._subject_refs(rule_id, subject)
         return _ordered(item for ref in refs for item in self.verifying_by_entry[ref])
+
+    def examined(self, *, rule_id: str, subject: ResourceRef) -> tuple[CoverageEvidence, ...]:
+        """Return every timed examination of one subject within the cutoff, earliest first."""
+        refs = self._subject_refs(rule_id, subject)
+        return _ordered(item for ref in refs for item in self.examined_by_entry.get(ref, ()))
+
+    def untimed(self, *, rule_id: str, subject: ResourceRef) -> tuple[CoverageEvidence, ...]:
+        """Return the evidence of one subject that carries no source time."""
+        refs = self._subject_refs(rule_id, subject)
+        return _ordered(item for ref in refs for item in self.untimed_by_entry.get(ref, ()))
+
+    def _subject_refs(self, rule_id: str, subject: ResourceRef) -> tuple[ResourceRef, ...]:
+        """Return the entries a subject reads: a sample group's members, or the entry naming it."""
+        if rule_id == PSD_RULE:
+            return self._members.get(subject.resource_id.removeprefix(SAMPLE_GROUP_PREFIX), ())
+        entry = self.inventory.entry_for(subject.resource_type, subject.resource_id)
+        return () if entry is None else (entry.ref,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,12 +636,18 @@ def verifying_evidence(
 def file_evidence(
     observations: Iterable[Observation], inventory: Inventory, as_of: datetime
 ) -> FiledEvidence:
-    """File every observation and attestation once, for many `FiledEvidence.verifying` reads."""
+    """File every observation and attestation once, for many `FiledEvidence` reads."""
     collected = _collect(observations, inventory, _utc(as_of))[0]
     return FiledEvidence(
         inventory=inventory,
         verifying_by_entry=MappingProxyType(
             {ref: tuple(item for _, item in found.verifying) for ref, found in collected.items()}
+        ),
+        examined_by_entry=MappingProxyType(
+            {ref: tuple(item for _, item in found.examined) for ref, found in collected.items()}
+        ),
+        untimed_by_entry=MappingProxyType(
+            {ref: tuple(found.untimed) for ref, found in collected.items()}
         ),
     )
 

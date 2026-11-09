@@ -234,6 +234,19 @@ class TopLevelTests(RefusalCase):
         content = b" " * (MAX_CHANGES_BYTES + 1)
         self.assert_refused(content, f"maximum is {MAX_CHANGES_BYTES} bytes")
 
+    def test_the_byte_limit_itself_is_accepted(self) -> None:
+        plain = encoded(document())
+        padded = b" " * (MAX_CHANGES_BYTES - len(plain)) + plain
+        self.assertEqual(parse_changes(padded).size_bytes, MAX_CHANGES_BYTES)
+
+    def test_the_bounds_are_the_contract(self) -> None:
+        self.assertEqual(MAX_CHANGES_BYTES, 8 * 1024 * 1024)
+        self.assertEqual(MAX_CHANGES, 20_000)
+        self.assertEqual(MAX_CHANGE_RESOURCES, 1_000)
+        self.assertEqual(MAX_RATIONALE_CHARS, 512)
+        self.assertEqual(CHANGES_LIMITS.max_artifact_bytes, MAX_CHANGES_BYTES)
+        self.assertEqual(CHANGES_LIMITS.max_json_depth, 16)
+
     def test_the_depth_bound_applies(self) -> None:
         depth = CHANGES_LIMITS.max_json_depth + 1
         self.assert_refused(b"[" * depth + b"]" * depth, "changes exceeds a limit")

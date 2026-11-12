@@ -99,6 +99,8 @@ SYSTEM_RUNS: dict[str, Sequence[str]] = {
 }
 #: The report goldens compiled through the library, which no command-line run cuts.
 LIBRARY_GOLDENS = {"vdt-sarif", "vdt-hdf", "vdt-cyclonedx", "historical-cyclonedx"}
+#: The goldens cut from a store rather than from artifacts; each has its own reproduction.
+STORE_GOLDENS = {"vdt-changes-replay"}
 #: Each stateless report command's golden run, whose artifacts are argv[2:5].
 COMMANDS = (
     ("vdt", REPORT_ARGUMENTS),
@@ -265,7 +267,7 @@ class ErrorDiagnosticInvariantTests(unittest.TestCase):
 
     def test_no_report_golden_carries_an_error_diagnostic(self) -> None:
         names = report_goldens()
-        self.assertEqual(names, {*GOLDEN_RUNS, *SYSTEM_RUNS, *LIBRARY_GOLDENS})
+        self.assertEqual(names, {*GOLDEN_RUNS, *SYSTEM_RUNS, *LIBRARY_GOLDENS, *STORE_GOLDENS})
         for name in sorted(names):
             with self.subTest(golden=name):
                 document = json.loads((GOLDEN / f"{name}.json").read_text(encoding="utf-8"))

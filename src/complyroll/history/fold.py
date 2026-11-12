@@ -21,6 +21,7 @@ from typing import Any, Final, TypeGuard, TypeVar
 from complyroll.adapters import DiagnosticLevel, FailureClass, IngestDiagnostic
 from complyroll.adapters.failures import EXECUTION_UNSUCCESSFUL
 from complyroll.events import (
+    CHANGE_RECORDED,
     COVERAGE_RECORDED,
     COVERAGE_STREAM_SCHEMA_VERSION,
     FAILURE_HEAD_TYPES,
@@ -32,6 +33,7 @@ from complyroll.events import (
     EventRepository,
     artifact_identity_breach,
     case_stream_id,
+    change_identity_breach,
     coverage_head_order_message,
     coverage_record_disagreement,
     coverage_record_problem,
@@ -45,6 +47,7 @@ from complyroll.events import (
     failure_stream_components,
     is_artifact_stream,
     is_case_stream,
+    is_change_stream,
     is_coverage_stream,
     is_failure_stream,
     metadata_breaches,
@@ -57,7 +60,10 @@ from complyroll.models import (
     Observation,
     ObservationClockError,
     PainRating,
+    ResourceRef,
 )
+from complyroll.reports.changes import StoredChangeSet
+from complyroll.reports.changes_input import Change, ChangeKind, ChangeSource
 from complyroll.reports.checks import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
@@ -1288,10 +1294,78 @@ def _read_coverage_streams(repository: EventRepository) -> tuple[_CoverageStream
     return tuple(views)
 
 
-#: What an unreadable artifact-, failure- or coverage-stream event is called in the message
-#: the fold raises.
+def read_stored_changes(repository: EventRepository) -> StoredChangeSet | None:
+    """Read every recorded change back as the file reader read it, or None when none is.
+
+    A change stream is one `change.recorded` naming its own change (ADR 0018 Decision 10), so
+    the reader refuses what the audit names, with the audit's message: a change event on no
+    change stream, an event no change stream carries, a contract-invalid event, an event its
+    stream does not name, and a stream holding any other number of events. The changes come
+    back sorted as a change file's are, so a store and a file holding the same changes
+    project them identically.
+    """
+
+    streams: dict[str, list[EventRecord]] = {}
+    for record in repository.read_all():
+        change_stream = is_change_stream(record.stream_id)
+        if not change_stream and record.event_type != CHANGE_RECORDED:
+            continue
+        if not event_belongs_on_stream(record.event_type, record.stream_id):
+            raise HistoryError(_misplaced_event_message(record))
+        _require_readable_artifact_event(repository, record)
+        breach = change_identity_breach(record.stream_id, record.event_type, record.payload)
+        if breach is not None:
+            raise HistoryError(f"event {record.sequence} is on the wrong stream: {breach}")
+        streams.setdefault(record.stream_id, []).append(record)
+    if not streams:
+        return None
+    for stream_id, held in streams.items():
+        problem = _change_stream_problem(stream_id, len(held))
+        if problem is not None:
+            raise HistoryError(problem[1])
+    read = sorted(
+        (_stored_change(held[0].payload) for held in streams.values()),
+        key=lambda item: (item[0].occurred_at, item[0].change_id),
+    )
+    return StoredChangeSet(
+        changes=tuple(change for change, _, _ in read),
+        names=tuple(name for _, name, _ in read),
+        digests=tuple(digest for _, _, digest in read),
+    )
+
+
+def _stored_change(payload: Mapping[str, Any]) -> tuple[Change, str, str]:
+    """Rebuild one change, with the file name and digest it was recorded from."""
+
+    detect_by = _optional_text(payload, "detectBy")
+    change = Change(
+        change_id=_text(payload, "changeId"),
+        kind=ChangeKind(_text(payload, "kind")),
+        occurred_at=parse_utc(_text(payload, "occurredAt")),
+        source=ChangeSource(
+            tool=_text(payload["source"], "tool"),
+            reference=_text(payload["source"], "reference"),
+        ),
+        resources=tuple(
+            ResourceRef(
+                resource_type=_text(resource, "resourceType"),
+                resource_id=_text(resource, "resourceId"),
+            )
+            for resource in payload["resources"]
+        ),
+        significant=_flag(payload, "significant"),
+        rationale=_text(payload, "rationale"),
+        detect_by=None if detect_by is None else parse_utc(detect_by),
+        job=_optional_text(payload, "job"),
+    )
+    return change, _text(payload, "changesName"), _text(payload, "changesSha256")
+
+
+#: What an unreadable artifact-, failure-, coverage- or change-stream event is called in the
+#: message the fold raises.
 _ARTIFACT_EVENT_NAMES: Final[dict[str, str]] = {
     ARTIFACT_INGESTED: "artifact record",
+    CHANGE_RECORDED: "change record",
     COVERAGE_RECORDED: "coverage record",
     FAILURE_RECORDED: "failure record",
     FAILURE_HELD: "failure hold",
@@ -1871,6 +1945,30 @@ def _coverage_stream_problem(
     return None
 
 
+def _change_stream_problem(stream_id: str, recorded: int) -> tuple[str, str] | None:
+    """Return the fault code and message for a change stream that is not one event, else None.
+
+    A change stream is exactly one `change.recorded` (ADR 0018), so the shape is the
+    declaration, as it is for a coverage stream: a second is overfull, and none, with only a
+    foreign event left on the stream, is incomplete.
+    """
+
+    found = f"found {recorded} {CHANGE_RECORDED} event(s)"
+    if recorded > 1:
+        return (
+            "change_overfull",
+            f"change stream {stream_id!r} is overfull: a change stream holds one "
+            f"{CHANGE_RECORDED}, {found}",
+        )
+    if recorded < 1:
+        return (
+            "change_incomplete",
+            f"change stream {stream_id!r} is incomplete: a change stream holds one "
+            f"{CHANGE_RECORDED}, {found}",
+        )
+    return None
+
+
 def _coverage_pair_faults(
     stream_id: str,
     heads: int,
@@ -2373,6 +2471,7 @@ __all__ = [
     "fold_case",
     "fold_case_records",
     "history_entries",
+    "read_stored_changes",
     "reading_elsewhere",
     "rehydrate_observations",
     "summarize",

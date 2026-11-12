@@ -46,6 +46,7 @@ COMPILED_GOLDENS = (
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-timed.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-cyclonedx-coverage.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-changes.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-changes-replay.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-changes-timed.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-gaps.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-failed.json"),
@@ -364,6 +365,7 @@ class CompiledGoldenValidationTests(unittest.TestCase):
             with_coverage,
             {
                 "historical-coverage-gaps.json",
+                "vdt-changes-replay.json",
                 "vdt-changes-timed.json",
                 "vdt-changes.json",
                 "vdt-coverage-gaps.json",

@@ -837,10 +837,12 @@ class ChangesPendingCommandTests(PendingBase):
     def test_at_least_one_artifact_is_required(self) -> None:
         argv = [item for item in pending_argv() if item not in TIMED_ARTIFACTS]
 
-        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
-            main(argv)
+        code, out, err = run(argv)
 
-        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(
+            err, "error: invalid_option: changes pending needs at least one artifact, or --db\n"
+        )
 
 
 class DeriveFromArtifactsTests(PendingBase):

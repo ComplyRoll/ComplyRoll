@@ -76,9 +76,10 @@ from .reports import (
     load_kev_catalog,
     parse_rfc3339,
 )
-from .reports.changes import detection_request
+from .reports.changes import ChangeProjection, detection_request
 from .reports.gaps import COVERAGE_GAP_SOURCE_TYPE
 from .reports.records import derive_changes_from_artifacts
+from .reports.replay import derive_changes_from_history
 from .schemas import (
     MAX_REPORT_BYTES,
     ReportDocumentError,
@@ -553,9 +554,14 @@ def _add_changes_pending_arguments(pending: argparse.ArgumentParser) -> None:
 
     pending.add_argument(
         "artifacts",
-        nargs="+",
+        nargs="*",
         metavar="ARTIFACT",
         help="CKLB, CKL, XCCDF, ARF, SARIF, HDF, or CycloneDX file",
+    )
+    pending.add_argument(
+        "--db",
+        metavar="PATH",
+        help="read the recorded changes and the evidence from this event store",
     )
     # Each input appends for the reason it does on `report`: a second file is refused.
     pending.add_argument(
@@ -1437,15 +1443,25 @@ def _run_changes_record(args: argparse.Namespace) -> int:
 
 def _run_changes_pending(args: argparse.Namespace) -> int:
     stderr = sys.stderr
+    database = Path(args.db) if args.db else None
     artifacts = [Path(item) for item in args.artifacts]
     output = Path(args.output) if args.output else None
     kev_paths = [Path(item) for item in (args.kev or ())]
     inventory_paths = [Path(item) for item in (args.inventory or ())]
     changes_paths = [Path(item) for item in (args.changes or ())]
 
-    refused = _pending_option_refusal(kev_paths, inventory_paths, changes_paths)
+    conflict = _pending_source_conflict(args)
+    if conflict is not None:
+        return _fail(stderr, "invalid_option", conflict)
+    refused = _pending_option_refusal(
+        kev_paths, inventory_paths, changes_paths, persisted=database is not None
+    )
     if refused is not None:
         return _fail(stderr, "invalid_option", refused)
+    if database is not None:
+        missing = _refuse_missing_store(stderr, database)
+        if missing is not None:
+            return missing
     # Both destination refusals need only the paths, so nothing is read before them.
     linked = _refuse_symlink_output(stderr, (output,))
     if linked is not None:
@@ -1454,11 +1470,17 @@ def _run_changes_pending(args: argparse.Namespace) -> int:
     try:
         _refuse_input_overwrite(
             outputs=(output,),
-            inputs=(*artifacts, *kev_paths, *inventory_paths, *changes_paths),
+            inputs=(
+                *artifacts,
+                *kev_paths,
+                *inventory_paths,
+                *changes_paths,
+                *((database,) if database is not None else ()),
+            ),
         )
         kev_catalog = load_kev_catalog(kev_paths[0]) if kev_paths else None
         inventory = load_inventory(inventory_paths[0])
-        change_set = load_changes(changes_paths[0])
+        change_set = load_changes(changes_paths[0]) if changes_paths else None
         options = ReportOptions(
             certification_class=CertificationClass(args.certification_class),
             package_uri=_REQUEST_PACKAGE_URI,
@@ -1473,10 +1495,16 @@ def _run_changes_pending(args: argparse.Namespace) -> int:
     except (TypeError, ValueError) as exc:
         return _fail(stderr, "invalid_option", str(exc))
 
+    def derive() -> tuple[ChangeProjection, tuple[ReportDiagnostic, ...]]:
+        if database is None:
+            return derive_changes_from_artifacts(
+                artifacts, options=options, record_failed_imports=args.record_failed_imports
+            )
+        with _open_repository(database) as repository:
+            return derive_changes_from_history(repository, options=options)
+
     def derive_and_publish() -> int:
-        projection, diagnostics = derive_changes_from_artifacts(
-            artifacts, options=options, record_failed_imports=args.record_failed_imports
-        )
+        projection, diagnostics = derive()
         # A request holds no system record, so its status never says one was recorded.
         return _publish_rendered(
             stderr,
@@ -1493,10 +1521,36 @@ def _run_changes_pending(args: argparse.Namespace) -> int:
     return _persisted_run(stderr, derive_and_publish)
 
 
+def _pending_source_conflict(args: argparse.Namespace) -> str | None:
+    """Return why a `changes pending` run names the wrong sources, or None when it is fine.
+
+    The twin of `_report_source_conflict`: a store holds its artifacts and its changes, so
+    naming either beside `--db` asks one run to honour two sources of truth, and the store
+    already recorded or refused its failures when `ingest` read them (ADR 0018).
+    """
+
+    named = [
+        name
+        for name, present in (
+            ("artifacts", bool(args.artifacts)),
+            ("--changes", bool(args.changes)),
+            ("--record-failed-imports", args.record_failed_imports),
+        )
+        if present
+    ]
+    if args.db is not None and named:
+        return f"changes pending takes either --db or {', '.join(named)}, never both"
+    if args.db is None and not args.artifacts:
+        return "changes pending needs at least one artifact, or --db"
+    return None
+
+
 def _pending_option_refusal(
     kev_paths: Sequence[Path],
     inventory_paths: Sequence[Path],
     changes_paths: Sequence[Path],
+    *,
+    persisted: bool,
 ) -> str | None:
     """Return why a `changes pending` run names the wrong inputs, or None when it is fine."""
 
@@ -1506,11 +1560,12 @@ def _pending_option_refusal(
         return f"changes pending takes one --inventory file, not {len(inventory_paths)}"
     if len(changes_paths) > 1:
         return f"changes pending takes one --changes file, not {len(changes_paths)}"
-    if not changes_paths:
+    if not persisted and not changes_paths:
         return "changes pending needs --changes: a request is read from a change file or not at all"
     if not inventory_paths:
+        source = "--db" if persisted else "--changes"
         return (
-            "changes pending --changes needs --inventory: a change is read against the "
+            f"changes pending {source} needs --inventory: a change is read against the "
             "inventory or not at all"
         )
     return None

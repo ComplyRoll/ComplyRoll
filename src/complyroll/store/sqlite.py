@@ -648,6 +648,20 @@ class SQLiteEventStore:
         _require_contiguous_stream_versions(records, stream_id, after_version)
         return records
 
+    def holds_stream_with_prefix(self, prefix: str) -> bool:
+        """Return whether any stream id starts with `prefix`, without reading a stream."""
+
+        _require_name(prefix, "prefix")
+        connection = self._require_open()
+        # The stream-version index answers a range; LIKE and its case folding would not use it.
+        limit = f"{prefix[:-1]}{chr(ord(prefix[-1]) + 1)}"
+        with _sqlite_errors("could not read event history"):
+            row = connection.execute(
+                "SELECT 1 FROM events WHERE stream_id >= ? AND stream_id < ? LIMIT 1",
+                (prefix, limit),
+            ).fetchone()
+        return row is not None
+
     def verify_history(self) -> IntegrityReport:
         """Walk the whole log and report every integrity fault instead of raising one.
 

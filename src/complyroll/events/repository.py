@@ -52,6 +52,7 @@ from .contracts import (
     CHANGE_RECORDED,
     CHANGE_STREAM_SCHEMA_VERSION,
     COVERAGE_RECORDED,
+    COVERAGE_STREAM_PREFIX,
     COVERAGE_STREAM_SCHEMA_VERSION,
     EVENT_CONTRACTS,
     FAILURE_CLOCK_VALUES,
@@ -639,6 +640,11 @@ class EventRepository:
         """Return the current version of one stream, or zero when it does not exist."""
 
         return self._store.current_stream_version(stream_id)
+
+    def holds_coverage_stream(self) -> bool:
+        """Return whether the store holds a coverage stream, without loading any (ADR 0015)."""
+
+        return self._store.holds_stream_with_prefix(f"{COVERAGE_STREAM_PREFIX}/")
 
     def read_stream(self, stream_id: str) -> tuple[EventRecord, ...]:
         """Read one whole stream in stream-version order, across pages."""

@@ -1329,6 +1329,8 @@ class RecordFailedImportsTests(unittest.TestCase):
         # The failure and coverage gap goldens exit 3 by design; each pair has its own
         # reproduction, the gap pair in `test_coverage_gap_report`.
         system_goldens = {
+            # Cut from a store, not from artifacts; `test_changes_persisted` reproduces it.
+            "vdt-changes-replay",
             "vdt-failed",
             "historical-failed",
             "vdt-coverage-gaps",

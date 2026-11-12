@@ -9,8 +9,9 @@ failure stream reads back as its system observation and its head's diagnostics, 
 what the stateless path compiled for that failure (ADR 0014 records where the two differ).
 Current is the stream that carries the failure: a hold left dormant beneath it is named,
 not read back (ADR 0014, amendment 2026-10-13). A coverage stream reads back as its gap
-record, and a store marked schema 4 compiles gap aware, naming each window no recorded gap
-carries and each recorded gap this run derives no window for (ADR 0015).
+record, and a store holding one compiles gap aware, naming each window no recorded gap
+carries and each recorded gap this run derives no window for (ADR 0015). A recorded change
+feeds the change block when the run has an inventory (ADR 0018).
 
 Detection-time attestations are per case here rather than one flag on the command line.
 An attestation still applies only to a group where no observation declares a source
@@ -28,10 +29,11 @@ from typing import TYPE_CHECKING
 
 from complyroll.adapters import DiagnosticLevel
 from complyroll.correlation import group_open_observations
-from complyroll.events import COVERAGE_STREAM_SCHEMA_VERSION, EventRepository, is_failure_stream
+from complyroll.events import EventRepository, is_failure_stream
 from complyroll.models import Observation
 
 from .avi import CompiledAviReport, project_avi
+from .changes import ChangeProjection, StoredChangeSet
 from .evaluations import EvaluationInput, EvaluationMatch
 from .historical import CompiledHistoricalReport, project_historical
 from .model import (
@@ -42,7 +44,7 @@ from .model import (
     ReportDiagnostic,
     ReportOptions,
 )
-from .records import compile_record_set
+from .records import compile_record_set, derive_request_changes
 from .vdt import CompiledVdtReport, project_vdt
 
 if TYPE_CHECKING:  # pragma: no cover - imported for annotations only
@@ -102,12 +104,13 @@ def compile_record_set_from_history(
     the log already holds, one `detection.attested` event per case, so a command-line
     flag has nothing to add and must not silently override what an operator filed.
     `options.record_coverage_gaps` is refused rather than ignored: a report never records a
-    gap, `cases coverage` does (ADR 0015). The store decides instead: one marked schema 4
-    has recorded gaps, so with an inventory the report is gap aware, each window naming the
-    recorded gap that carries it or none. A store that never recorded a gap reads exactly
+    gap, `cases coverage` does (ADR 0015). The store decides instead: one holding a coverage
+    stream has recorded gaps, so with an inventory the report is gap aware, each window naming
+    the recorded gap that carries it or none. A store that never recorded a gap reads exactly
     as the stateless run without the flag, whatever the build that reads it.
     `options.changes` is refused too: a store never read that file, so a block built here
-    would claim an input the history does not hold (ADR 0018).
+    would claim an input the history does not hold. The store's own recorded changes feed the
+    block instead, and with no inventory there is no block to feed (ADR 0018).
     """
 
     if not isinstance(options, ReportOptions):
@@ -125,30 +128,85 @@ def compile_record_set_from_history(
     # Imported here because `complyroll.history` reads the report layer's evaluation
     # shapes, so a module-level import would close a cycle whenever history is the
     # first of the two packages a caller imports.
-    from complyroll.history import artifact_history, fold_all_cases, rehydrate_observations
+    from complyroll.history import (
+        artifact_history,
+        fold_all_cases,
+        read_stored_changes,
+        rehydrate_observations,
+    )
 
     history = artifact_history(repository)
     artifacts = tuple(_compiled_artifact(record) for record in history.current)
     observations = rehydrate_observations(repository)
     cases = fold_all_cases(repository)
-    diagnostics = (
+    return compile_record_set(
+        artifacts=artifacts,
+        observations=observations,
+        ingest_diagnostics=_history_diagnostics(history, cases, observations),
+        evaluations_by_tracking_id=case_evaluations(cases),
+        attestation=_attestation(cases),
+        options=options,
+        gap_aware=options.inventory is not None and repository.holds_coverage_stream(),
+        stored_changes=(None if options.inventory is None else read_stored_changes(repository)),
+    )
+
+
+def derive_changes_from_history(
+    repository: EventRepository,
+    *,
+    options: ReportOptions,
+) -> tuple[ChangeProjection, tuple[ReportDiagnostic, ...]]:
+    """Project a store's recorded changes, with no report around them (ADR 0018).
+
+    The persisted twin of `derive_changes_from_artifacts`: the same refusals about reading the
+    store, the same projection as a report with the same flags, and a store that recorded no
+    change makes an empty request rather than a refusal. It builds no record, so a refusal
+    about one does not apply. The diagnostics are the store's, in the report's order, then the
+    projection's warnings.
+    """
+
+    if not isinstance(options, ReportOptions):
+        raise TypeError("options must be a ReportOptions")
+    if options.inventory is None:
+        raise ValueError("deriving a change projection needs an inventory")
+    if options.changes is not None:
+        raise ValueError(
+            "changes applies only to a compile from artifacts; a store never read this "
+            "change file, so a request from history cannot name it as its input"
+        )
+    # Imported here for the reason `compile_record_set_from_history` imports them locally.
+    from complyroll.history import (
+        artifact_history,
+        fold_all_cases,
+        read_stored_changes,
+        rehydrate_observations,
+    )
+
+    history = artifact_history(repository)
+    observations = rehydrate_observations(repository)
+    cases = fold_all_cases(repository)
+    stored = read_stored_changes(repository)
+    return derive_request_changes(
+        observations,
+        _history_diagnostics(history, cases, observations),
+        StoredChangeSet(changes=(), names=(), digests=()) if stored is None else stored,
+        options=options,
+    )
+
+
+def _history_diagnostics(
+    history: ArtifactHistory,
+    cases: Sequence[CaseState],
+    observations: Sequence[Observation],
+) -> tuple[ReportDiagnostic, ...]:
+    """Reproduce what a store knows about its own readings, in the order a report lists them."""
+
+    return (
         _ingest_diagnostics((*history.current, *history.current_failures))
         + _superseded_artifacts(history)
         + _superseded_failures(history)
         + _held_failures(history)
         + _stale_cases(cases, observations)
-    )
-    return compile_record_set(
-        artifacts=artifacts,
-        observations=observations,
-        ingest_diagnostics=diagnostics,
-        evaluations_by_tracking_id=case_evaluations(cases),
-        attestation=_attestation(cases),
-        options=options,
-        gap_aware=(
-            options.inventory is not None
-            and repository.store.schema_version >= COVERAGE_STREAM_SCHEMA_VERSION
-        ),
     )
 
 
@@ -423,5 +481,6 @@ __all__ = [
     "compile_historical_report_from_history",
     "compile_record_set_from_history",
     "compile_vdt_report_from_history",
+    "derive_changes_from_history",
     "disposition_without_evaluation_message",
 ]

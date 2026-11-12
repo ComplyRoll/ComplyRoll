@@ -96,6 +96,41 @@ _OPEN_STATUSES = WAITING_STATUSES | {ObligationStatus.DETECTED}
 
 
 @dataclass(frozen=True, slots=True)
+class StoredChangeSet:
+    """The changes a store recorded, each with the file name and digest it came from."""
+
+    changes: tuple[Change, ...]
+    # Parallel to `changes`: where each diagnostic is located, and what the block's input counts.
+    names: tuple[str, ...]
+    digests: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        keys = [(change.occurred_at, change.change_id) for change in self.changes]
+        if keys != sorted(keys):
+            raise ValueError("changes must be sorted by occurred_at, then change_id")
+        if len({change.change_id for change in self.changes}) != len(keys):
+            raise ValueError("a change id must name exactly one change")
+        if len(self.names) != len(keys):
+            raise ValueError("every change must carry one name")
+        if len(self.digests) != len(keys):
+            raise ValueError("every change must carry one digest")
+
+    @property
+    def change_count(self) -> int:
+        return len(self.changes)
+
+    @property
+    def digest_counts(self) -> tuple[tuple[str, int], ...]:
+        """Return each file digest the changes carry and how many, sorted by digest."""
+        return tuple(sorted(Counter(self.digests).items()))
+
+    @property
+    def name(self) -> str:
+        """Return the stored file names, one name when the store recorded one file."""
+        return ", ".join(sorted(set(self.names)))
+
+
+@dataclass(frozen=True, slots=True)
 class ChangeObligation:
     """One (change, resource) row at as-of, with the status its evidence supports."""
 
@@ -143,7 +178,7 @@ class UnregisteredChangeResource:
 class ChangeProjection:
     """The change projection of one run, a pure function of its inputs."""
 
-    change_set: ChangeSet
+    change_set: ChangeSet | StoredChangeSet
     inventory: Inventory
     as_of: datetime
     profile: CertificationProfile
@@ -262,7 +297,7 @@ class _Subject:
 
 def derive_changes(
     observations: Iterable[Observation],
-    change_set: ChangeSet,
+    change_set: ChangeSet | StoredChangeSet,
     inventory: Inventory,
     policy: SelectedPolicy,
     as_of: datetime,
@@ -278,6 +313,7 @@ def derive_changes(
     groups = _groups(inventory)
     subjects = _Subjects(file_evidence(evidence, inventory, cutoff), inventory)
     kev = None if kev_catalog is None else _KevFindings(kev_catalog, evidence, inventory, cutoff)
+    names = _names_of(change_set)
 
     obligations: list[ChangeObligation] = []
     warnings: list[ReportDiagnostic] = []
@@ -291,13 +327,15 @@ def derive_changes(
             if named.entry is None and named.group is None:
                 obligations.append(_unregistered_row(change, named))
                 if named.resource not in unregistered:
-                    warnings.append(_unregistered_warning(change_set, change, named.resource))
+                    warnings.append(
+                        _unregistered_warning(names[change.change_id], change, named.resource)
+                    )
                 unregistered.setdefault(named.resource, []).append(change.change_id)
                 continue
             subject = subjects.read(named)
             row = _obligation(change, named, subject, subjects, kev, cutoff)
             obligations.append(row)
-            warnings.extend(_row_warnings(change_set, row, subject))
+            warnings.extend(_row_warnings(names[change.change_id], row, subject))
 
     return ChangeProjection(
         change_set=change_set,
@@ -314,6 +352,18 @@ def derive_changes(
         later=tuple(later),
         warnings=tuple(warnings),
     )
+
+
+# NOTE: A store can hold changes from several files, so a diagnostic is located under the
+# name its own change was recorded with.
+def _names_of(change_set: ChangeSet | StoredChangeSet) -> dict[str, str]:
+    """Return the file name each change's diagnostics are located under, by change id."""
+    if isinstance(change_set, StoredChangeSet):
+        return {
+            change.change_id: name
+            for change, name in zip(change_set.changes, change_set.names, strict=True)
+        }
+    return {change.change_id: change_set.name for change in change_set.changes}
 
 
 def _groups(inventory: Inventory) -> dict[str, tuple[InformationResource, ...]]:
@@ -454,9 +504,7 @@ def _kev_at_activation(
     return kev.at_activation(change, entry, subject, verified_at)
 
 
-def _row_warnings(
-    change_set: ChangeSet, row: ChangeObligation, subject: _Subject
-) -> list[ReportDiagnostic]:
+def _row_warnings(name: str, row: ChangeObligation, subject: _Subject) -> list[ReportDiagnostic]:
     change = row.change
     label = coverage_label(row.resource)
     decommissioned_at = subject.decommissioned_at
@@ -469,7 +517,7 @@ def _row_warnings(
         warnings.append(
             _warning(
                 CHANGE_AFTER_DECOMMISSION,
-                change_set,
+                name,
                 change,
                 row.resource,
                 f"change {change.change_id} occurred after {label} was decommissioned at "
@@ -480,7 +528,7 @@ def _row_warnings(
         warnings.append(
             _warning(
                 CHANGE_PRECEDES_EXPECTED_SINCE,
-                change_set,
+                name,
                 change,
                 row.resource,
                 f"change {change.change_id} occurred before {label}'s expectedSince "
@@ -492,7 +540,7 @@ def _row_warnings(
         warnings.append(
             _warning(
                 KEV_AT_ACTIVATION,
-                change_set,
+                name,
                 change,
                 row.resource,
                 f"change {change.change_id} activated {label} with "
@@ -503,12 +551,10 @@ def _row_warnings(
     return warnings
 
 
-def _unregistered_warning(
-    change_set: ChangeSet, change: Change, resource: ResourceRef
-) -> ReportDiagnostic:
+def _unregistered_warning(name: str, change: Change, resource: ResourceRef) -> ReportDiagnostic:
     return _warning(
         CHANGE_RESOURCE_UNREGISTERED,
-        change_set,
+        name,
         change,
         resource,
         f"change {change.change_id} names {coverage_label(resource)}, which no inventory entry "
@@ -520,13 +566,13 @@ def _unregistered_warning(
 # SECURITY: Every part of the location passed its reader's identity or name rule, so it prints
 # as plain text.
 def _warning(
-    code: str, change_set: ChangeSet, change: Change, resource: ResourceRef, message: str
+    code: str, name: str, change: Change, resource: ResourceRef, message: str
 ) -> ReportDiagnostic:
     return ReportDiagnostic(
         level=DiagnosticLevel.WARNING,
         code=code,
         message=message,
-        location=f"{change_set.name} {change.change_id} {coverage_label(resource)}",
+        location=f"{name} {change.change_id} {coverage_label(resource)}",
     )
 
 
@@ -815,7 +861,15 @@ def _provenance_dict(provenance: PolicyProvenance) -> dict[str, Any]:
     }
 
 
-def _input_dict(change_set: ChangeSet) -> dict[str, Any]:
+def _input_dict(change_set: ChangeSet | StoredChangeSet) -> dict[str, Any]:
+    """Return the block's and the request's `input`: the one thing the two paths word apart."""
+    if isinstance(change_set, StoredChangeSet):
+        return {
+            "source": "store",
+            "changesSha256": [
+                {"sha256": digest, "changes": count} for digest, count in change_set.digest_counts
+            ],
+        }
     return {
         "name": change_set.name,
         "sizeBytes": change_set.size_bytes,
@@ -878,6 +932,7 @@ __all__ = [
     "ChangeObligation",
     "ChangeProjection",
     "ObligationStatus",
+    "StoredChangeSet",
     "UnregisteredChangeResource",
     "derive_changes",
     "detection_request",

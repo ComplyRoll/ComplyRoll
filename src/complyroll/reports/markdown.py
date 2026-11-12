@@ -14,8 +14,14 @@ from datetime import UTC, datetime
 
 from complyroll.models import CaseStatus, ResourceRef
 
-from .changes import CHANGE_BASIS, DAC_RULE, ChangeObligation, ChangeProjection
-from .changes_input import Change
+from .changes import (
+    CHANGE_BASIS,
+    DAC_RULE,
+    ChangeObligation,
+    ChangeProjection,
+    StoredChangeSet,
+)
+from .changes_input import Change, ChangeSet
 from .coverage import (
     COVERAGE_BASIS,
     CoverageEvidence,
@@ -516,12 +522,10 @@ def write_changes(write: Callable[[str], None], metadata: ReportMetadata) -> Non
     changes = metadata.changes
     if changes is None:
         return
-    change_set = changes.change_set
     write("## Changes")
     write("")
     write(
-        f"Changes declared in {_cell(change_set.name)} ({change_set.change_count} changes, "
-        f"{change_set.size_bytes} bytes, SHA-256 {change_set.sha256}), read against the "
+        f"{_changes_provenance(changes.change_set)}, read against the "
         f"inventory with SHA-256 {changes.inventory.sha256} as of {iso(changes.as_of)}, under "
         f"{DAC_RULE} ({changes.force.value}) from rules dataset commit "
         f"{changes.provenance.commit}."
@@ -590,6 +594,19 @@ def write_changes(write: Callable[[str], None], metadata: ReportMetadata) -> Non
             resources = ", ".join(_coverage_ref(ref) for ref in change.resources)
             write(f"| {_cell(change.change_id)} | {iso(change.occurred_at)} | {resources} |")
     write("")
+
+
+def _changes_provenance(change_set: ChangeSet | StoredChangeSet) -> str:
+    """Word where the changes came from, the twin of the block's `input` (ADR 0018)."""
+    if isinstance(change_set, StoredChangeSet):
+        counted = ", ".join(
+            f"{count} from SHA-256 {digest}" for digest, count in change_set.digest_counts
+        )
+        return f"Changes recorded in the store ({change_set.change_count} changes: {counted})"
+    return (
+        f"Changes declared in {_cell(change_set.name)} ({change_set.change_count} changes, "
+        f"{change_set.size_bytes} bytes, SHA-256 {change_set.sha256})"
+    )
 
 
 def _declared_change_row(change: Change, changes: ChangeProjection) -> str:

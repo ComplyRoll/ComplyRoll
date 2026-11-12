@@ -1,7 +1,7 @@
 # ADR 0018: Change-triggered detection
 
 - Status: Accepted
-- Date: 2026-11-08
+- Date: 2026-11-09
 
 ## Context
 
@@ -292,7 +292,7 @@ Why: each flag answers for its own kind of record, and the command names follow 
 
 ## Decision 14: the grouping criterion is marked Met
 
-`docs/BUILD_PLAN.md` gains "**Met, 2026-11-08** (shipped since ADR 0001: correlation keeps every
+`docs/BUILD_PLAN.md` gains "**Met, 2026-11-09** (shipped since ADR 0001: correlation keeps every
 distinct affected resource of a group, `correlation/__init__.py`, pinned by
 `tests/test_correlation.py`)" on the exit criterion "A case can group equivalent observations while
 retaining every affected resource", with no code change.
@@ -317,3 +317,85 @@ the line read as open work.
 - A `VDR-CSO-AKE` case. The KEV finding is already a reviewable record with its own clock.
 - One case per resource when a window closes. The request is scoped by the change, so a later
   section keeps the case at that scope with every resource listed on it.
+
+## PR 2: recorded changes (2026-11-09)
+
+`changes record` appends each declared change as history, and `report --db` and `changes pending
+--db` derive the same projection from what the store holds. This section adds Decision 9's PR 2
+commands, Decision 10, and the compatibility items of Decision 13. The rest of Decision 13 and
+Decisions 11 and 12 belong to the section that makes an unmet window a case.
+
+### Decision 9, continued (2026-11-09): the commands of recorded changes
+
+- `changes record --db STORE --changes FILE [--as-of T] [--actor NAME]` appends each change the
+  store lacks, one stream per change, in one transaction. A second `--changes` is `invalid_option`,
+  a missing store is `store_missing`, and it exits 0 or 1. `--as-of` defaults to the current second
+  and is recorded as `recordedAt`.
+- `report vdt|avi|historical --db STORE --inventory FILE` prints the block when the store holds at
+  least one change stream. Without `--inventory` there is no block and no refusal, as for coverage,
+  and the change streams are not read. `--changes` beside `--db` stays refused: a compile from a
+  store never reads a change file, so a block built from one would claim an input the history does
+  not hold, which is the refusal PR 1 recorded in Decision 9.
+- `changes pending --db STORE --inventory FILE --class B|C --as-of T [--calendar-tz NAME] [--kev
+  FILE] [-o FILE]` writes the request from the store. It refuses artifacts, `--changes` and
+  `--record-failed-imports` in the wording `report` uses, needs `--inventory`, and with no change
+  stream writes an empty request and exits 0, because a store that recorded nothing has nothing
+  waiting. `changes pending` without artifacts or `--db` is now `invalid_option` with exit 1, as
+  `report` is, instead of an argparse usage error.
+
+Why: each path needs an inventory because no store holds one, by ADR 0015 Decision 4, and each
+refusal says what the store already answers for.
+
+### Decision 10 (2026-11-09): a change is a fifth stream kind behind schema 5
+
+A recorded change is the stream `change/<sha256(changeId)>` holding exactly one `change.recorded`
+v1 event and nothing else. The payload carries every contract field as the bounded reader read it,
+`recordedAt`, `changesSha256` and `changesName`. Keeping the file's `name` is what lets a stored
+change's diagnostics be located where the stateless path locates them.
+
+The change id is the idempotence key. Contract fields are compared as read, field by field in the
+contract's order, and `change_conflict` names the first that differs: `kind`, `occurredAt`,
+`source`, `resources`, `significant`, `rationale`, `detectBy`, `job`. So a file spelling the same
+instant with another offset is `already_recorded`, and `recordedAt`, `changesSha256` and
+`changesName` may differ, which lets a file that grows, or is renamed, re-record cleanly. The same
+id with a differing contract field is refused before any append, because history is append-only and
+the first recorded payload stands. Every change in the file is judged before the first append, so a
+refusal writes nothing.
+
+A change stream append needs schema 5, marked inside the same transaction as schemas 2 to 4 are
+(ADR 0015 Decision 33), with migration record 5 ("change streams, ADR 0018").
+
+`store verify` gains `change_incomplete`, `change_overfull`, `change_stream_mismatch` and
+`change_schema_unmarked`. `change_stream_mismatch` covers a stream id that is not the sha256 of the
+payload's `changeId`, an event no change stream carries, and a `change.recorded` on a stream of any
+other kind; the last two are also `event_stream_mismatch`, the older code that says only that an
+event is misplaced. `read_stored_changes` refuses the shapes the first three name, as
+`history_invalid` on the command line. `change_schema_unmarked` is content-neutral, as
+`coverage_schema_unmarked` is: no reader refuses it, and the evaluation order check still runs
+beside it. `rehydrate_observations` is untouched: a change is a fact, not an observation.
+
+The store feeds the projection through `StoredChangeSet`, the changes sorted as a `ChangeSet` sorts
+them with each one's stored name and digest. Its `input` on this path is `{"source": "store",
+"changesSha256": [{"sha256": ..., "changes": n}, ...]}`, sorted by digest, and no name or size,
+because a store can hold changes from several files. The Markdown intro line is the twin of that
+object and reads the digests and counts. Those are the only things the two paths word apart, as the
+ADR 0008 amendment of this date records.
+
+Why: the digest keeps provider identifiers out of stream ids, as the coverage fingerprint does, and
+one event per stream makes the idempotence check a stream-exists check.
+
+### Decision 13, compatibility (2026-11-09): what each build does with the other's store
+
+- 0.4.0a0 against a store this build wrote: the first `changes record` marks schema 5, so 0.4.0a0
+  refuses the store at open ("database schema 5 is newer than supported schema 4") and its `store
+  verify` reports `schema_version_unsupported` (ADR 0004 amendment 2026-10-03). A store that never
+  records a change stays at its version, and 0.4.0a0 reads it unchanged.
+- This build against a 0.4.0a0 store: schema 4 and below open as before, with no change stream and
+  every report byte-identical, and a read never marks a schema. Every golden cut before this leg
+  recompiles byte-identical.
+- A store marked 5 and read by this build is gap-aware only if it holds a coverage stream, so
+  recording a change turns on no coverage window key and no `coverage_gap_*` note. ADR 0015 Decision
+  37's amendment of this date records why.
+
+Why: every bump now has to say what each build does with the other's store, and a store that
+never recorded a change has to stay readable by the build that wrote it.

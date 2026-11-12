@@ -790,3 +790,20 @@ does, and a text line whose level is interpolated. The docstring of the test lis
 have been found, and that list is not closed. A diagnostic an adapter mints keeps its own code when
 a report carries it, a stored one read back keeps the code it was stored with, and audit faults stay
 in `AUDIT_FAULT_CODES`. There is no run-time check, so no new refusal.
+
+## Amendment (2026-11-09): a coverage stream, not the marker, makes a store gap-aware
+
+ADR 0018 marks a store schema 5 at its first `changes record`, and `_mark_schema` inserts every
+migration record up to the one it needs, so a store that never ran `cases coverage` now carries
+record 4. Decision 37's rule would have turned on window keys and `coverage_gap_unrecorded` notes in
+such a store, the thing it promised could not happen.
+
+A report from a store is now gap-aware when the store holds at least one `coverage/` stream and the
+run has an inventory. This reverses one sentence of Decision 37: the marker no longer decides, and a
+store marked 4 by hand with no coverage stream reads unaware, exactly as it read before the mark. A
+`cases coverage` run that recorded nothing leaves the store unaware until one is recorded. A store
+holding a coverage stream below schema 4, which `store verify` names as `coverage_schema_unmarked`,
+is gap-aware, because awareness follows the stream. The read is
+`EventRepository.holds_coverage_stream`, which loads no stream. Decision 28 follows the new rule,
+and no golden moved: every golden cut from a store that recorded a gap still holds a coverage
+stream.

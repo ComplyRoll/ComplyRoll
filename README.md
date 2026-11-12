@@ -54,8 +54,8 @@ catalog the operator supplies.
 | `stigroll FILE...` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output |
 | `complyroll.adapters`, `.policy`, `.schemas`, `.store` | Ingest an artifact, calculate a deadline with its rule provenance, validate a report, or open the event store from Python |
 
-Not yet built, among others: failures in the response process, stored changes, SPDX and cloud
-sources, and KSI and SDR evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. A coverage
+Not yet built, among others: failures in the response process, SPDX and cloud sources, and KSI and
+SDR evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. A coverage
 gap records that no verification reached a resource in time, not that the resource is vulnerable.
 A SARIF log with no results ingests as a PASS observation of the scope it names, which is
 evidence that the tool ran, not that the scope is clean. A CycloneDX SBOM with no vulnerability

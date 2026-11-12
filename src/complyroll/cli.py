@@ -37,6 +37,7 @@ from .events import (
 from .history import (
     CaseNotFoundError,
     CaseState,
+    ChangeConflictError,
     EvaluationMatchError,
     EvaluationOrderError,
     HistoryError,
@@ -49,6 +50,7 @@ from .history import (
     fold_all_cases,
     latent_pair_warnings,
     reading_elsewhere,
+    record_changes,
     record_coverage_gaps,
     record_failure,
     record_ingest,
@@ -370,6 +372,19 @@ def build_parser() -> argparse.ArgumentParser:
             description=pending_description,
         )
     )
+    record_description = (
+        "Append each declared change the store lacks, one stream per change, in one "
+        "transaction. A change already recorded is left alone; one already recorded with a "
+        "different value is refused as change_conflict and nothing is written. Exits 0 "
+        "whether or not anything was new."
+    )
+    _add_changes_record_arguments(
+        change_commands.add_parser(
+            "record",
+            help="record declared changes as history",
+            description=record_description,
+        )
+    )
 
     store = subparsers.add_parser("store", help="inspect the event store")
     store_commands = store.add_subparsers(dest="store_command", required=True)
@@ -588,6 +603,25 @@ def _add_changes_pending_arguments(pending: argparse.ArgumentParser) -> None:
     pending.add_argument("-o", "--output", metavar="FILE", help="write JSON here instead of stdout")
 
 
+def _add_changes_record_arguments(record: argparse.ArgumentParser) -> None:
+    """Add the `changes record` arguments, whose flags mean what they mean elsewhere."""
+
+    _add_database_option(record, "event store to append the changes to")
+    # Appends for the reason `report --changes` does: a second file is refused.
+    record.add_argument(
+        "--changes",
+        action="append",
+        metavar="FILE",
+        help="declared change file JSON to record",
+    )
+    record.add_argument(
+        "--as-of",
+        metavar="RFC3339",
+        help="instant recorded as when the changes were recorded (default: now, UTC)",
+    )
+    _add_actor_option(record)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _tolerate_unencodable_output()
     args = build_parser().parse_args(argv)
@@ -613,6 +647,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "changes":
         if args.changes_command == "pending":
             return _run_changes_pending(args)
+        if args.changes_command == "record":
+            return _run_changes_record(args)
         raise AssertionError(f"unhandled changes command: {args.changes_command}")
 
     if args.command == "store":
@@ -1353,6 +1389,52 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
     return _persisted_run(stderr, compile_and_publish)
 
 
+def _run_changes_record(args: argparse.Namespace) -> int:
+    stderr = sys.stderr
+    database = Path(args.db)
+    changes_paths = [Path(item) for item in (args.changes or ())]
+    if not changes_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            "changes record needs --changes: a change is recorded from a change file",
+        )
+    if len(changes_paths) > 1:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"changes record takes one --changes file, not {len(changes_paths)}",
+        )
+    missing = _refuse_missing_store(stderr, database)
+    if missing is not None:
+        return missing
+    try:
+        recorded_at = _instant(args.as_of, "--as-of")
+        change_set = load_changes(changes_paths[0])
+        metadata = _metadata(args)
+    except ReportInputError as exc:
+        return _fail(stderr, "invalid_input", str(exc))
+    except ValueError as exc:
+        return _fail(stderr, "invalid_option", str(exc))
+
+    def record() -> int:
+        with _open_repository(database) as repository:
+            outcome = record_changes(
+                repository, change_set, recorded_at=recorded_at, metadata=metadata
+            )
+        for change_id in outcome.recorded:
+            _say(f"{change_id}: recorded")
+        for change_id in outcome.already_recorded:
+            _say(f"{change_id}: already_recorded")
+        _say(
+            f"recorded {len(outcome.recorded)} change(s), "
+            f"skipped {len(outcome.already_recorded)} already-recorded change(s)"
+        )
+        return 0
+
+    return _persisted_run(stderr, record)
+
+
 def _run_changes_pending(args: argparse.Namespace) -> int:
     stderr = sys.stderr
     artifacts = [Path(item) for item in args.artifacts]
@@ -1600,6 +1682,8 @@ def _persisted_run(stream: TextIO, action: Callable[[], int]) -> int:
         # The writer's lines are the report's lines for the same record, byte for byte.
         _write_diagnostics(stream, exc.diagnostics)
         return 1
+    except ChangeConflictError as exc:
+        return _fail(stream, "change_conflict", str(exc))
     except HistoryError as exc:
         return _fail(stream, "history_invalid", str(exc))
     except EventContractError as exc:

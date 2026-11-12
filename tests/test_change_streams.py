@@ -14,7 +14,7 @@ import hashlib
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest import TestCase
@@ -49,13 +49,13 @@ from complyroll.events import (
     PendingEvent,
     change_identity_breach,
     change_stream_id,
-    coverage_stream_id_of,
     event_belongs_on_stream,
     is_artifact_stream,
     is_case_stream,
     is_change_stream,
     is_coverage_stream,
     is_failure_stream,
+    iso_utc,
     stream_kind,
     timestamp_pointers_for,
 )
@@ -69,6 +69,7 @@ from complyroll.events.contracts import (
     FAILURE_STREAM_EVENT_TYPES,
     _placement_problem,
 )
+from complyroll.history import audit_history, rehydrate_observations
 from complyroll.reports.changes_input import (
     MAX_CHANGE_RESOURCES,
     MAX_RATIONALE_CHARS,
@@ -397,7 +398,9 @@ class ChangeRecordedContractTests(TestCase):
         self.assertEqual(
             timestamp_pointers_for(CHANGE_RECORDED), ("/detectBy", "/occurredAt", "/recordedAt")
         )
-        self.assertEqual(utc_text(datetime(2026, 7, 1, tzinfo=UTC)), "2026-07-01T00:00:00Z")
+        # The plan spells instants through `utc_text`; the writer uses `iso_utc`. Both write this.
+        instant = datetime(2026, 7, 1, 2, 30, 1, 500, tzinfo=timezone(timedelta(hours=2)))
+        self.assertEqual(utc_text(instant), iso_utc(instant))
 
 
 # *--- Placement ---*
@@ -699,9 +702,13 @@ class ChangeSchemaMarkingTests(StoreCase):
         self.assertEqual(len(events), 2)
         self.assertEqual(len(all_events), 2)
         self.assertTrue(result.ok)
+        # Neither fold nor audit may touch the marker: only a change append does.
+        self.assertEqual(audit_history(repository), ())
+        self.assertEqual(
+            rehydrate_observations(repository)[0].context_key, gap_record().context_key
+        )
         self.assertEqual(reopened.schema_version, 4)
         self.assertEqual(self.migrations(), [FIRST, SECOND, THIRD, FOURTH])
-        self.assertEqual(coverage_stream_id_of(gap_record()), stream_id)
 
     def test_schema_5_needs_every_migration_record(self) -> None:
         for missing in (1, 2, 3, 4, 5):

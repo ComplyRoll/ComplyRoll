@@ -32,6 +32,7 @@ from complyroll.adapters import (
 from complyroll.adapters.failures import DETECTION_FAILURE_RECORDED, failure_recorded_message
 from complyroll.correlation import VulnerabilityGroup, group_open_observations, tracking_id_for
 from complyroll.events import (
+    CHANGE_RECORDED,
     COVERAGE_RECORDED,
     FAILURE_HEAD_TYPES,
     FAILURE_HELD,
@@ -45,6 +46,8 @@ from complyroll.events import (
     artifact_stream_id,
     canonical_payload_digest,
     case_stream_id,
+    change_identity_breach,
+    change_stream_id,
     coverage_head_payload,
     coverage_stream_id_of,
     failure_hold_orphan_message,
@@ -55,6 +58,7 @@ from complyroll.events import (
 )
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.policy import CertificationProfile
+from complyroll.reports.changes_input import Change, ChangeSet
 from complyroll.reports.checks import clock_problem, observation_clock_message, system_record_kind
 from complyroll.reports.coverage import CoverageResult
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, record_label
@@ -97,6 +101,39 @@ CLERICAL_FIELDS: Mapping[str, frozenset[str]] = {
 
 #: The WARNING a failure carries when another failure stream of its digest already holds it.
 FAILURE_HELD_BY_ANOTHER_STREAM = "failure_held_by_another_stream"
+
+
+#: The contract fields of a `change.recorded` a re-run compares, in the order the contract
+#: names them: the first that differs is the one `change_conflict` reports. `changeId` is the
+#: stream itself, and `changesName`, `changesSha256` and `recordedAt` are provenance, so a
+#: renamed or re-run file re-records cleanly (ADR 0018 Decision 10).
+CHANGE_CONTRACT_FIELDS: tuple[str, ...] = (
+    "kind",
+    "occurredAt",
+    "source",
+    "resources",
+    "significant",
+    "rationale",
+    "detectBy",
+    "job",
+)
+
+
+class ChangeConflictError(HistoryError):
+    """A change file states another value for a change the store already holds (ADR 0018).
+
+    History is append-only and the first recorded payload stands, so a run that would
+    disagree with it is refused whole: `field_name` is the first field that differs.
+    """
+
+    def __init__(self, change_id: str, field_name: str) -> None:
+        self.change_id = change_id
+        self.field_name = field_name
+        super().__init__(
+            f"change {change_id!r} is already recorded with a different {field_name}; history "
+            "is append-only and the first recorded payload stands, so restore the recorded "
+            "value in the change file or declare the correction under a new change id"
+        )
 
 
 class EvaluationMatchError(HistoryError):
@@ -165,6 +202,19 @@ class CoverageOutcome:
     recorded: tuple[Observation, ...]
     already_recorded: tuple[Observation, ...]
     diagnostics: tuple[ReportDiagnostic, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeRecordOutcome:
+    """What one `record_changes` call did (ADR 0018).
+
+    `recorded` is each change this call wrote and `already_recorded` each one the store
+    already held, by change id and both in the file's canonical order: by `occurred_at`, then
+    change id.
+    """
+
+    recorded: tuple[str, ...]
+    already_recorded: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -786,6 +836,128 @@ def _record_coverage_gaps(
         already_recorded=tuple(already),
         diagnostics=tuple(coverage_diagnostics(coverage)),
     )
+
+
+def record_changes(
+    repository: EventRepository,
+    change_set: ChangeSet,
+    *,
+    recorded_at: datetime,
+    metadata: EventMetadata,
+) -> ChangeRecordOutcome:
+    """Record each declared change the store lacks, once and atomically (ADR 0018).
+
+    A change's stream is named by its change id, so the stream id is the idempotence key: a
+    change already held is compared field by field against what the bounded reader read, and
+    only `recordedAt`, `changesSha256` and `changesName` may differ. The same id with a
+    differing contract field is refused with `ChangeConflictError`, naming the first such
+    field. Every change in the file is judged before the first append, and the whole run
+    happens in one store transaction or in the caller's, so a refusal writes nothing.
+    """
+
+    if not isinstance(change_set, ChangeSet):
+        raise TypeError("change_set must be a ChangeSet")
+    _require_aware(recorded_at, "recorded_at")
+    with _transaction_scope(repository):
+        return _record_changes(repository, change_set, recorded_at=recorded_at, metadata=metadata)
+
+
+def _record_changes(
+    repository: EventRepository,
+    change_set: ChangeSet,
+    *,
+    recorded_at: datetime,
+    metadata: EventMetadata,
+) -> ChangeRecordOutcome:
+    """Judge every change against the store, then write the ones it lacks."""
+
+    new_changes: list[tuple[str, dict[str, Any]]] = []
+    already_recorded: list[str] = []
+    # Every change is read and judged before the first append, so a refusal writes nothing.
+    for change in change_set.changes:
+        payload = _change_payload(change, change_set, recorded_at)
+        stream_id = change_stream_id(change.change_id)
+        existing = repository.read_stream(stream_id)
+        if not existing:
+            new_changes.append((stream_id, payload))
+            continue
+        stored = _recorded_change_payload(repository, stream_id, change.change_id, existing)
+        conflict = next(
+            (field for field in CHANGE_CONTRACT_FIELDS if stored[field] != payload[field]), None
+        )
+        if conflict is not None:
+            raise ChangeConflictError(change.change_id, conflict)
+        already_recorded.append(change.change_id)
+    for stream_id, payload in new_changes:
+        repository.append_batch(
+            stream_id,
+            (_pending(CHANGE_RECORDED, payload, recorded_at, metadata),),
+            expected_version=0,
+        )
+    return ChangeRecordOutcome(
+        recorded=tuple(payload["changeId"] for _, payload in new_changes),
+        already_recorded=tuple(already_recorded),
+    )
+
+
+def _change_payload(change: Change, change_set: ChangeSet, recorded_at: datetime) -> dict[str, Any]:
+    """Return one change's `change.recorded` payload, each field exactly as the reader read it."""
+
+    return {
+        "changeId": change.change_id,
+        "kind": change.kind.value,
+        "occurredAt": iso_utc(change.occurred_at),
+        "source": {"tool": change.source.tool, "reference": change.source.reference},
+        "resources": [
+            {"resourceType": resource.resource_type, "resourceId": resource.resource_id}
+            for resource in change.resources
+        ],
+        "significant": change.significant,
+        "rationale": change.rationale,
+        "detectBy": None if change.detect_by is None else iso_utc(change.detect_by),
+        "job": change.job,
+        "changesName": change_set.name,
+        "changesSha256": change_set.sha256,
+        "recordedAt": iso_utc(recorded_at),
+    }
+
+
+def _recorded_change_payload(
+    repository: EventRepository,
+    stream_id: str,
+    change_id: str,
+    existing: Sequence[EventRecord],
+) -> Mapping[str, Any]:
+    """Return a change stream's one payload, or refuse a stream no writer could have left.
+
+    A change stream is exactly one contract-valid `change.recorded` naming its own change, so
+    anything else is damage, refused rather than resumed. `store verify` names the same
+    shapes (Decision 10); this is the writer's own refusal for a stream it would otherwise
+    compare or extend.
+    """
+
+    if len(existing) != 1 or existing[0].event_type != CHANGE_RECORDED:
+        raise HistoryError(
+            f"change stream {stream_id!r} holds {len(existing)} event(s) and not its one "
+            f"{CHANGE_RECORDED}; a change stream is written whole, so it is refused rather "
+            "than resumed"
+        )
+    record = existing[0]
+    try:
+        repository.validate_payload(
+            CHANGE_RECORDED, record.payload, event_version=record.event_version
+        )
+    except EventContractError as exc:
+        raise HistoryError(
+            f"event {record.sequence} on change stream {stream_id!r} is not a readable change "
+            f"record: {exc}"
+        ) from exc
+    breach = change_identity_breach(stream_id, CHANGE_RECORDED, record.payload)
+    if breach is not None:
+        raise HistoryError(
+            f"{breach}; a change stream is written whole, so it is refused rather than resumed"
+        )
+    return record.payload
 
 
 def _held_by_another_stream(
@@ -1653,8 +1825,11 @@ def _require_aware(value: datetime, field_name: str) -> None:
 
 
 __all__ = [
+    "CHANGE_CONTRACT_FIELDS",
     "CLERICAL_FIELDS",
     "AttestationOutcome",
+    "ChangeConflictError",
+    "ChangeRecordOutcome",
     "CorrelationOutcome",
     "CoverageOutcome",
     "EvaluationMatchError",
@@ -1666,6 +1841,7 @@ __all__ = [
     "attest_detection",
     "content_digest",
     "correlate_cases",
+    "record_changes",
     "record_coverage_gaps",
     "record_failure",
     "record_ingest",

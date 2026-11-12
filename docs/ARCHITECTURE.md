@@ -282,11 +282,12 @@ observation takes its instant from the ingest on one path and the report on the 
 detection process failures the equality holds under the conditions ADR 0014 Decision 15 names,
 recorded as a dated amendment to ADR 0008. A coverage gap is observed at its window close on both
 paths, but a store's recorded gaps can disagree with the windows a run derives, and the report
-names each disagreement in an INFO note (the ADR 0008 amendment of 2026-10-16). Event payloads
-are validated against the contracts in `events/` on every append; the store itself stays a
-generic envelope log. The fold runs in memory at Phase 1 volumes; projection tables and
-checkpoints remain available for when that stops being enough. The domain model remains
-independent from all of it.
+names each disagreement in an INFO note (the ADR 0008 amendment of 2026-10-16). A store that
+recorded changes gives the stateless run's bytes but for the change block's `input` and its
+Markdown intro line (the ADR 0008 amendment of 2026-11-09). Event payloads are validated against
+the contracts in `events/` on every append; the store itself stays a generic envelope log. The
+fold runs in memory at Phase 1 volumes; projection tables and checkpoints remain available for
+when that stops being enough. The domain model remains independent from all of it.
 
 ## Failure semantics
 

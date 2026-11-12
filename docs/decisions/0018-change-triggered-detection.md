@@ -340,8 +340,10 @@ Decisions 11 and 12 belong to the section that makes an unmet window a case.
   FILE] [-o FILE]` writes the request from the store. It refuses artifacts, `--changes` and
   `--record-failed-imports` in the wording `report` uses, needs `--inventory`, and with no change
   stream writes an empty request and exits 0, because a store that recorded nothing has nothing
-  waiting. `changes pending` without artifacts or `--db` is now `invalid_option` with exit 1, as
-  `report` is, instead of an argparse usage error.
+  waiting. That holds on a dataset lacking `VDR-CSO-DAC` too: Decision 5's
+  `change_rule_unavailable` applies to a store holding changes, in a message that says so, and an
+  empty request read against no rule carries `force` null. `changes pending` without artifacts or
+  `--db` is now `invalid_option` with exit 1, as `report` is, instead of an argparse usage error.
 
 Why: each path needs an inventory because no store holds one, by ADR 0015 Decision 4, and each
 refusal says what the store already answers for.
@@ -360,7 +362,9 @@ instant with another offset is `already_recorded`, and `recordedAt`, `changesSha
 `changesName` may differ, which lets a file that grows, or is renamed, re-record cleanly. The same
 id with a differing contract field is refused before any append, because history is append-only and
 the first recorded payload stands. Every change in the file is judged before the first append, so a
-refusal writes nothing.
+conflict, a contract refusal or the size cap writes nothing. The run is one store transaction, so a
+later failure rolls it back; a caller that supplies the transaction and catches the error owns that
+rollback.
 
 A change stream append needs schema 5, marked inside the same transaction as schemas 2 to 4 are
 (ADR 0015 Decision 33), with migration record 5 ("change streams, ADR 0018").
@@ -378,8 +382,10 @@ The store feeds the projection through `StoredChangeSet`, the changes sorted as 
 them with each one's stored name and digest. Its `input` on this path is `{"source": "store",
 "changesSha256": [{"sha256": ..., "changes": n}, ...]}`, sorted by digest, and no name or size,
 because a store can hold changes from several files. The Markdown intro line is the twin of that
-object and reads the digests and counts. Those are the only things the two paths word apart, as the
-ADR 0008 amendment of this date records.
+object and reads the digests and counts. Those are the only bytes of a published output the two
+paths word apart, as the ADR 0008 amendment of this date records. A refusal can word its own input:
+`change_rule_unavailable` says a change file was supplied on one path and that the store holds
+recorded changes on the other, and nothing is published either way.
 
 Why: the digest keeps provider identifiers out of stream ids, as the coverage fingerprint does, and
 one event per stream makes the idempotence check a stream-exists check.

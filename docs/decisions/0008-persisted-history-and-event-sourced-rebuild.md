@@ -990,7 +990,9 @@ style of the ADR 0014 and ADR 0015 ones. These rules bind from this date.
 - **Nothing else moves.** Every other byte is identical, including diagnostics, their locations and
   their order, which is why a stored change keeps the `changesName` of the file it came from. On the
   store path a request's diagnostics include what a report from that store prints about its own
-  readings, as they do for `report --db` (Decision 5). `recordedAt` reaches no output.
+  readings, as they do for `report --db` (Decision 5), with `stale_case` saying "this request"
+  instead of "this report". `recordedAt` reaches no output. A refused run publishes nothing, and
+  `change_rule_unavailable` says which input it read, a change file or recorded changes.
 - **The gap divergences stay the coverage ones.** A lapsed window as a case belongs to a later
   section of ADR 0018 and adds none here. Whether a run is coverage-gap-aware follows a coverage
   stream, as ADR 0015 Decision 37's amendment of this date records, so recording a change adds no

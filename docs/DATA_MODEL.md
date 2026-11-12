@@ -449,7 +449,9 @@ is not a compliance finding, and an obligation's row is evidence toward `KSI-CMT
 `KSI-CMT-VTD`, never proof of either. WARNING codes on a run with a change file:
 `change_resource_unregistered`, `change_after_decommission`, `change_precedes_expected_since`, and
 `kev_at_activation`, each located at `<changes name> <changeId> <type>:<id>`. A dataset that lacks
-`VDR-CSO-DAC` refuses the run with ERROR `change_rule_unavailable`.
+`VDR-CSO-DAC` refuses the run with ERROR `change_rule_unavailable`. On the store path its message
+says the store holds recorded changes, and a store holding none is not refused: `changes pending
+--db` writes its empty request with `force` null.
 
 `kevAtActivation` answers only with `--kev`, on a `created` change of a machine-based entry whose
 row is `detected`. Every other row prints `null`. The answer comes from every artifact with a
@@ -505,8 +507,10 @@ same instant with another offset is `already_recorded`, and `changesName`, `chan
 `recordedAt` are provenance and never move idempotence, so a file that grows or is renamed
 re-records cleanly. The same id with a differing contract field is refused as `change_conflict`,
 naming the first differing field in contract order, because history is append-only and the first
-recorded payload stands. Every change is judged before the first append, so a refusal writes
-nothing. A store that holds a change stream is schema version 5, and one that never records a
+recorded payload stands. Every change is judged before the first append, so a conflict, a contract
+refusal or the size cap writes nothing. The run is one store transaction, so a later failure rolls
+it back; a caller that supplies the transaction and catches the error owns that rollback.
+A store that holds a change stream is schema version 5, and one that never records a
 change stays at its version.
 
 A report from a store carries the block when the store holds at least one change stream and the

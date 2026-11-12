@@ -2491,6 +2491,16 @@ def _canonical_json_object(value: Mapping[str, Any], field_name: str) -> str:
     return encoded
 
 
+def require_storable_payload(payload: Mapping[str, Any]) -> None:
+    """Raise what `append` would raise about a payload's JSON, and touch no store.
+
+    `append` applies the value, depth and byte limits as it writes. A writer that promises a
+    whole run is judged before its first append asks here, so the limits keep one home.
+    """
+
+    _canonical_json_object(payload, "payload")
+
+
 def _json_size_problem(text: str, field_name: str) -> str | None:
     """Name the size limit a JSON column's text breaks, or return None.
 

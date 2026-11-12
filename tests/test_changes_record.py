@@ -10,8 +10,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from itertools import combinations
 from pathlib import Path
@@ -24,6 +27,7 @@ from test_coverage_streams import metadata
 
 from complyroll.events import (
     CHANGE_RECORDED,
+    EventContractError,
     EventMetadata,
     EventRepository,
     change_stream_id,
@@ -35,7 +39,7 @@ from complyroll.history import (
     record_changes,
 )
 from complyroll.reports.changes_input import ChangeSet, parse_changes
-from complyroll.store import NewEvent, SQLiteEventStore
+from complyroll.store import EventPayloadLimitError, NewEvent, SQLiteEventStore
 
 # *--- Fixtures ---*
 
@@ -88,6 +92,15 @@ def edited(**fields: Any) -> dict[str, Any]:
     """Return the full change with fields replaced, a `None` value removing one."""
     value = {**FULL, **fields}
     return {key: item for key, item in value.items() if item is not None}
+
+
+def oversized(change_id: str, occurred_at: str) -> dict[str, Any]:
+    """Return a change the file reader admits and the store's 1 MiB event cap refuses."""
+    return change(
+        change_id,
+        occurredAt=occurred_at,
+        resources=[pair(f"{index:04d}".ljust(512, "r"), "t" * 512) for index in range(1_000)],
+    )
 
 
 class RecordCase(unittest.TestCase):
@@ -301,6 +314,40 @@ class RecordChangesTests(RecordCase):
         self.assertEqual(self.store.latest_sequence, sequence)
         self.assertEqual(self.repository.read_stream(change_stream_id("CHG-0")), ())
 
+    def test_an_oversized_change_caught_inside_a_callers_transaction_appends_nothing(self) -> None:
+        # The event cap is judged with the rest, so the small change sorted first stays out.
+        with self.repository.transaction():
+            with self.assertRaises(EventPayloadLimitError):
+                self.record(
+                    change("CHG-0", occurredAt="2026-08-01T00:00:00Z"),
+                    oversized("CHG-1", "2026-09-01T00:00:00Z"),
+                )
+
+        self.assertEqual((self.store.latest_sequence, self.store.schema_version), (0, 1))
+        self.assertEqual(self.repository.read_stream(change_stream_id("CHG-0")), ())
+
+    def test_a_change_its_contract_refuses_caught_in_a_callers_transaction_appends_nothing(
+        self,
+    ) -> None:
+        # The file reader keeps the same years, so only a change set built by hand gets here.
+        read = change_set(
+            change("CHG-0", occurredAt="2026-08-01T00:00:00Z"),
+            change("CHG-1", occurredAt="2026-08-02T00:00:00Z"),
+        )
+        past_the_reader = replace(read.changes[1], occurred_at=datetime(9500, 1, 1, tzinfo=UTC))
+
+        with self.repository.transaction():
+            with self.assertRaises(EventContractError):
+                record_changes(
+                    self.repository,
+                    replace(read, changes=(read.changes[0], past_the_reader)),
+                    recorded_at=NOW,
+                    metadata=metadata(),
+                )
+
+        self.assertEqual((self.store.latest_sequence, self.store.schema_version), (0, 1))
+        self.assertEqual(self.repository.read_stream(change_stream_id("CHG-0")), ())
+
     def test_a_stream_holding_something_else_is_refused_rather_than_compared(self) -> None:
         stream_id = change_stream_id("CHG-1")
         stored_payload = {
@@ -419,6 +466,54 @@ class RecordChangesTests(RecordCase):
         self.assertEqual(record.metadata["actor"], "someone")
 
 
+class RecordTransactionTests(unittest.TestCase):
+    """The run is one transaction of its own, so a failure mid-run leaves the store as it was."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "history.db"
+        self.store = SQLiteEventStore(self.path)
+        self.addCleanup(self.store.close)
+        self.repository = EventRepository(self.store)
+
+    def migration_versions(self) -> list[int]:
+        with closing(sqlite3.connect(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT version FROM complyroll_schema_migrations ORDER BY version"
+            ).fetchall()
+        return [int(version) for (version,) in rows]
+
+    def test_a_failure_on_the_second_append_leaves_nothing(self) -> None:
+        real_append = EventRepository.append_batch
+        calls: list[str] = []
+
+        def fail_on_the_second_call(
+            repository: EventRepository, stream_id: str, *args: Any, **kwargs: Any
+        ) -> Any:
+            calls.append(stream_id)
+            if len(calls) == 2:
+                raise RuntimeError("the run dies before its second append")
+            return real_append(repository, stream_id, *args, **kwargs)
+
+        with patch.object(EventRepository, "append_batch", fail_on_the_second_call):
+            with self.assertRaises(RuntimeError):
+                record_changes(
+                    self.repository,
+                    change_set(
+                        change("CHG-0", occurredAt="2026-08-01T00:00:00Z"),
+                        change("CHG-1", occurredAt="2026-08-02T00:00:00Z"),
+                    ),
+                    recorded_at=NOW,
+                    metadata=metadata(),
+                )
+
+        self.assertEqual(calls, [change_stream_id("CHG-0"), change_stream_id("CHG-1")])
+        self.assertEqual(self.store.latest_sequence, 0)
+        self.assertEqual(self.store.schema_version, 1)
+        self.assertEqual(self.migration_versions(), [1])
+
+
 # *--- Command ---*
 
 
@@ -521,6 +616,19 @@ class ChangesRecordCommandTests(unittest.TestCase):
         self.assertIn("error: store_missing:", err)
         self.assertFalse(missing.exists())
 
+    def test_a_missing_store_is_refused_before_the_change_file_is_read(self) -> None:
+        missing = self.workspace / "no-such.db"
+        unreadable = self.workspace / "no-such-changes.json"
+
+        code, out, err = run(
+            ["changes", "record", "--db", str(missing), "--changes", str(unreadable)]
+        )
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("error: store_missing:", err)
+        self.assertNotIn("invalid_input", err)
+        self.assertFalse(missing.exists())
+
     def test_second_changes_file_is_invalid_option(self) -> None:
         code, out, err = run([*self.argv(), "--changes", str(self.changes)])
 
@@ -561,6 +669,19 @@ class ChangesRecordCommandTests(unittest.TestCase):
         self.assertIn("rationale", err)
         with SQLiteEventStore(self.database) as store:
             self.assertEqual(store.latest_sequence, sequence)
+
+    def test_an_oversized_change_exits_one_and_writes_nothing(self) -> None:
+        self.write_changes(
+            change("CHG-0", occurredAt="2026-08-01T00:00:00Z"),
+            oversized("CHG-1", "2026-09-01T00:00:00Z"),
+        )
+
+        code, out, err = run(self.argv())
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("error: event_too_large: payload exceeds the 1048576-byte limit", err)
+        with SQLiteEventStore(self.database) as store:
+            self.assertEqual((store.latest_sequence, store.schema_version), (0, 1))
 
     def test_a_damaged_stream_is_history_invalid(self) -> None:
         stream_id = change_stream_id("CHG-1")

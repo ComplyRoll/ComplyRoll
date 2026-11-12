@@ -22,7 +22,9 @@ from jsonschema import Draft202012Validator, ValidationError, validators
 
 from complyroll import __version__
 from complyroll.adapters.common import (
+    MAX_CLOCK_YEAR,
     MAX_IDENTITY_CHARS,
+    MIN_CLOCK_YEAR,
     encode_list,
     identity_problem,
     sanitize,
@@ -46,7 +48,7 @@ from complyroll.models import (
 )
 from complyroll.policy import RuleForce
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
-from complyroll.store.sqlite import SHOWN_LIMIT, bounded, shown
+from complyroll.store.sqlite import SHOWN_LIMIT, bounded, require_storable_payload, shown
 
 from .contracts import (
     CHANGE_RECORDED,
@@ -400,6 +402,22 @@ class EventRepository:
             _require_readable_observation(payload, event_version)
         if event_type == CHANGE_RECORDED:
             _require_readable_change(payload, event_version)
+
+    def require_appendable(
+        self,
+        event_type: str,
+        payload: Mapping[str, Any],
+        *,
+        event_version: int = 1,
+    ) -> None:
+        """Raise what appending this payload would raise about it, and write nothing.
+
+        The contract and the store's limits, for a writer that judges a whole run before its
+        first append, so a refusal cannot arrive halfway through the run.
+        """
+
+        self.validate_payload(event_type, payload, event_version=event_version)
+        require_storable_payload(payload)
 
     def append(
         self,
@@ -1709,8 +1727,11 @@ def _change_readability_issue(payload: Mapping[str, Any]) -> ContractIssue | Non
     """Return the first way a `change.recorded` payload breaks what the reader guarantees."""
 
     for pointer, key in (("/occurredAt", "occurredAt"), ("/recordedAt", "recordedAt")):
-        if _canonical_instant(payload[key]) is None:
+        instant = _canonical_instant(payload[key])
+        if instant is None:
             return _change_issue(pointer, f"{key} is not an instant as its writer spells one")
+        if not _clock_year_kept(instant):
+            return _change_issue(pointer, _clock_years_message(key))
     problem = identity_problem(payload["source"]["reference"], MAX_IDENTITY_CHARS)
     if problem is not None:
         return _change_issue("/source/reference", f"reference {problem}")
@@ -1730,9 +1751,21 @@ def _change_readability_issue(payload: Mapping[str, Any]) -> ContractIssue | Non
     detect_by = _canonical_instant(payload["detectBy"])
     if detect_by is None:
         return _change_issue("/detectBy", "detectBy is not an instant as its writer spells one")
+    if not _clock_year_kept(detect_by):
+        return _change_issue("/detectBy", _clock_years_message("detectBy"))
     if detect_by < parse_utc(payload["occurredAt"]):
         return _change_issue("/detectBy", "detectBy must not be before occurredAt")
     return None
+
+
+def _clock_year_kept(instant: datetime) -> bool:
+    """Return whether an instant lies in the years the reader of a clock keeps."""
+
+    return MIN_CLOCK_YEAR <= instant.year <= MAX_CLOCK_YEAR
+
+
+def _clock_years_message(key: str) -> str:
+    return f"{key} must fall in the years {MIN_CLOCK_YEAR} through {MAX_CLOCK_YEAR} UTC"
 
 
 def _change_issue(pointer: str, message: str) -> ContractIssue:

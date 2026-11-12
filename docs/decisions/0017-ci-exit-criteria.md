@@ -443,3 +443,20 @@ docstring whitespace, and every golden is byte-identical. With no file left to r
 `lint` job runs `ruff format --check src tests stigroll.py` beside `ruff check` and `mypy`, each
 step after a failed one too, so one run reports every gate. A later change keeps its files
 formatter-clean instead of earning another exception.
+
+## Amendment 2026-11-09: `changes pending` is the second command with both paths
+
+Decision 1 says only `report` has a stateless and a persisted path. ADR 0018 gives `changes
+pending` both: the stateless form reads artifacts and a change file, and `changes pending --db`
+reads the changes a store recorded. It also adds `changes record`, which takes `--db` alone. This
+amendment supersedes that sentence of Decision 1 and adds the rows its table lacks.
+
+| Command | Path | 0 | 1 | 3 |
+|---|---|---|---|---|
+| `changes pending` | stateless | the request was written, whether or not anything is waiting; also an execution-class failure without the flag, which stays WARNING `execution_unsuccessful`, and a failure noted by `--record-failed-imports` | a refusal; a missing or second input; a failed reading without the flag; a `ReportCompileError`; a publish failure | never |
+| `changes pending --db` | store | the request was written, including the empty request of a store that recorded no change | a refusal, a missing store, `history_invalid`, a `ReportCompileError` | never |
+| `changes record` | store | every change is recorded or already recorded, including a rerun with nothing new | a refusal, a missing or second change file, a missing store, `change_conflict`, a damaged change stream | never |
+
+The other rows and the five invariants stand. These three never exit 3, so I2 keeps its three
+places: a request holds no system record, and `changes record` writes no failure or gap. A usage
+error is still 2 on all three.

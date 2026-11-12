@@ -48,6 +48,7 @@ from test_reports import AS_OF, options
 from complyroll.events import (
     CHANGE_RECORDED,
     EventRepository,
+    case_stream_id,
     change_stream_id,
     coverage_stream_id,
 )
@@ -55,6 +56,7 @@ from complyroll.history import HistoryError, read_stored_changes, record_changes
 from complyroll.reports import (
     StoredChangeSet,
     compile_record_set_from_history,
+    derive_changes_from_history,
     load_changes,
     load_inventory,
     parse_changes,
@@ -71,6 +73,13 @@ HELPERS = "https://github.com/example/webapp/src/ui/helpers.js"
 SMUGGLED = metadata().to_dict()
 #: A coverage gap note's codes, none of which a store that recorded no gap may print.
 GAP_NOTES = ("coverage_gap_unrecorded", "coverage_gap_contradicted", "coverage_gap_unmatched")
+#: The refusal a store holding changes meets under a dataset without the rule.
+RULE_UNAVAILABLE_ON_THE_STORE_PATH = (
+    "error: change_rule_unavailable: the store holds recorded changes, but the Class C policy "
+    "selects no VDR-CSO-DAC rule, so no change can be read against it"
+)
+#: A well-formed tracking id no synthetic artifact produces, for the stale-case path.
+ORPHAN_CASE = "case-00000000000000ff"
 #: The block's `input` object, at the indentation the JSON writer gives its keys.
 BLOCK_INPUT = r'^ {6}"input": \{$.*?^ {6}\},\n'
 REQUEST_INPUT = r'^ {2}"input": \{$.*?^ {2}\},\n'
@@ -239,6 +248,24 @@ class ReportReplayTests(ChangesStoreCase):
             store_input({sha256_of(first): 1, sha256_of(second): 2}),
         )
 
+    def test_the_markdown_intro_names_two_files_in_digest_order(self) -> None:
+        self.populate(ACCEPTED_EVALUATIONS)
+        first = self.write_changes(change_entry("CHG-1"), name="first")
+        second = self.write_changes(change_entry("CHG-2"), change_entry("CHG-3"), name="second")
+        self.record(first)
+        self.record(second)
+
+        _, stored_markdown, _ = self.report_outputs(
+            self.persisted("vdt", "--inventory", str(EXAMPLE_INVENTORY)), "two-files"
+        )
+
+        counts = {sha256_of(first): 1, sha256_of(second): 2}
+        counted = ", ".join(f"{counts[digest]} from SHA-256 {digest}" for digest in sorted(counts))
+        self.assertIn(
+            f"Changes recorded in the store (3 changes: {counted}), read against the inventory",
+            stored_markdown,
+        )
+
     def test_a_change_recorded_again_from_another_file_keeps_its_first_digest(self) -> None:
         self.populate(ACCEPTED_EVALUATIONS)
         original = self.write_changes(change_entry("CHG-1"), name="original")
@@ -310,6 +337,29 @@ class ReportReplayTests(ChangesStoreCase):
 
         self.assertNotIn("changes", json.loads(out)["x-complyroll"])
         self.assertNotIn("change_", err)
+
+    def test_no_inventory_reads_no_change_stream_so_damage_refuses_nothing(self) -> None:
+        self.populate()
+        self.record()
+        with SQLiteEventStore(self.database) as store:
+            store.append(
+                change_stream_id("CHG-1001"),
+                [
+                    NewEvent(
+                        event_type=CHANGE_RECORDED,
+                        occurred_at=datetime(2026, 11, 9, tzinfo=UTC),
+                        payload={"nonsense": True},
+                        metadata=SMUGGLED,
+                    )
+                ],
+                expected_version=1,
+            )
+
+        code, out, err = run(self.persisted("vdt"))
+
+        self.assertEqual(code, 0, msg=err)
+        self.assertNotIn("changes", json.loads(out)["x-complyroll"])
+        self.assertNotIn("history_invalid", err)
 
     def test_recorded_at_reaches_no_output(self) -> None:
         self.populate()
@@ -403,6 +453,16 @@ class ReportReplayTests(ChangesStoreCase):
 
         self.assertEqual(code, 0, msg=err)
         self.assertNotIn("change_rule_unavailable", err)
+
+    def test_a_refusal_on_the_store_path_says_the_store_holds_recorded_changes(self) -> None:
+        self.populate()
+        self.record()
+
+        with mock.patch.object(records_module, "select_policy", stripped_policy("VDR-CSO-DAC")):
+            code, out, err = run(self.persisted("vdt", "--inventory", str(EXAMPLE_INVENTORY)))
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, RULE_UNAVAILABLE_ON_THE_STORE_PATH + " [example-changes]\n")
 
 
 class TimedReplayTests(ChangesStoreCase):
@@ -666,6 +726,86 @@ class PendingPersistedTests(ChangesStoreCase):
         self.assertEqual((code, out), (1, ""))
         self.assertIn("error: store_missing:", err)
         self.assertFalse(missing.exists())
+
+    def test_a_missing_store_is_refused_before_a_symlinked_output(self) -> None:
+        missing = self.workspace / "absent.db"
+        target = self.workspace / "target.json"
+        target.write_text("kept", encoding="utf-8")
+        link = self.workspace / "link.json"
+        link.symlink_to(target)
+
+        code, out, err = run(
+            [
+                "changes",
+                "pending",
+                "--db",
+                str(missing),
+                "--inventory",
+                str(TIMED_INVENTORY),
+                "--class",
+                "C",
+                "--as-of",
+                TIMED_AS_OF,
+                "-o",
+                str(link),
+            ]
+        )
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("error: store_missing:", err)
+        self.assertNotIn("output_is_symlink", err)
+        self.assertEqual(target.read_text(encoding="utf-8"), "kept")
+        self.assertFalse(missing.exists())
+
+    def test_a_case_no_observation_matches_is_stale_on_the_request(self) -> None:
+        self.record(TIMED_CHANGES)
+        with SQLiteEventStore(self.database) as store:
+            EventRepository(store).append(
+                case_stream_id(ORPHAN_CASE),
+                "case.created",
+                {
+                    "trackingId": ORPHAN_CASE,
+                    "sourceType": "ckl",
+                    "sourceRecordId": "V-000001",
+                    "contextKey": "Retired Windows STIG",
+                    "title": "A weakness whose artifact was never ingested again",
+                    "description": "Recorded from an artifact that is no longer supplied.",
+                    "createdAt": "2026-08-01T00:00:00Z",
+                },
+                occurred_at=datetime(2026, 8, 1, tzinfo=UTC),
+                metadata=metadata(),
+                expected_version=0,
+            )
+
+        code, _, err = run(self.stored())
+
+        self.assertEqual(code, 0, msg=err)
+        self.assertIn(
+            f"info: stale_case: {ORPHAN_CASE} is recorded in history but no open observation "
+            f"group matches it, so it is not in this request [case/{ORPHAN_CASE}]\n",
+            err,
+        )
+
+    def test_a_dataset_without_the_rule_refuses_a_store_holding_changes(self) -> None:
+        self.record(TIMED_CHANGES)
+
+        with mock.patch.object(records_module, "select_policy", stripped_policy("VDR-CSO-DAC")):
+            code, out, err = run(self.stored())
+
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn(RULE_UNAVAILABLE_ON_THE_STORE_PATH, err)
+
+    def test_a_dataset_without_the_rule_does_not_touch_a_store_with_no_change(self) -> None:
+        with mock.patch.object(records_module, "select_policy", stripped_policy("VDR-CSO-DAC")):
+            code, out, err = run(self.stored())
+
+        self.assertEqual(code, 0, msg=err)
+        self.assertNotIn("change_rule_unavailable", err)
+        document = json.loads(out)
+        self.assertEqual(document["requests"], [])
+        self.assertEqual(document["summary"]["pending"], 0)
+        self.assertEqual(document["input"], {"source": "store", "changesSha256": []})
+        self.assertIsNone(document["force"])
 
     def test_the_output_may_not_overwrite_the_store(self) -> None:
         code, _, err = run(self.stored("-o", str(self.database)))
@@ -982,6 +1122,12 @@ class ReadStoredChangesTests(ChangesStoreCase):
         self.smuggle(coverage_stream_id("b" * 64), "coverage.recorded", {"name": "n"})
         self.assertTrue(self.repository.holds_coverage_stream())
 
+    def test_a_stream_sorting_after_coverage_is_no_coverage_stream(self) -> None:
+        # `failure/` sorts after `coverage/`, so only the prefix's upper bound keeps it out.
+        self.smuggle("failure/" + "a" * 64, "failure.recorded", {"name": "n"})
+
+        self.assertFalse(self.repository.holds_coverage_stream())
+
 
 class StoredChangeSetTests(ChangesStoreCase):
     """`StoredChangeSet` keeps its parallel fields and the file's sort order honest."""
@@ -1010,6 +1156,19 @@ class StoredChangeSetTests(ChangesStoreCase):
 
         self.assertEqual(stored.digest_counts, (("0" * 64, 1), ("f" * 64, 2)))
         self.assertEqual(stored.change_count, 3)
+
+    def test_name_joins_each_distinct_name_in_order(self) -> None:
+        first = self.change("CHG-1", datetime(2026, 9, 1, tzinfo=UTC))
+        second = self.change("CHG-2", datetime(2026, 9, 2, tzinfo=UTC))
+        third = self.change("CHG-3", datetime(2026, 9, 3, tzinfo=UTC))
+
+        stored = StoredChangeSet(
+            changes=(first, second, third),
+            names=("zeta", "alpha", "zeta"),
+            digests=("a" * 64, "b" * 64, "a" * 64),
+        )
+
+        self.assertEqual(stored.name, "alpha, zeta")
 
     def test_the_constructor_holds_each_invariant(self) -> None:
         early = self.change("CHG-1", datetime(2026, 9, 1, tzinfo=UTC))
@@ -1062,6 +1221,33 @@ class HistoryCompileRefusalTests(ChangesStoreCase):
         self.assertEqual(
             err, "error: invalid_option: report vdt takes either --db or --changes, never both\n"
         )
+
+    def test_deriving_from_history_needs_report_options(self) -> None:
+        with SQLiteEventStore(self.database) as store:
+            with self.assertRaisesRegex(TypeError, "options must be a ReportOptions"):
+                derive_changes_from_history(
+                    EventRepository(store),
+                    options="not options",  # type: ignore[arg-type]
+                )
+
+    def test_deriving_from_history_needs_an_inventory_before_it_reads_the_store(self) -> None:
+        # A closed store refuses any read, so the refusal can only come from before the first.
+        store = SQLiteEventStore(self.database)
+        store.close()
+
+        with self.assertRaisesRegex(ValueError, "needs an inventory"):
+            derive_changes_from_history(EventRepository(store), options=options())
+
+    def test_deriving_from_history_refuses_a_change_file(self) -> None:
+        with SQLiteEventStore(self.database) as store:
+            with self.assertRaisesRegex(ValueError, "a store never read this change file"):
+                derive_changes_from_history(
+                    EventRepository(store),
+                    options=replace(
+                        options(inventory=load_inventory(EXAMPLE_INVENTORY)),
+                        changes=load_changes(EXAMPLE_CHANGES),
+                    ),
+                )
 
     def test_a_second_input_on_the_store_path_is_refused_too(self) -> None:
         change_set = load_changes(EXAMPLE_CHANGES)

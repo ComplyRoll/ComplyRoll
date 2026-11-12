@@ -1190,16 +1190,22 @@ def _changes(
     policy: SelectedPolicy,
     options: ReportOptions,
 ) -> ChangeProjection:
-    """Return the change projection, or stop the run when the policy lacks its rule."""
+    """Return the change projection, or stop the run when the policy lacks its rule.
 
-    if not _selects(policy, DAC_RULE):
+    A store that holds no change has nothing to read against the rule, so only a set that
+    names a change needs one, and the empty request of such a store is written (ADR 0018).
+    """
+
+    stored = isinstance(change_set, StoredChangeSet)
+    if (not stored or change_set.changes) and not _selects(policy, DAC_RULE):
+        supplied = "the store holds recorded changes" if stored else "a change file was supplied"
         raise ReportCompileError(
             (
                 ReportDiagnostic(
                     level=DiagnosticLevel.ERROR,
                     code="change_rule_unavailable",
                     message=(
-                        "a change file was supplied, but the Class "
+                        f"{supplied}, but the Class "
                         f"{policy.profile.certification_class.value} policy selects no "
                         f"{DAC_RULE} rule, so no change can be read against it"
                     ),

@@ -142,7 +142,7 @@ def compile_record_set_from_history(
     return compile_record_set(
         artifacts=artifacts,
         observations=observations,
-        ingest_diagnostics=_history_diagnostics(history, cases, observations),
+        ingest_diagnostics=_history_diagnostics(history, cases, observations, document="report"),
         evaluations_by_tracking_id=case_evaluations(cases),
         attestation=_attestation(cases),
         options=options,
@@ -188,7 +188,7 @@ def derive_changes_from_history(
     stored = read_stored_changes(repository)
     return derive_request_changes(
         observations,
-        _history_diagnostics(history, cases, observations),
+        _history_diagnostics(history, cases, observations, document="request"),
         StoredChangeSet(changes=(), names=(), digests=()) if stored is None else stored,
         options=options,
     )
@@ -198,15 +198,20 @@ def _history_diagnostics(
     history: ArtifactHistory,
     cases: Sequence[CaseState],
     observations: Sequence[Observation],
+    *,
+    document: str,
 ) -> tuple[ReportDiagnostic, ...]:
-    """Reproduce what a store knows about its own readings, in the order a report lists them."""
+    """Reproduce what a store knows about its own readings, in the order a report lists them.
+
+    `document` is the word for what the run writes, a report or a request.
+    """
 
     return (
         _ingest_diagnostics((*history.current, *history.current_failures))
         + _superseded_artifacts(history)
         + _superseded_failures(history)
         + _held_failures(history)
-        + _stale_cases(cases, observations)
+        + _stale_cases(cases, observations, document=document)
     )
 
 
@@ -363,6 +368,8 @@ def _held_failures(history: ArtifactHistory) -> tuple[ReportDiagnostic, ...]:
 def _stale_cases(
     cases: Sequence[CaseState],
     observations: Sequence[Observation],
+    *,
+    document: str,
 ) -> tuple[ReportDiagnostic, ...]:
     """Name every stored case that no current observation group matches.
 
@@ -378,7 +385,7 @@ def _stale_cases(
             code="stale_case",
             message=(
                 f"{case.label} is recorded in history but no open observation "
-                "group matches it, so it is not in this report"
+                f"group matches it, so it is not in this {document}"
             ),
             location=case.stream_id,
         )

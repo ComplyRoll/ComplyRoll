@@ -851,8 +851,10 @@ def record_changes(
     change already held is compared field by field against what the bounded reader read, and
     only `recordedAt`, `changesSha256` and `changesName` may differ. The same id with a
     differing contract field is refused with `ChangeConflictError`, naming the first such
-    field. Every change in the file is judged before the first append, and the whole run
-    happens in one store transaction or in the caller's, so a refusal writes nothing.
+    field. Every change in the file is judged before the first append, so a conflict, a
+    contract refusal or the size cap writes nothing. The run is one store transaction, so a
+    later failure rolls it back; a caller that supplies the transaction and catches the
+    error owns that rollback.
     """
 
     if not isinstance(change_set, ChangeSet):
@@ -873,12 +875,14 @@ def _record_changes(
 
     new_changes: list[tuple[str, dict[str, Any]]] = []
     already_recorded: list[str] = []
-    # Every change is read and judged before the first append, so a refusal writes nothing.
+    # Every change is read and judged before the first append, each new one against its
+    # contract and the event size cap too, so these refusals write nothing.
     for change in change_set.changes:
         payload = _change_payload(change, change_set, recorded_at)
         stream_id = change_stream_id(change.change_id)
         existing = repository.read_stream(stream_id)
         if not existing:
+            repository.require_appendable(CHANGE_RECORDED, payload)
             new_changes.append((stream_id, payload))
             continue
         stored = _recorded_change_payload(repository, stream_id, change.change_id, existing)

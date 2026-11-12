@@ -205,6 +205,25 @@ class ChangeStreamAuditTests(ChangeAuditCase):
         self.assert_faults([(sequence, "payload_contract_invalid")])
         self.assert_reader_refuses("is not a readable change record")
 
+    def test_an_instant_outside_the_reader_years_is_refused_and_named(self) -> None:
+        cases = (
+            {"occurredAt": "0001-01-01T00:00:00Z"},
+            {"occurredAt": "9999-12-31T23:59:59Z", "detectBy": None},
+            {"detectBy": "9999-12-31T23:59:59Z"},
+            {"recordedAt": "0001-01-01T00:00:00Z"},
+        )
+        for fields in cases:
+            with self.subTest(fields=fields):
+                self.setUp()
+                (sequence,) = self.stage(
+                    change_stream_id(CHANGE_ID), [(CHANGE_RECORDED, payload(**fields))]
+                )
+
+                self.assert_faults(
+                    [(sequence, "payload_contract_invalid")], "1970 through 9000 UTC"
+                )
+                self.assert_reader_refuses("is not a readable change record")
+
     def test_a_breach_on_a_wrong_payload_is_not_read_off_it(self) -> None:
         # A payload its contract refuses is named by the contract check alone.
         (sequence,) = self.stage(

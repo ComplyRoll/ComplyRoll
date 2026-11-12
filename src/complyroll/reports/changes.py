@@ -20,7 +20,13 @@ from typing import Any
 from complyroll.adapters import DiagnosticLevel
 from complyroll.correlation import tracking_id_for
 from complyroll.models import Observation, ObservationDisposition, ObservationOrigin, ResourceRef
-from complyroll.policy import CertificationProfile, PolicyProvenance, RuleForce, SelectedPolicy
+from complyroll.policy import (
+    CertificationProfile,
+    PolicyProvenance,
+    PolicyRuleNotFoundError,
+    RuleForce,
+    SelectedPolicy,
+)
 
 from .changes_input import Change, ChangeKind, ChangeSet
 
@@ -183,12 +189,18 @@ class ChangeProjection:
     as_of: datetime
     profile: CertificationProfile
     provenance: PolicyProvenance
-    force: RuleForce
+    # None only when a store holding no change meets a dataset that lacks the rule.
+    force: RuleForce | None
     obligations: tuple[ChangeObligation, ...]
     unregistered: tuple[UnregisteredChangeResource, ...]
     # Changes after as-of: listed, never measured.
     later: tuple[Change, ...]
     warnings: tuple[ReportDiagnostic, ...]
+
+    @property
+    def force_value(self) -> str | None:
+        """Return the rule's force as text, or None when no rule was read."""
+        return None if self.force is None else self.force.value
 
     @property
     def waiting(self) -> tuple[ChangeObligation, ...]:
@@ -233,15 +245,15 @@ class ChangeProjection:
         """Return the `x-complyroll.changes` block; keys are sorted when the JSON is written."""
         return {
             "rule": DAC_RULE,
-            "force": self.force.value,
+            "force": self.force_value,
             "provenance": _provenance_dict(self.provenance),
             "asOf": _instant_text(self.as_of),
             "input": _input_dict(self.change_set),
             "inventorySha256": self.inventory.sha256,
             "summary": {status.value: count for status, count in self.summary.items()},
-            "changes": [_change_row(change, self.force) for change in self.declared],
+            "changes": [_change_row(change, self.force_value) for change in self.declared],
             "obligations": [
-                _obligation_row(row, self.force, self.as_of) for row in self.obligations
+                _obligation_row(row, self.force_value, self.as_of) for row in self.obligations
             ],
             "unregistered": [item.to_dict() for item in self.unregistered],
             "later": [
@@ -307,8 +319,15 @@ def derive_changes(
     """Derive one status per (change, resource) at as-of; input order never matters."""
     cutoff = _utc(as_of)
     # The rule resolves before anything is derived, so a pinned dataset that lacks it refuses
-    # the run instead of thinning the projection.
-    force = policy.rule(DAC_RULE).force
+    # the run instead of thinning the projection. A store holding no change reads nothing
+    # against the rule, so it is not refused, and its projection names no force (ADR 0018).
+    force: RuleForce | None
+    try:
+        force = policy.rule(DAC_RULE).force
+    except PolicyRuleNotFoundError:
+        if not isinstance(change_set, StoredChangeSet) or change_set.changes:
+            raise
+        force = None
     evidence = tuple(observations)
     groups = _groups(inventory)
     subjects = _Subjects(file_evidence(evidence, inventory, cutoff), inventory)
@@ -591,7 +610,7 @@ def detection_request(projection: ChangeProjection) -> dict[str, Any]:
         "schema": DETECTION_REQUEST_SCHEMA,
         "schemaVersion": DETECTION_REQUEST_SCHEMA_VERSION,
         "rule": DAC_RULE,
-        "force": projection.force.value,
+        "force": projection.force_value,
         "provenance": _provenance_dict(projection.provenance),
         "asOf": _instant_text(projection.as_of),
         "input": _input_dict(projection.change_set),
@@ -882,7 +901,7 @@ def _source_dict(change: Change) -> dict[str, str]:
     return {"tool": change.source.tool, "reference": change.source.reference}
 
 
-def _change_row(change: Change, force: RuleForce) -> dict[str, Any]:
+def _change_row(change: Change, force: str | None) -> dict[str, Any]:
     return {
         "changeId": change.change_id,
         "kind": change.kind.value,
@@ -892,11 +911,11 @@ def _change_row(change: Change, force: RuleForce) -> dict[str, Any]:
         "rationale": change.rationale,
         "detectBy": _instant_text(change.detect_by),
         "job": change.job,
-        "force": force.value,
+        "force": force,
     }
 
 
-def _obligation_row(row: ChangeObligation, force: RuleForce, as_of: datetime) -> dict[str, Any]:
+def _obligation_row(row: ChangeObligation, force: str | None, as_of: datetime) -> dict[str, Any]:
     return {
         "changeId": row.change.change_id,
         **_ref_dict(row.resource),
@@ -904,7 +923,7 @@ def _obligation_row(row: ChangeObligation, force: RuleForce, as_of: datetime) ->
         "sampleGroup": row.sample_group,
         "matchedAs": None if row.matched_as is None else _ref_dict(row.matched_as),
         "status": row.status.value,
-        "force": force.value,
+        "force": force,
         "evidence": None if row.evidence is None else row.evidence.to_dict(),
         "standIn": None if row.stand_in is None else _ref_dict(row.stand_in),
         "lagSeconds": row.lag_seconds,

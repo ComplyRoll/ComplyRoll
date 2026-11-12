@@ -108,6 +108,14 @@ PROHIBITED_IDENTITY_TEXT = {
     "a line separator": "lab win",
     "a right-to-left override": "lab‮win",
 }
+#: Canonical instants past each edge of what `parse_rfc3339` keeps, and the edges themselves.
+OUTSIDE_THE_READER_YEARS = (
+    "0001-01-01T00:00:00Z",
+    "1969-12-31T23:59:59Z",
+    "9001-01-01T00:00:00Z",
+    "9999-12-31T23:59:59Z",
+)
+THE_READER_YEARS = ("1970-01-01T00:00:00Z", "9000-12-31T23:59:59Z")
 
 
 def payload(**overrides: Any) -> dict[str, Any]:
@@ -302,6 +310,43 @@ class ChangeRecordedContractTests(TestCase):
         self.assert_refused(payload(detectBy="2026-07-08T00:00:00+00:00"), "/detectBy")
         self.assert_refused(payload(detectBy=""), "/detectBy")
         self.assert_refused(payload(detectBy="2026-02-30T00:00:00Z"), "/detectBy")
+
+    def test_detect_by_must_be_spelled_as_its_writer_spells_it(self) -> None:
+        # The fraction of zeros the contract's regular expression admits and `iso_utc` never
+        # writes, which only the canonical spelling check refuses.
+        self.assert_refused(payload(detectBy="2026-07-08T00:00:00.000Z"), "/detectBy")
+
+    def assert_outside_the_reader_years(self, field_name: str, text: str, **fields: Any) -> None:
+        """Assert one instant is refused at its own field, for the reader's years and no other."""
+        value = payload(**fields, **{field_name: text})
+        with self.assertRaises(EventContractError) as caught:
+            self.repository.validate_payload(CHANGE_RECORDED, value)
+        (issue,) = caught.exception.issues
+        self.assertEqual(issue.instance_pointer, f"/{field_name}")
+        self.assertIn("must fall in the years 1970 through 9000 UTC", issue.message)
+
+    def test_occurred_at_keeps_to_the_years_the_reader_keeps(self) -> None:
+        for text in OUTSIDE_THE_READER_YEARS:
+            with self.subTest(text=text):
+                self.assert_outside_the_reader_years("occurredAt", text, detectBy=None)
+        for text in THE_READER_YEARS:
+            with self.subTest(text=text):
+                self.assert_passes(payload(occurredAt=text, detectBy=None))
+
+    def test_recorded_at_keeps_to_the_years_the_reader_keeps(self) -> None:
+        for text in OUTSIDE_THE_READER_YEARS:
+            with self.subTest(text=text):
+                self.assert_outside_the_reader_years("recordedAt", text)
+        for text in THE_READER_YEARS:
+            with self.subTest(text=text):
+                self.assert_passes(payload(recordedAt=text))
+
+    def test_detect_by_keeps_to_the_years_the_reader_keeps(self) -> None:
+        # Only the upper bound: `detectBy` is never before `occurredAt`, whose floor holds it.
+        for text in ("9001-01-01T00:00:00Z", "9999-12-31T23:59:59Z"):
+            with self.subTest(text=text):
+                self.assert_outside_the_reader_years("detectBy", text)
+        self.assert_passes(payload(detectBy="9000-12-31T23:59:59Z"))
 
     def test_job_may_be_null(self) -> None:
         self.assert_passes(payload(job=None))

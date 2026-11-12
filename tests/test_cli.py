@@ -1635,6 +1635,11 @@ COVERED_AUDIT_CODES = {
     "clock_out_of_range",
     # Its library tests live in `tests/test_replay.py`, beside the report's refusal.
     "disposition_without_evaluation",
+    # The four change codes' `store verify` command tests live in `tests/test_changes_audit.py`.
+    "change_incomplete",
+    "change_overfull",
+    "change_schema_unmarked",
+    "change_stream_mismatch",
     # The five coverage codes' `store verify` command tests live in
     # `tests/test_coverage_streams.py`.
     "coverage_identity_breach",

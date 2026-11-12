@@ -285,6 +285,22 @@ class RecordChangesTests(RecordCase):
         self.assertEqual(self.store.latest_sequence, sequence)
         self.assertEqual(self.repository.read_stream(change_stream_id("CHG-0")), ())
 
+    def test_a_conflict_caught_inside_a_callers_transaction_appends_nothing(self) -> None:
+        # Every change is judged before the first append, so a caller that catches the
+        # refusal and goes on to commit still has nothing half recorded.
+        self.record(FULL)
+        sequence = self.store.latest_sequence
+
+        with self.repository.transaction():
+            with self.assertRaises(ChangeConflictError):
+                self.record(
+                    change("CHG-0", occurredAt="2026-08-01T00:00:00Z"),
+                    edited(rationale="A different reason."),
+                )
+
+        self.assertEqual(self.store.latest_sequence, sequence)
+        self.assertEqual(self.repository.read_stream(change_stream_id("CHG-0")), ())
+
     def test_a_stream_holding_something_else_is_refused_rather_than_compared(self) -> None:
         stream_id = change_stream_id("CHG-1")
         stored_payload = {

@@ -2831,7 +2831,12 @@ class AuditHistoryTests(WriterFixture):
         self.assertNotIn("case_stream_mismatch", _ORDER_CHECKED_BESIDE)
         self.assertEqual(
             _ORDER_CHECKED_BESIDE,
-            {"event_metadata_invalid", "failure_schema_unmarked", "coverage_schema_unmarked"},
+            {
+                "event_metadata_invalid",
+                "failure_schema_unmarked",
+                "coverage_schema_unmarked",
+                "change_schema_unmarked",
+            },
         )
 
     def test_the_published_codes_are_a_sorted_tuple(self) -> None:

@@ -97,6 +97,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "attestation_not_applicable",
     "case_not_found",
     "change_after_decommission",
+    "change_conflict",
     "change_precedes_expected_since",
     "change_resource_unregistered",
     "change_rule_unavailable",

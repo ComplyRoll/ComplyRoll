@@ -1329,6 +1329,8 @@ class RecordFailedImportsTests(unittest.TestCase):
         # The failure and coverage gap goldens exit 3 by design; each pair has its own
         # reproduction, the gap pair in `test_coverage_gap_report`.
         system_goldens = {
+            # Cut from a store, not from artifacts; `test_changes_persisted` reproduces it.
+            "vdt-changes-replay",
             "vdt-failed",
             "historical-failed",
             "vdt-coverage-gaps",
@@ -1633,6 +1635,11 @@ COVERED_AUDIT_CODES = {
     "clock_out_of_range",
     # Its library tests live in `tests/test_replay.py`, beside the report's refusal.
     "disposition_without_evaluation",
+    # The four change codes' `store verify` command tests live in `tests/test_changes_audit.py`.
+    "change_incomplete",
+    "change_overfull",
+    "change_schema_unmarked",
+    "change_stream_mismatch",
     # The five coverage codes' `store verify` command tests live in
     # `tests/test_coverage_streams.py`.
     "coverage_identity_breach",
@@ -7907,7 +7914,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 self.assertEqual(code, 1, err[:500])
                 self.assertIn(
                     "error: store_unavailable: database schema -1 is outside supported "
-                    "schemas 1 to 4",
+                    "schemas 1 to 5",
                     err,
                 )
                 self.assert_bounded(out, err)
@@ -7919,7 +7926,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1, err[:500])
         self.assertIn(
             "schema_version_unsupported: database is marked schema -1; this build opens "
-            "schemas 1 to 4",
+            "schemas 1 to 5",
             out + err,
         )
         self.assert_bounded(out, err)

@@ -972,3 +972,34 @@ above costs an `ingest`.
 Left out, on purpose. A report does not warn, since no reader refuses a latent pair and a report's
 output is compared byte for byte. `cases correlate` does not either. No golden, fixture, example,
 tracking id or store byte moves, and verify on a store with no pair reads exactly as it did.
+
+## Amendment 2026-11-09: what a replay of recorded changes may word apart
+
+ADR 0018 records declared changes in the store on a fifth stream kind, `change/<sha256(changeId)>`,
+so a report and a detection request can be derived from the log with no change file in hand.
+Decision 5 promises the rebuilt report is byte-identical to the stateless one compiled from the same
+inputs. The file cannot be named on a path that never read it, so this is a named carve-out, in the
+style of the ADR 0014 and ADR 0015 ones. These rules bind from this date.
+
+- **Decision 5 has a carve-out for the change file's provenance.** A store that recorded exactly the
+  file a stateless run reads gives that run's bytes but for three things: the `input` object of
+  `x-complyroll.changes`, its twin the first sentence of the Markdown `## Changes` section, and the
+  detection request's `input` object. Stateless, `input` names the file by its name, size, digest
+  and change count. On the store path it is `source: store` and each distinct `changesSha256` with
+  its count, and the sentence reads the same digests and counts.
+- **Nothing else moves.** Every other byte is identical, including diagnostics, their locations and
+  their order, which is why a stored change keeps the `changesName` of the file it came from. On the
+  store path a request's diagnostics include what a report from that store prints about its own
+  readings, as they do for `report --db` (Decision 5), with `stale_case` saying "this request"
+  instead of "this report". `recordedAt` reaches no output. A refused run publishes nothing, and
+  `change_rule_unavailable` says which input it read, a change file or recorded changes.
+- **The gap divergences stay the coverage ones.** A lapsed window as a case belongs to a later
+  section of ADR 0018 and adds none here. Whether a run is coverage-gap-aware follows a coverage
+  stream, as ADR 0015 Decision 37's amendment of this date records, so recording a change adds no
+  window key and no `coverage_gap_*` note.
+
+The test of this carve-out compares the real output of both paths, not their derived objects:
+`tests/test_changes_persisted.py` holds the JSON, the Markdown, the request and standard error to
+each other with only those regions cut, and `tests/golden/vdt-changes-replay.{json,md}` are the
+replay pair of `tests/golden/vdt-changes.{json,md}`. A store that never records a change reads as it
+did, and no existing golden moved.

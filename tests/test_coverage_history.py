@@ -39,7 +39,6 @@ from test_coverage_gap_report import (
     BACKUP_KEY,
     EARLY_AS_OF,
     GAP_WINDOWS,
-    RECORDED_SENTENCE,
     VDT_GAP_ARGUMENTS,
     WINDOW_KEYS,
     diagnostics_of,
@@ -59,7 +58,6 @@ from test_reports import (
     REPORT_KINDS,
     assert_markdown_carries_the_json,
     markdown_section,
-    markdown_subsection,
     options,
 )
 
@@ -832,7 +830,7 @@ def stored_gaps_of(database: Path) -> list[Observation]:
 
 
 class GapAwareReportTests(CoverageStoreFixture):
-    """A store marked schema 4 reports gap aware; one never marked reads as before."""
+    """A store holding a coverage stream reports gap aware; any other reads as before."""
 
     def test_a_store_that_never_recorded_a_gap_carries_no_window_key(self) -> None:
         self.golden_store()
@@ -844,46 +842,22 @@ class GapAwareReportTests(CoverageStoreFixture):
             self.assertFalse(WINDOW_KEYS & set(window))
         self.assertEqual(diagnostics_of(report, "coverage_gap_unrecorded"), [])
 
-    def test_a_store_marked_4_by_hand_reads_gap_aware_with_every_window_unrecorded(
+    def test_a_store_marked_4_by_hand_with_no_stream_reads_exactly_as_before_the_mark(
         self,
     ) -> None:
+        # Moved by ADR 0015 Decision 37's amendment (2026-11-09): the marker no longer means
+        # gaps were recorded, so a marked store with no coverage stream is unaware.
         self.golden_store()
+        unmarked = self.replay(inventory=INVENTORY)
         mark_schema_4_by_hand(self.database)
         self.assertEqual(self.store.schema_version, 4)
         self.assertEqual(audit_history(self.repository), ())
 
         report = self.replay(inventory=INVENTORY)
 
-        self.assertEqual(
-            window_rows(report),
-            [(rule, label, closed, False, None) for rule, label, closed, _ in GAP_WINDOWS],
-        )
-        self.assertEqual(report.metadata.coverage_gaps, ())
-        self.assertFalse({row[3] for row in GAP_WINDOWS} & tracking_ids(report))
-        notes = diagnostics_of(report, "coverage_gap_unrecorded")
-        self.assertEqual(
-            [(item["level"], item["message"], item["location"]) for item in notes],
-            [
-                (
-                    "info",
-                    unrecorded_message(rule, label, closed),
-                    f"example-boundary {label}",
-                )
-                for rule, label, closed, _ in GAP_WINDOWS
-            ],
-        )
-        markdown = report.to_markdown()
-        windows = markdown_subsection(markdown_section(markdown, "Coverage"), "Windows")
-        self.assertIn(RECORDED_SENTENCE, windows)
-        self.assertEqual(windows.count("| no | n/a |"), GAP_COUNT)
-        diagnostics = markdown_section(markdown, "Diagnostics")
-        for rule, label, closed, _ in GAP_WINDOWS:
-            self.assertIn(
-                f"- **info** coverage_gap_unrecorded: "
-                f"{markdown_module._cell(unrecorded_message(rule, label, closed))} "
-                f"[{markdown_module._cell(f'example-boundary {label}')}]",
-                diagnostics,
-            )
+        self.assertEqual(report.to_json(), unmarked.to_json())
+        self.assertEqual(report.to_markdown(), unmarked.to_markdown())
+        self.assertEqual(diagnostics_of(report, "coverage_gap_unrecorded"), [])
         assert_markdown_carries_the_json(self, report)
 
     def test_cases_coverage_makes_the_report_gap_aware_with_every_window_recorded(

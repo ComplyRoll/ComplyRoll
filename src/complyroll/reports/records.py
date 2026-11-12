@@ -59,7 +59,7 @@ from complyroll.policy import (
 )
 from complyroll.policy.source import RuleSourceSnapshot
 
-from .changes import DAC_RULE, ChangeProjection, derive_changes
+from .changes import DAC_RULE, ChangeProjection, StoredChangeSet, derive_changes
 from .changes_input import ChangeSet
 from .checks import (
     CLOCK_OUT_OF_RANGE,
@@ -186,8 +186,7 @@ def derive_changes_from_artifacts(
     if not isinstance(options, ReportOptions):
         raise TypeError("options must be a ReportOptions")
     change_set = options.changes
-    inventory = options.inventory
-    if change_set is None or inventory is None:
+    if change_set is None or options.inventory is None:
         raise ValueError("deriving a change projection needs a change set and an inventory")
 
     ingest_diagnostics: list[ReportDiagnostic] = []
@@ -197,13 +196,28 @@ def derive_changes_from_artifacts(
         ingest_diagnostics,
         record_failed_imports=record_failed_imports,
     )
+    return derive_request_changes(observations, ingest_diagnostics, change_set, options=options)
+
+
+def derive_request_changes(
+    observations: Sequence[Observation],
+    ingest_diagnostics: Sequence[ReportDiagnostic],
+    change_input: ChangeSet | StoredChangeSet,
+    *,
+    options: ReportOptions,
+) -> tuple[ChangeProjection, tuple[ReportDiagnostic, ...]]:
+    """Project changes over evidence already read: both paths of a detection request."""
+
+    inventory = options.inventory
+    if inventory is None:
+        raise ValueError("deriving a change projection needs an inventory")
     # The report path meets these two refusals on its way to the projection. Without them a
     # late catalog is applied and an unusable clock ends the run in the derivation.
     if options.kev_catalog is not None:
         _require_kev_catalog_by_as_of(options.kev_catalog, options)
     _refuse_unusable_clocks(observations)
     policy = select_policy(load_bundled_rule_source_snapshot(), options.profile)
-    projection = _changes(observations, change_set, inventory, policy, options)
+    projection = _changes(observations, change_input, inventory, policy, options)
     return projection, (
         *sorted(ingest_diagnostics, key=_diagnostic_order),
         *projection.warnings,
@@ -220,6 +234,7 @@ def compile_record_set(
     options: ReportOptions,
     coverage: CoverageResult | None = None,
     gap_aware: bool = False,
+    stored_changes: StoredChangeSet | None = None,
 ) -> CompiledRecordSet:
     """Compile the period-agnostic record set from already-normalized inputs.
 
@@ -234,12 +249,15 @@ def compile_record_set(
     window is mapped to the record that carries its gap, or to None when none does, and
     each window no record carries and each gap record no window derives is named in an
     INFO note, which only a compile from history can meet (ADR 0015, divergences 1 and 2).
+    `stored_changes` is what a store recorded, the persisted twin of `options.changes` (ADR 0018).
     """
 
     if not isinstance(options, ReportOptions):
         raise TypeError("options must be a ReportOptions")
     if not isinstance(attestation, DetectionAttestation):
         raise TypeError("attestation must be a DetectionAttestation")
+    if stored_changes is not None and options.changes is not None:
+        raise ValueError("a compile reads changes from a file or from a store, never both")
 
     diagnostics: list[ReportDiagnostic] = sorted(ingest_diagnostics, key=_diagnostic_order)
     correlation = correlate_observations(observations)
@@ -281,10 +299,11 @@ def compile_record_set(
         raise ValueError("a gap-aware compile needs an inventory")
     # After coverage, which has refused any out-of-range clock by name; a coverage gap in
     # these observations is a system record, so it never satisfies a change.
+    change_input = options.changes if stored_changes is None else stored_changes
     changes = (
         None
-        if options.changes is None or inventory is None
-        else _changes(observations, options.changes, inventory, policy, options)
+        if change_input is None or inventory is None
+        else _changes(observations, change_input, inventory, policy, options)
     )
 
     compiled: list[CompiledVulnerability] = []
@@ -1166,25 +1185,31 @@ def _refuse_unusable_clocks(observations: Sequence[Observation]) -> None:
 
 def _changes(
     observations: Sequence[Observation],
-    change_set: ChangeSet,
+    change_set: ChangeSet | StoredChangeSet,
     inventory: Inventory,
     policy: SelectedPolicy,
     options: ReportOptions,
 ) -> ChangeProjection:
-    """Return the change projection, or stop the run when the policy lacks its rule."""
+    """Return the change projection, or stop the run when the policy lacks its rule.
 
-    if not _selects(policy, DAC_RULE):
+    A store that holds no change has nothing to read against the rule, so only a set that
+    names a change needs one, and the empty request of such a store is written (ADR 0018).
+    """
+
+    stored = isinstance(change_set, StoredChangeSet)
+    if (not stored or change_set.changes) and not _selects(policy, DAC_RULE):
+        supplied = "the store holds recorded changes" if stored else "a change file was supplied"
         raise ReportCompileError(
             (
                 ReportDiagnostic(
                     level=DiagnosticLevel.ERROR,
                     code="change_rule_unavailable",
                     message=(
-                        "a change file was supplied, but the Class "
+                        f"{supplied}, but the Class "
                         f"{policy.profile.certification_class.value} policy selects no "
                         f"{DAC_RULE} rule, so no change can be read against it"
                     ),
-                    location=change_set.name,
+                    location=change_set.name or None,
                 ),
             )
         )
@@ -1754,5 +1779,6 @@ __all__ = [
     "compile_record_set_from_artifacts",
     "coverage_diagnostics",
     "derive_changes_from_artifacts",
+    "derive_request_changes",
     "derive_report_coverage",
 ]

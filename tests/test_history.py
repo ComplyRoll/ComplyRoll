@@ -2762,7 +2762,7 @@ class FoldContractSweepTests(unittest.TestCase):
         passed = 0
         refused: set[tuple[str, str, Any]] = set()
         for (event_type, _), schema in EVENT_CONTRACTS.items():
-            if event_type in ("observation.recorded", "coverage.recorded"):
+            if event_type in ("observation.recorded", "coverage.recorded", "change.recorded"):
                 continue
             self.fold(event_type, GOOD_PAYLOADS[event_type])
             for pointer in self.pointers(schema):
@@ -2831,7 +2831,12 @@ class AuditHistoryTests(WriterFixture):
         self.assertNotIn("case_stream_mismatch", _ORDER_CHECKED_BESIDE)
         self.assertEqual(
             _ORDER_CHECKED_BESIDE,
-            {"event_metadata_invalid", "failure_schema_unmarked", "coverage_schema_unmarked"},
+            {
+                "event_metadata_invalid",
+                "failure_schema_unmarked",
+                "coverage_schema_unmarked",
+                "change_schema_unmarked",
+            },
         )
 
     def test_the_published_codes_are_a_sorted_tuple(self) -> None:

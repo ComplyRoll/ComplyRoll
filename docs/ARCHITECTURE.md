@@ -60,8 +60,9 @@ Report inputs, which are not adapters and produce no observations:
   `complyroll.changes` document. It is read locally through a bounded reader and needs an
   inventory, because a change is read against one. The report names it by the SHA-256 of the bytes
   that were read, and `changes pending` writes the resources still waiting as a document for the
-  pipeline that owns the scanner (ADR 0018). No adapter for git, Terraform, Kubernetes, or a
-  deployment record is built.
+  pipeline that owns the scanner (ADR 0018). `changes record` appends each change as history, and
+  a report or request from the store derives the same projection from what it recorded. No adapter
+  for git, Terraform, Kubernetes, or a deployment record is built.
 
 ### Observation ledger
 
@@ -210,9 +211,19 @@ Schema version 4 (ADR 0015) changes no schema object either. It marks a store th
 coverage stream. The first append that needs version 4 (`requires_schema=4`) inserts every
 missing migration record up to 4 and sets `user_version` to 4 inside its own transaction, so a
 store that never held a failure carries records 2 and 3 as well. A store that never records a
-coverage gap stays at its version. This build opens versions 1 to 4 (`SUPPORTED_SCHEMA_VERSION`).
-An earlier build refuses a version 4 store at open with `database schema 4 is newer than supported
-schema 3`, and its `store verify` reports the marker as `schema_version_unsupported`.
+coverage gap stays at its version. An earlier build refuses a version 4 store at open with
+`database schema 4 is newer than supported schema 3`, and its `store verify` reports the marker as
+`schema_version_unsupported`.
+
+Schema version 5 (ADR 0018) changes no schema object either. It marks a store that holds a change
+stream. The first `changes record` append (`requires_schema=5`) inserts every missing migration
+record up to 5 and sets `user_version` to 5 inside its own transaction, so such a store carries
+record 4 even if it never held a coverage stream. A store that never records a change stays at
+its version. Gap awareness follows a coverage stream, not the marker (ADR 0015, amendment
+2026-11-09), so a read never marks a schema and recording a change turns on no coverage window key.
+This build opens versions 1 to 5 (`SUPPORTED_SCHEMA_VERSION`). 0.4.0a0 refuses a version 5 store
+at open with `database schema 5 is newer than supported schema 4`, and its `store verify` reports
+the marker as `schema_version_unsupported`.
 
 Projection checkpoints are mutable compare-and-swap cursors over the global sequence. Projection
 rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
@@ -226,9 +237,10 @@ and case streams: `failure/<sha256>/<parser_name>/<parser_version>`, which holds
 `failure.recorded` or `failure.held` head and the one `observation.recorded` carrying its system
 observation. ADR 0015 adds `coverage.recorded` v1 and a fourth stream kind,
 `coverage/<fingerprint>`, named for its gap record's SYSTEM identity hash, which holds one
-`coverage.recorded` head and the one `observation.recorded` carrying that gap record. Candidates
-for later slices: `case.action_planned`, `case.action_completed`, `validation.completed`,
-`evidence.attached`.
+`coverage.recorded` head and the one `observation.recorded` carrying that gap record. ADR 0018 adds
+`change.recorded` v1 and a fifth stream kind, `change/<sha256(changeId)>`, which holds exactly one
+`change.recorded` and nothing else. Candidates for later slices: `case.action_planned`,
+`case.action_completed`, `validation.completed`, `evidence.attached`.
 
 ## Package layout
 
@@ -270,11 +282,12 @@ observation takes its instant from the ingest on one path and the report on the 
 detection process failures the equality holds under the conditions ADR 0014 Decision 15 names,
 recorded as a dated amendment to ADR 0008. A coverage gap is observed at its window close on both
 paths, but a store's recorded gaps can disagree with the windows a run derives, and the report
-names each disagreement in an INFO note (the ADR 0008 amendment of 2026-10-16). Event payloads
-are validated against the contracts in `events/` on every append; the store itself stays a
-generic envelope log. The fold runs in memory at Phase 1 volumes; projection tables and
-checkpoints remain available for when that stops being enough. The domain model remains
-independent from all of it.
+names each disagreement in an INFO note (the ADR 0008 amendment of 2026-10-16). A store that
+recorded changes gives the stateless run's bytes but for the change block's `input` and its
+Markdown intro line (the ADR 0008 amendment of 2026-11-09). Event payloads are validated against
+the contracts in `events/` on every append; the store itself stays a generic envelope log. The
+fold runs in memory at Phase 1 volumes; projection tables and checkpoints remain available for
+when that stops being enough. The domain model remains independent from all of it.
 
 ## Failure semantics
 

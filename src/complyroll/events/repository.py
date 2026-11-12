@@ -21,7 +21,14 @@ from uuid import uuid4
 from jsonschema import Draft202012Validator, ValidationError, validators
 
 from complyroll import __version__
-from complyroll.adapters.common import encode_list
+from complyroll.adapters.common import (
+    MAX_CLOCK_YEAR,
+    MAX_IDENTITY_CHARS,
+    MIN_CLOCK_YEAR,
+    encode_list,
+    identity_problem,
+    sanitize,
+)
 from complyroll.adapters.failures import (
     DETECTION_FAILURE_PARSER_NAME,
     DETECTION_FAILURE_PARSER_VERSION,
@@ -41,10 +48,13 @@ from complyroll.models import (
 )
 from complyroll.policy import RuleForce
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
-from complyroll.store.sqlite import SHOWN_LIMIT, bounded, shown
+from complyroll.store.sqlite import SHOWN_LIMIT, bounded, require_storable_payload, shown
 
 from .contracts import (
+    CHANGE_RECORDED,
+    CHANGE_STREAM_SCHEMA_VERSION,
     COVERAGE_RECORDED,
+    COVERAGE_STREAM_PREFIX,
     COVERAGE_STREAM_SCHEMA_VERSION,
     EVENT_CONTRACTS,
     FAILURE_CLOCK_VALUES,
@@ -54,11 +64,13 @@ from .contracts import (
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
     artifact_stream_components,
+    change_stream_id,
     coverage_stream_fingerprint,
     coverage_stream_id,
     event_belongs_on_stream,
     failure_stream_components,
     is_artifact_stream,
+    is_change_stream,
     is_coverage_stream,
     is_failure_stream,
     iso_utc,
@@ -388,6 +400,24 @@ class EventRepository:
         _require_real_instants(event_type, event_version, payload)
         if event_type == OBSERVATION_RECORDED:
             _require_readable_observation(payload, event_version)
+        if event_type == CHANGE_RECORDED:
+            _require_readable_change(payload, event_version)
+
+    def require_appendable(
+        self,
+        event_type: str,
+        payload: Mapping[str, Any],
+        *,
+        event_version: int = 1,
+    ) -> None:
+        """Raise what appending this payload would raise about it, and write nothing.
+
+        The contract and the store's limits, for a writer that judges a whole run before its
+        first append, so a refusal cannot arrive halfway through the run.
+        """
+
+        self.validate_payload(event_type, payload, event_version=event_version)
+        require_storable_payload(payload)
 
     def append(
         self,
@@ -425,6 +455,10 @@ class EventRepository:
             raise ValueError("events must contain at least one event")
         if len(pending) > MAX_BATCH_EVENTS:
             raise ValueError(f"events must contain at most {MAX_BATCH_EVENTS} events")
+        # A change stream is exactly one event, so an idempotent re-record is a read of the
+        # stream and a second append is never a resume (ADR 0018 Decision 10).
+        if is_change_stream(stream_id) and (expected_version != 0 or len(pending) != 1):
+            raise EventContractError(change_write_once_message(stream_id))
         prepared: list[NewEvent] = []
         for index, event in enumerate(pending):
             if not isinstance(event, PendingEvent):
@@ -495,6 +529,15 @@ class EventRepository:
                 prepared,
                 expected_version=expected_version,
                 requires_schema=COVERAGE_STREAM_SCHEMA_VERSION,
+            )
+        if is_change_stream(stream_id):
+            # A change stream needs schema 5, marked with its event in one transaction, so a
+            # rollback undoes both (ADR 0018).
+            return self._store.append(
+                stream_id,
+                prepared,
+                expected_version=expected_version,
+                requires_schema=CHANGE_STREAM_SCHEMA_VERSION,
             )
         return self._store.append(stream_id, prepared, expected_version=expected_version)
 
@@ -615,6 +658,11 @@ class EventRepository:
         """Return the current version of one stream, or zero when it does not exist."""
 
         return self._store.current_stream_version(stream_id)
+
+    def holds_coverage_stream(self) -> bool:
+        """Return whether the store holds a coverage stream, without loading any (ADR 0015)."""
+
+        return self._store.holds_stream_with_prefix(f"{COVERAGE_STREAM_PREFIX}/")
 
     def read_stream(self, stream_id: str) -> tuple[EventRecord, ...]:
         """Read one whole stream in stream-version order, across pages."""
@@ -1387,6 +1435,45 @@ def failure_duplicate_observation_message(
     )
 
 
+def change_write_once_message(stream_id: str) -> str:
+    """Word a change stream being asked to hold anything but its one event (ADR 0018)."""
+
+    return (
+        f"change stream {stream_id!r} holds exactly one {CHANGE_RECORDED}; a recorded change is "
+        "append-only history, so the first payload stands"
+    )
+
+
+def change_identity_breach(
+    stream_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> str | None:
+    """Return why a `change.recorded` is not about the change its stream names (ADR 0018).
+
+    A change stream id digests its change id, so the two have to agree or the stream is
+    someone else's change. Returns None for an event no change stream carries and for a
+    stream of another kind, which are the stream-kind check's business rather than this one's.
+    """
+
+    if event_type != CHANGE_RECORDED or not is_change_stream(stream_id):
+        return None
+    recorded = payload.get("changeId")
+    try:
+        expected = change_stream_id(recorded)  # type: ignore[arg-type]
+    except ValueError:
+        return (
+            f"{CHANGE_RECORDED} on stream {stream_id!r} records change id {shown(recorded)}, "
+            "which names no change stream"
+        )
+    if expected == stream_id:
+        return None
+    return (
+        f"{CHANGE_RECORDED} records change id {shown(recorded)} on stream {stream_id!r}, which "
+        f"is not {expected!r}, the stream of that change id"
+    )
+
+
 def _require_stream_compatible(
     stream_id: str,
     event_type: str,
@@ -1401,13 +1488,14 @@ def _require_stream_compatible(
     `artifact.ingested` and an `observation.recorded` name their own stream the same way,
     through the artifact identity the stream id spells out. A failure stream's head and its
     system observation are held to the failed reading the stream id spells out (ADR 0014),
-    and a coverage stream's gap record to the fingerprint its stream id spells out (ADR 0015).
+    a coverage stream's gap record to the fingerprint its stream id spells out (ADR 0015), and
+    a change event to the change id its stream digests (ADR 0018).
     """
 
     if not event_belongs_on_stream(event_type, stream_id):
         kind = stream_kind(stream_id)
         described = (
-            "not an artifact, case, failure, or coverage stream"
+            "not an artifact, case, failure, coverage, or change stream"
             if kind is None
             else f"a {kind} stream"
         )
@@ -1420,6 +1508,8 @@ def _require_stream_compatible(
     if breach is None:
         problem = coverage_record_problem(stream_id, event_type, payload)
         breach = None if problem is None else problem[1]
+    if breach is None:
+        breach = change_identity_breach(stream_id, event_type, payload)
     if breach is not None:
         raise EventContractError(breach)
     if event_type != CASE_CREATED:
@@ -1577,6 +1667,8 @@ __all__ = [
     "PendingEvent",
     "artifact_identity_breach",
     "canonical_payload_digest",
+    "change_identity_breach",
+    "change_write_once_message",
     "coverage_head_order_message",
     "coverage_head_payload",
     "coverage_record_disagreement",
@@ -1612,3 +1704,69 @@ def _require_readable_observation(payload: Mapping[str, Any], event_version: int
             f"{issue.render()}",
             issues=(issue,),
         ) from exc
+
+
+def _require_readable_change(payload: Mapping[str, Any], event_version: int) -> None:
+    """Refuse a `change.recorded` payload the replay reader could not read back (ADR 0018).
+
+    The contract's schema says what a schema can; this is the rest of what the bounded reader
+    guarantees, so a hand-edited payload that no change file could produce is refused at
+    append and named by `store verify` rather than discovered by a report.
+    """
+
+    issue = _change_readability_issue(payload)
+    if issue is None:
+        return
+    raise EventContractError(
+        f"{CHANGE_RECORDED} version {event_version} payload is not readable: {issue.render()}",
+        issues=(issue,),
+    )
+
+
+def _change_readability_issue(payload: Mapping[str, Any]) -> ContractIssue | None:
+    """Return the first way a `change.recorded` payload breaks what the reader guarantees."""
+
+    for pointer, key in (("/occurredAt", "occurredAt"), ("/recordedAt", "recordedAt")):
+        instant = _canonical_instant(payload[key])
+        if instant is None:
+            return _change_issue(pointer, f"{key} is not an instant as its writer spells one")
+        if not _clock_year_kept(instant):
+            return _change_issue(pointer, _clock_years_message(key))
+    problem = identity_problem(payload["source"]["reference"], MAX_IDENTITY_CHARS)
+    if problem is not None:
+        return _change_issue("/source/reference", f"reference {problem}")
+    keys: list[tuple[str, str]] = []
+    for index, resource in enumerate(payload["resources"]):
+        for field_name in ("resourceType", "resourceId"):
+            problem = identity_problem(resource[field_name], MAX_IDENTITY_CHARS)
+            if problem is not None:
+                return _change_issue(f"/resources/{index}/{field_name}", f"{field_name} {problem}")
+        keys.append((resource["resourceType"], resource["resourceId"]))
+    if keys != sorted(set(keys)):
+        return _change_issue("/resources", "resources must be sorted by type and id, and distinct")
+    if sanitize(payload["rationale"])[1]:
+        return _change_issue("/rationale", "rationale carries text the reader would have cleaned")
+    if payload["detectBy"] is None:
+        return None
+    detect_by = _canonical_instant(payload["detectBy"])
+    if detect_by is None:
+        return _change_issue("/detectBy", "detectBy is not an instant as its writer spells one")
+    if not _clock_year_kept(detect_by):
+        return _change_issue("/detectBy", _clock_years_message("detectBy"))
+    if detect_by < parse_utc(payload["occurredAt"]):
+        return _change_issue("/detectBy", "detectBy must not be before occurredAt")
+    return None
+
+
+def _clock_year_kept(instant: datetime) -> bool:
+    """Return whether an instant lies in the years the reader of a clock keeps."""
+
+    return MIN_CLOCK_YEAR <= instant.year <= MAX_CLOCK_YEAR
+
+
+def _clock_years_message(key: str) -> str:
+    return f"{key} must fall in the years {MIN_CLOCK_YEAR} through {MAX_CLOCK_YEAR} UTC"
+
+
+def _change_issue(pointer: str, message: str) -> ContractIssue:
+    return ContractIssue(instance_pointer=pointer, validator="reader", message=message)

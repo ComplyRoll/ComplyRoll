@@ -17,12 +17,28 @@ All notable project changes will be documented here.
 - `changes pending` writes a `complyroll.detection-request` document: the resources a declared
   change still waits on, for the pipeline that owns the scanner. ComplyRoll runs no scanner. It
   exits 0 whether or not anything is waiting, and `summary.pending` is the signal (ADR 0018).
+- `changes record --db STORE --changes FILE [--as-of T] [--actor NAME]` appends each declared change
+  the store lacks as a `change.recorded` event on a stream of its own, in one transaction. A change
+  already recorded is left alone and the same id with a different value is `change_conflict`, naming
+  the first differing field, with nothing written. `report --db` with `--inventory` and
+  `changes pending --db` derive the same block and request from what the store recorded, equal to
+  the stateless path but for the `input` object and its Markdown intro line (ADR 0008 amendment
+  2026-11-09). `store verify` gains `change_incomplete`, `change_overfull`, `change_stream_mismatch`
+  and `change_schema_unmarked`. The first recorded change marks the store schema 5, which 0.4.0a0
+  refuses to open; a store that never records a change stays at its version and reads unchanged in
+  both builds (ADR 0018).
 
 ### Changed
 
 - `docs/BUILD_PLAN.md` marks the exit criterion "A case can group equivalent observations while
   retaining every affected resource" Met, which has been true since ADR 0001. No code changed for
   it.
+- A report from a store is coverage-gap-aware when the store holds a `coverage/` stream, not when it
+  is marked schema 4, so a store marked 4 by hand with no coverage stream reads unaware, and
+  recording a change turns on no window key or `coverage_gap_*` note (ADR 0015 amendment
+  2026-11-09). No golden moved.
+- `changes pending` with neither artifacts nor `--db` is `invalid_option` with exit 1, as `report`
+  is, instead of an argparse usage error with exit 2. Not in a release.
 
 ## 0.4.0a0 - 2026-11-05
 

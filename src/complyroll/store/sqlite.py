@@ -26,16 +26,18 @@ SCHEMA_VERSION = 1
 #: The newest schema this build opens. A store is still created at `SCHEMA_VERSION`, and
 #: an append that needs a newer schema marks the store forward inside its own transaction,
 #: so a store that never needs schema 2 stays readable by a build that knows only 1, one
-#: that never needs schema 3 by a build that knows only 2, and one that never needs schema 4
-#: by a build that knows only 3. None adds a schema object: schema 2 marks a store that
-#: holds failure streams (ADR 0014), schema 3 one that holds a held failure (ADR 0014,
-#: amendment 2026-10-13), and schema 4 one that holds a coverage gap (ADR 0015).
-SUPPORTED_SCHEMA_VERSION = 4
+#: that never needs schema 3 by a build that knows only 2, one that never needs schema 4 by a
+#: build that knows only 3, and one that never needs schema 5 by a build that knows only 4.
+#: None adds a schema object: schema 2 marks a store that holds failure streams (ADR 0014),
+#: schema 3 one that holds a held failure (ADR 0014, amendment 2026-10-13), schema 4 one that
+#: holds a coverage gap (ADR 0015), and schema 5 one that holds a change stream (ADR 0018).
+SUPPORTED_SCHEMA_VERSION = 5
 _MIGRATION_DESCRIPTIONS: Mapping[int, str] = {
     1: "append-only event history and projection checkpoints",
     2: "failure streams, ADR 0014",
     3: "held failures, ADR 0014 amendment 2026-10-13",
     4: "coverage gaps, ADR 0015",
+    5: "change streams, ADR 0018",
 }
 APPLICATION_ID = 0x43524F4C  # ASCII "CROL"
 MAX_EVENTS_PER_APPEND = 1_000
@@ -645,6 +647,20 @@ class SQLiteEventStore:
         records = tuple(_event_from_row(row) for row in rows)
         _require_contiguous_stream_versions(records, stream_id, after_version)
         return records
+
+    def holds_stream_with_prefix(self, prefix: str) -> bool:
+        """Return whether any stream id starts with `prefix`, without reading a stream."""
+
+        _require_name(prefix, "prefix")
+        connection = self._require_open()
+        # The stream-version index answers a range; LIKE and its case folding would not use it.
+        limit = f"{prefix[:-1]}{chr(ord(prefix[-1]) + 1)}"
+        with _sqlite_errors("could not read event history"):
+            row = connection.execute(
+                "SELECT 1 FROM events WHERE stream_id >= ? AND stream_id < ? LIMIT 1",
+                (prefix, limit),
+            ).fetchone()
+        return row is not None
 
     def verify_history(self) -> IntegrityReport:
         """Walk the whole log and report every integrity fault instead of raising one.
@@ -2383,7 +2399,7 @@ def _schema_out_of_range(version: int) -> UnsupportedSchemaError:
 def _missing_migrations(connection: sqlite3.Connection, version: int) -> tuple[int, ...]:
     """Return the migration records a store marked at ``version`` lacks, in order.
 
-    A store at version 1 needs record 1, and one at version 2, 3 or 4 every record up to it. A
+    A store at version 1 needs record 1, and one at version 2 to 5 every record up to it. A
     version this build does not open is held to the records it knows, so `verify_history`
     can still describe such a file rather than raising. Only a record stored as an integer
     counts. The column is an alias for the rowid and holds nothing else, so only a table
@@ -2473,6 +2489,16 @@ def _canonical_json_object(value: Mapping[str, Any], field_name: str) -> str:
     if problem is not None:
         raise EventPayloadLimitError(problem)
     return encoded
+
+
+def require_storable_payload(payload: Mapping[str, Any]) -> None:
+    """Raise what `append` would raise about a payload's JSON, and touch no store.
+
+    `append` applies the value, depth and byte limits as it writes. A writer that promises a
+    whole run is judged before its first append asks here, so the limits keep one home.
+    """
+
+    _canonical_json_object(payload, "payload")
 
 
 def _json_size_problem(text: str, field_name: str) -> str | None:

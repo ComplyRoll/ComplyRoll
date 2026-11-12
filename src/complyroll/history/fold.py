@@ -21,6 +21,8 @@ from typing import Any, Final, TypeGuard, TypeVar
 from complyroll.adapters import DiagnosticLevel, FailureClass, IngestDiagnostic
 from complyroll.adapters.failures import EXECUTION_UNSUCCESSFUL
 from complyroll.events import (
+    CHANGE_RECORDED,
+    CHANGE_STREAM_SCHEMA_VERSION,
     COVERAGE_RECORDED,
     COVERAGE_STREAM_SCHEMA_VERSION,
     FAILURE_HEAD_TYPES,
@@ -32,6 +34,7 @@ from complyroll.events import (
     EventRepository,
     artifact_identity_breach,
     case_stream_id,
+    change_identity_breach,
     coverage_head_order_message,
     coverage_record_disagreement,
     coverage_record_problem,
@@ -45,6 +48,7 @@ from complyroll.events import (
     failure_stream_components,
     is_artifact_stream,
     is_case_stream,
+    is_change_stream,
     is_coverage_stream,
     is_failure_stream,
     metadata_breaches,
@@ -57,7 +61,10 @@ from complyroll.models import (
     Observation,
     ObservationClockError,
     PainRating,
+    ResourceRef,
 )
+from complyroll.reports.changes import StoredChangeSet
+from complyroll.reports.changes_input import Change, ChangeKind, ChangeSource
 from complyroll.reports.checks import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
@@ -84,6 +91,10 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "artifact_stream_mismatch",
     "case_stream_mismatch",
     "case_tracking_id_mismatch",
+    "change_incomplete",
+    "change_overfull",
+    "change_schema_unmarked",
+    "change_stream_mismatch",
     "clock_out_of_range",
     "coverage_identity_breach",
     "coverage_incomplete",
@@ -587,7 +598,12 @@ def _digest_compares_numerically(history: ArtifactHistory, sha256: str, version:
 #: The faults no reader and no case writer refuses on any stream, beside which
 #: `audit_history` still checks evaluation order.
 _ORDER_CHECKED_BESIDE: Final[frozenset[str]] = frozenset(
-    {"event_metadata_invalid", "failure_schema_unmarked", "coverage_schema_unmarked"}
+    {
+        "event_metadata_invalid",
+        "failure_schema_unmarked",
+        "coverage_schema_unmarked",
+        "change_schema_unmarked",
+    }
 )
 
 
@@ -655,6 +671,16 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     - `coverage_schema_unmarked`: a coverage stream in a store below schema 4, which a
       build that predates coverage streams would open and misread.
 
+    Change streams (ADR 0018) have four of their own, the mirror of a coverage stream's:
+
+    - `change_incomplete` and `change_overfull`: a change stream that is not exactly one
+      `change.recorded`.
+    - `change_stream_mismatch`: a change stream whose id is not the digest of the change id
+      its `change.recorded` records, an event no change stream carries, or a `change.recorded`
+      on any stream but a change stream.
+    - `change_schema_unmarked`: a change stream in a store below schema 5, which a build
+      that predates change streams would open and misread.
+
     One fault names a case a report cannot carry:
 
     - `disposition_without_evaluation`: a case stream recording a disposition and no
@@ -672,10 +698,9 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       one, and so can a store written around the writers. It folds every case and
       rehydrates observations, which a damaged log cannot do dependably, so it is checked
       only when every other fault found is `event_metadata_invalid`,
-      `failure_schema_unmarked`, or `coverage_schema_unmarked`, the three no reader refuses
-      on any stream. Beside those it
-      is skipped when it cannot fold, and the faults found are reported alone (ADR 0008
-      amendment 2026-10-14, second).
+      `failure_schema_unmarked`, `coverage_schema_unmarked`, or `change_schema_unmarked`,
+      the four no reader refuses on any stream. Beside those it is skipped when it cannot
+      fold, and the faults found are reported alone (ADR 0008 amendment 2026-10-14, second).
 
     One more fault is checked under the same conditions, for history an earlier build wrote:
 
@@ -721,6 +746,8 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     coverage_shapes: dict[str, list[int]] = {}
     coverage_openers: dict[str, EventRecord] = {}
     coverage_pairs: dict[str, dict[str, EventRecord]] = {}
+    # Per change stream: its first event's sequence and how many `change.recorded` it holds.
+    change_shapes: dict[str, list[int]] = {}
     # Every case stream seen so far, so one whose id names no tracking id is named once.
     case_streams: set[str] = set()
     # Per case stream: its first event, every `case.created` after it, whether it records an
@@ -733,6 +760,7 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
         contract_faults = _contract_faults(repository, record)
         faults.extend(contract_faults)
         faults.extend(_placement_faults(record))
+        faults.extend(_change_placement_faults(record))
         faults.extend(_untracked_stream_faults(record, case_streams))
         faults.extend(_metadata_faults(record))
         identity_faults: tuple[HistoryFault, ...] = ()
@@ -773,6 +801,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
                 if not contract_faults and not identity_faults:
                     pair = coverage_pairs.setdefault(record.stream_id, {})
                     pair.setdefault(record.event_type, record)
+        if is_change_stream(record.stream_id):
+            change_shape = change_shapes.setdefault(record.stream_id, [record.sequence, 0])
+            if record.event_type == CHANGE_RECORDED:
+                change_shape[1] += 1
         if record.event_type == ARTIFACT_INGESTED:
             count = record.payload.get("observationCount")
             if record.stream_id not in declared and _is_whole_number(count):
@@ -816,6 +848,11 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
             )
         )
     faults.extend(_coverage_schema_faults(repository, coverage_shapes))
+    for stream_id, (first, recorded) in change_shapes.items():
+        problem = _change_stream_problem(stream_id, recorded)
+        if problem is not None:
+            faults.append(HistoryFault(sequence=first, code=problem[0], message=problem[1]))
+    faults.extend(_change_schema_faults(repository, change_shapes))
     faults.extend(_case_shape_faults(case_openers, case_recreations))
     faults.extend(_disposition_faults(dispositions, evaluated))
     for stream_id, (sequence, count) in declared.items():
@@ -1288,10 +1325,78 @@ def _read_coverage_streams(repository: EventRepository) -> tuple[_CoverageStream
     return tuple(views)
 
 
-#: What an unreadable artifact-, failure- or coverage-stream event is called in the message
-#: the fold raises.
+def read_stored_changes(repository: EventRepository) -> StoredChangeSet | None:
+    """Read every recorded change back as the file reader read it, or None when none is.
+
+    A change stream is one `change.recorded` naming its own change (ADR 0018 Decision 10), so
+    the reader refuses what the audit names, with the audit's message: a change event on no
+    change stream, an event no change stream carries, a contract-invalid event, an event its
+    stream does not name, and a stream holding any other number of events. The changes come
+    back sorted as a change file's are, so a store and a file holding the same changes
+    project them identically.
+    """
+
+    streams: dict[str, list[EventRecord]] = {}
+    for record in repository.read_all():
+        change_stream = is_change_stream(record.stream_id)
+        if not change_stream and record.event_type != CHANGE_RECORDED:
+            continue
+        if not event_belongs_on_stream(record.event_type, record.stream_id):
+            raise HistoryError(_misplaced_event_message(record))
+        _require_readable_artifact_event(repository, record)
+        breach = change_identity_breach(record.stream_id, record.event_type, record.payload)
+        if breach is not None:
+            raise HistoryError(f"event {record.sequence} is on the wrong stream: {breach}")
+        streams.setdefault(record.stream_id, []).append(record)
+    if not streams:
+        return None
+    for stream_id, held in streams.items():
+        problem = _change_stream_problem(stream_id, len(held))
+        if problem is not None:
+            raise HistoryError(problem[1])
+    read = sorted(
+        (_stored_change(held[0].payload) for held in streams.values()),
+        key=lambda item: (item[0].occurred_at, item[0].change_id),
+    )
+    return StoredChangeSet(
+        changes=tuple(change for change, _, _ in read),
+        names=tuple(name for _, name, _ in read),
+        digests=tuple(digest for _, _, digest in read),
+    )
+
+
+def _stored_change(payload: Mapping[str, Any]) -> tuple[Change, str, str]:
+    """Rebuild one change, with the file name and digest it was recorded from."""
+
+    detect_by = _optional_text(payload, "detectBy")
+    change = Change(
+        change_id=_text(payload, "changeId"),
+        kind=ChangeKind(_text(payload, "kind")),
+        occurred_at=parse_utc(_text(payload, "occurredAt")),
+        source=ChangeSource(
+            tool=_text(payload["source"], "tool"),
+            reference=_text(payload["source"], "reference"),
+        ),
+        resources=tuple(
+            ResourceRef(
+                resource_type=_text(resource, "resourceType"),
+                resource_id=_text(resource, "resourceId"),
+            )
+            for resource in payload["resources"]
+        ),
+        significant=_flag(payload, "significant"),
+        rationale=_text(payload, "rationale"),
+        detect_by=None if detect_by is None else parse_utc(detect_by),
+        job=_optional_text(payload, "job"),
+    )
+    return change, _text(payload, "changesName"), _text(payload, "changesSha256")
+
+
+#: What an unreadable artifact-, failure-, coverage- or change-stream event is called in the
+#: message the fold raises.
 _ARTIFACT_EVENT_NAMES: Final[dict[str, str]] = {
     ARTIFACT_INGESTED: "artifact record",
+    CHANGE_RECORDED: "change record",
     COVERAGE_RECORDED: "coverage record",
     FAILURE_RECORDED: "failure record",
     FAILURE_HELD: "failure hold",
@@ -1767,7 +1872,9 @@ def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
     it carries have to name that identity in their payload as well. A failure stream id is
     a failed reading's identity, and its observation has to be that digest's system record
     (ADR 0014). A coverage stream id is a gap record's fingerprint, and its observation has
-    to be that gap record (ADR 0015), under the code `coverage_record_problem` gives.
+    to be that gap record (ADR 0015), under the code `coverage_record_problem` gives. A change
+    stream id is the digest of its change id, and its event has to record that change (ADR
+    0018).
     """
 
     breach = artifact_identity_breach(record.stream_id, record.event_type, record.payload)
@@ -1779,6 +1886,9 @@ def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
         problem = coverage_record_problem(record.stream_id, record.event_type, record.payload)
         if problem is not None:
             code, breach = problem
+    if breach is None:
+        breach = change_identity_breach(record.stream_id, record.event_type, record.payload)
+        code = "change_stream_mismatch"
     if breach is None:
         return ()
     return (
@@ -1871,6 +1981,30 @@ def _coverage_stream_problem(
     return None
 
 
+def _change_stream_problem(stream_id: str, recorded: int) -> tuple[str, str] | None:
+    """Return the fault code and message for a change stream that is not one event, else None.
+
+    A change stream is exactly one `change.recorded` (ADR 0018), so the shape is the
+    declaration, as it is for a coverage stream: a second is overfull, and none, with only a
+    foreign event left on the stream, is incomplete.
+    """
+
+    found = f"found {recorded} {CHANGE_RECORDED} event(s)"
+    if recorded > 1:
+        return (
+            "change_overfull",
+            f"change stream {stream_id!r} is overfull: a change stream holds one "
+            f"{CHANGE_RECORDED}, {found}",
+        )
+    if recorded < 1:
+        return (
+            "change_incomplete",
+            f"change stream {stream_id!r} is incomplete: a change stream holds one "
+            f"{CHANGE_RECORDED}, {found}",
+        )
+    return None
+
+
 def _coverage_pair_faults(
     stream_id: str,
     heads: int,
@@ -1936,6 +2070,37 @@ def _coverage_schema_faults(
             message=(
                 f"coverage stream {stream_id!r} is in a store at schema {version}; a store "
                 f"holding coverage streams is marked schema {COVERAGE_STREAM_SCHEMA_VERSION}, "
+                "so a build that cannot read them refuses it rather than misreading it"
+            ),
+        ),
+    )
+
+
+def _change_schema_faults(
+    repository: EventRepository,
+    change_streams: Mapping[str, Sequence[int]],
+) -> tuple[HistoryFault, ...]:
+    """Report change streams in a store that never marked itself for them (ADR 0018).
+
+    The first change append marks the store schema 5 in the same transaction, so a store
+    below 5 holding a change stream was written past the repository, and a build that
+    predates change streams would open it and misread them instead of refusing it. One
+    fault names the store's condition once, at the first change stream's first event.
+    """
+
+    if not change_streams:
+        return ()
+    version = repository.store.schema_version
+    if version >= CHANGE_STREAM_SCHEMA_VERSION:
+        return ()
+    stream_id, shape = min(change_streams.items(), key=lambda item: item[1][0])
+    return (
+        HistoryFault(
+            sequence=shape[0],
+            code="change_schema_unmarked",
+            message=(
+                f"change stream {stream_id!r} is in a store at schema {version}; a store "
+                f"holding change streams is marked schema {CHANGE_STREAM_SCHEMA_VERSION}, "
                 "so a build that cannot read them refuses it rather than misreading it"
             ),
         ),
@@ -2075,6 +2240,20 @@ def _contract_faults(
             ),
         )
     return ()
+
+
+def _change_placement_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
+    """Report an event a change stream cannot carry, or a change event elsewhere (ADR 0018)."""
+
+    if is_change_stream(record.stream_id) == (record.event_type == CHANGE_RECORDED):
+        return ()
+    return (
+        HistoryFault(
+            sequence=record.sequence,
+            code="change_stream_mismatch",
+            message=_misplaced_event_message(record),
+        ),
+    )
 
 
 def _case_opener_message(tracking_id: str, event_type: str) -> str:
@@ -2373,6 +2552,7 @@ __all__ = [
     "fold_case",
     "fold_case_records",
     "history_entries",
+    "read_stored_changes",
     "reading_elsewhere",
     "rehydrate_observations",
     "summarize",

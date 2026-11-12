@@ -294,7 +294,7 @@ class CoverageIdentityConstantTests(unittest.TestCase):
 
     def test_a_coverage_stream_needs_schema_4_and_this_build_opens_it(self) -> None:
         self.assertEqual(COVERAGE_STREAM_SCHEMA_VERSION, 4)
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, COVERAGE_STREAM_SCHEMA_VERSION)
+        self.assertGreaterEqual(SUPPORTED_SCHEMA_VERSION, COVERAGE_STREAM_SCHEMA_VERSION)
         self.assertLess(HELD_FAILURE_SCHEMA_VERSION, COVERAGE_STREAM_SCHEMA_VERSION)
 
 
@@ -776,14 +776,14 @@ class CoverageSchemaMarkingTests(StoreCase):
             self.addCleanup(reopened.close)
             self.assertEqual(reopened.schema_version, 3)
 
-    def test_a_store_newer_than_schema_4_is_refused(self) -> None:
+    def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         record_coverage(self.repository, gap_record())
-        self.damage("PRAGMA user_version = 5")
+        self.damage("PRAGMA user_version = 6")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 5 is newer than supported schema 4", str(caught.exception))
+        self.assertIn("database schema 6 is newer than supported schema 5", str(caught.exception))
 
 
 # *--- Readers ---*

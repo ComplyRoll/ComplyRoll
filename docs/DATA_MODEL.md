@@ -343,8 +343,8 @@ the gap's context key names the case, and no report prints the latter. A gap rec
 failure record does: `detectedAtSource` `system`, detection at the earliest window close of its
 case, one `VER-TFR-EVU` deadline from that close, and PAIN only from an evaluation matched on the
 full triple. `parserVersions` gains `complyroll.coverage`. A gap-aware run, one with the flag or a
-report from a store marked schema 4 given an inventory, adds two keys to every window of the
-block, and the Markdown Windows table gains a column for each:
+report from a store holding a coverage stream given an inventory, adds two keys to every window of
+the block, and the Markdown Windows table gains a column for each:
 
 | Window key | Purpose |
 |---|---|
@@ -372,8 +372,9 @@ record at replay. A recorded stream is never rewritten, so after an edited inven
 ## Declared changes and detection requests
 
 A change file is the provider's statement of what changed: a `complyroll.changes` JSON document
-supplied per run with `--changes`, read against the inventory (ADR 0018). It is read locally and
-never stored. Its fields:
+supplied per run with `--changes`, read against the inventory (ADR 0018). A report given one reads
+it locally and never stores it. `changes record` is the one command that writes a change to a
+store, as [Recorded changes](#recorded-changes) describes. Its fields:
 
 | Top level | Rule |
 |---|---|
@@ -419,7 +420,7 @@ period selects from it, because it is measured at as-of:
 | `rule`, `force` | `VDR-CSO-DAC` and the force read from the pinned dataset |
 | `provenance` | The pinned rules source, version, and digest the force was read from |
 | `asOf` | The run's as-of instant in UTC; evidence and changes after it are never measured |
-| `input` | `name`, `sizeBytes`, `sha256`, and `changeCount`: the file's identity, never its bytes |
+| `input` | Stateless: `name`, `sizeBytes`, `sha256`, and `changeCount`, the file's identity, never its bytes. From a store: `source` set to `store` and `changesSha256`, each distinct file digest with its `changes` count, sorted by digest |
 | `inventorySha256` | The inventory every change was read against |
 | `summary` | A count of obligations per status, all seven present |
 | `changes` | One row per change at or before as-of, as declared, with its force |
@@ -448,7 +449,9 @@ is not a compliance finding, and an obligation's row is evidence toward `KSI-CMT
 `KSI-CMT-VTD`, never proof of either. WARNING codes on a run with a change file:
 `change_resource_unregistered`, `change_after_decommission`, `change_precedes_expected_since`, and
 `kev_at_activation`, each located at `<changes name> <changeId> <type>:<id>`. A dataset that lacks
-`VDR-CSO-DAC` refuses the run with ERROR `change_rule_unavailable`.
+`VDR-CSO-DAC` refuses the run with ERROR `change_rule_unavailable`. On the store path its message
+says the store holds recorded changes, and a store holding none is not refused: `changes pending
+--db` writes its empty request with `force` null.
 
 `kevAtActivation` answers only with `--kev`, on a `created` change of a machine-based entry whose
 row is `detected`. Every other row prints `null`. The answer comes from every artifact with a
@@ -483,7 +486,39 @@ in the block with its status:
 A request entry carries `changeId`, `kind`, `occurredAt`, `detectBy`, `job`, `source`, and
 `resources`, and each resource carries `resourceType`, `resourceId`, `aliases`, `sampleGroup`, and
 `status`. A sample group row names the group by its `logical:sample-group/<name>` pair and carries
-no aliases.
+no aliases. From a store, `changes pending --db` derives the document from the same rows, and a
+store that recorded no change writes an empty one.
+
+### Recorded changes
+
+`changes record` appends each change the store lacks as its own stream, `change/<sha256(changeId)>`,
+which holds exactly one `change.recorded` v1 event and nothing else. Every field of the change
+file's contract is stored as the reader read it, plus the three that record where it came from:
+
+| `change.recorded` field | Purpose |
+|---|---|
+| `changeId` to `job` | The change as the reader read it: `kind`, `occurredAt`, `source`, `resources`, `significant`, `rationale`, `detectBy`, `job` |
+| `changesName` | The file's `name`, so a replay's diagnostics are located as a stateless run's are |
+| `changesSha256` | The SHA-256 of the file the change came from |
+| `recordedAt` | The instant it was recorded |
+
+The change id is the idempotence key. Contract fields are compared as read, so a file spelling the
+same instant with another offset is `already_recorded`, and `changesName`, `changesSha256`, and
+`recordedAt` are provenance and never move idempotence, so a file that grows or is renamed
+re-records cleanly. The same id with a differing contract field is refused as `change_conflict`,
+naming the first differing field in contract order, because history is append-only and the first
+recorded payload stands. Every change is judged before the first append, so a conflict, a contract
+refusal or the size cap writes nothing. The run is one store transaction, so a later failure rolls
+it back; a caller that supplies the transaction and catches the error owns that rollback.
+A store that holds a change stream is schema version 5, and one that never records a
+change stays at its version.
+
+A report from a store carries the block when the store holds at least one change stream and the
+run has `--inventory`. A replay of a store holding exactly the file a stateless run reads equals it
+byte for byte but for the block's `input`, the Markdown intro line that is its twin, and the
+request's `input` (ADR 0008 amendment 2026-11-09), and `recordedAt` reaches no output. Recording a
+change turns on no coverage window key and no `coverage_gap_*` note: gap awareness follows a
+coverage stream, not the schema marker.
 
 ## Report extension (x-complyroll)
 

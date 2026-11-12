@@ -14,8 +14,14 @@ from datetime import UTC, datetime
 
 from complyroll.models import CaseStatus, ResourceRef
 
-from .changes import CHANGE_BASIS, DAC_RULE, ChangeObligation, ChangeProjection
-from .changes_input import Change
+from .changes import (
+    CHANGE_BASIS,
+    DAC_RULE,
+    ChangeObligation,
+    ChangeProjection,
+    StoredChangeSet,
+)
+from .changes_input import Change, ChangeSet
 from .coverage import (
     COVERAGE_BASIS,
     CoverageEvidence,
@@ -516,14 +522,12 @@ def write_changes(write: Callable[[str], None], metadata: ReportMetadata) -> Non
     changes = metadata.changes
     if changes is None:
         return
-    change_set = changes.change_set
     write("## Changes")
     write("")
     write(
-        f"Changes declared in {_cell(change_set.name)} ({change_set.change_count} changes, "
-        f"{change_set.size_bytes} bytes, SHA-256 {change_set.sha256}), read against the "
+        f"{_changes_provenance(changes.change_set)}, read against the "
         f"inventory with SHA-256 {changes.inventory.sha256} as of {iso(changes.as_of)}, under "
-        f"{DAC_RULE} ({changes.force.value}) from rules dataset commit "
+        f"{DAC_RULE} ({_force_text(changes)}) from rules dataset commit "
         f"{changes.provenance.commit}."
     )
     write("")
@@ -592,6 +596,24 @@ def write_changes(write: Callable[[str], None], metadata: ReportMetadata) -> Non
     write("")
 
 
+def _changes_provenance(change_set: ChangeSet | StoredChangeSet) -> str:
+    """Word where the changes came from, the twin of the block's `input` (ADR 0018)."""
+    if isinstance(change_set, StoredChangeSet):
+        counted = ", ".join(
+            f"{count} from SHA-256 {digest}" for digest, count in change_set.digest_counts
+        )
+        return f"Changes recorded in the store ({change_set.change_count} changes: {counted})"
+    return (
+        f"Changes declared in {_cell(change_set.name)} ({change_set.change_count} changes, "
+        f"{change_set.size_bytes} bytes, SHA-256 {change_set.sha256})"
+    )
+
+
+def _force_text(changes: ChangeProjection) -> str:
+    """Word the rule's force, which no rule states only on a store holding no change."""
+    return changes.force_value or "n/a"
+
+
 def _declared_change_row(change: Change, changes: ChangeProjection) -> str:
     return (
         "| "
@@ -605,7 +627,7 @@ def _declared_change_row(change: Change, changes: ChangeProjection) -> str:
                 _cell(change.rationale),
                 _optional_iso(change.detect_by),
                 _cell(change.job or "n/a"),
-                changes.force.value,
+                _force_text(changes),
             )
         )
         + " |"
@@ -624,7 +646,7 @@ def _change_obligation_row(row: ChangeObligation, changes: ChangeProjection) -> 
                 _cell(row.sample_group or "n/a"),
                 _coverage_ref(row.matched_as),
                 row.status.value,
-                changes.force.value,
+                _force_text(changes),
                 _coverage_evidence(row.evidence),
                 _coverage_ref(row.stand_in),
                 _optional_int(row.lag_seconds),

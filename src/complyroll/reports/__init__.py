@@ -1,6 +1,7 @@
 """Report compilers that turn source observations into official-format projections."""
 
 from .avi import CompiledAviReport, compile_avi_report, project_avi
+from .changes import StoredChangeSet
 from .changes_input import (
     MAX_CHANGE_RESOURCES,
     MAX_CHANGES,
@@ -70,6 +71,7 @@ from .replay import (
     compile_historical_report_from_history,
     compile_record_set_from_history,
     compile_vdt_report_from_history,
+    derive_changes_from_history,
 )
 from .vdt import CompiledVdtReport, compile_records, compile_vdt_report, project_vdt
 
@@ -120,6 +122,7 @@ __all__ = [
     "ReportInputError",
     "ReportMetadata",
     "ReportOptions",
+    "StoredChangeSet",
     "compile_avi_report",
     "compile_avi_report_from_history",
     "compile_historical_report",
@@ -127,6 +130,7 @@ __all__ = [
     "compile_record_set",
     "compile_record_set_from_artifacts",
     "compile_record_set_from_history",
+    "derive_changes_from_history",
     "compile_records",
     "compile_vdt_report",
     "compile_vdt_report_from_history",

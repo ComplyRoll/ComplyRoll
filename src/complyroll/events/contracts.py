@@ -13,11 +13,13 @@ by `iso_utc`; `observation.recorded` is the one exception, because it stores exa
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from complyroll.adapters.common import MAX_IDENTITY_CHARS
 from complyroll.adapters.failures import (
     CLASS_CODES,
     EXECUTION_UNSUCCESSFUL,
@@ -55,6 +57,7 @@ ARTIFACT_STREAM_PREFIX: Final = "artifact"
 CASE_STREAM_PREFIX: Final = "case"
 FAILURE_STREAM_PREFIX: Final = "failure"
 COVERAGE_STREAM_PREFIX: Final = "coverage"
+CHANGE_STREAM_PREFIX: Final = "change"
 #: The store schema a failure stream needs (ADR 0014). A store is created at schema 1 and
 #: marked 2 by the transaction that first writes a failure stream, so a store that never
 #: records a failure stays readable by a build that knows only schema 1.
@@ -67,12 +70,21 @@ HELD_FAILURE_SCHEMA_VERSION: Final = 3
 #: transaction that first writes a `coverage.recorded` stream, so a store that never records
 #: a gap stays at its version and readable by a build that knows only schema 3.
 COVERAGE_STREAM_SCHEMA_VERSION: Final = 4
+#: The store schema a change stream needs (ADR 0018). A store is marked 5 by the transaction
+#: that first writes a `change.recorded` stream, so a store that never records a change stays
+#: at its version and readable by a build that knows only schema 4.
+CHANGE_STREAM_SCHEMA_VERSION: Final = 5
 TRACKING_ID_PATTERN: Final = re.compile(r"^case-[0-9a-f]{16}$")
 
 #: Stream-id components may not contain the separator, so a stream id parses back.
 _COMPONENT_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 _MAX_STREAM_ID_LENGTH: Final = 500
+#: The change file's name rule (ADR 0018): 1 to 128 printable ASCII characters with no space at
+#: either edge. Spelled here because the event layer cannot import the report layer that reads
+#: the file; a test holds it equal to that reader's rule.
+_CHANGE_NAME_REGEX: Final = r"[\x21-\x7e]([\x20-\x7e]{0,126}[\x21-\x7e])?"
+_CHANGE_NAME_PATTERN: Final = re.compile(_CHANGE_NAME_REGEX)
 
 _UTC_TIMESTAMP_REGEX: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$"
 #: RFC 3339 offsets are hours and minutes. Python parses an offset carrying seconds
@@ -91,6 +103,10 @@ _UTC_TIMESTAMP: Final[dict[str, Any]] = {"type": "string", "pattern": _UTC_TIMES
 _NULLABLE_RFC3339: Final[dict[str, Any]] = {
     "type": ["string", "null"],
     "pattern": _RFC3339_REGEX,
+}
+_NULLABLE_UTC_TIMESTAMP: Final[dict[str, Any]] = {
+    "type": ["string", "null"],
+    "pattern": _UTC_TIMESTAMP_REGEX,
 }
 _CANONICAL_TIMESTAMP: Final[dict[str, Any]] = {
     "type": "string",
@@ -402,6 +418,82 @@ _COVERAGE_HEAD_PROPERTIES: Final[dict[str, Any]] = {
 #: record (ADR 0015).
 COVERAGE_RECORDED_V1: Final[dict[str, Any]] = _schema(COVERAGE_RECORDED, _COVERAGE_HEAD_PROPERTIES)
 
+#: The one event a change stream holds (ADR 0018).
+CHANGE_RECORDED: Final = "change.recorded"
+
+#: The two change kinds. Mirrors `reports.changes_input.ChangeKind` without importing the
+#: report layer into the event layer; a test holds the two equal.
+CHANGE_KIND_VALUES: Final[tuple[str, ...]] = ("created", "modified")
+
+#: The change file's bounds, spelled here for the reason `_CHANGE_NAME_REGEX` is.
+_MAX_CHANGE_REFERENCE_CHARS: Final = 512
+_MAX_CHANGE_RESOURCES: Final = 1_000
+_MAX_CHANGE_RATIONALE_CHARS: Final = 512
+#: A Python `$` also matches before a trailing newline, and a name or digest holding one is
+#: neither, so these two end on a lookahead that keeps it out.
+_CHANGE_NAME: Final[dict[str, Any]] = {
+    "type": "string",
+    "pattern": f"^{_CHANGE_NAME_REGEX}(?!\\n)$",
+}
+_NULLABLE_CHANGE_NAME: Final[dict[str, Any]] = {**_CHANGE_NAME, "type": ["string", "null"]}
+_CHANGE_SHA256: Final[dict[str, Any]] = {"type": "string", "pattern": r"^[0-9a-f]{64}(?!\n)$"}
+_CHANGE_IDENTITY_TEXT: Final[dict[str, Any]] = {
+    **_NON_BLANK_TEXT,
+    "maxLength": MAX_IDENTITY_CHARS,
+}
+
+#: One declared change as the bounded reader read it (ADR 0018), and what the record came
+#: from. `changeId` to `job` are the contract fields a re-run compares; `changesName`,
+#: `changesSha256` and `recordedAt` are provenance and never move idempotence. `detectBy` and
+#: `job` are null when the file left them out. What a schema cannot say is held at validation
+#: by `repository._change_readability_issue`: each instant spelled exactly as `iso_utc` writes
+#: it, the resources sorted, `detectBy` not before `occurredAt`, and identity text the rule
+#: the adapters apply. A payload the repository admits is one the replay reader can read.
+CHANGE_RECORDED_V1: Final[dict[str, Any]] = _schema(
+    CHANGE_RECORDED,
+    {
+        "changeId": _CHANGE_NAME,
+        "kind": {"enum": list(CHANGE_KIND_VALUES)},
+        "occurredAt": _UTC_TIMESTAMP,
+        "source": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["tool", "reference"],
+            "properties": {
+                "tool": _CHANGE_NAME,
+                "reference": {**_NON_BLANK_TEXT, "maxLength": _MAX_CHANGE_REFERENCE_CHARS},
+            },
+        },
+        "resources": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": _MAX_CHANGE_RESOURCES,
+            "uniqueItems": True,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["resourceType", "resourceId"],
+                "properties": {
+                    # NOTE: A colon would make a context key split two ways, and a CycloneDX
+                    # package is never an information resource (the inventory's own rules).
+                    "resourceType": {
+                        **_CHANGE_IDENTITY_TEXT,
+                        "not": {"anyOf": [{"const": "package"}, {"pattern": ":"}]},
+                    },
+                    "resourceId": _CHANGE_IDENTITY_TEXT,
+                },
+            },
+        },
+        "significant": {"type": "boolean"},
+        "rationale": {**_NON_BLANK_TEXT, "maxLength": _MAX_CHANGE_RATIONALE_CHARS},
+        "detectBy": _NULLABLE_UTC_TIMESTAMP,
+        "job": _NULLABLE_CHANGE_NAME,
+        "changesName": _CHANGE_NAME,
+        "changesSha256": _CHANGE_SHA256,
+        "recordedAt": _UTC_TIMESTAMP,
+    },
+)
+
 #: The one registry every writer validates against (ADR 0008 Decision 1).
 EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("artifact.ingested", 1): ARTIFACT_INGESTED_V1,
@@ -416,6 +508,7 @@ EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("failure.recorded", 1): FAILURE_RECORDED_V1,
     (FAILURE_HELD, 1): FAILURE_HELD_V1,
     (COVERAGE_RECORDED, 1): COVERAGE_RECORDED_V1,
+    (CHANGE_RECORDED, 1): CHANGE_RECORDED_V1,
 }
 
 EVENT_TYPES: Final[tuple[str, ...]] = tuple(
@@ -441,11 +534,13 @@ FAILURE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
 COVERAGE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {COVERAGE_RECORDED, "observation.recorded"}
 )
+CHANGE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset({CHANGE_RECORDED})
 STREAM_EVENT_TYPES: Final[Mapping[str, frozenset[str]]] = {
     ARTIFACT_STREAM_PREFIX: ARTIFACT_STREAM_EVENT_TYPES,
     CASE_STREAM_PREFIX: CASE_STREAM_EVENT_TYPES,
     FAILURE_STREAM_PREFIX: FAILURE_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_PREFIX: COVERAGE_STREAM_EVENT_TYPES,
+    CHANGE_STREAM_PREFIX: CHANGE_STREAM_EVENT_TYPES,
 }
 
 
@@ -454,19 +549,22 @@ def _placement_problem(
     case: frozenset[str],
     failure: frozenset[str],
     coverage: frozenset[str],
+    change: frozenset[str],
     event_types: frozenset[str],
 ) -> str | None:
     """Return why a placement table is unsound, or None when every type has its place.
 
-    Every published type must be on some kind, a case type on no other kind, and any two of
-    the artifact, failure, and coverage kinds may share `observation.recorded` and nothing
-    else.
+    Every published type must be on some kind, a case type on no other kind, a change type on
+    no other kind, and any two of the artifact, failure, and coverage kinds may share
+    `observation.recorded` and nothing else.
     """
 
-    if artifact | case | failure | coverage != event_types:
+    if artifact | case | failure | coverage | change != event_types:
         return "every published event type must belong to a stream kind"
     if case & (artifact | failure | coverage):
         return "a case event type must belong to the case stream kind alone"
+    if change & (artifact | case | failure | coverage):
+        return "a change event type must belong to the change stream kind alone"
     for first, second in ((artifact, failure), (artifact, coverage), (failure, coverage)):
         if first & second != {"observation.recorded"}:
             return (
@@ -481,6 +579,7 @@ _PLACEMENT_PROBLEM: Final = _placement_problem(
     CASE_STREAM_EVENT_TYPES,
     FAILURE_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_EVENT_TYPES,
+    CHANGE_STREAM_EVENT_TYPES,
     frozenset(EVENT_TYPES),
 )
 if _PLACEMENT_PROBLEM is not None:  # pragma: no cover - a new event type nobody placed
@@ -637,13 +736,15 @@ def stream_kind(stream_id: str) -> str | None:
         return FAILURE_STREAM_PREFIX
     if is_coverage_stream(stream_id):
         return COVERAGE_STREAM_PREFIX
+    if is_change_stream(stream_id):
+        return CHANGE_STREAM_PREFIX
     return None
 
 
 def event_belongs_on_stream(event_type: str, stream_id: str) -> bool:
     """Return True when one event type may be stored on one stream (ADR 0008 Decision 2).
 
-    A stream that names none of the four aggregate kinds carries nothing: every published
+    A stream that names none of the five aggregate kinds carries nothing: every published
     event type belongs to at least one of them.
     """
 
@@ -713,6 +814,22 @@ def coverage_stream_fingerprint(stream_id: str) -> str:
     return _require_digest(stream_id[len(start) :], "fingerprint")
 
 
+def change_stream_id(change_id: str) -> str:
+    """Return `change/<sha256 of change_id>` for one declared change (ADR 0018 Decision 10).
+
+    The digest keeps a provider's identifiers out of stream ids, as the coverage fingerprint
+    does, and the change id follows the name rule, so a stream id parses back to one change.
+    """
+
+    if not isinstance(change_id, str) or _CHANGE_NAME_PATTERN.fullmatch(change_id) is None:
+        raise ValueError(
+            "change_id must be 1 to 128 printable ASCII characters with no space at either "
+            f"edge, got {shown(change_id)}"
+        )
+    digest = hashlib.sha256(change_id.encode("utf-8")).hexdigest()
+    return _require_stream_id(f"{CHANGE_STREAM_PREFIX}/{digest}")
+
+
 def _reading_stream_id(prefix: str, sha256: str, parser_name: str, parser_version: str) -> str:
     """Return `<prefix>/<sha256>/<parser_name>/<parser_version>` for one reading's stream."""
 
@@ -780,6 +897,12 @@ def is_coverage_stream(stream_id: str) -> bool:
     """Return True when a stream id names a recorded coverage gap (ADR 0015)."""
 
     return isinstance(stream_id, str) and stream_id.startswith(f"{COVERAGE_STREAM_PREFIX}/")
+
+
+def is_change_stream(stream_id: str) -> bool:
+    """Return True when a stream id names a recorded declared change (ADR 0018)."""
+
+    return isinstance(stream_id, str) and stream_id.startswith(f"{CHANGE_STREAM_PREFIX}/")
 
 
 def require_tracking_id(value: str) -> str:
@@ -855,6 +978,12 @@ __all__ = [
     "CASE_PAIN_REDUCED_V1",
     "CASE_STREAM_EVENT_TYPES",
     "CASE_STREAM_PREFIX",
+    "CHANGE_KIND_VALUES",
+    "CHANGE_RECORDED",
+    "CHANGE_RECORDED_V1",
+    "CHANGE_STREAM_EVENT_TYPES",
+    "CHANGE_STREAM_PREFIX",
+    "CHANGE_STREAM_SCHEMA_VERSION",
     "CLOSED_DISPOSITION_VALUES",
     "COVERAGE_ANCHOR_VALUES",
     "COVERAGE_RECORDED",
@@ -882,6 +1011,7 @@ __all__ = [
     "artifact_stream_components",
     "artifact_stream_id",
     "case_stream_id",
+    "change_stream_id",
     "coverage_stream_fingerprint",
     "coverage_stream_id",
     "event_belongs_on_stream",
@@ -889,6 +1019,7 @@ __all__ = [
     "failure_stream_id",
     "is_artifact_stream",
     "is_case_stream",
+    "is_change_stream",
     "is_coverage_stream",
     "is_failure_stream",
     "iso_utc",

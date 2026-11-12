@@ -3312,10 +3312,10 @@ class StoreHeaderTests(unittest.TestCase):
         # the first schema. `_mark_schema` writes neither: it inserts each record and moves
         # the marker in one transaction, and numbers from 1.
         cases = (
-            (1, (), [2, 3, 4]),
-            (3, (), [4]),
-            (4, (5,), [5]),
-            (4, (0,), [0]),
+            (1, (), [2, 3, 4, 5]),
+            (3, (), [4, 5]),
+            (5, (6,), [6]),
+            (5, (0,), [0]),
         )
         for marker, added, unexpected in cases:
             with self.subTest(marker=marker, added=added):
@@ -3398,6 +3398,7 @@ class StoreHeaderTests(unittest.TestCase):
                 ("migration_missing", "2"),
                 ("migration_altered", "3"),
                 ("migration_unexpected", "4"),
+                ("migration_unexpected", "5"),
             ],
         )
 
@@ -3442,7 +3443,7 @@ class StoreHeaderTests(unittest.TestCase):
         self.set_header(path, "user_version", 1)
         with SQLiteEventStore(path, clock=lambda: RECORDED_AT) as store:
             store.append("stream-h", [sample_event("evt-h-3")], expected_version=3)
-        self.assertEqual(self.state(path), (1, (4, 4), [(1,), (2,), (3,), (4,)]))
+        self.assertEqual(self.state(path), (1, (4, 4), [(1,), (2,), (3,), (4,), (5,)]))
 
     def test_verify_reports_a_foreign_application_id(self) -> None:
         for application_id in (0, 1, -1):
@@ -3645,7 +3646,7 @@ class StoreHeaderTests(unittest.TestCase):
                 )
                 self.assertFalse(store._connection.in_transaction)
                 self.assertEqual(self.state(path), before)
-                self.assertEqual(before, (marker, (3, 3), [(1,), (2,), (3,), (4,)]))
+                self.assertEqual(before, (marker, (3, 3), [(1,), (2,), (3,), (4,), (5,)]))
 
     def test_an_append_after_the_application_id_is_rewritten_is_refused(self) -> None:
         """The open checked the application id; a second connection rewrites it afterwards.
@@ -3689,7 +3690,7 @@ class StoreHeaderTests(unittest.TestCase):
                 )
 
         self.assertEqual(
-            self.state(path), (SUPPORTED_SCHEMA_VERSION, (5, 5), [(1,), (2,), (3,), (4,)])
+            self.state(path), (SUPPORTED_SCHEMA_VERSION, (5, 5), [(1,), (2,), (3,), (4,), (5,)])
         )
 
 

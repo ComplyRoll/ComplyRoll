@@ -92,9 +92,9 @@ _MAX_STREAM_ID_LENGTH: Final = 500
 _CHANGE_NAME_REGEX: Final = r"[\x21-\x7e]([\x20-\x7e]{0,126}[\x21-\x7e])?"
 _CHANGE_NAME_PATTERN: Final = re.compile(_CHANGE_NAME_REGEX)
 
-#: Every anchored pattern here ends on `(?!\n)$`. JSON Schema runs `pattern` as a search, and a
-#: Python `$` also matches just before a final newline, so `^...$` passed a digest, a tracking id
-#: or an instant with one after it. The lookahead keeps it out and means the same in ECMA-262.
+#: Every anchored schema pattern below ends on `(?!\n)$`. JSON Schema runs `pattern` as a search,
+#: and a Python `$` also matches just before a final newline, so `^...$` passed a digest, a tracking
+#: id or an instant with one after it. The lookahead keeps it out and means the same in ECMA-262.
 _UTC_TIMESTAMP_REGEX: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z(?!\n)$"
 #: RFC 3339 offsets are hours and minutes. Python parses an offset carrying seconds
 #: and re-serializes it unchanged, so nothing downstream would catch one that got in.

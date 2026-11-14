@@ -2116,12 +2116,21 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
     BYSTANDER_RULE = "bystander_rule"
 
     def run_refusals(self, evaluations: EvaluationSet) -> tuple[str, ...]:
-        """Return the lines this run is refused with on a store's own account, else nothing."""
+        """Return the lines this run is refused with on a store's own account, else nothing.
+
+        A refused run appends nothing, alone and inside a caller's open transaction, where the
+        writer's own scope is a no-op: a check that ran after the appends would commit them
+        with the caller's block, as `HistoryOrderFixture.refused` pins for ordering.
+        """
 
         before = self.sequence
         try:
             self.evaluate(evaluations)
         except EvaluationMatchError as caught:
+            self.assertEqual(self.sequence, before)
+            with self.repository.transaction(), self.assertRaises(EvaluationMatchError) as again:
+                self.evaluate(evaluations)
+            self.assertEqual(again.exception.problems, caught.problems)
             self.assertEqual(self.sequence, before)
             return caught.problems
         return ()
@@ -2163,6 +2172,23 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
                     self.assertNotIn("evaluations[", problem)
                 if refused:
                     self.assertIn("tracking_id_collision", [fault.code for fault in faults])
+
+    def test_the_writer_pairs_each_later_claimant_with_the_first(self) -> None:
+        # As the report pairs them: the third claimant pairs with the first, not the second.
+        self.three_claimants()
+        first, second, third = sorted(
+            self.case_of(rule) for rule in (BANNER_RULE, SSHD_RULE, "third_rule")
+        )
+        empty = parse_evaluations(json.dumps({"evaluations": []}).encode("utf-8"))
+
+        def pair(earlier: str, later: str) -> str:
+            return (
+                "recorded history: effective tracking id 'PROV-SHARED' is claimed by recorded "
+                f"history (originally {earlier}) and recorded history (originally {later}); "
+                f"{self.CASE_TAIL}"
+            )
+
+        self.assertEqual(self.run_refusals(empty), (pair(first, second), pair(first, third)))
 
     def test_a_refusal_naming_an_entry_is_located_at_that_entry(self) -> None:
         # Cases are walked in id order, so the entry can be either side of the pair.
@@ -2317,15 +2343,21 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
                 [item.code for item in caught.exception.diagnostics], ["tracking_id_collision"]
             )
 
+    #: A rule whose correlation id sorts before the banner rule's, though its name sorts after.
+    ZETA_RULE = "zeta_rule"
+
     def test_a_line_naming_a_group_no_case_holds_lists_its_sides_in_id_order(self) -> None:
-        # The group can be either side of the pair, and the line is at the entry either way.
-        banner, sshd = self.timed(BANNER_RULE), self.timed(SSHD_RULE)
+        # The group can be either side of the pair, and the line is at the entry either way. The
+        # two rules' id order reverses the order `current_groups` holds them in, by group key.
+        banner, zeta = self.timed(BANNER_RULE), self.timed(self.ZETA_RULE)
         ordered = sorted(
             (
                 (self.tracking_id_of(banner), banner, BANNER_RULE),
-                (self.tracking_id_of(sshd), sshd, SSHD_RULE),
+                (self.tracking_id_of(zeta), zeta, self.ZETA_RULE),
             )
         )
+        in_group_order = [group.tracking_id for group in groups_of((banner, zeta))]
+        self.assertEqual(in_group_order, [item[0] for item in ordered[::-1]])
         for case_side, group_side in (ordered, ordered[::-1]):
             case, case_path, rule = case_side
             target, group_path, _ = group_side
@@ -2374,6 +2406,17 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
             ),
         )
         self.assertEqual(fault.code, "tracking_id_collision")
+        # A run that touches the claimant without moving it is refused at its entry.
+        restated = self.sides(
+            (banner, f"evaluations[0] (originally {banner})"), self.unheld_side(group)
+        )
+        self.assertEqual(
+            self.run_refusals(self.evaluation_of(BANNER_RULE)),
+            (
+                f"evaluations[0]: effective tracking id {sshd!r} is claimed by {restated}; "
+                f"{self.CASE_TAIL}, and another trackingId for {banner} clears it",
+            ),
+        )
 
         self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-RENAMED"))
 
@@ -2937,10 +2980,13 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
         path.write_text(json.dumps({**payload, "evaluations": entries}), encoding="utf-8")
         return run(["cases", "evaluate", "--db", self.database, "--evaluations", str(path)])
 
-    def assert_refused_whole(self, outcome: tuple[int, str, str], *problems: str) -> None:
-        """Require one `evaluation_unmatched` line naming these problems, and nothing appended."""
+    def assert_refused_whole(
+        self, command: Callable[[], tuple[int, str, str]], *problems: str
+    ) -> None:
+        """Run `command`; require one `evaluation_unmatched` line of these, nothing appended."""
 
         before = self.latest_sequence()
+        outcome = command()
         self.assertEqual(
             outcome,
             (
@@ -2957,13 +3003,9 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
         self.correlate_and_attest()
         self.ingest("openscap-results.xml")
         self.succeeds("store", "verify", "--db", self.database)
-        before = self.latest_sequence()
 
-        refused = self.evaluate_entries(0, 1, override=self.BANNER_ID)
-
-        self.assertEqual(self.latest_sequence(), before)
         self.assert_refused_whole(
-            refused,
+            lambda: self.evaluate_entries(0, 1, override=self.BANNER_ID),
             f"evaluations[0]: effective tracking id {self.BANNER_ID!r} is claimed by "
             f"{self.BANNER_GROUP} and evaluations[0] (originally {self.UBUNTU_ID}); an override "
             f"may rename one case but may not merge two, and another trackingId for "
@@ -2973,7 +3015,7 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
         # Once the group has a case, the case claims its id and the line is the plain one.
         self.succeeds("cases", "correlate", "--db", self.database)
         self.assert_refused_whole(
-            self.evaluate_entries(0, 1, override=self.BANNER_ID),
+            lambda: self.evaluate_entries(0, 1, override=self.BANNER_ID),
             f"evaluations[0]: effective tracking id {self.BANNER_ID!r} is claimed by recorded "
             f"history (originally {self.BANNER_ID}) and evaluations[0] (originally "
             f"{self.UBUNTU_ID}); an override may rename one case but may not merge two",
@@ -2991,7 +3033,7 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
         self.assertEqual(run(["store", "verify", "--db", self.database])[0], 1)
 
         self.assert_refused_whole(
-            self.evaluate_entries(1),
+            lambda: self.evaluate_entries(1),
             f"recorded history: effective tracking id {self.BANNER_ID!r} is claimed by "
             f"{self.BANNER_GROUP} and recorded history (originally {self.UBUNTU_ID}); an override "
             f"may rename one case but may not merge two, and another trackingId for "
@@ -3019,7 +3061,7 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
         self.succeeds("store", "verify", "--db", self.database)
 
         self.assert_refused_whole(
-            self.evaluate_entries(0, 1, override=self.BANNER_ID),
+            lambda: self.evaluate_entries(0, 1, override=self.BANNER_ID),
             f"evaluations[0]: effective tracking id {self.BANNER_ID!r} is claimed by recorded "
             f"history (originally {self.BANNER_ID}) and evaluations[0] (originally "
             f"{self.UBUNTU_ID}); an override may rename one case but may not merge two",

@@ -20,10 +20,20 @@ import json
 import sqlite3
 import unittest
 from collections.abc import Iterator, Mapping
+from datetime import datetime
+from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
-from test_cli import INGESTED_AT, INVOCATION_FIXTURE, PersistedStoreTestCase, run
+from test_cli import (
+    INGESTED_AT,
+    INVOCATION_FIXTURE,
+    SARIF_NEXT,
+    PersistedStoreTestCase,
+    cli_module,
+    run,
+)
 from test_events import (
     ARTIFACT_STREAM_ID,
     COVERAGE_STREAM_ID,
@@ -36,7 +46,9 @@ from test_events import (
     metadata,
     with_value,
 )
+from test_replay import bumped
 
+from complyroll.adapters import IngestResult, ingest_stig_artifact
 from complyroll.events import (
     CHANGE_GAP_STREAM_SCHEMA_VERSION,
     CHANGE_STREAM_SCHEMA_VERSION,
@@ -114,13 +126,13 @@ STREAMS: dict[str, tuple[str, int]] = {
     "change.gap_recorded": (f"changegap/{DIGEST}", CHANGE_GAP_STREAM_SCHEMA_VERSION),
 }
 
-#: The fields `store verify` passed with a final newline before this change that the writing
-#: commands leave in the store below, with the code a case-folding reader now refuses it with, or
-#: None where `cases list` still reads the store. A hold's `ingestedAt` reads as a recorded
-#: failure's does and is pinned by the table tests above.
+#: The twelve fields `store verify` passed with a final newline before this change, each left in
+#: the store below by the writing commands, with the code a case-folding reader now refuses it
+#: with, or None where `cases list` still reads the store.
 VERIFIED_CLEAN: tuple[tuple[str, str, str | None], ...] = (
     ("artifact.ingested", "/ingestedAt", None),
     ("failure.recorded", "/ingestedAt", None),
+    ("failure.held", "/ingestedAt", None),
     ("case.created", "/createdAt", "event_contract_invalid"),
     ("case.observation_linked", "/observedAt", "event_contract_invalid"),
     ("case.observation_linked", "/sourceArtifactSha256", "event_contract_invalid"),
@@ -280,20 +292,32 @@ class StoredNewlineCommandTests(PersistedStoreTestCase):
     """A field `store verify` passed with a final newline is now a fault the readers name.
 
     Each store is the documented four-command store plus a flagged ingest of a SARIF log whose
-    failed invocation is recorded beside timed results, with one field rewritten in place, digest
-    included, as another tool or an older build would leave it. `cases history` reads only its
-    case's stream, so it still prints the case (CL-104).
+    failed invocation is recorded beside timed results, and the same log read again by the next
+    parser version, whose failure is held, with one field rewritten in place, digest included, as
+    another tool or an older build would leave it. `cases history` reads only its case's stream,
+    so it still prints the case (CL-104).
     """
 
     def setUp(self) -> None:
         super().setUp()
         self.ingest_fixtures()
         flagged = ["ingest", str(INVOCATION_FIXTURE), "--record-failed-imports"]
-        code, _out, err = run([*flagged, "--db", str(self.database), "--as-of", INGESTED_AT])
+        flagged += ["--db", str(self.database), "--as-of", INGESTED_AT]
+        code, _out, err = run(flagged)
         self.assertEqual(code, 3, err)
         self.correlate()
         self.attest_missing()
         self.evaluate()
+
+        # The hold is test_cli's recipe: the next version reads the log the installed one read.
+        def read_by_the_next_version(path: Path, *, ingested_at: datetime) -> IngestResult:
+            return bumped(ingest_stig_artifact(path, ingested_at=ingested_at), SARIF_NEXT)
+
+        with patch.object(cli_module, "ingest_stig_artifact", read_by_the_next_version):
+            code, _out, err = run(flagged)
+        self.assertEqual(code, 3, err)
+        self.correlate()
+        self.assertEqual(run(["store", "verify", "--db", str(self.database)])[0], 0)
         self.pristine = self.database
 
     def rewrite(self, event_type: str, pointer: str) -> tuple[int, str]:

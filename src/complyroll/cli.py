@@ -77,7 +77,7 @@ from .reports import (
     load_kev_catalog,
     parse_rfc3339,
 )
-from .reports.change_gaps import change_gap_change_id
+from .reports.change_gaps import CHANGE_GAP_SOURCE_TYPE, change_gap_change_id
 from .reports.changes import ChangeProjection, detection_request
 from .reports.gaps import COVERAGE_GAP_SOURCE_TYPE
 from .reports.records import derive_changes_from_artifacts
@@ -140,9 +140,13 @@ CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
     ("PAIN", False),
     ("DISPOSITION", False),
 )
-#: The column a listing adds once it lists a coverage gap case: the gap's context key, which
-#: an evaluation entry must state and no report document carries ("-" for every other case).
+#: The column a listing adds once it lists a gap case of either kind: the gap's context key,
+#: which an evaluation entry must state and no report document carries ("-" for every other
+#: case).
 GAP_CONTEXT_COLUMN: tuple[str, bool] = ("CONTEXT KEY", False)
+#: The reserved source types whose cases the listing names by context key: a coverage gap
+#: (ADR 0015) and a change detection gap (ADR 0018).
+_GAP_CASE_SOURCE_TYPES = frozenset({COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -1982,11 +1986,12 @@ def _cases_missing_detection(cases: Sequence[CaseState]) -> tuple[str, ...]:
 def _case_table(cases: Sequence[CaseState]) -> tuple[str, ...]:
     """Render the case listing, header first, sized to its widest cell per column.
 
-    A listing with no coverage gap case keeps `CASE_COLUMNS` alone, byte for byte; one with
-    a gap case adds `GAP_CONTEXT_COLUMN` last (ADR 0015 amendment 2026-10-26).
+    A listing with no gap case keeps `CASE_COLUMNS` alone, byte for byte; one with a coverage
+    or change gap case adds `GAP_CONTEXT_COLUMN` last (ADR 0015 amendment 2026-10-26, ADR
+    0018).
     """
 
-    gaps_listed = any(case.source_type == COVERAGE_GAP_SOURCE_TYPE for case in cases)
+    gaps_listed = any(case.source_type in _GAP_CASE_SOURCE_TYPES for case in cases)
     columns = (*CASE_COLUMNS, GAP_CONTEXT_COLUMN) if gaps_listed else CASE_COLUMNS
     rows = [_case_row(case, gaps_listed) for case in cases]
     widths = [
@@ -2014,7 +2019,7 @@ def _case_row(case: CaseState, gaps_listed: bool) -> tuple[str, ...]:
     )
     if not gaps_listed:
         return cells
-    is_gap = case.source_type == COVERAGE_GAP_SOURCE_TYPE
+    is_gap = case.source_type in _GAP_CASE_SOURCE_TYPES
     return (*cells, case.context_key if is_gap else "-")
 
 

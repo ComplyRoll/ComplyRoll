@@ -680,8 +680,13 @@ class GapEvaluationOrderTests(unittest.TestCase):
             return diagnostic.message.partition(f"(source {detected_source}); ")[2]
 
         artifact = "supply the artifact that detected it earlier, or correct completedAt"
+        change_remedy = (
+            "a change detection gap is detected when its window closed, so evaluate it at or "
+            "after that instant, or correct completedAt"
+        )
         for label, detected_source, source_type, expected in (
             ("coverage gap", "system", COVERAGE_GAP_SOURCE_TYPE, GAP_REMEDY),
+            ("change detection gap", "system", CHANGE_GAP_SOURCE_TYPE, change_remedy),
             ("detection failure", "system", DETECTION_FAILURE_SOURCE_TYPE, SYSTEM_REMEDY),
             ("no source type", "system", None, SYSTEM_REMEDY),
             ("another reserved type", "system", OTHER_SOURCE_TYPE, SYSTEM_REMEDY),

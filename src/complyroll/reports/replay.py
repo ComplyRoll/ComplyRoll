@@ -11,7 +11,8 @@ Current is the stream that carries the failure: a hold left dormant beneath it i
 not read back (ADR 0014, amendment 2026-10-13). A coverage stream reads back as its gap
 record, and a store holding one compiles gap aware, naming each window no recorded gap
 carries and each recorded gap this run derives no window for (ADR 0015). A recorded change
-feeds the change block when the run has an inventory (ADR 0018).
+feeds the change block when the run has an inventory, and a change gap stream reads back as
+its gap record and makes the block change-gap aware the same way (ADR 0018).
 
 Detection-time attestations are per case here rather than one flag on the command line.
 An attestation still applies only to a group where no observation declares a source
@@ -109,7 +110,10 @@ def compile_record_set_from_history(
     the recorded gap that carries it or none. A store that never recorded a gap reads exactly
     as the stateless run without the flag, whatever the build that reads it.
     `options.record_change_gaps` is refused for the same reason: `cases changes` records a
-    change gap, never a report (ADR 0018).
+    change gap, never a report (ADR 0018). The store decides here too: one holding a change gap
+    stream has recorded change gaps, so with an inventory every obligation row says whether its
+    closed window is a record and each divergence between the store's gaps and this run's
+    windows is named. A store that never recorded a change gap reads exactly as before.
     `options.changes` is refused too: a store never read that file, so a block built here
     would claim an input the history does not hold. The store's own recorded changes feed the
     block instead, and with no inventory there is no block to feed (ADR 0018).
@@ -156,6 +160,9 @@ def compile_record_set_from_history(
         options=options,
         gap_aware=options.inventory is not None and repository.holds_coverage_stream(),
         stored_changes=(None if options.inventory is None else read_stored_changes(repository)),
+        # The fold has refused a gap whose change the store does not record, so a store holding
+        # a change gap stream holds the changes its block is derived from.
+        change_gap_aware=(options.inventory is not None and repository.holds_change_gap_stream()),
     )
 
 

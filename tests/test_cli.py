@@ -1642,6 +1642,13 @@ COVERED_AUDIT_CODES = {
     "change_overfull",
     "change_schema_unmarked",
     "change_stream_mismatch",
+    # The five change gap codes' `store verify` command tests live in
+    # `tests/test_change_gap_streams.py`, and the content-neutral one's beside the others below.
+    "changegap_identity_breach",
+    "changegap_incomplete",
+    "changegap_overfull",
+    "changegap_schema_unmarked",
+    "changegap_stream_mismatch",
     # The five coverage codes' `store verify` command tests live in
     # `tests/test_coverage_streams.py`.
     "coverage_identity_breach",
@@ -7039,6 +7046,43 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
             return [(coverage.sequence, "coverage_schema_unmarked")]
 
         self.assert_content_neutral("coverage-schema", plant)
+
+    def test_a_change_gap_schema_marker_left_low_changes_no_report_and_no_writer(self) -> None:
+        # The twin holds the same change and change gap streams, as the coverage case above
+        # does: the fold reads a gap, so a stream planted in one copy alone would change the
+        # report (ADR 0018, PR 3 task 4).
+        self.copy_store(self.clean, "changegap-clean.db")
+        self.succeeds(
+            ["changes", "record", "--db", str(self.database), "--changes", str(EXAMPLE_CHANGES)]
+            + ["--as-of", INGESTED_AT]
+        )
+        code, _out, err = run(
+            [
+                "cases",
+                "changes",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--as-of",
+                INGESTED_AT,
+                "--inventory",
+                str(EXAMPLE_INVENTORY),
+            ]
+        )
+        self.assertEqual(code, 3, err)
+        self.clean = self.database
+        head = self.record("change.gap_recorded")
+        self.copy_store(self.clean, "changegap-twin.db")
+        self.twin_outputs = self.outputs("changegap-twin")
+        self.twin_reads = self.case_reads()
+        self.twin_appended = self.appended()
+
+        def plant() -> list[tuple[int, str]]:
+            self.mark_schema_by_hand(5)
+            return [(head.sequence, "changegap_schema_unmarked")]
+
+        self.assert_content_neutral("changegap-schema", plant)
 
 
 class ReportSourceConflictTests(unittest.TestCase):

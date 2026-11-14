@@ -31,7 +31,17 @@ from test_change_gaps import (
     timed,
 )
 from test_change_streams import FIFTH
-from test_changes import AS_OF, HOUR, T, changes_of, host, inventory_of, pair, policy
+from test_changes import (
+    AS_OF,
+    GROUP_PAIR,
+    HOUR,
+    T,
+    changes_of,
+    host,
+    inventory_of,
+    pair,
+    policy,
+)
 from test_changes_report import change_file
 from test_cli import (
     TIMED_ARTIFACTS,
@@ -53,6 +63,7 @@ from test_coverage_streams import (
     gap_record,
     metadata,
     pending,
+    rebuilt,
     record_coverage,
 )
 from test_events import observation as artifact_observation
@@ -65,6 +76,7 @@ from complyroll.events import (
     CHANGE_GAP_STREAM_EVENT_TYPES,
     CHANGE_GAP_STREAM_PREFIX,
     CHANGE_GAP_STREAM_SCHEMA_VERSION,
+    CHANGE_KIND_VALUES,
     CHANGE_RECORDED,
     CHANGE_STREAM_EVENT_TYPES,
     CHANGE_STREAM_PREFIX,
@@ -107,28 +119,48 @@ from complyroll.events.contracts import (
     _placement_problem,
 )
 from complyroll.history import (
+    AUDIT_FAULT_CODES,
     ChangeGapOutcome,
     HistoryError,
+    HistoryFault,
+    artifact_history,
     audit_history,
+    correlate_cases,
+    fold_all_cases,
     read_stored_changes,
     record_change_gaps,
     record_changes,
     rehydrate_observations,
 )
+from complyroll.history import order as order_module
 from complyroll.history import writers as writers_module
+from complyroll.history.fold import _ORDER_CHECKED_BESIDE
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, Observation
 from complyroll.policy import CertificationClass, CertificationProfile
 from complyroll.reports import ReportCompileError, load_changes, load_inventory
 from complyroll.reports import records as records_module
 from complyroll.reports.change_gaps import (
+    CHANGE_GAP_BASIS_TEXTS,
+    CHANGE_GAP_DESCRIPTION,
     CHANGE_GAP_METADATA_KEYS,
+    CHANGE_GAP_PARSER_NAME,
+    CHANGE_GAP_PARSER_VERSION,
+    CHANGE_GAP_RECORD_ID,
+    CHANGE_GAP_SOURCE_TOOL,
     CHANGE_GAP_SOURCE_TYPE,
+    CHANGE_GAP_TITLE,
     change_gap_observations,
 )
-from complyroll.reports.changes import derive_changes
+from complyroll.reports.changes import DAC_RULE, derive_changes
+from complyroll.reports.changes_input import ChangeKind
 from complyroll.reports.inventory import Inventory
 from complyroll.reports.records import derive_report_changes
-from complyroll.store import SUPPORTED_SCHEMA_VERSION, SQLiteEventStore, UnsupportedSchemaError
+from complyroll.store import (
+    SUPPORTED_SCHEMA_VERSION,
+    NewEvent,
+    SQLiteEventStore,
+    UnsupportedSchemaError,
+)
 from complyroll.store import sqlite as sqlite_module
 
 # *--- Fixtures ---*
@@ -161,6 +193,19 @@ HEAD_PAIRS: dict[str, tuple[str, str]] = {
     "changesSha256": ("change.changesSha256", "c" * 64),
     "inventorySha256": ("change.inventorySha256", "d" * 64),
 }
+#: Fields the gap builder fixes and the fingerprint does not cover, a value for each that the
+#: payload contract admits, and the reason the identity check gives for it (P lesson 1).
+FIXED_FIELD_EDITS: dict[str, tuple[Any, str]] = {
+    "disposition": ("pass", "its disposition is 'pass'"),
+    "source_severity": ("high", "its source severity is 'high'"),
+    "source_identifiers": (["CVE-2099-0001"], "its source identifiers are ['CVE-2099-0001']"),
+    "title": ("Nothing to see here", "its title is 'Nothing to see here'"),
+    "description": ("x", "its description is 'x'"),
+}
+#: The reason a record that is no change gap system record gives, at append and in the audit.
+NOT_A_CHANGE_GAP = (
+    "only a system record of source type 'complyroll.change' names a change gap stream"
+)
 #: The `cases changes` run over the timed store, less its `--db`.
 CHANGES_OPTIONS = ("--class", "C", "--as-of", TIMED_AS_OF, "--inventory", str(TIMED_INVENTORY))
 #: When the timed store recorded its change file.
@@ -250,6 +295,36 @@ def stored_change_payload(change_set: Any, recorded_at: datetime = NOW) -> dict[
     return writers_module._change_payload(change, change_set, recorded_at)
 
 
+def not_a_record(stream_id: str, reason: str) -> str:
+    """Word a stored record its change gap stream does not name as a change gap record."""
+    return (
+        f"observation.recorded on change gap stream {stream_id!r} is not a change gap record: "
+        f"{reason}"
+    )
+
+
+def shape_message(stream_id: str, shape: str, heads: int, observations: int) -> str:
+    """Word a change gap stream that is not one head and one observation (`shape` names how)."""
+    return (
+        f"change gap stream {stream_id!r} is {shape}: a change gap stream holds one "
+        f"change.gap_recorded head and one observation, found {heads} head(s) and "
+        f"{observations} observation(s)"
+    )
+
+
+def with_metadata(record: Observation, **edits: Any) -> dict[str, Any]:
+    """Return a gap record's canonical form with metadata values set, or dropped when None."""
+    canonical = record.to_canonical_dict()
+    source = {**canonical["source_metadata"]}
+    for key, value in edits.items():
+        name = key.replace("_", ".", 1)
+        if value is None:
+            del source[name]
+        else:
+            source[name] = value
+    return {**canonical, "source_metadata": source}
+
+
 # *--- Identity Constants ---*
 
 
@@ -266,6 +341,24 @@ class ChangeGapIdentityConstantTests(unittest.TestCase):
                     tuple(sorted(dict(gap.source_metadata))),
                     repository_module.CHANGE_GAP_METADATA_KEYS,
                 )
+
+    def test_every_identity_copy_equals_the_builders_constant(self) -> None:
+        # Task 4: the audit holds a stored gap to these, so each copy is pinned to its source.
+        pairs = {
+            "CHANGE_GAP_SOURCE_TOOL": CHANGE_GAP_SOURCE_TOOL,
+            "CHANGE_GAP_PARSER_NAME": CHANGE_GAP_PARSER_NAME,
+            "CHANGE_GAP_PARSER_VERSION": CHANGE_GAP_PARSER_VERSION,
+            "CHANGE_GAP_RECORD_ID": CHANGE_GAP_RECORD_ID,
+            "CHANGE_GAP_TITLE": CHANGE_GAP_TITLE,
+            "CHANGE_GAP_DESCRIPTION": CHANGE_GAP_DESCRIPTION,
+            "CHANGE_GAP_BASIS_TEXTS": CHANGE_GAP_BASIS_TEXTS,
+            "CHANGE_GAP_KEY_RULE": DAC_RULE,
+        }
+        for name, expected in pairs.items():
+            with self.subTest(name=name):
+                self.assertEqual(getattr(repository_module, name), expected)
+        # The audit reads a stored kind against the change contract's own vocabulary.
+        self.assertEqual({kind.value for kind in ChangeKind}, set(CHANGE_KIND_VALUES))
 
     def test_a_change_gap_stream_needs_schema_6_and_this_build_opens_it(self) -> None:
         self.assertEqual(CHANGE_GAP_STREAM_SCHEMA_VERSION, 6)
@@ -1058,6 +1151,793 @@ class ChangeGapSchemaMarkingTests(StoreCase):
         self.assertIn("database schema 7 is newer than supported schema 6", str(caught.exception))
 
 
+# *--- Reader ---*
+
+
+class ChangeGapStoreCase(StoreCase):
+    """A store holding CHG-1, its lab-01 gap record and head, and a writer past the repository."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        record_the_change(self.repository)
+        self.gaps = derived_gaps(self.repository)
+        self.record = gap_of(self.gaps)
+        self.stream_id = change_gap_stream_id_of(self.record)
+        self.head, self.observation = change_gap_events(self.record)
+
+    def plant(
+        self,
+        events: Sequence[tuple[str, Mapping[str, Any]]],
+        stream_id: str | None = None,
+        *,
+        requires_schema: int = CHANGE_GAP_STREAM_SCHEMA_VERSION,
+    ) -> list[int]:
+        """Stage events on one new change gap stream past the repository, as a damaged store."""
+        return self.stage(
+            self.stream_id if stream_id is None else stream_id,
+            events,
+            requires_schema=requires_schema,
+        )
+
+    def faults(self) -> list[tuple[int, str]]:
+        return [(fault.sequence, fault.code) for fault in audit_history(self.repository)]
+
+    def refused(self) -> str:
+        """Return the text every reader refuses this store with; none may succeed."""
+        with self.assertRaises(HistoryError) as caught:
+            rehydrate_observations(self.repository)
+        return str(caught.exception)
+
+
+class ChangeGapReaderTests(ChangeGapStoreCase):
+    """The fold reads a whole change gap stream and refuses each shape the audit names."""
+
+    def test_the_readers_read_a_whole_change_gap_stream(self) -> None:
+        # Task 4: rehydration gains each gap record in recorded order, so `cases correlate`
+        # opens one case per change, and artifact history is unchanged.
+        self.record_failure()
+        history = artifact_history(self.repository)
+        (failure,) = rehydrate_observations(self.repository)
+        lab_01, lab_02 = self.gaps
+
+        record_change_gap(self.repository, lab_01)
+        record_change_gap(self.repository, lab_02)
+
+        self.assertEqual(artifact_history(self.repository), history)
+        self.assertEqual(rehydrate_observations(self.repository), (failure, lab_01, lab_02))
+        correlate_cases(self.repository, metadata=metadata(), now=NOW)
+        self.assertEqual(
+            sorted(
+                (case.source_type, case.context_key) for case in fold_all_cases(self.repository)
+            ),
+            sorted({(item.source_type, item.context_key) for item in (failure, lab_01, lab_02)}),
+        )
+        self.assertEqual(audit_history(self.repository), ())
+
+    def fresh_store(self) -> None:
+        """Point the test at a new store holding CHG-1 alone, so each shape starts clean."""
+        self.setUp()
+
+    def test_the_reader_refuses_each_shape_with_the_audits_message(self) -> None:
+        head, observation = self.head, self.observation
+        other_head, other = change_gap_events(gap_of(self.gaps, LAB_02))
+        canonical = self.record.to_canonical_dict()
+        orphan = gap_of(stateless_gaps(changes_of(timed("CHG-2", pair("lab-01")))))
+        another_window = gap_of(
+            stateless_gaps(
+                changes_of(
+                    timed(
+                        "CHG-1", pair("lab-01"), pair("lab-02"), detectBy=(T + 2 * HOUR).isoformat()
+                    )
+                )
+            )
+        )
+        invalid = (CHANGE_GAP_RECORDED, {**head[1], "windowClosedAt": "soon"})
+        # Each shape, the stream it is planted on, the audit code it is reported under, and the
+        # text the reader puts before the audit's message, as it does for a coverage stream.
+        shapes: dict[str, tuple[str, list[tuple[str, Any]], str, str | None]] = {
+            "head alone": (self.stream_id, [head], "changegap_incomplete", None),
+            "record alone": (self.stream_id, [observation], "changegap_incomplete", None),
+            "a second record": (
+                self.stream_id,
+                [head, observation, observation],
+                "changegap_overfull",
+                None,
+            ),
+            "record first": (
+                self.stream_id,
+                [observation, head],
+                "changegap_stream_mismatch",
+                None,
+            ),
+            "another gap's record": (
+                self.stream_id,
+                [other_head, other],
+                "changegap_stream_mismatch",
+                "is on the wrong stream",
+            ),
+            "a metadata key dropped": (
+                self.stream_id,
+                [head, ("observation.recorded", with_metadata(self.record, change_force=None))],
+                "changegap_identity_breach",
+                "is on the wrong stream",
+            ),
+            "a head naming another window close": (
+                self.stream_id,
+                [(CHANGE_GAP_RECORDED, {**head[1], "windowClosedAt": "2026-09-01T14:00:00Z"})]
+                + [observation],
+                "changegap_identity_breach",
+                None,
+            ),
+            "a head outside its contract": (
+                self.stream_id,
+                [invalid, observation],
+                "payload_contract_invalid",
+                "is not a readable change gap head",
+            ),
+            "a stream id naming no fingerprint": (
+                "changegap/not-a-fingerprint",
+                [head, observation],
+                "changegap_stream_mismatch",
+                "is on the wrong stream",
+            ),
+            "a gap of a change no stream records": (
+                change_gap_stream_id_of(orphan),
+                change_gap_events(orphan),
+                "changegap_stream_mismatch",
+                None,
+            ),
+            "a gap of another reading of its change": (
+                change_gap_stream_id_of(another_window),
+                change_gap_events(another_window),
+                "changegap_stream_mismatch",
+                None,
+            ),
+            **{
+                f"its {field} edited": (
+                    self.stream_id,
+                    [head, ("observation.recorded", {**canonical, field: value})],
+                    "changegap_identity_breach",
+                    "is on the wrong stream",
+                )
+                for field, (value, _) in FIXED_FIELD_EDITS.items()
+            },
+            "its artifact digest set": (
+                self.stream_id,
+                [head, ("observation.recorded", {**canonical, "source_artifact_digest": "c" * 64})],
+                "payload_contract_invalid",
+                "is not a readable observation",
+            ),
+            # The stream kind is read before the event type, so a foreign event stops the read.
+            "a foreign event alone": (
+                self.stream_id,
+                [("case.identified", {"providerTrackingId": "PROV-2026-0001"})],
+                "event_stream_mismatch",
+                None,
+            ),
+            "a foreign event after a whole stream": (
+                self.stream_id,
+                [head, observation, ("probe.planted", {})],
+                "event_stream_mismatch",
+                None,
+            ),
+            "a foreign event on a stream no gap names": (
+                change_gap_stream_id("f" * 64),
+                [("case.identified", {"providerTrackingId": "PROV-2026-0001"})],
+                "event_stream_mismatch",
+                None,
+            ),
+        }
+        for label, (stream_id, events, code, prefix) in shapes.items():
+            with self.subTest(label):
+                self.fresh_store()
+                self.plant(events, stream_id)
+                faults = [fault for fault in audit_history(self.repository) if fault.code == code]
+                self.assertTrue(faults, msg=label)
+                fault = faults[0]
+                expected = (
+                    fault.message
+                    if prefix is None
+                    else f"event {fault.sequence} {prefix}: {fault.message}"
+                )
+
+                self.assertEqual(self.refused(), expected)
+
+    def test_a_store_holding_a_gap_and_no_change_is_refused_by_name(self) -> None:
+        # Call 11 and P M13: only a write past the repository leaves this, and a reader names
+        # it rather than letting a report build a change-gap-aware compile with no block.
+        StoreCase.setUp(self)
+        orphan = gap_of(stateless_gaps(CHANGE_SET))
+        stream_id = change_gap_stream_id_of(orphan)
+        self.plant(change_gap_events(orphan), stream_id)
+
+        message = (
+            f"change gap stream {stream_id!r} records change id 'CHG-1' in its "
+            "change.gap_recorded, and no change stream records that change; a change gap is a "
+            "window of a recorded change"
+        )
+        self.assertEqual(self.refused(), message)
+        self.assertEqual(
+            [(fault.code, fault.message) for fault in audit_history(self.repository)],
+            [("changegap_stream_mismatch", message)],
+        )
+
+
+# *--- Audits ---*
+
+
+class ChangeGapAuditTests(ChangeGapStoreCase):
+    """`audit_history` names each way a change gap stream is not one head and its gap record."""
+
+    def test_a_whole_change_gap_stream_is_no_fault(self) -> None:
+        self.plant([self.head, self.observation])
+
+        self.assertEqual(audit_history(self.repository), ())
+
+    def test_a_stream_that_is_not_one_head_and_one_observation_is_incomplete_or_overfull(
+        self,
+    ) -> None:
+        shapes = {
+            "head only": ([self.head], "incomplete", 1, 0),
+            "record only": ([self.observation], "incomplete", 0, 1),
+            "head twice": ([self.head, self.observation, self.head], "overfull", 2, 1),
+            "record twice": ([self.head, self.observation, self.observation], "overfull", 1, 2),
+        }
+        for label, (events, shape, heads, observations) in shapes.items():
+            with self.subTest(label):
+                self.setUp()
+                sequences = self.plant(events)
+
+                faults = audit_history(self.repository)
+                self.assertEqual(
+                    [(fault.sequence, fault.code) for fault in faults],
+                    [(sequences[0], f"changegap_{shape}")],
+                )
+                self.assertEqual(
+                    faults[0].message, shape_message(self.stream_id, shape, heads, observations)
+                )
+
+    def test_a_stream_its_record_opens_is_a_stream_mismatch(self) -> None:
+        sequences = self.plant([self.observation, self.head])
+
+        self.assertEqual(self.faults(), [(sequences[0], "changegap_stream_mismatch")])
+        self.assertEqual(
+            audit_history(self.repository)[0].message,
+            change_gap_head_order_message(self.stream_id),
+        )
+
+    def test_another_gaps_record_is_a_stream_mismatch(self) -> None:
+        other = gap_of(self.gaps, LAB_02)
+        # The head agrees with the record it sits beside, so the stream id is all that is wrong.
+        sequences = self.plant(change_gap_events(other))
+
+        self.assertEqual(self.faults(), [(sequences[1], "changegap_stream_mismatch")])
+        self.assertIn(
+            f"is the gap record of stream {change_gap_stream_id_of(other)!r}",
+            audit_history(self.repository)[0].message,
+        )
+
+    def test_a_stream_id_naming_no_fingerprint_is_a_mismatch_on_each_event(self) -> None:
+        stream_id = "changegap/not-a-fingerprint"
+        sequences = self.plant([self.head, self.observation], stream_id)
+
+        self.assertEqual(
+            self.faults(), [(sequence, "changegap_stream_mismatch") for sequence in sequences]
+        )
+        for fault in audit_history(self.repository):
+            self.assertIn(f"stream {stream_id!r} names no gap record", fault.message)
+
+    def test_a_record_that_is_not_a_change_gap_record_is_an_identity_breach(self) -> None:
+        for label, record in (
+            ("a detection failure", system_record()),
+            ("a coverage gap", gap_record()),
+        ):
+            with self.subTest(label):
+                self.setUp()
+                stream_id = change_gap_stream_id(record.fingerprint)
+                sequences = self.plant(
+                    [self.head, ("observation.recorded", record.to_canonical_dict())], stream_id
+                )
+
+                self.assertEqual(self.faults(), [(sequences[1], "changegap_identity_breach")])
+                self.assertEqual(
+                    audit_history(self.repository)[0].message,
+                    not_a_record(stream_id, NOT_A_CHANGE_GAP),
+                )
+
+    def test_a_foreign_event_on_a_change_gap_stream_is_a_placement_fault(self) -> None:
+        foreign = ("case.identified", {"providerTrackingId": "PROV-2026-0001"})
+        shapes = {
+            # Alone, it also leaves the stream without either half.
+            "alone": ([foreign], [(0, "changegap_incomplete"), (0, "event_stream_mismatch")]),
+            "after a whole stream": (
+                [self.head, self.observation, foreign],
+                [(2, "event_stream_mismatch")],
+            ),
+        }
+        for label, (events, expected) in shapes.items():
+            with self.subTest(label):
+                self.setUp()
+                sequences = self.plant(events)
+
+                self.assertEqual(
+                    self.faults(), [(sequences[index], code) for index, code in expected]
+                )
+
+    def test_a_head_that_disagrees_with_its_record_is_an_identity_breach(self) -> None:
+        canonical = self.record.to_canonical_dict()
+        for field_name, (record_key, other) in HEAD_PAIRS.items():
+            with self.subTest(field=field_name):
+                self.setUp()
+                head = {**change_gap_head_payload(self.record), field_name: other}
+                sequences = self.plant([(CHANGE_GAP_RECORDED, head), self.observation])
+
+                self.assertEqual(self.faults(), [(sequences[1], "changegap_identity_breach")])
+                described = (
+                    canonical["context_key"]
+                    if record_key == "context_key"
+                    else canonical["source_metadata"][record_key]
+                )
+                message = (
+                    f"change gap stream {self.stream_id!r} records {field_name} {other!r} in "
+                    f"its change.gap_recorded and {record_key} {described!r} in its gap record; "
+                    "the two describe one gap"
+                )
+                self.assertEqual(audit_history(self.repository)[0].message, message)
+                self.assertEqual(
+                    change_gap_record_disagreement(self.stream_id, head, canonical), message
+                )
+
+    def test_a_head_naming_a_change_no_stream_records_is_a_stream_mismatch(self) -> None:
+        orphan = gap_of(stateless_gaps(changes_of(timed("CHG-2", pair("lab-01")))))
+        stream_id = change_gap_stream_id_of(orphan)
+        sequences = self.plant(change_gap_events(orphan), stream_id)
+
+        self.assertEqual(self.faults(), [(sequences[0], "changegap_stream_mismatch")])
+        self.assertEqual(
+            audit_history(self.repository)[0].message,
+            f"change gap stream {stream_id!r} records change id 'CHG-2' in its "
+            "change.gap_recorded, and no change stream records that change; a change gap is a "
+            "window of a recorded change",
+        )
+
+    def test_a_head_naming_another_reading_of_its_change_is_a_stream_mismatch(self) -> None:
+        # The head and its record agree with each other; the stored change says otherwise.
+        for label, change_set, field_name, change_key, stored in (
+            (
+                "another file",
+                changes_named("another-file", timed("CHG-1", pair("lab-01"), pair("lab-02"))),
+                "changesSha256",
+                "changesSha256",
+                CHANGE_SET.sha256,
+            ),
+            (
+                "another occurrence",
+                changes_of(
+                    timed(
+                        "CHG-1", pair("lab-01"), pair("lab-02"), occurredAt=(T - HOUR).isoformat()
+                    )
+                ),
+                "occurredAt",
+                "occurredAt",
+                OCCURRED_TEXT,
+            ),
+            (
+                "another window",
+                changes_of(
+                    timed(
+                        "CHG-1",
+                        pair("lab-01"),
+                        pair("lab-02"),
+                        detectBy=(T + 2 * HOUR).isoformat(),
+                    )
+                ),
+                "windowClosedAt",
+                "detectBy",
+                DETECT_BY_TEXT,
+            ),
+        ):
+            with self.subTest(label):
+                self.setUp()
+                other = gap_of(stateless_gaps(change_set))
+                stream_id = change_gap_stream_id_of(other)
+                head = change_gap_head_payload(other)
+                sequences = self.plant(change_gap_events(other), stream_id)
+
+                self.assertEqual(self.faults(), [(sequences[0], "changegap_stream_mismatch")])
+                self.assertEqual(
+                    audit_history(self.repository)[0].message,
+                    f"change gap stream {stream_id!r} records {field_name} "
+                    f"{head[field_name]!r} in its change.gap_recorded, and change 'CHG-1' "
+                    f"records {change_key} {stored!r}; a change gap is a window of the change it "
+                    "names",
+                )
+
+    def test_a_change_gap_stream_in_a_store_below_schema_6_is_unmarked(self) -> None:
+        sequences = self.plant([self.head, self.observation], requires_schema=5)
+
+        self.assertEqual(self.store.schema_version, 5)
+        self.assertEqual(self.faults(), [(sequences[0], "changegap_schema_unmarked")])
+        self.assertEqual(
+            audit_history(self.repository)[0].message,
+            f"change gap stream {self.stream_id!r} is in a store at schema 5; a store holding "
+            "change gap streams is marked schema 6, so a build that cannot read them refuses it "
+            "rather than misreading it",
+        )
+        # No reader refuses it: the gap is read as the writer recorded it.
+        self.assertIn(self.record, rehydrate_observations(self.repository))
+
+    def test_one_unmarked_fault_names_the_first_change_gap_stream_beside_each_other_kind(
+        self,
+    ) -> None:
+        StoreCase.setUp(self)
+        change = self.stage(
+            change_stream_id("CHG-1"),
+            [(CHANGE_RECORDED, stored_change_payload(CHANGE_SET))],
+            requires_schema=1,
+        )
+        first, second = stateless_gaps(CHANGE_SET)
+        gap = self.plant(
+            change_gap_events(first), change_gap_stream_id_of(first), requires_schema=1
+        )
+        self.plant(change_gap_events(second), change_gap_stream_id_of(second), requires_schema=1)
+
+        self.assertEqual(
+            self.faults(),
+            [(change[0], "change_schema_unmarked"), (gap[0], "changegap_schema_unmarked")],
+        )
+
+    def test_the_five_codes_are_published_and_the_marker_is_content_neutral(self) -> None:
+        codes = (
+            "changegap_identity_breach",
+            "changegap_incomplete",
+            "changegap_overfull",
+            "changegap_schema_unmarked",
+            "changegap_stream_mismatch",
+        )
+        for code in codes:
+            self.assertIn(code, AUDIT_FAULT_CODES)
+        self.assertEqual(AUDIT_FAULT_CODES, tuple(sorted(AUDIT_FAULT_CODES)))
+        # No reader refuses a marker left low, so the order check still runs beside it.
+        self.assertEqual(
+            {code for code in codes if code in _ORDER_CHECKED_BESIDE},
+            {"changegap_schema_unmarked"},
+        )
+
+    def test_the_order_checks_still_run_beside_an_unmarked_store(self) -> None:
+        # The order checks fold the cases and rehydrate the gap, which reads as written, so a
+        # marker left low hides no inversion for good (ADR 0008 amendment 2026-10-14, second).
+        sequences = self.plant([self.head, self.observation], requires_schema=5)
+        sentinel = HistoryFault(sequence=1, code="evaluation_before_detection", message="x")
+        with mock.patch.object(order_module, "evaluation_order_faults", return_value=(sentinel,)):
+            faults = self.faults()
+
+        self.assertEqual(
+            faults,
+            [(1, "evaluation_before_detection"), (sequences[0], "changegap_schema_unmarked")],
+        )
+
+    def test_the_problem_checks_answer_only_for_change_gap_stream_events(self) -> None:
+        canonical = self.record.to_canonical_dict()
+        for stream_id, event_type in (
+            (f"artifact/{'a' * 64}/complyroll.cklb/1", "observation.recorded"),
+            (f"failure/{'a' * 64}/complyroll.sarif/1", "observation.recorded"),
+            (f"coverage/{'a' * 64}", "observation.recorded"),
+            (self.stream_id, "case.identified"),
+        ):
+            with self.subTest(stream=stream_id, event_type=event_type):
+                self.assertIsNone(change_gap_record_problem(stream_id, event_type, canonical))
+
+
+class ChangeGapIdentityAuditTests(ChangeGapStoreCase):
+    """Task 4's identity audit: each builder-fixed field, mutated alone, trips the audit.
+
+    The fingerprint covers none of the metadata, so a record edited there still names its
+    stream; a field it does cover is moved with `rebuilt`, under the id it then derives, and
+    planted on its own stream. Each breach is the audit's fault, the reader's refusal and the
+    repository's refusal at append, in one text (P lesson 1).
+    """
+
+    def assert_breach(
+        self,
+        observation: Mapping[str, Any],
+        reason: str,
+        *,
+        stream_id: str | None = None,
+        code: str = "changegap_identity_breach",
+    ) -> None:
+        stream = self.stream_id if stream_id is None else stream_id
+        sequences = self.plant([self.head, ("observation.recorded", observation)], stream)
+        message = not_a_record(stream, reason)
+
+        self.assertEqual(self.faults(), [(sequences[1], code)])
+        self.assertEqual(audit_history(self.repository)[0].message, message)
+        self.assertEqual(self.refused(), f"event {sequences[1]} is on the wrong stream: {message}")
+        self.assertEqual(
+            change_gap_record_problem(stream, "observation.recorded", observation),
+            (code, message),
+        )
+
+    def assert_moved(self, reason: str, **changes: Any) -> None:
+        """Move a fingerprinted field, re-derive the id, and plant it on its own stream."""
+        moved = rebuilt(self.record, **changes)
+        self.assert_breach(
+            moved.to_canonical_dict(), reason, stream_id=change_gap_stream_id(moved.fingerprint)
+        )
+
+    def test_every_gap_the_builder_writes_passes_the_identity_check(self) -> None:
+        # Entry, group and late rows, a job, a colon and a space in the id, and a window that
+        # closes as the change occurs: what the writer records is never a breach (M4).
+        group_inventory = inventory_of(
+            host("lab-01"), host("web-01", sampleGroup="web"), host("web-02", sampleGroup="web")
+        )
+        change_set = changes_of(
+            timed("deploy:2026-09-01 web", pair("lab-01"), GROUP_PAIR, job="nightly"),
+            timed("CHG-0", pair("lab-01"), detectBy=T.isoformat()),
+        )
+        projection = derive_report_changes((), change_set, group_inventory, PROFILE, AS_OF)
+        records = change_gap_observations(projection, ingested_at=AS_OF)
+        self.assertEqual(len(records), 3)
+        for record in records:
+            with self.subTest(key=record.context_key, resource=record.resource.resource_id):
+                self.assertIsNone(
+                    change_gap_record_problem(
+                        change_gap_stream_id_of(record),
+                        "observation.recorded",
+                        record.to_canonical_dict(),
+                    )
+                )
+
+    def test_a_record_of_another_source_type_is_an_identity_breach(self) -> None:
+        self.assert_moved(NOT_A_CHANGE_GAP, source_type="complyroll.synthetic-other")
+
+    def test_a_record_of_another_tool_is_an_identity_breach(self) -> None:
+        self.assert_moved("its source tool is 'other'", source_tool="other")
+
+    def test_a_record_of_another_parser_is_an_identity_breach(self) -> None:
+        for label, changes, reason in (
+            ("name", {"parser_name": "complyroll.other"}, "'complyroll.other' version '1'"),
+            ("version", {"parser_version": "2"}, "'complyroll.change' version '2'"),
+        ):
+            with self.subTest(label):
+                self.setUp()
+                self.assert_moved(f"its parser is {reason}", **changes)
+
+    def test_a_record_of_another_record_id_is_an_identity_breach(self) -> None:
+        self.assert_moved("its source record id is 'change-gap-2'", source_record_id="change-gap-2")
+
+    def test_a_record_of_another_origin_is_contract_invalid_and_not_a_change_gap_record(
+        self,
+    ) -> None:
+        # The observation contract keeps the reserved prefix to system records, so it refuses
+        # this on every store path first; the identity check's own reason is a direct call's.
+        observation = {**self.observation[1], "origin": "artifact"}
+        sequences = self.plant([self.head, ("observation.recorded", observation)])
+
+        self.assertEqual(self.faults(), [(sequences[1], "payload_contract_invalid")])
+        self.assertEqual(
+            change_gap_record_problem(self.stream_id, "observation.recorded", observation),
+            ("changegap_identity_breach", not_a_record(self.stream_id, NOT_A_CHANGE_GAP)),
+        )
+
+    def test_another_disposition_is_an_identity_breach(self) -> None:
+        self.assert_breach(
+            {**self.observation[1], "disposition": "pass"}, "its disposition is 'pass'"
+        )
+
+    def test_another_severity_is_an_identity_breach(self) -> None:
+        self.assert_breach(
+            {**self.observation[1], "source_severity": "high"}, "its source severity is 'high'"
+        )
+
+    def test_source_identifiers_are_an_identity_breach(self) -> None:
+        self.assert_breach(
+            {**self.observation[1], "source_identifiers": ["CVE-2099-0001"]},
+            "its source identifiers are ['CVE-2099-0001']",
+        )
+
+    def test_another_description_is_an_identity_breach(self) -> None:
+        self.assert_breach({**self.observation[1], "description": "x"}, "its description is 'x'")
+
+    def test_an_artifact_field_is_contract_invalid_and_not_a_change_gap_record(self) -> None:
+        for field, value in (("source_artifact_digest", "c" * 64), ("source_artifact_name", "x")):
+            with self.subTest(field):
+                self.setUp()
+                observation = {**self.observation[1], field: value}
+                sequences = self.plant([self.head, ("observation.recorded", observation)])
+
+                self.assertEqual(self.faults(), [(sequences[1], "payload_contract_invalid")])
+                self.assertEqual(
+                    change_gap_record_problem(self.stream_id, "observation.recorded", observation),
+                    (
+                        "changegap_identity_breach",
+                        not_a_record(self.stream_id, f"its {field.replace('_', ' ')} is {value!r}"),
+                    ),
+                )
+
+    def test_a_window_close_other_than_the_observed_instant_is_an_identity_breach(
+        self,
+    ) -> None:
+        # observed_at, change.detectBy and the head's windowClosedAt name one instant.
+        with self.subTest("the metadata close moved"):
+            self.assert_breach(
+                with_metadata(self.record, change_detectBy="2026-09-01T14:00:00Z"),
+                "its metadata change.detectBy is '2026-09-01T14:00:00Z', where the record is "
+                "observed at '2026-09-01T13:00:00Z'",
+            )
+        with self.subTest("the observed instant moved"):
+            self.setUp()
+            self.assert_moved(
+                "its metadata change.detectBy is '2026-09-01T13:00:00Z', where the record is "
+                "observed at '2026-09-01T14:00:00Z'",
+                observed_at=T + 2 * HOUR,
+            )
+        with self.subTest("the close spelled with an offset"):
+            self.setUp()
+            self.assert_breach(
+                with_metadata(self.record, change_detectBy="2026-09-01T13:00:00+00:00"),
+                "its metadata change.detectBy is '2026-09-01T13:00:00+00:00', where the record "
+                "is observed at '2026-09-01T13:00:00Z'",
+            )
+
+    def test_a_context_key_other_than_the_changes_is_an_identity_breach(self) -> None:
+        with self.subTest("the key moved"):
+            self.assert_moved(
+                "its metadata change.id is 'CHG-1', and its context key "
+                "'VDR-CSO-DAC:change:CHG-9' is not 'VDR-CSO-DAC:change:CHG-1'",
+                context_key="VDR-CSO-DAC:change:CHG-9",
+            )
+        with self.subTest("the change id moved"):
+            self.setUp()
+            self.assert_breach(
+                with_metadata(self.record, change_id="CHG-9"),
+                "its metadata change.id is 'CHG-9', and its context key "
+                "'VDR-CSO-DAC:change:CHG-1' is not 'VDR-CSO-DAC:change:CHG-9'",
+            )
+        for change_id in ("", " CHG-1"):
+            with self.subTest("a change id naming no change", change_id=change_id):
+                self.setUp()
+                self.assert_breach(
+                    with_metadata(self.record, change_id=change_id),
+                    f"its metadata change.id is {change_id!r}, which names no change",
+                )
+
+    def test_another_change_rule_is_an_identity_breach(self) -> None:
+        self.assert_breach(
+            with_metadata(self.record, change_rule="VDR-CSO-AKE"),
+            "its metadata change.rule is 'VDR-CSO-AKE', not 'VDR-CSO-DAC'",
+        )
+
+    def test_a_force_that_is_no_rule_force_is_an_identity_breach(self) -> None:
+        self.assert_breach(
+            with_metadata(self.record, change_force="MAYBE"),
+            "its metadata change.force is 'MAYBE', not a rule force",
+        )
+
+    def test_a_kind_that_is_no_change_kind_is_an_identity_breach(self) -> None:
+        self.assert_breach(
+            with_metadata(self.record, change_kind="deleted"),
+            "its metadata change.kind is 'deleted', not a change kind",
+        )
+
+    def test_an_occurrence_after_the_close_is_an_identity_breach(self) -> None:
+        for label, value, reason in (
+            (
+                "after the close",
+                "2026-09-01T14:00:00Z",
+                "which is after its window close '2026-09-01T13:00:00Z'",
+            ),
+            (
+                "spelled with an offset",
+                "2026-09-01T12:00:00+00:00",
+                "not an instant as its writer spells one",
+            ),
+            ("no instant", "last week", "not an instant as its writer spells one"),
+        ):
+            with self.subTest(label):
+                self.setUp()
+                self.assert_breach(
+                    with_metadata(self.record, change_occurredAt=value),
+                    f"its metadata change.occurredAt is {value!r}, {reason}",
+                )
+        # A window may close as its change occurs (M4), so the two may be one instant.
+        at_the_close = with_metadata(self.record, change_occurredAt=DETECT_BY_TEXT)
+        self.assertIsNone(
+            change_gap_record_problem(self.stream_id, "observation.recorded", at_the_close)
+        )
+
+    def test_another_basis_is_an_identity_breach(self) -> None:
+        self.assert_breach(
+            with_metadata(self.record, change_basis="Changes looked fine."),
+            "its metadata change.basis is 'Changes looked fine.', not a basis its writer records",
+        )
+
+    def test_another_title_is_an_identity_breach(self) -> None:
+        self.assert_breach(
+            {**self.observation[1], "title": "Nothing to see here"},
+            "its title is 'Nothing to see here'",
+        )
+
+    def test_another_evidence_id_is_an_identity_breach(self) -> None:
+        digest = self.observation[1]["source_metadata"]["change.changesSha256"]
+        self.assert_breach(
+            {**self.observation[1], "evidence_ids": [f"sha256:{'d' * 64}"]},
+            f"its evidence ids are ['sha256:{'d' * 64}'], where its metadata "
+            f"change.changesSha256 names ['sha256:{digest}']",
+        )
+
+    def test_a_digest_that_is_not_sha256_text_is_an_identity_breach(self) -> None:
+        for key in ("change.changesSha256", "change.inventorySha256"):
+            for value in ("C" * 64, "x"):
+                with self.subTest(key=key, value=value):
+                    self.setUp()
+                    observation = with_metadata(self.record, **{key.replace(".", "_"): value})
+                    if key == "change.changesSha256":
+                        # Consistent with its evidence id, so only the digest itself is wrong.
+                        observation["evidence_ids"] = [f"sha256:{value}"]
+                    self.assert_breach(
+                        observation,
+                        f"its metadata {key} is {value!r}, not a SHA-256 digest",
+                    )
+
+    def test_a_missing_or_added_metadata_key_is_an_identity_breach(self) -> None:
+        with self.subTest("change.job missing"):
+            self.assert_breach(
+                with_metadata(self.record, change_job=None), "its metadata has no 'change.job'"
+            )
+        with self.subTest("a key added"):
+            self.setUp()
+            self.assert_breach(
+                with_metadata(self.record, change_note="x"),
+                "its metadata carries 'change.note', which a change gap record does not",
+            )
+
+    def test_an_id_that_is_not_derived_is_an_identity_breach(self) -> None:
+        derived = self.record.observation_id
+        self.assert_breach(
+            {**self.observation[1], "observation_id": f"obs-{'0' * 64}"},
+            f"its id is 'obs-{'0' * 64}', not its derived id {derived!r}",
+        )
+
+    def test_a_record_its_reader_cannot_read_is_named_at_the_function(self) -> None:
+        # Unreachable on a store path, where the observation contract reads the same payload
+        # first (call 14); a direct call names it rather than raising.
+        forged = {
+            **self.observation[1],
+            "fingerprint": "0" * 64,
+            "observation_id": f"obs-{'0' * 64}",
+        }
+
+        code, message = change_gap_record_problem(
+            self.stream_id, "observation.recorded", forged
+        ) or ("", "")
+
+        self.assertEqual(code, "changegap_identity_breach")
+        self.assertTrue(
+            message.startswith(
+                not_a_record(self.stream_id, "the payload is not a readable observation: ")
+            ),
+            msg=message,
+        )
+
+    def test_an_oddly_spelled_value_is_named_and_never_raises(self) -> None:
+        # Written past the repository, any text may sit where an instant or a digest goes; the
+        # audit names it and returns rather than stopping on it.
+        for edits in (
+            {"change_detectBy": "garbage"},
+            {"change_occurredAt": "9999-12-31T23:59:59-23:59"},
+            {"change_occurredAt": "2026-02-30T12:00:00Z"},
+            {"change_force": ""},
+            {"change_changesSha256": ""},
+        ):
+            with self.subTest(edits=edits):
+                self.setUp()
+                self.plant(
+                    [self.head, ("observation.recorded", with_metadata(self.record, **edits))]
+                )
+                self.assertEqual([code for _, code in self.faults()], ["changegap_identity_breach"])
+
+
 # *--- Writer ---*
 
 
@@ -1286,16 +2166,21 @@ class ChangeGapWriterTests(StoreCase):
         self.assertEqual(self.store.schema_version, 5)
         self.assertEqual(recorded_gaps(self.repository), [])
 
+    def shapes(self) -> dict[str, Any]:
+        """Each damaged shape of one gap's stream, as the events planted on it."""
+        return {
+            "the head alone": lambda gap: change_gap_events(gap)[:1],
+            "the record alone": lambda gap: change_gap_events(gap)[1:],
+            "the record first": lambda gap: change_gap_events(gap)[::-1],
+            "a foreign event": lambda gap: [("probe.planted", {})],
+            "a third event": lambda gap: [*change_gap_events(gap), ("probe.planted", {})],
+        }
+
     def test_a_stream_holding_anything_but_its_head_and_record_is_refused(self) -> None:
-        # Every stream is judged before the first append, so the other gap is not written
-        # either. No reader reads a change gap stream before this one does.
-        for label, events in (
-            ("the head alone", lambda gap: change_gap_events(gap)[:1]),
-            ("the record alone", lambda gap: change_gap_events(gap)[1:]),
-            ("the record first", lambda gap: change_gap_events(gap)[::-1]),
-            ("a foreign event", lambda gap: [("probe.planted", {})]),
-            ("a third event", lambda gap: [*change_gap_events(gap), ("probe.planted", {})]),
-        ):
+        # Moved on purpose in task 4: `rehydrate_observations` now reads every change gap
+        # stream, so the fold refuses each shape with the audit's text before the writer judges
+        # it, and nothing is appended.
+        for label, events in self.shapes().items():
             with self.subTest(label):
                 self.setUp()
                 record_the_change(self.repository)
@@ -1304,8 +2189,44 @@ class ChangeGapWriterTests(StoreCase):
                 staged = events(first)
                 self.stage(stream_id, staged, requires_schema=CHANGE_GAP_STREAM_SCHEMA_VERSION)
                 latest = self.store.latest_sequence
+                expected = {
+                    "the head alone": shape_message(stream_id, "incomplete", 1, 0),
+                    "the record alone": shape_message(stream_id, "incomplete", 0, 1),
+                    "the record first": change_gap_head_order_message(stream_id),
+                    "a foreign event": (
+                        f"event 'probe.planted' does not belong on stream {stream_id!r}"
+                    ),
+                    "a third event": (
+                        f"event 'probe.planted' does not belong on stream {stream_id!r}"
+                    ),
+                }[label]
 
                 with self.assertRaises(HistoryError) as caught:
+                    self.record_gaps()
+
+                self.assertEqual(str(caught.exception), expected)
+                self.assertEqual(self.store.latest_sequence, latest)
+
+    def test_the_writer_still_refuses_a_stream_it_would_resume(self) -> None:
+        # Call 14: unreachable through the fold, which refuses each shape first; held here with
+        # the fold's reader set aside, so the writer never resumes a stream on its own.
+        for label, events in self.shapes().items():
+            with self.subTest(label):
+                self.setUp()
+                record_the_change(self.repository)
+                evidence = rehydrate_observations(self.repository)
+                first = gap_of(derived_gaps(self.repository), LAB_02)
+                stream_id = change_gap_stream_id_of(first)
+                staged = events(first)
+                self.stage(stream_id, staged, requires_schema=CHANGE_GAP_STREAM_SCHEMA_VERSION)
+                latest = self.store.latest_sequence
+
+                with (
+                    mock.patch.object(
+                        writers_module, "rehydrate_observations", return_value=evidence
+                    ),
+                    self.assertRaises(HistoryError) as caught,
+                ):
                     self.record_gaps()
 
                 self.assertEqual(
@@ -1623,6 +2544,202 @@ class ChangeGapCommandTests(PersistedStoreTestCase):
             "schemas 1 to 5",
             verify[1] + verify[2],
         )
+
+
+# *--- Store Verify ---*
+
+
+class ChangeGapStoreVerifyCommandTests(PersistedStoreTestCase):
+    """`store verify` names each change gap fault and exits 1; every reader refuses it by name.
+
+    Each shape is planted past the repository in the timed store, which recorded its change
+    file and no gap. A refusal is `history_invalid` on every command that reads the store,
+    never an uncaught exception (call 11).
+    """
+
+    populate_changes = ChangeGapCommandTests.populate_changes
+    cases_changes = ChangeGapCommandTests.cases_changes
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.populate_changes()
+        with SQLiteEventStore(self.database) as store:
+            repository = EventRepository(store)
+            stored = read_stored_changes(repository)
+            assert stored is not None
+            projection = derive_report_changes(
+                rehydrate_observations(repository),
+                stored,
+                load_inventory(TIMED_INVENTORY),
+                CertificationProfile(CertificationClass.C, calendar_timezone="UTC"),
+                datetime(2026, 9, 3, 12, tzinfo=UTC),
+            )
+        self.image, self.render = change_gap_observations(
+            projection, ingested_at=datetime(2026, 9, 3, 12, tzinfo=UTC)
+        )
+        self.stream_id = change_gap_stream_id_of(self.image)
+        self.head, self.observation = change_gap_events(self.image)
+
+    def smuggle(
+        self,
+        events: Sequence[tuple[str, Mapping[str, Any]]],
+        stream_id: str | None = None,
+        *,
+        requires_schema: int = CHANGE_GAP_STREAM_SCHEMA_VERSION,
+    ) -> list[int]:
+        """Append events to one new stream straight to the store, past the repository."""
+        sequences = []
+        with SQLiteEventStore(self.database) as store:
+            for version, (event_type, payload) in enumerate(events):
+                (appended,) = store.append(
+                    self.stream_id if stream_id is None else stream_id,
+                    [
+                        NewEvent(
+                            event_type=event_type,
+                            occurred_at=NOW,
+                            payload=dict(payload),
+                            metadata=metadata().to_dict(),
+                        )
+                    ],
+                    expected_version=version,
+                    requires_schema=requires_schema,
+                )
+                sequences.append(appended.sequence)
+        return sequences
+
+    def assert_one_fault(self, sequence: int, code: str, message: str) -> None:
+        code_seen, out, err = run(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((code_seen, out), (1, ""), msg=err)
+        (line, summary) = err.splitlines()
+        self.assertTrue(line.startswith(f"error: sequence {sequence}: {code}: "), msg=line)
+        self.assertIn(message, line)
+        self.assertTrue(summary.startswith("faults: 1 domain fault(s) in"), msg=summary)
+
+    def assert_refused_everywhere(self, message: str) -> None:
+        """Every command that reads the store's observations refuses it, naming the fault."""
+        timed_report = [
+            "report",
+            "vdt",
+            "--db",
+            str(self.database),
+            "--class",
+            "C",
+            "--package-uri",
+            "https://example.test/cpo",
+            "--as-of",
+            TIMED_AS_OF,
+            "--from",
+            "2026-09-01T00:00:00Z",
+            "--to",
+            "2026-09-30T23:59:59Z",
+            "--inventory",
+            str(TIMED_INVENTORY),
+        ]
+        latest = self.latest_sequence()
+        for label, argv in (
+            ("report vdt", timed_report),
+            ("cases changes", ["cases", "changes", "--db", str(self.database), *CHANGES_OPTIONS]),
+            ("cases correlate", ["cases", "correlate", "--db", str(self.database)]),
+            (
+                "changes pending",
+                ["changes", "pending", "--db", str(self.database), *CHANGES_OPTIONS],
+            ),
+        ):
+            with self.subTest(label):
+                code, out, err = run(argv)
+                self.assertEqual((code, out), (1, ""), msg=err)
+                self.assertIn("error: history_invalid: ", err)
+                self.assertIn(message, err)
+                self.assertNotIn("Traceback", err)
+        self.assertEqual(self.latest_sequence(), latest)
+
+    def test_whole_change_gap_streams_verify_and_their_gaps_reach_the_report(self) -> None:
+        self.assertEqual(self.cases_changes(*CHANGES_OPTIONS)[0], 3)
+
+        out, err = self.succeeds(["store", "verify", "--db", str(self.database)])
+
+        self.assertEqual((out, err), (f"ok: {self.latest_sequence()} event(s) verified\n", ""))
+        self.succeeds(["cases", "correlate", "--db", str(self.database)])
+        listing, _ = self.succeeds(["cases", "list", "--db", str(self.database)])
+        for row in CLOSED_ROWS:
+            self.assertIn(row[3], listing)
+
+    def test_a_change_gap_stream_missing_its_record_is_named_and_refused(self) -> None:
+        sequences = self.smuggle([self.head])
+        message = shape_message(self.stream_id, "incomplete", 1, 0)
+
+        self.assert_one_fault(sequences[0], "changegap_incomplete", message)
+        self.assert_refused_everywhere(message)
+
+    def test_a_change_gap_stream_with_a_second_record_is_named_and_refused(self) -> None:
+        sequences = self.smuggle([self.head, self.observation, self.observation])
+        message = shape_message(self.stream_id, "overfull", 1, 2)
+
+        self.assert_one_fault(sequences[0], "changegap_overfull", message)
+        self.assert_refused_everywhere(message)
+
+    def test_another_gaps_record_on_a_change_gap_stream_is_named_and_refused(self) -> None:
+        sequences = self.smuggle(change_gap_events(self.render))
+        message = (
+            f"is the gap record of stream {change_gap_stream_id_of(self.render)!r}; a change gap "
+            "stream is named for its gap record's fingerprint"
+        )
+
+        self.assert_one_fault(sequences[1], "changegap_stream_mismatch", message)
+        self.assert_refused_everywhere(message)
+
+    def test_a_change_gap_record_with_a_metadata_key_dropped_is_named_and_refused(self) -> None:
+        sequences = self.smuggle(
+            [self.head, ("observation.recorded", with_metadata(self.image, change_basis=None))]
+        )
+        message = "its metadata has no 'change.basis'"
+
+        self.assert_one_fault(sequences[1], "changegap_identity_breach", message)
+        self.assert_refused_everywhere(message)
+
+    def test_a_gap_of_a_change_the_store_never_recorded_is_named_and_refused(self) -> None:
+        # Call 11: nothing but a write past the repository leaves one, and each reader names it
+        # rather than ending in an uncaught exception.
+        orphan = gap_of(stateless_gaps(changes_of(timed("CHG-9", pair("lab-01")))))
+        stream_id = change_gap_stream_id_of(orphan)
+        sequences = self.smuggle(change_gap_events(orphan), stream_id)
+        message = (
+            f"change gap stream {stream_id!r} records change id 'CHG-9' in its "
+            "change.gap_recorded, and no change stream records that change"
+        )
+
+        self.assert_one_fault(sequences[0], "changegap_stream_mismatch", message)
+        self.assert_refused_everywhere(message)
+
+    def test_a_store_holding_gaps_and_no_change_is_named_and_refused(self) -> None:
+        # P M13: a change-gap-aware report of this store would have no block to map; the
+        # reader refuses it first, by name.
+        self.database = self.workspace / "no-change.db"
+        self.succeeds(["ingest", *TIMED_ARTIFACTS, "--db", str(self.database), "--as-of", NOW_TEXT])
+        sequences = self.smuggle([self.head, self.observation])
+
+        self.assert_one_fault(
+            sequences[0],
+            "changegap_stream_mismatch",
+            "records change id 'CHG-2001' in its change.gap_recorded, and no change stream "
+            "records that change",
+        )
+        self.assert_refused_everywhere("and no change stream records that change")
+
+    def test_a_change_gap_stream_in_a_store_left_at_schema_5_is_named_and_exits_one(
+        self,
+    ) -> None:
+        sequences = self.smuggle([self.head, self.observation], requires_schema=5)
+
+        self.assert_one_fault(
+            sequences[0],
+            "changegap_schema_unmarked",
+            f"change gap stream {self.stream_id!r} is in a store at schema 5",
+        )
+        # No reader refuses it: the report reads the gap as the writer would have recorded it.
+        code, _out, err = run(["cases", "correlate", "--db", str(self.database)])
+        self.assertEqual(code, 0, msg=err)
 
 
 if __name__ == "__main__":

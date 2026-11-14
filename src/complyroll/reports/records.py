@@ -59,8 +59,18 @@ from complyroll.policy import (
 )
 from complyroll.policy.source import RuleSourceSnapshot
 
-from .change_gaps import CHANGE_GAP_SOURCE_TYPE, change_gap_observations
-from .changes import DAC_RULE, ChangeObligation, ChangeProjection, StoredChangeSet, derive_changes
+from .change_gaps import CHANGE_GAP_SOURCE_TYPE, change_gap_change_id, change_gap_observations
+
+# NOTE: The change block's own lookup of each change's file name, shared so a change gap note
+# is located exactly as a change warning is.
+from .changes import (
+    DAC_RULE,
+    ChangeObligation,
+    ChangeProjection,
+    StoredChangeSet,
+    _names_of,
+    derive_changes,
+)
 from .changes_input import ChangeSet
 from .checks import (
     CLOCK_OUT_OF_RANGE,
@@ -80,6 +90,9 @@ from .checks import (
 from .coverage import (
     DRIFT_LIKELIHOOD_UNKNOWN,
     PDD_RULE,
+    PSD_RULE,
+    SAMPLE_GROUP_PREFIX,
+    SAMPLE_GROUP_TYPE,
     CoverageEvidence,
     CoverageResult,
     CoverageWindow,
@@ -280,7 +293,9 @@ def compile_record_set(
     `changes` is a change projection the caller already derived from these observations and
     that input, which must belong to the options as `coverage` must. With `change_gap_aware`,
     every row whose change window closed is mapped to the record that carries its gap, or to
-    None when none does (ADR 0018).
+    None when none does, and each closed window no record carries and each change gap record no
+    window derives is named in an INFO note, which only a compile from history can meet (ADR
+    0018 Decision 13).
     """
 
     if not isinstance(options, ReportOptions):
@@ -357,8 +372,10 @@ def compile_record_set(
     # and to the record as a diagnostic names it.
     gap_tracking: dict[str, str] = {}
     gap_labels: dict[str, str] = {}
-    # Each change gap observation's id, to the published id of the record carrying it.
+    # Each change gap observation's id, to the published id of the record carrying it, and to
+    # the record as a diagnostic names it.
     change_gap_tracking: dict[str, str] = {}
+    change_gap_labels: dict[str, str] = {}
 
     for group in groups:
         evaluation = evaluations_by_tracking_id.get(group.tracking_id)
@@ -457,12 +474,14 @@ def compile_record_set(
         ]
         gap_tracking.update((gap_id, record.tracking_id) for gap_id in gaps)
         gap_labels.update((gap_id, record.label) for gap_id in gaps)
-        change_gap_tracking.update(
-            (item.observation_id, record.tracking_id)
+        change_gaps = [
+            item.observation_id
             for item in group.observations
             if item.origin is ObservationOrigin.SYSTEM
             and item.source_type == CHANGE_GAP_SOURCE_TYPE
-        )
+        ]
+        change_gap_tracking.update((gap_id, record.tracking_id) for gap_id in change_gaps)
+        change_gap_labels.update((gap_id, record.label) for gap_id in change_gaps)
         if kev_rule is not None and any(cve_may_be_missing(item) for item in group.observations):
             kev_incomplete.append(record)
 
@@ -499,14 +518,20 @@ def compile_record_set(
             _coverage_gap_divergences(coverage, window_ids, gap_tracking, gap_labels, observations)
         )
     change_gap_records: dict[ChangeObligation, str | None] | None = None
+    change_gap_notes: list[ReportDiagnostic] = []
     if change_gap_aware and changes is not None:
         # Built from the published projection, whose rows are the ones the block prints.
+        change_window_ids = _change_window_gap_ids(changes, options)
         change_gap_records = {
-            row: change_gap_tracking.get(gap_id)
-            for row, gap_id in _change_window_gap_ids(changes, options).items()
+            row: change_gap_tracking.get(gap_id) for row, gap_id in change_window_ids.items()
         }
+        change_gap_notes = _change_gap_divergences(
+            changes, change_window_ids, change_gap_tracking, change_gap_labels, observations
+        )
     if changes is not None:
         diagnostics.extend(changes.warnings)
+    # After the block's own warnings, as the coverage notes follow the coverage warnings.
+    diagnostics.extend(change_gap_notes)
     return CompiledRecordSet(
         records=tuple(compiled),
         artifacts=tuple(sorted(artifacts, key=_artifact_order)),
@@ -1368,6 +1393,236 @@ def _change_window_gap_ids(
     closed = [row for row in changes.obligations if row.window_closed_at is not None]
     gaps = change_gap_observations(changes, ingested_at=options.as_of)
     return {row: gap.observation_id for row, gap in zip(closed, gaps, strict=True)}
+
+
+def _change_gap_divergences(
+    changes: ChangeProjection,
+    window_ids: Mapping[ChangeObligation, str],
+    gap_tracking: Mapping[str, str],
+    gap_labels: Mapping[str, str],
+    observations: Sequence[Observation],
+) -> list[ReportDiagnostic]:
+    """Name each closed change window no gap record carries, then each record no window derives.
+
+    The change twin of `_coverage_gap_divergences` (ADR 0018 Decision 13): a stateless run
+    records every closed window it derives and nothing else, so only a compile from history
+    meets either. A recorded gap is a permanent fact and keeps its case; the note says why this
+    run derives no window for it, as `change_gap_contradicted` when a verification inside its
+    window [occurredAt, detectBy] disproves it and as `change_gap_unmatched` when none does. One
+    case carries every resource of a change, so each note is read against the other recorded
+    gaps of its case. Every note names the change id; windows are named in obligation order and
+    recorded gaps by occurrence, change id and resource, each located as a change warning is.
+    """
+
+    names = _names_of(changes.change_set)
+    notes: list[ReportDiagnostic] = []
+    for row, gap_id in window_ids.items():
+        if gap_id in gap_tracking or row.window_closed_at is None:
+            continue
+        change_id = row.change.change_id
+        label = coverage_label(row.resource)
+        notes.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.INFO,
+                code="change_gap_unrecorded",
+                message=(
+                    f"the {DAC_RULE} window for {label} after change {change_id} closed "
+                    f"{iso(row.window_closed_at)} with no verification, and history records no "
+                    "gap for it, so no case in this report carries it; cases changes with this "
+                    "run's inventory, as-of and class records it"
+                ),
+                location=_change_gap_location(names, change_id, label),
+            )
+        )
+    derived = set(window_ids.values())
+    recorded = sorted(
+        (
+            item
+            for item in observations
+            if item.origin is ObservationOrigin.SYSTEM
+            and item.source_type == CHANGE_GAP_SOURCE_TYPE
+            and item.observation_id in gap_tracking
+        ),
+        key=_change_gap_order,
+    )
+    underived = [item for item in recorded if item.observation_id not in derived]
+    disproof: dict[str, CoverageEvidence | None] = {}
+    if underived:
+        # One filing serves every underived gap, as it does for coverage.
+        filed = file_evidence(observations, changes.inventory, changes.as_of)
+        disproof = {
+            item.observation_id: _change_gap_disproof(item, filed, changes.inventory)
+            for item in underived
+        }
+    # Each case's recorded gaps, in note order, so siblings are found once per case.
+    cases: dict[str, list[Observation]] = {}
+    for item in recorded:
+        cases.setdefault(gap_tracking[item.observation_id], []).append(item)
+    for item in recorded:
+        if item.observation_id not in disproof:
+            continue
+        siblings = [
+            other for other in cases[gap_tracking[item.observation_id]] if other is not item
+        ]
+        # A sibling still derived, or one nothing disproves, keeps the case open.
+        standing = [
+            (other, other.observation_id in derived)
+            for other in siblings
+            if other.observation_id in derived or disproof[other.observation_id] is None
+        ]
+        notes.append(
+            _underived_change_gap(
+                item,
+                gap_labels[item.observation_id],
+                disproof[item.observation_id],
+                standing=standing,
+                shared=bool(siblings),
+                location=_change_gap_location(
+                    names, _change_gap_id(item), coverage_label(item.resource)
+                ),
+            )
+        )
+    return notes
+
+
+def _change_gap_disproof(
+    gap: Observation, filed: FiledEvidence, inventory: Inventory
+) -> CoverageEvidence | None:
+    """Return the earliest verification inside a recorded change gap's window, or None.
+
+    The window is [occurredAt, detectBy], closed at both ends as the derivation reads it, unlike
+    a coverage window: `change.occurredAt` from the record's metadata, which the reader holds to
+    its head and its change, and the close the record is observed at. The subject is read as the
+    derivation reads it too: an entry, under any spelling the inventory gives it, or else a
+    sample group's members under VDR-TFR-PSD. Evidence is filed as the derivation files it, so a
+    verification after as-of is not used.
+    """
+
+    closed_at = gap.observed_at
+    if closed_at is None:  # pragma: no cover - a gap is always observed at its window close
+        raise ValueError(f"change gap {gap.observation_id} has no window close")
+    occurred_at = datetime.fromisoformat(dict(gap.source_metadata)["change.occurredAt"])
+    subject = gap.resource
+    rule = DAC_RULE
+    if inventory.entry_for(subject.resource_type, subject.resource_id) is None and (
+        subject.resource_type == SAMPLE_GROUP_TYPE
+        and subject.resource_id.startswith(SAMPLE_GROUP_PREFIX)
+    ):
+        rule = PSD_RULE
+    return next(
+        (
+            item
+            for item in filed.verifying(rule_id=rule, subject=subject)
+            if item.at is not None and occurred_at <= item.at <= closed_at
+        ),
+        None,
+    )
+
+
+def _underived_change_gap(
+    gap: Observation,
+    label: str,
+    evidence: CoverageEvidence | None,
+    *,
+    standing: Sequence[tuple[Observation, bool]],
+    shared: bool,
+    location: str,
+) -> ReportDiagnostic:
+    """Name a recorded change gap this run derives no window for, and why it derives none.
+
+    The wording of `_underived_gap`, less the calendar zone, which a change window never reads,
+    and less the change set, which a store never rewrites (ADR 0018). A disposition answers the
+    whole case, so a contradicted note advises a false positive only when no other recorded gap
+    of its case stands; each that does is named with why it stands.
+    """
+
+    described = f"{label} carries the recorded gap of {_change_gap_window(gap)}"
+    others = ", and ".join(
+        f"{_change_gap_window(other)}, which this run "
+        + ("still derives" if still_derived else "neither derives nor disproves")
+        for other, still_derived in standing
+    )
+    if evidence is None or evidence.at is None:
+        tail = "the gap stays recorded"
+        if others:
+            tail = f"{tail}, and the case also carries {others}"
+        return ReportDiagnostic(
+            level=DiagnosticLevel.INFO,
+            code="change_gap_unmatched",
+            message=(
+                f"{described}, and this run derives no such window and holds no verification "
+                "inside it, so its inventory, as-of or class may differ from the run that "
+                f"recorded the gap; {tail}"
+            ),
+            location=location,
+        )
+    if others:
+        advice = (
+            f"but the case also carries {others}, so it stays open until every other gap it "
+            "carries is contradicted or disposed on its own merits"
+        )
+    elif shared:
+        advice = (
+            "and every other recorded gap of the case is contradicted too, so an evaluation "
+            "can dispose the case as a false positive"
+        )
+    else:
+        advice = "and an evaluation can dispose it as a false positive"
+    return ReportDiagnostic(
+        level=DiagnosticLevel.INFO,
+        code="change_gap_contradicted",
+        message=(
+            f"{described}, but {evidence.kind.value} {evidence.reference} on "
+            f"{coverage_label(evidence.resource)} verified it at {iso(evidence.at)}, inside "
+            f"that window, so this run derives no such window; the gap stays recorded, {advice}"
+        ),
+        location=location,
+    )
+
+
+def _change_gap_id(gap: Observation) -> str:
+    """Return the change id a recorded change gap's context key names, whole, colons and all."""
+
+    change_id = change_gap_change_id(gap.context_key)
+    if change_id is None:  # pragma: no cover - the reader holds every gap's key to its change
+        raise ValueError(f"change gap {gap.observation_id} names no change")
+    return change_id
+
+
+def _change_gap_window(gap: Observation) -> str:
+    """Return a recorded change gap as its window reads: rule, resource, change and close."""
+
+    closed = "" if gap.observed_at is None else iso(gap.observed_at)
+    rule = gap.context_key.split(":", 1)[0]
+    return (
+        f"the {rule} window for {coverage_label(gap.resource)} after change "
+        f"{_change_gap_id(gap)} that closed {closed}"
+    )
+
+
+def _change_gap_order(gap: Observation) -> tuple[datetime, str, str, str, str]:
+    """Order recorded change gaps as obligations are ordered: occurrence, change, resource."""
+
+    occurred_at = datetime.fromisoformat(dict(gap.source_metadata)["change.occurredAt"])
+    subject = gap.resource
+    return (
+        occurred_at,
+        _change_gap_id(gap),
+        subject.resource_type,
+        subject.resource_id,
+        gap.observation_id,
+    )
+
+
+def _change_gap_location(names: Mapping[str, str], change_id: str, label: str) -> str:
+    """Locate a note as a change warning is: file name, change id and resource.
+
+    A gap whose change the set does not hold, which only a library caller can hand in, is
+    located without a file name rather than refused.
+    """
+
+    name = names.get(change_id)
+    return f"{change_id} {label}" if name is None else f"{name} {change_id} {label}"
 
 
 def _window_gap_ids(coverage: CoverageResult, options: ReportOptions) -> dict[CoverageWindow, str]:

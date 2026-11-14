@@ -52,7 +52,9 @@ from complyroll.store.sqlite import SHOWN_LIMIT, bounded, require_storable_paylo
 
 from .contracts import (
     CHANGE_GAP_RECORDED,
+    CHANGE_GAP_STREAM_PREFIX,
     CHANGE_GAP_STREAM_SCHEMA_VERSION,
+    CHANGE_KIND_VALUES,
     CHANGE_RECORDED,
     CHANGE_STREAM_SCHEMA_VERSION,
     COVERAGE_RECORDED,
@@ -203,10 +205,52 @@ _COVERAGE_RECORD_PAIRS: Final[tuple[tuple[str, str], ...]] = (
     ("inventorySha256", "coverage.inventorySha256"),
 )
 
-#: The source type and metadata keys of a change gap stream's gap record, exactly what
-#: `reports.change_gaps` writes (ADR 0018). Spelled here for the reason the coverage identity is;
-#: the change gap stream tests hold each to its builder's.
+#: The identity of a change gap stream's gap record, exactly what `reports.change_gaps` writes
+#: (ADR 0018). Spelled here for the reason the coverage identity is; the change gap stream tests
+#: hold each to its builder's.
 CHANGE_GAP_SOURCE_TYPE: Final = "complyroll.change"
+CHANGE_GAP_SOURCE_TOOL: Final = "complyroll"
+CHANGE_GAP_PARSER_NAME: Final = "complyroll.change"
+CHANGE_GAP_PARSER_VERSION: Final = "1"
+CHANGE_GAP_RECORD_ID: Final = "change-detection-gap"
+#: The rule a gap record's `change.rule` names and its context key leads with,
+#: `reports.changes.DAC_RULE`.
+CHANGE_GAP_KEY_RULE: Final = "VDR-CSO-DAC"
+
+#: A change gap record's title and description, `reports.change_gaps`' `CHANGE_GAP_TITLE` and
+#: `CHANGE_GAP_DESCRIPTION`. The report prints the title, built from the rule, the resource, the
+#: change id and the window close.
+CHANGE_GAP_TITLE: Final = (
+    "{rule} window for {resource_type}:{resource_id} after change {change_id} closed "
+    "{closed_at} with no verification recorded "
+    f"({DETECTION_FAILURE_RULE})"
+)
+CHANGE_GAP_DESCRIPTION: Final = (
+    "ComplyRoll recorded no verification of this resource between the change and the window "
+    "close; this records the absence of a verification, not a vulnerability."
+)
+
+#: Every `change.basis` text a change gap record's writer has recorded, `reports.changes`'
+#: `CHANGE_BASIS`. A reworded basis is added here, never put in place of one, so a gap recorded
+#: before the change still verifies.
+CHANGE_GAP_BASIS_TEXTS: Final[tuple[str, ...]] = (
+    "VDR-CSO-DAC states no timeframe, so a window here is only the provider's own detectBy, and "
+    "a change without a window is tracked but never lapses. Changes are measured against the "
+    "provider-supplied inventory named by its SHA-256 digest, so a resource it omits is listed "
+    "as unregistered and opens no obligation. A detection obligation is satisfied only by a "
+    "verification at or after the change and at or before as-of; an examination that verified "
+    "nothing does not satisfy one, and neither does untimed evidence. A created "
+    "change and a new entry's coverage clocks overlap on purpose, under different rules. A "
+    "detected status is not a compliance finding.",
+)
+
+#: Why a record of any other kind names no change gap stream, at append and in the audit.
+_NOT_A_CHANGE_GAP_RECORD: Final = (
+    f"only a system record of source type {CHANGE_GAP_SOURCE_TYPE!r} names a change gap stream"
+)
+
+#: Exactly the source metadata keys a change gap record carries, `change.job` empty when the
+#: change names no job. The fingerprint covers none of them.
 CHANGE_GAP_METADATA_KEYS: Final[tuple[str, ...]] = (
     "change.basis",
     "change.changesSha256",
@@ -242,6 +286,9 @@ _CHANGE_GAP_CHANGE_PAIRS: Final[tuple[tuple[str, str], ...]] = (
 
 #: A size as `str(int)` spells it: digits only, no sign, no leading zero.
 _COUNT_TEXT: Final = re.compile(r"(?:0|[1-9][0-9]*)")
+
+#: A SHA-256 digest as every writer spells one: sixty-four lowercase hex digits.
+_SHA256_TEXT: Final = re.compile(r"[0-9a-f]{64}")
 
 #: The failure classes a system record's metadata may name.
 _FAILURE_CLASS_VALUES: Final = frozenset(member.value for member in FailureClass)
@@ -767,6 +814,15 @@ class EventRepository:
         """Return whether the store holds a coverage stream, without loading any (ADR 0015)."""
 
         return self._store.holds_stream_with_prefix(f"{COVERAGE_STREAM_PREFIX}/")
+
+    def holds_change_gap_stream(self) -> bool:
+        """Return whether the store holds a change gap stream, without loading any (ADR 0018).
+
+        The `changegap/` range sorts after the whole `change/` range, so a store holding only
+        change streams answers False.
+        """
+
+        return self._store.holds_stream_with_prefix(f"{CHANGE_GAP_STREAM_PREFIX}/")
 
     def read_stream(self, stream_id: str) -> tuple[EventRecord, ...]:
         """Read one whole stream in stream-version order, across pages."""
@@ -1505,10 +1561,7 @@ def change_gap_stream_id_of(observation: Observation) -> str:
         observation.origin is not ObservationOrigin.SYSTEM
         or observation.source_type != CHANGE_GAP_SOURCE_TYPE
     ):
-        raise ValueError(
-            f"only a system record of source type {CHANGE_GAP_SOURCE_TYPE!r} names a change gap "
-            "stream"
-        )
+        raise ValueError(_NOT_A_CHANGE_GAP_RECORD)
     return change_gap_stream_id(observation.fingerprint)
 
 
@@ -1556,10 +1609,16 @@ def change_gap_record_problem(
 
     A change gap stream id is its gap record's fingerprint (ADR 0018), so either event on a
     stream whose id names none is a `changegap_stream_mismatch`, and so is a record whose
-    fingerprint is another stream's. A record that is not a change gap system record names no
-    such stream at all, a `changegap_identity_breach`. The repository refuses each at append
-    with the message. Whether the head agrees with its record takes both events, which is
-    `change_gap_record_disagreement`'s business.
+    fingerprint is another stream's. The record must be the gap record a closed change window
+    mints, else a `changegap_identity_breach`: a system record of the change gap source type,
+    which a record of any other kind names no such stream by; the change gap tool, parser and
+    record id, its derived id, disposition `open`, severity `unknown`, no source identifier or
+    artifact, and the builder's description; and exactly `CHANGE_GAP_METADATA_KEYS`, with the
+    values `_change_gap_metadata_problem` holds, the title included. The fingerprint covers
+    none of the fixed fields or the metadata, so they are checked here. The repository refuses
+    each at append with the message, and the audit and the reader report each in it. Whether
+    the head agrees with its record and with its change takes the other events, which is
+    `change_gap_record_disagreement`'s and `change_gap_change_disagreement`'s business.
 
     Returns None for an event no change gap stream carries and for a stream of another kind,
     which are the stream-kind check's business rather than this one's.
@@ -1577,16 +1636,23 @@ def change_gap_record_problem(
     if event_type == CHANGE_GAP_RECORDED:
         return None
     described = f"{OBSERVATION_RECORDED} on change gap stream {stream_id!r}"
-    try:
-        recomputed = change_gap_stream_id_of_payload(payload)
-    except ValueError as exc:
-        return ("changegap_identity_breach", f"{described} is not a change gap record: {exc}")
-    if recomputed != stream_id:
-        return (
-            "changegap_stream_mismatch",
-            f"{described} is the gap record of stream {recomputed!r}; a change gap stream is "
-            "named for its gap record's fingerprint",
-        )
+    # A record of another kind is named as one first, in the words the stream id read gives.
+    problem = _change_gap_record_identity_problem(payload)
+    if problem is None:
+        try:
+            recomputed = change_gap_stream_id_of_payload(payload)
+        except ValueError as exc:
+            problem = str(exc)
+        else:
+            if recomputed != stream_id:
+                return (
+                    "changegap_stream_mismatch",
+                    f"{described} is the gap record of stream {recomputed!r}; a change gap "
+                    "stream is named for its gap record's fingerprint",
+                )
+            problem = _change_gap_metadata_problem(payload)
+    if problem is not None:
+        return ("changegap_identity_breach", f"{described} is not a change gap record: {problem}")
     return None
 
 
@@ -1667,6 +1733,155 @@ def change_gap_write_once_message(stream_id: str) -> str:
         "then its gap record in one batch; a recorded gap is append-only history, so the first "
         "payload stands"
     )
+
+
+def _change_gap_record_identity_problem(payload: Mapping[str, Any]) -> str | None:
+    """Return the first way one observation payload's fixed fields are not a change gap record's.
+
+    A record of another origin or source type is named as the stream id read names it, so a
+    detection failure, a coverage gap or an artifact finding reads one way wherever it is met.
+    """
+
+    if (
+        payload.get("origin") != ObservationOrigin.SYSTEM.value
+        or payload.get("source_type") != CHANGE_GAP_SOURCE_TYPE
+    ):
+        return _NOT_A_CHANGE_GAP_RECORD
+    if payload.get("source_record_id") != CHANGE_GAP_RECORD_ID:
+        return f"its source record id is {shown(payload.get('source_record_id'))}"
+    if payload.get("source_tool") != CHANGE_GAP_SOURCE_TOOL:
+        return f"its source tool is {shown(payload.get('source_tool'))}"
+    parser = (payload.get("parser_name"), payload.get("parser_version"))
+    if parser != (CHANGE_GAP_PARSER_NAME, CHANGE_GAP_PARSER_VERSION):
+        return f"its parser is {shown(parser[0])} version {shown(parser[1])}"
+    derived = f"obs-{payload.get('fingerprint')}"
+    if payload.get(OBSERVATION_ID_KEY) != derived:
+        return (
+            f"its id is {shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
+            f"{shown(derived)}"
+        )
+    # The builder fixes these, and a report reads each of them back from the record.
+    if payload.get("disposition") != ObservationDisposition.OPEN.value:
+        return f"its disposition is {shown(payload.get('disposition'))}"
+    if payload.get("source_severity") != SourceSeverity.UNKNOWN.value:
+        return f"its source severity is {shown(payload.get('source_severity'))}"
+    if payload.get("source_identifiers") != []:
+        return f"its source identifiers are {shown(payload.get('source_identifiers'))}"
+    if payload.get("description") != CHANGE_GAP_DESCRIPTION:
+        return f"its description is {shown(payload.get('description'))}"
+    # NOTE: The observation contract refuses either artifact field on a system record first,
+    # so on a store path these two answer only a direct call.
+    if payload.get("source_artifact_digest") != "":
+        return f"its source artifact digest is {shown(payload.get('source_artifact_digest'))}"
+    if payload.get("source_artifact_name") != "":
+        return f"its source artifact name is {shown(payload.get('source_artifact_name'))}"
+    return None
+
+
+def _change_gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
+    """Return the first way a change gap record's metadata is not what its writer stores.
+
+    Exactly the ten keys. The rule is the change rule; the change id names a change, and the
+    context key is the one that id spells; the window close is the instant the record is
+    observed at; the occurrence is an instant spelled as the writer spells it, at or before the
+    close, since a window may close as its change occurs; the force is a rule force and the
+    kind a change kind; both digests are SHA-256 text, and the one evidence id names the change
+    file's; the title is the one the rule, the resource, the change and the close build; and the
+    basis is a text the writer records. Every value is compared as text or read through a
+    parser that refuses, so a value written past the repository is named, never raised on. The
+    head restates six of them, which `change_gap_record_disagreement` holds it to.
+    """
+
+    raw = payload.get("source_metadata")
+    if not isinstance(raw, Mapping):
+        return "its metadata is not an object"
+    for key in CHANGE_GAP_METADATA_KEYS:
+        if key not in raw:
+            return f"its metadata has no {key!r}"
+    for key in raw:
+        if key not in CHANGE_GAP_METADATA_KEYS:
+            return f"its metadata carries {shown(key)}, which a change gap record does not"
+    rule = raw["change.rule"]
+    if rule != CHANGE_GAP_KEY_RULE:
+        return f"its metadata change.rule is {shown(rule)}, not {CHANGE_GAP_KEY_RULE!r}"
+    change_id = raw["change.id"]
+    try:
+        change_stream_id(change_id)
+    except (TypeError, ValueError):
+        return f"its metadata change.id is {shown(change_id)}, which names no change"
+    context_key = payload.get("context_key")
+    keyed = f"{CHANGE_GAP_KEY_RULE}:change:{change_id}"
+    if context_key != keyed:
+        return (
+            f"its metadata change.id is {shown(change_id)}, and its context key "
+            f"{shown(context_key)} is not {shown(keyed)}"
+        )
+    observed = _utc_text(payload.get("observed_at"))
+    closed_at = raw["change.detectBy"]
+    if observed is None or closed_at != observed:
+        return (
+            f"its metadata change.detectBy is {shown(closed_at)}, where the record is observed "
+            f"at {shown(observed)}"
+        )
+    occurred_at = _canonical_instant(raw["change.occurredAt"])
+    if occurred_at is None:
+        return (
+            f"its metadata change.occurredAt is {shown(raw['change.occurredAt'])}, not an "
+            "instant as its writer spells one"
+        )
+    # A change window is closed at both ends and may be empty-length (ADR 0018).
+    if occurred_at > parse_utc(observed):
+        return (
+            f"its metadata change.occurredAt is {shown(raw['change.occurredAt'])}, which is "
+            f"after its window close {shown(closed_at)}"
+        )
+    if raw["change.force"] not in _RULE_FORCE_VALUES:
+        return f"its metadata change.force is {shown(raw['change.force'])}, not a rule force"
+    if raw["change.kind"] not in CHANGE_KIND_VALUES:
+        return f"its metadata change.kind is {shown(raw['change.kind'])}, not a change kind"
+    for key in ("change.changesSha256", "change.inventorySha256"):
+        digest = raw[key]
+        if not isinstance(digest, str) or _SHA256_TEXT.fullmatch(digest) is None:
+            return f"its metadata {key} is {shown(digest)}, not a SHA-256 digest"
+    evidence = [f"sha256:{raw['change.changesSha256']}"]
+    if payload.get("evidence_ids") != evidence:
+        return (
+            f"its evidence ids are {shown(payload.get('evidence_ids'))}, where its metadata "
+            f"change.changesSha256 names {shown(evidence)}"
+        )
+    # The title restates the rule, the resource, the change and the close, checked once they are.
+    resource = payload.get("resource")
+    subject = (
+        (resource.get("resource_type"), resource.get("resource_id"))
+        if isinstance(resource, Mapping)
+        else (None, None)
+    )
+    title = CHANGE_GAP_TITLE.format(
+        rule=rule,
+        resource_type=subject[0],
+        resource_id=subject[1],
+        change_id=change_id,
+        closed_at=closed_at,
+    )
+    if payload.get("title") != title:
+        return f"its title is {shown(payload.get('title'))}"
+    if raw["change.basis"] not in CHANGE_GAP_BASIS_TEXTS:
+        return (
+            f"its metadata change.basis is {shown(raw['change.basis'])}, not a basis its "
+            "writer records"
+        )
+    return None
+
+
+def _utc_text(value: Any) -> str | None:
+    """Return a stored instant as `iso_utc` spells it, or None for text that is no instant."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        return iso_utc(parse_utc(value))
+    except ValueError:
+        return None
 
 
 def _canonical_instant(value: Any) -> datetime | None:
@@ -1930,8 +2145,16 @@ def _json_pointer(parts: Any) -> str:
 
 __all__ = [
     "ARTIFACT_IDENTITY_KEYS",
+    "CHANGE_GAP_BASIS_TEXTS",
+    "CHANGE_GAP_DESCRIPTION",
+    "CHANGE_GAP_KEY_RULE",
     "CHANGE_GAP_METADATA_KEYS",
+    "CHANGE_GAP_PARSER_NAME",
+    "CHANGE_GAP_PARSER_VERSION",
+    "CHANGE_GAP_RECORD_ID",
+    "CHANGE_GAP_SOURCE_TOOL",
     "CHANGE_GAP_SOURCE_TYPE",
+    "CHANGE_GAP_TITLE",
     "COVERAGE_BASIS_TEXTS",
     "COVERAGE_DESCRIPTION",
     "COVERAGE_METADATA_KEYS",

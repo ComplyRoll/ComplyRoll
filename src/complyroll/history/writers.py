@@ -885,7 +885,8 @@ def record_change_gaps(
     idempotence key: a stream already holding its head and record is left alone, and the first
     recorded payload stands even where this run's inventory digest differs. A stream holding
     anything else is refused, not resumed, because nothing ever writes one half of a change gap
-    stream. A new stream is written head first, as one batch at version 0.
+    stream; the fold refuses every such stream before this reads it. A new stream is written
+    head first, as one batch at version 0.
 
     The reads and every append run in one store transaction, or in the caller's, so a run
     records every gap it derives or none of them.
@@ -928,6 +929,9 @@ def _record_change_gaps(
             recorded.append(gap)
             continue
         held = [record.event_type for record in existing]
+        # NOTE: Unreachable today: `_read_change_gap_streams`, run by `rehydrate_observations`
+        # above, refuses every such shape first. The check stays so this writer refuses a stream
+        # it would resume on its own, whatever that reader comes to accept.
         if held != [CHANGE_GAP_RECORDED, OBSERVATION_RECORDED]:
             raise HistoryError(
                 f"change gap stream {stream_id!r} holds {len(held)} event(s) and not its "

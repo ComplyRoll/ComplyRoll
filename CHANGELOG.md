@@ -61,6 +61,48 @@ All notable project changes will be documented here.
   2026-11-12). No golden moved.
 - `changes pending` with neither artifacts nor `--db` is `invalid_option` with exit 1, as `report`
   is, instead of an argparse usage error with exit 2. Not in a release.
+- `cases evaluate` refuses two runs it accepted, each with exit 1, `evaluation_unmatched`, and
+  nothing appended. An override naming the correlation id of a group `ingest` brought that no case
+  holds yet, before `cases correlate`, is refused, and the refusal names that group's source
+  record id and context key and the case whose new `trackingId` clears it. An override naming the
+  correlation id of a case whose own override no report reads, because it has no current
+  evaluation, is refused too. Each run left a store that `store verify` names as
+  `tracking_id_collision` and no report compiled, and the stateless compiler already refused the
+  same file. A store that already holds either collision now refuses every run until one moves a
+  claimant off the id: at `recorded history` when the run touches neither claimant, and at the
+  entry when it touches one without moving it. An override naming a correlation id no current
+  group has is still accepted. No golden moved (ADR 0008 amendment 2026-11-14, fourth).
+
+### Fixed
+
+- The event contracts' anchored patterns now end at the end of the text. A JSON Schema `pattern`
+  is a search, and Python's `$` also matches before a final newline, so a digest, a tracking id
+  or an instant followed by `\n` passed its contract on 28 fields, and on 12 of them `store verify`
+  said ok: every `ingestedAt` on an artifact or failure head, and `createdAt`, `observedAt`,
+  `sourceArtifactSha256`, `detectedAt`, `attestedAt`, `completedAt`, `estimatedAt`, `reducedAt`
+  and `recordedAt` on a case stream. Eleven are instants, which `parse_utc` strips, and no reader
+  parses or compares `sourceArtifactSha256`. Every such pattern ends on `(?!\n)$`, the change
+  contract's spelling. The repository refuses the value, and `store verify` names it as
+  `payload_contract_invalid` at its sequence. The commands that fold cases, `changes pending --db`
+  among them, refuse a case stream holding one as `event_contract_invalid`. The reports, `cases
+  correlate`, `cases coverage`, `cases changes`, `changes pending --db`, `cases evaluate` with an
+  entry that matches a case, and `ingest --record-failed-imports` of other bytes that fail to parse
+  refuse an artifact or failure head holding one as `history_invalid`; that `ingest` exited 3 and
+  recorded the failure. `ingest --record-failed-imports` of the bytes a `failure.recorded` head
+  names exited 3 and now refuses that head as `event_contract_invalid`, for its `sha256` as for its
+  `ingestedAt`. Where another fault named the value before, `sha256` on a head and the coverage and
+  change gap heads' fields are now `payload_contract_invalid` alone, and a `case.created` tracking
+  id is named by both. No released writer leaves such a value, so this stops nothing a store the
+  writers produced could do, and no golden moved (ADR 0008 amendment 2026-11-14, second).
+- An evaluation entry can now state a `match.contextKey` of only whitespace, and it matches the
+  stored key exactly, on the stateless path and through `cases evaluate` alike. An XCCDF
+  `TestResult id=" "` under a benchmark with no id stores such a key, and the entry was refused as
+  `invalid_input`, so once a twin under a real name made the source record ambiguous no entry could
+  name the claimant, and a `tracking_id_collision` on it could not be cleared. A new override on it
+  now clears it, as on any claimant. An empty `contextKey` or one that is not a string is still
+  refused, now as "must be non-empty text when present", and `sourceRecordId` and `sourceType`
+  stay non-blank. Nothing changes at ingest, and no id or golden moved (ADR 0008 amendment
+  2026-11-14, third).
 
 ## 0.4.0a0 - 2026-11-05
 

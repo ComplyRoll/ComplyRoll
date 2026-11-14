@@ -92,17 +92,22 @@ _MAX_STREAM_ID_LENGTH: Final = 500
 _CHANGE_NAME_REGEX: Final = r"[\x21-\x7e]([\x20-\x7e]{0,126}[\x21-\x7e])?"
 _CHANGE_NAME_PATTERN: Final = re.compile(_CHANGE_NAME_REGEX)
 
-_UTC_TIMESTAMP_REGEX: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$"
+#: Every anchored schema pattern below ends on `(?!\n)$`. JSON Schema runs `pattern` as a search,
+#: and a Python `$` also matches just before a final newline, so `^...$` passed a digest, a tracking
+#: id or an instant with one after it. The lookahead keeps it out and means the same in ECMA-262.
+_UTC_TIMESTAMP_REGEX: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z(?!\n)$"
 #: RFC 3339 offsets are hours and minutes. Python parses an offset carrying seconds
 #: and re-serializes it unchanged, so nothing downstream would catch one that got in.
-_RFC3339_REGEX: Final = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$"
+_RFC3339_REGEX: Final = (
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})(?!\n)$"
+)
 #: Exactly what `datetime.isoformat()` writes for an aware datetime, which is exactly
 #: what `Observation.to_canonical_dict` stores and `from_canonical_dict` will read
 #: back: no `Z` suffix, a fraction of exactly six digits or none at all, and an offset
 #: of whole minutes. A looser pattern would let the repository store history the
 #: replay reader refuses (ADR 0008, "stored text is canonical or rejected").
 _CANONICAL_TIMESTAMP_REGEX: Final = (
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{6})?[+-]\d{2}:\d{2}$"
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{6})?[+-]\d{2}:\d{2}(?!\n)$"
 )
 
 _UTC_TIMESTAMP: Final[dict[str, Any]] = {"type": "string", "pattern": _UTC_TIMESTAMP_REGEX}
@@ -141,14 +146,20 @@ _NON_BLANK_TEXT: Final[dict[str, Any]] = {
     "minLength": 1,
     "pattern": _NON_BLANK_PATTERN,
 }
-_SHA256: Final[dict[str, Any]] = {"type": "string", "pattern": r"^[0-9a-f]{64}$"}
+_SHA256: Final[dict[str, Any]] = {"type": "string", "pattern": r"^[0-9a-f]{64}(?!\n)$"}
 #: System observations carry no artifact, so their digest field is the empty string.
-_OPTIONAL_SHA256: Final[dict[str, Any]] = {"type": "string", "pattern": r"^([0-9a-f]{64})?$"}
+_OPTIONAL_SHA256: Final[dict[str, Any]] = {
+    "type": "string",
+    "pattern": r"^([0-9a-f]{64})?(?!\n)$",
+}
 #: The repository checks `integer` as a JSON integer, where JSON Schema alone admits 1.0, so a
 #: validator reading these documents by themselves passes what `store verify` refuses.
 _PAIN: Final[dict[str, Any]] = {"type": "integer", "minimum": 1, "maximum": 5}
 _COUNT: Final[dict[str, Any]] = {"type": "integer", "minimum": 0}
-_TRACKING_ID: Final[dict[str, Any]] = {"type": "string", "pattern": r"^case-[0-9a-f]{16}$"}
+_TRACKING_ID: Final[dict[str, Any]] = {
+    "type": "string",
+    "pattern": r"^case-[0-9a-f]{16}(?!\n)$",
+}
 _STRING_ARRAY: Final[dict[str, Any]] = {"type": "array", "items": _NON_EMPTY_TEXT}
 
 #: A stored diagnostic is never an ERROR. An ERROR stops a reading before anything is
@@ -435,8 +446,8 @@ CHANGE_KIND_VALUES: Final[tuple[str, ...]] = ("created", "modified")
 _MAX_CHANGE_REFERENCE_CHARS: Final = 512
 _MAX_CHANGE_RESOURCES: Final = 1_000
 _MAX_CHANGE_RATIONALE_CHARS: Final = 512
-#: A Python `$` also matches before a trailing newline, and a name or digest holding one is
-#: neither, so these two end on a lookahead that keeps it out.
+#: A name or digest holding a final newline is neither, so these two end on the lookahead every
+#: anchored pattern above ends on.
 _CHANGE_NAME: Final[dict[str, Any]] = {
     "type": "string",
     "pattern": f"^{_CHANGE_NAME_REGEX}(?!\\n)$",

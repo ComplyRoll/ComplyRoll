@@ -2732,11 +2732,15 @@ class ChangeGapStoreVerifyCommandTests(PersistedStoreTestCase):
         stream_id: str | None = None,
         *,
         requires_schema: int = CHANGE_GAP_STREAM_SCHEMA_VERSION,
+        first_version: int = 0,
     ) -> list[int]:
-        """Append events to one new stream straight to the store, past the repository."""
+        """Append events to one stream straight to the store, past the repository.
+
+        `first_version` is the version the stream is already at: zero for a new stream.
+        """
         sequences = []
         with SQLiteEventStore(self.database) as store:
-            for version, (event_type, payload) in enumerate(events):
+            for version, (event_type, payload) in enumerate(events, start=first_version):
                 (appended,) = store.append(
                     self.stream_id if stream_id is None else stream_id,
                     [
@@ -2810,6 +2814,30 @@ class ChangeGapStoreVerifyCommandTests(PersistedStoreTestCase):
         listing, _ = self.succeeds(["cases", "list", "--db", str(self.database)])
         for row in CLOSED_ROWS:
             self.assertIn(row[3], listing)
+
+    def test_the_case_commands_still_print_a_gap_case_whose_stream_verify_faults(self) -> None:
+        # CL-104: `cases list` and `cases history` read only `case/` streams and rehydrate no
+        # observation, so a damaged gap stream behind a case reaches neither of them; `store
+        # verify` is the check of the observations behind a case.
+        self.assertEqual(self.cases_changes(*CHANGES_OPTIONS)[0], 3)
+        self.succeeds(["cases", "correlate", "--db", str(self.database)])
+        tracking_id = CLOSED_ROWS[0][3]
+        readers = (
+            ["cases", "list", "--db", str(self.database)],
+            ["cases", "history", tracking_id, "--db", str(self.database)],
+        )
+        before = [self.succeeds(argv) for argv in readers]
+        with SQLiteEventStore(self.database) as store:
+            (head, _record) = EventRepository(store).read_stream(self.stream_id)
+
+        self.smuggle([self.observation], first_version=2)
+
+        self.assert_one_fault(
+            head.sequence, "changegap_overfull", shape_message(self.stream_id, "overfull", 1, 2)
+        )
+        self.assertIn(tracking_id, before[0][0])
+        self.assertIn(self.image.observation_id, before[1][0])
+        self.assertEqual([self.succeeds(argv) for argv in readers], before)
 
     def test_a_change_gap_stream_missing_its_record_is_named_and_refused(self) -> None:
         sequences = self.smuggle([self.head])

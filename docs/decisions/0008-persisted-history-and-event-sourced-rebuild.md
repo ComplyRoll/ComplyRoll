@@ -1060,3 +1060,139 @@ window as a case"; the case is any closed window, a late detection's included (A
   it, it changes no report's bytes, and `store verify` still checks evaluation order beside it.
   `change_schema_unmarked` joined the set with ADR 0018's second section (its Decision 10), which
   this record did not count, so the 2026-10-16 amendment's three codes are now five.
+
+## Amendment 2026-11-14 (second): contract patterns end at the end of the text
+
+Decision 1's contracts spell digests, tracking ids and instants as `pattern`s anchored `^...$`.
+JSON Schema runs a pattern as a search, and a Python `$` also matches just before a final newline,
+so a value followed by one `\n` passed its contract on 28 fields of 13 contracts. Only the change
+contract's names and digests, and the change gap contract's, already ended on `(?!\n)$` (ADR
+0018). Twelve of the 28 verified clean: `ingestedAt` on `artifact.ingested`, `failure.recorded`
+and `failure.held`, `createdAt`, `observedAt` and `sourceArtifactSha256` on
+`case.observation_linked`, `detectedAt`, `attestedAt`, `completedAt`, `estimatedAt`, `reducedAt`,
+and `recordedAt` on `case.disposition_recorded`. Eleven are instants, which `parse_utc` strips, so
+every reader read them as if the newline were not there; `sourceArtifactSha256` is a digest no
+reader parses or compares. The others were named by another fault.
+
+Every anchored pattern in every contract now ends on `(?!\n)$`, which matches only at the end of the
+text in Python and means the same in ECMA-262. The contract documents change by that suffix and
+nothing else, no event version changes, and `tests/test_contract_patterns.py` fails on any pattern
+that ends on a bare `$`. The repository refuses such a value at append, and `store verify` names it
+as `payload_contract_invalid` at its sequence, in the pattern's words.
+
+- **The nine on a case stream.** `store verify` exits 1 where it said ok. Every command that folds
+  cases refuses the store as `event_contract_invalid`: the three reports from a store, `cases
+  correlate`, `cases evaluate` with or without an entry, `cases attest-detection`, `cases list`
+  and `changes pending --db`. `cases history` still prints the case, and `cases coverage`, `cases
+  changes`, `changes record` and `ingest`, flagged or not, exit as before.
+- **The three heads.** An `ingestedAt` on an artifact, failure or hold head makes `store verify`
+  exit 1 where it said ok. The three reports, `cases correlate`, `cases coverage`, `cases
+  changes`, `changes pending --db` and `cases evaluate` with an entry that matches a case refuse
+  the store as `history_invalid` ("event N is not a readable ..."), and so does `ingest
+  --record-failed-imports` of other bytes that fail to parse, which exited 3 recording the failure
+  and now records nothing. On a `failure.recorded` head, `ingest --record-failed-imports` of the
+  bytes that head names exited 3 and now exits 1 as `event_contract_invalid`. `cases evaluate`
+  with no entry reads no observation on these stores and exits 0, as before, and `cases list`,
+  `cases history`, `cases attest-detection`, `changes record`, a plain `ingest` of the bytes the
+  store holds and an `ingest` of other bytes that records no failure exit as before.
+- **The rest.** The identity checks read only a payload its contract passes, so the code moves to
+  `payload_contract_invalid` for `sha256` on `artifact.ingested` (from `artifact_stream_mismatch`)
+  and on both failure heads (from `failure_stream_mismatch`), for the three `coverage.recorded`
+  fields (from `coverage_identity_breach`), and for `windowClosedAt` and `occurredAt` on
+  `change.gap_recorded` (from `changegap_identity_breach`). `case.created`'s `trackingId` keeps
+  `case_tracking_id_mismatch` and gains `payload_contract_invalid` at the same sequence, and the
+  readers that refused it as `history_invalid` now say `event_contract_invalid`. The four
+  `observation.recorded` fields and `change.recorded`'s `occurredAt`, `detectBy` and `recordedAt`
+  were already `payload_contract_invalid`, and now carry the pattern's words rather than the
+  reader's. Every reader that refused one of these stores still refuses it with exit 1, and one
+  that passed now refuses: `ingest --record-failed-imports` of the bytes a `failure.recorded`
+  head names exited 3 with that head's `sha256` carrying the newline, and now exits 1 as
+  `event_contract_invalid`.
+
+No released writer leaves such a value. 0.3.0a0 and 0.4.0a0 write every one of these fields from a
+computed value (`iso_utc`, `isoformat`, a SHA-256 hex digest, or the tracking id correlation
+derives), and 0.2.0a0 has no event writer, so only a store written around the repository holds one.
+A store the writers produced verifies and reads byte for byte as before, and no golden moves.
+`providerTrackingId` is free text with no pattern and is unchanged.
+
+`parse_utc` keeps its `strip()`. Every input reaches it through a contract that now refuses the
+newline, or through a reader stricter than the pattern, except one: `ingest` resuming an artifact
+stream an earlier build left short reads the stored head's `ingestedAt` without checking the head
+against its contract. A short stream whose head carries the newline is resumed exactly as before,
+and `store verify` still names the head afterward.
+
+## Amendment 2026-11-14 (third): a match states a context key of only whitespace
+
+The 2026-11-03 amendment left one claimant out of reach: one whose stored context key is only
+whitespace, which an XCCDF `TestResult id=" "` under a benchmark with no id gives. `contextKey`
+had to be non-blank, so once a twin under a real name made its source record ambiguous, no entry
+reached it, and a collision on it could not be cleared through the command line. That amendment
+left reaching such a key to its own ruling. The ruling: `match.contextKey` accepts a string of only
+whitespace and matches it exactly, as it matches every key. This supersedes that amendment's
+sentence that such a claimant "cannot be named either", which stays as written above.
+
+- **One parser, both paths.** `parse_evaluations` reads the file for the stateless compiler and for
+  `cases evaluate`, and `reports.records._matches` and `history.writers._matches` both compare the
+  stated key with the stored one with no stripping, so a key of one space and a key of two spaces
+  are two records on both paths.
+- **What stays refused.** An empty `contextKey` and one that is not a string are refused as before,
+  now in the words "must be non-empty text when present", since "non-blank" no longer describes the
+  rule. `sourceRecordId` and `sourceType` keep their non-blank rule and their words.
+- **What moves.** An entry stating `contextKey` of only whitespace was refused as `invalid_input`
+  by every command that reads an evaluations file and is now read: it selects the record whose key
+  it equals, or none. A new override on such a claimant clears the collision and the refusal, as
+  it does for any other claimant. Nothing changes at ingest, where XCCDF keeps the key it stores,
+  no event records a match, and no tracking id or golden moves. Two groups under one correlation
+  id are unchanged: they share one case, so no override parts them.
+
+## Amendment 2026-11-14 (fourth): `cases evaluate` counts every record a report publishes
+
+The 2026-11-03 amendment made `cases evaluate` count what a report would publish and left two
+claimants out on purpose, so as to add no refusal. A case holding an override no report reads
+claimed nothing, though a report publishes its group under its correlation id. A current group no
+case holds yet claimed nothing, though a report publishes it under its correlation id. Either gap
+let the writer accept a run after which `store verify` names `tracking_id_collision` and no report
+compiles. The fix was approved on 2026-11-05 as two new refusals. This supersedes that amendment's
+sentences that such a case "claims nothing, not its correlation id" and that the change "adds no
+refusal" and "still misses what it missed", which stay as written above, and narrows its route:
+`cases evaluate` now refuses an override naming a correlation id a current group already has,
+before or after `cases correlate`.
+
+- **The claims.** A case the run does not touch, with no current evaluation, claims its
+  correlation id whatever override it holds. A current group no case holds claims its correlation
+  id. The rest is as before: a case with no current group claims nothing, a case the run touches
+  claims the entry's `trackingId`, else its recorded override, else its correlation id, and an
+  untouched case with a current evaluation claims its override, else its correlation id. Each
+  claim is the id verify reads once the run is written, so a refused run is always one after which
+  verify would name the collision, and the writer refuses no run whose result verifies clean of it.
+  The stateless compiler already refuses the same file, because it compiles every group, so the two
+  paths now agree.
+- **The pairs.** Claimants are walked in id order and each later claim pairs with the first, at
+  the entry when an entry is a claimant, else at `recorded history`, in the words of the writer's
+  other collision refusals; the command prints every pair on its one `evaluation_unmatched` line,
+  joined by `; `. A group no case holds is named `a current group no case holds yet (originally
+  <id>: sourceRecordId=<value>, contextKey=<value>)`, and its pair ends "and another trackingId
+  for <case> clears it", naming the case whose override meets it. Where a new claimant sorts
+  first, a pair of two entries becomes a pair of each with it, so a refusal can name more pairs;
+  none names fewer. The order check still runs first.
+- **Still accepted.** An override naming a correlation id no current group has: nothing publishes
+  under it. A later `ingest` that brings the group leaves the collision verify names, as on the
+  2026-11-03 route.
+- **Stores that already hold one.** A store a build before this one or a later `ingest` left with
+  either collision now refuses every run unless the run moves a claimant off the id, as 2026-11-03
+  already did for two cases: at `recorded history` when the run touches neither claimant, and at
+  the entry when it touches one without moving it. A run moves one with an entry stating another
+  `trackingId` for the case whose override meets the id, or with any entry for a case whose
+  override was unread, which makes that override current. Such a run, when its claims meet no
+  other, is accepted and clears the fault and every report's refusal. Before, the writer did not
+  see such a collision and refused no run for it.
+- **Reads.** The check reads the groups only when two cases' claims are alike, or a claim is an
+  override shaped like a correlation id (`TRACKING_ID_PATTERN`) that no folded case holds. A group
+  no case holds has a correlation id and no case has it, so only such an override can meet one,
+  and the check skips no run it would refuse. An ordinary run reads the groups once, for the order
+  check, or not at all. A run with no entry now reads them on a store holding such an override, so
+  where damage also stops the observations being read, `cases evaluate` with no entry exits 1 as
+  `history_invalid` where it exited 0; `store verify` already rejects that store.
+- **Unchanged.** Two groups under one correlation id hold one place in the writer's group map, as
+  before, so the writer neither sees that pair nor refuses for it; verify names it, and no override
+  parts it.

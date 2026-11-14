@@ -61,8 +61,10 @@ Report inputs, which are not adapters and produce no observations:
   inventory, because a change is read against one. The report names it by the SHA-256 of the bytes
   that were read, and `changes pending` writes the resources still waiting as a document for the
   pipeline that owns the scanner (ADR 0018). `changes record` appends each change as history, and
-  a report or request from the store derives the same projection from what it recorded. No adapter
-  for git, Terraform, Kubernetes, or a deployment record is built.
+  a report or request from the store derives the same projection from what it recorded. `cases
+  changes` reads the inventory the same way to record change gaps, and the store keeps those gap
+  records, never the inventory. No adapter for git, Terraform, Kubernetes, or a deployment record
+  is built.
 
 ### Observation ledger
 
@@ -143,6 +145,13 @@ inventory. With `--record-coverage-gaps`, each window of that one projection als
 block and the gap records cannot disagree within a run. `cases coverage` derives through the same
 function the report uses and stores those observations instead (ADR 0015).
 
+Declared changes (ADR 0018) take the same shape. `reports/changes.py` derives one change
+projection, after the coverage derivation, and with `--record-change-gaps` each obligation row
+whose window closed also becomes a `VDR-CSO-FAV` system observation, built in
+`reports/change_gaps.py` and added before grouping. `cases changes` derives through the same
+function from the store's recorded changes and stores those observations instead. The projection
+reads only artifact observations, so no gap of either kind satisfies an obligation.
+
 Shipped projections:
 
 - Vulnerability Detail Report
@@ -220,10 +229,20 @@ stream. The first `changes record` append (`requires_schema=5`) inserts every mi
 record up to 5 and sets `user_version` to 5 inside its own transaction, so such a store carries
 record 4 even if it never held a coverage stream. A store that never records a change stays at
 its version. Gap awareness follows a coverage stream, not the marker (ADR 0015, amendment
-2026-11-09), so a read never marks a schema and recording a change turns on no coverage window key.
-This build opens versions 1 to 5 (`SUPPORTED_SCHEMA_VERSION`). 0.4.0a0 refuses a version 5 store
-at open with `database schema 5 is newer than supported schema 4`, and its `store verify` reports
-the marker as `schema_version_unsupported`.
+2026-11-12), so a read never marks a schema and recording a change turns on no coverage window key.
+0.4.0a0 refuses a version 5 store at open with `database schema 5 is newer than supported schema
+4`, and its `store verify` reports the marker as `schema_version_unsupported`.
+
+Schema version 6 (ADR 0018) changes no schema object either. It marks a store that holds a change
+gap stream. The first `cases changes` append that records a gap (`requires_schema=6`) inserts
+migration record 6 ("change gap streams, ADR 0018") and sets `user_version` to 6 inside its own
+transaction. A gap is recorded only of a change the store holds, so such a store is already
+version 5. A store that never records a change gap stays at its version, and change gap awareness
+follows a change gap stream, not the marker. This build opens versions 1 to 6
+(`SUPPORTED_SCHEMA_VERSION`). A build that stops at version 5 refuses a version 6 store at open
+with `database schema 6 is newer than supported schema 5`, and its `store verify` reports
+`schema_version_unsupported` ("database is marked schema 6; this build opens schemas 1 to 5").
+0.4.0a0 already refuses such a store as newer than schema 4.
 
 Projection checkpoints are mutable compare-and-swap cursors over the global sequence. Projection
 rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
@@ -239,7 +258,10 @@ observation. ADR 0015 adds `coverage.recorded` v1 and a fourth stream kind,
 `coverage/<fingerprint>`, named for its gap record's SYSTEM identity hash, which holds one
 `coverage.recorded` head and the one `observation.recorded` carrying that gap record. ADR 0018 adds
 `change.recorded` v1 and a fifth stream kind, `change/<sha256(changeId)>`, which holds exactly one
-`change.recorded` and nothing else. Candidates for later slices: `case.action_planned`,
+`change.recorded` and nothing else, then `change.gap_recorded` v1 and a sixth stream kind,
+`changegap/<fingerprint>`, named for its gap record's SYSTEM identity hash, which holds one
+`change.gap_recorded` head and the one `observation.recorded` carrying that gap record, written
+together and never extended. Candidates for later slices: `case.action_planned`,
 `case.action_completed`, `validation.completed`, `evidence.attached`.
 
 ## Package layout
@@ -256,7 +278,7 @@ src/complyroll/
   reports/        # the record compiler, the stateless and replayed report paths, the evaluations file
   schemas/        # verified offline schema registry and report validation results
   store/          # SQLite event history, migrations, integrity, and projection checkpoints
-  cli.py          # ComplyRoll project CLI (ingest, cases, report vdt|avi|historical, store verify, validate, version, plan)
+  cli.py          # ComplyRoll project CLI (ingest, cases, changes, report vdt|avi|historical, store verify, validate, version, plan)
   models.py       # framework-independent domain records
 ```
 
@@ -284,10 +306,12 @@ recorded as a dated amendment to ADR 0008. A coverage gap is observed at its win
 paths, but a store's recorded gaps can disagree with the windows a run derives, and the report
 names each disagreement in an INFO note (the ADR 0008 amendment of 2026-10-16). A store that
 recorded changes gives the stateless run's bytes but for the change block's `input` and its
-Markdown intro line (the ADR 0008 amendment of 2026-11-09). Event payloads are validated against
-the contracts in `events/` on every append; the store itself stays a generic envelope log. The
-fold runs in memory at Phase 1 volumes; projection tables and checkpoints remain available for
-when that stops being enough. The domain model remains independent from all of it.
+Markdown intro line (the ADR 0008 amendment of 2026-11-12), and one that recorded change gaps
+gives them too when they were recorded with the report's inventory, as-of, and class, or names
+each disagreement in an INFO note (the ADR 0008 amendment of 2026-11-14). Event payloads
+are validated against the contracts in `events/` on every append; the store itself stays a generic
+envelope log. The fold runs in memory at Phase 1 volumes; projection tables and checkpoints remain
+available for when that stops being enough. The domain model remains independent from all of it.
 
 ## Failure semantics
 
@@ -298,6 +322,9 @@ when that stops being enough. The domain model remains independent from all of i
 - Stale scanner or validation: status `stale` and a closed window in the same block. With
   `--record-coverage-gaps`, or `cases coverage` into a store, each closed window becomes a
   `VDR-CSO-FAV` system observation and case (ADR 0015). Validation runs are a Phase 3 slice.
+- No detection after a declared change: status `lapsed` in the changes block once the change's
+  `detectBy` passes. With `--record-change-gaps`, or `cases changes` into a store, each closed
+  window becomes a `VDR-CSO-FAV` system observation, and each change one case (ADR 0018).
 - Policy unavailable or unverified: block deadline/report certification claims.
 - Schema mismatch: report generation failure with actionable paths.
 - Unknown evaluation factor: preserve unknown; do not invent a default.
@@ -309,4 +336,6 @@ is the detector of that failure, so its `observed_at` is the failed invocation's
 the log declares one and otherwise the instant ComplyRoll saw the failure, and `failure.clock`
 records which (`invocation` or `as-of`). It never lends that instant to an artifact observation.
 A coverage gap (ADR 0015) is not one either: its `observed_at` is the close of its window, a due
-date the pinned rules dataset computes from the window's anchor, never as-of or ingest time.
+date the pinned rules dataset computes from the window's anchor, never as-of or ingest time. A
+change detection gap (ADR 0018) is observed at its change's `detectBy`, the window close the
+provider stated, because the dataset states no timeframe for `VDR-CSO-DAC`.

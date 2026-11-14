@@ -23,20 +23,42 @@ All notable project changes will be documented here.
   the first differing field, with nothing written. `report --db` with `--inventory` and
   `changes pending --db` derive the same block and request from what the store recorded, equal to
   the stateless path but for the `input` object and its Markdown intro line (ADR 0008 amendment
-  2026-11-09). `store verify` gains `change_incomplete`, `change_overfull`, `change_stream_mismatch`
+  2026-11-12). `store verify` gains `change_incomplete`, `change_overfull`, `change_stream_mismatch`
   and `change_schema_unmarked`. The first recorded change marks the store schema 5, which 0.4.0a0
   refuses to open; a store that never records a change stays at its version and reads unchanged in
   both builds (ADR 0018).
+- `report vdt|avi|historical --record-change-gaps`, which needs `--changes`, and `cases changes
+  --db STORE --inventory FILE --class C --as-of T` record each change window that closed with no
+  verification, a `lapsed` row or a late `detected` one, as a `VDR-CSO-FAV` system observation
+  (source type `complyroll.change`, record id `change-detection-gap`, context key
+  `VDR-CSO-DAC:change:<changeId>`), so the windows of one change are one case listing every
+  resource, which a store persists once `cases correlate` runs, and the run exits 3. The case is
+  detected at the change's `detectBy`, gets PAIN only from an evaluation matched on all three
+  keys, and closes only by a disposition. A gap-aware block adds `recorded` and `trackingId` to
+  each obligation row, and the Markdown Obligations table two columns. In a store each gap is a
+  `changegap/<fingerprint>` stream of a `change.gap_recorded` head and the record, written whole,
+  and the first marks the store schema 6, which 0.4.0a0 and the build before this one refuse to
+  open; a store that never records a change gap stays at its version. A report from a store notes
+  `change_gap_unrecorded`, `change_gap_contradicted`, or `change_gap_unmatched` where its gaps and
+  its run disagree (ADR 0008 amendment 2026-11-14). `store verify` gains `changegap_incomplete`,
+  `changegap_overfull`, `changegap_stream_mismatch`, `changegap_identity_breach`, and
+  `changegap_schema_unmarked`, and `cases list` shows the `CONTEXT KEY` column for change gap
+  cases too. A gap records an absence of verification, not a vulnerability. No existing golden
+  moved (ADR 0018).
 
 ### Changed
 
 - `docs/BUILD_PLAN.md` marks the exit criterion "A case can group equivalent observations while
   retaining every affected resource" Met, which has been true since ADR 0001. No code changed for
   it.
+- `docs/BUILD_PLAN.md` marks the Phase 2 exit criterion "New or significantly changed resources
+  can trigger a scoped detection request" Met, with the deliverable "Change-triggered detection
+  jobs", and marks "Git/deployment change-event ingestion" Contract complete. No adapter for git,
+  Terraform, Kubernetes, or a deployment record is built.
 - A report from a store is coverage-gap-aware when the store holds a `coverage/` stream, not when it
   is marked schema 4, so a store marked 4 by hand with no coverage stream reads unaware, and
   recording a change turns on no window key or `coverage_gap_*` note (ADR 0015 amendment
-  2026-11-09). No golden moved.
+  2026-11-12). No golden moved.
 - `changes pending` with neither artifacts nor `--db` is `invalid_option` with exit 1, as `report`
   is, instead of an argparse usage error with exit 2. Not in a release.
 

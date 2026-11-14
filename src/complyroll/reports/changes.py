@@ -196,6 +196,9 @@ class ChangeProjection:
     # Changes after as-of: listed, never measured.
     later: tuple[Change, ...]
     warnings: tuple[ReportDiagnostic, ...]
+    # The catalog `kevAtActivation` was read against, so a compile can tell a projection
+    # derived for its own options from one derived for another run's (ADR 0018).
+    kev_catalog: KevCatalog | None = None
 
     @property
     def force_value(self) -> str | None:
@@ -241,8 +244,22 @@ class ChangeProjection:
             ),
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        """Return the `x-complyroll.changes` block; keys are sorted when the JSON is written."""
+    def to_dict(
+        self, *, gap_records: Mapping[ChangeObligation, str | None] | None = None
+    ) -> dict[str, Any]:
+        """Return the `x-complyroll.changes` block; keys are sorted when the JSON is written.
+
+        `gap_records` makes the block change-gap aware: it maps every row whose window closed,
+        and no other, to the tracking id of the record carrying its gap, or None. Every row
+        then says whether its gap is a record (null where no window closed) and names it.
+        Without it the rows carry neither key, as they did before change gaps existed.
+        """
+        if gap_records is not None and set(gap_records) != {
+            row for row in self.obligations if row.window_closed_at is not None
+        }:
+            raise ValueError(
+                "gap_records must name every closed window of the projection and no other"
+            )
         return {
             "rule": DAC_RULE,
             "force": self.force_value,
@@ -253,7 +270,8 @@ class ChangeProjection:
             "summary": {status.value: count for status, count in self.summary.items()},
             "changes": [_change_row(change, self.force_value) for change in self.declared],
             "obligations": [
-                _obligation_row(row, self.force_value, self.as_of) for row in self.obligations
+                _obligation_row(row, self.force_value, self.as_of, gap_records)
+                for row in self.obligations
             ],
             "unregistered": [item.to_dict() for item in self.unregistered],
             "later": [
@@ -370,6 +388,7 @@ def derive_changes(
         ),
         later=tuple(later),
         warnings=tuple(warnings),
+        kev_catalog=kev_catalog,
     )
 
 
@@ -915,8 +934,13 @@ def _change_row(change: Change, force: str | None) -> dict[str, Any]:
     }
 
 
-def _obligation_row(row: ChangeObligation, force: str | None, as_of: datetime) -> dict[str, Any]:
-    return {
+def _obligation_row(
+    row: ChangeObligation,
+    force: str | None,
+    as_of: datetime,
+    gap_records: Mapping[ChangeObligation, str | None] | None = None,
+) -> dict[str, Any]:
+    value = {
         "changeId": row.change.change_id,
         **_ref_dict(row.resource),
         "entry": None if row.entry is None else _ref_dict(row.entry.ref),
@@ -935,6 +959,12 @@ def _obligation_row(row: ChangeObligation, force: str | None, as_of: datetime) -
         "kevAtActivation": row.kev_at_activation,
         "kevTrackingIds": list(row.kev_tracking_ids),
     }
+    # Only an aware run carries the two keys, so every earlier block keeps its bytes.
+    if gap_records is not None:
+        tracking_id = gap_records.get(row)
+        value["recorded"] = None if row.window_closed_at is None else tracking_id is not None
+        value["trackingId"] = tracking_id
+    return value
 
 
 __all__ = [

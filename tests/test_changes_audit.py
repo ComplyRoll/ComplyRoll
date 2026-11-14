@@ -286,6 +286,7 @@ class ChangeStreamAuditTests(ChangeAuditCase):
 
     def test_the_order_check_still_runs_beside_an_unmarked_store(self) -> None:
         self.assertIn("change_schema_unmarked", _ORDER_CHECKED_BESIDE)
+        # Moved on purpose in PR 3 task 4: a change gap marker left low joins the set.
         self.assertEqual(
             _ORDER_CHECKED_BESIDE,
             {
@@ -293,6 +294,7 @@ class ChangeStreamAuditTests(ChangeAuditCase):
                 "failure_schema_unmarked",
                 "coverage_schema_unmarked",
                 "change_schema_unmarked",
+                "changegap_schema_unmarked",
             },
         )
 

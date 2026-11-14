@@ -288,7 +288,7 @@ def common_extension(
     # Only a run given a change file carries the key, so a run without one moves no byte
     # (ADR 0018).
     if metadata.changes is not None:
-        extension["changes"] = metadata.changes.to_dict()
+        extension["changes"] = metadata.changes.to_dict(gap_records=metadata.change_gap_records)
     return extension
 
 

@@ -50,6 +50,7 @@ from .history import (
     fold_all_cases,
     latent_pair_warnings,
     reading_elsewhere,
+    record_change_gaps,
     record_changes,
     record_coverage_gaps,
     record_failure,
@@ -76,6 +77,7 @@ from .reports import (
     load_kev_catalog,
     parse_rfc3339,
 )
+from .reports.change_gaps import CHANGE_GAP_SOURCE_TYPE, change_gap_change_id
 from .reports.changes import ChangeProjection, detection_request
 from .reports.gaps import COVERAGE_GAP_SOURCE_TYPE
 from .reports.records import derive_changes_from_artifacts
@@ -120,8 +122,8 @@ def _default_actor() -> str:
 DEFAULT_ACTOR = _default_actor()
 
 #: The status of a run that recorded a system-generated VDR-CSO-FAV record and still wrote
-#: its output: a detection process failure (ADR 0014) or a coverage gap (ADR 0015), so a
-#: pipeline can tell it from a clean run (0) and a refusal (1).
+#: its output: a detection process failure (ADR 0014), a coverage gap (ADR 0015) or a change
+#: gap (ADR 0018), so a pipeline can tell it from a clean run (0) and a refusal (1).
 EXIT_DETECTION_FAILURES = 3
 
 #: `ReportOptions` requires a package URI and a request document has no use for one, so this
@@ -138,9 +140,13 @@ CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
     ("PAIN", False),
     ("DISPOSITION", False),
 )
-#: The column a listing adds once it lists a coverage gap case: the gap's context key, which
-#: an evaluation entry must state and no report document carries ("-" for every other case).
+#: The column a listing adds once it lists a gap case of either kind: the gap's context key,
+#: which an evaluation entry must state and no report document carries ("-" for every other
+#: case).
 GAP_CONTEXT_COLUMN: tuple[str, bool] = ("CONTEXT KEY", False)
+#: The reserved source types whose cases the listing names by context key: a coverage gap
+#: (ADR 0015) and a change detection gap (ADR 0018).
+_GAP_CASE_SOURCE_TYPES = frozenset({COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,6 +347,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_actor_option(coverage)
 
+    change_gaps_help = (
+        "record each change window that closed with no verification as a VDR-CSO-FAV system "
+        "record; exits 3 when one is recorded"
+    )
+    change_gaps = case_commands.add_parser(
+        "changes", help=change_gaps_help, description=change_gaps_help
+    )
+    _add_database_option(change_gaps, "event store holding the recorded changes and evidence")
+    # Appends for the reason `report --inventory` does: a second inventory is refused.
+    change_gaps.add_argument(
+        "--inventory",
+        action="append",
+        metavar="FILE",
+        help=(
+            "information resource inventory JSON every recorded change is read against "
+            "(read locally, never stored)"
+        ),
+    )
+    change_gaps.add_argument(
+        "--class",
+        dest="certification_class",
+        required=True,
+        choices=[item.value for item in CertificationClass],
+        help="certification class whose rules are read",
+    )
+    change_gaps.add_argument(
+        "--as-of",
+        required=True,
+        metavar="RFC3339",
+        help="instant the windows are closed against, and each gap's ingestion time",
+    )
+    # NOTE: Accepted for parity with `cases coverage`; nothing a change gap holds reads it.
+    change_gaps.add_argument(
+        "--calendar-tz",
+        default="UTC",
+        metavar="NAME",
+        help=(
+            "IANA calendar of the profile; a change window closes at an instant, so no gap "
+            "depends on it (default: UTC)"
+        ),
+    )
+    _add_actor_option(change_gaps)
+
     listing = case_commands.add_parser("list", help="list every recorded case")
     _add_database_option(listing, "event store to read")
 
@@ -532,6 +581,14 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         help=(
             "record each coverage window that closed with no verification as a VDR-CSO-FAV "
             "system record; needs --inventory; exits 3 when one is recorded"
+        ),
+    )
+    parser.add_argument(
+        "--record-change-gaps",
+        action="store_true",
+        help=(
+            "record each change window that closed with no verification as a VDR-CSO-FAV "
+            "system record; needs --changes; exits 3 when one is recorded"
         ),
     )
     parser.add_argument(
@@ -1005,6 +1062,8 @@ def _run_cases(args: argparse.Namespace) -> int:
         return _run_cases_evaluate(args)
     if args.cases_command == "coverage":
         return _run_cases_coverage(args)
+    if args.cases_command == "changes":
+        return _run_cases_changes(args)
     if args.cases_command == "list":
         return _run_cases_list(args)
     if args.cases_command == "history":
@@ -1183,6 +1242,72 @@ def _gap_window(gap: Observation) -> str:
     return f"{rule} window for {resource.resource_type}:{resource.resource_id} closed {closed}"
 
 
+def _run_cases_changes(args: argparse.Namespace) -> int:
+    stderr = sys.stderr
+    database = Path(args.db)
+    inventory_paths = [Path(item) for item in (args.inventory or ())]
+    if not inventory_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            "cases changes needs --inventory: a change names inventory resources, so its "
+            "windows are read against an inventory",
+        )
+    if len(inventory_paths) > 1:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"cases changes takes one --inventory file, not {len(inventory_paths)}",
+        )
+    missing = _refuse_missing_store(stderr, database)
+    if missing is not None:
+        return missing
+    try:
+        as_of = parse_rfc3339(args.as_of, "--as-of")
+        profile = CertificationProfile(
+            CertificationClass(args.certification_class), calendar_timezone=args.calendar_tz
+        )
+        inventory = load_inventory(inventory_paths[0])
+        metadata = _metadata(args)
+    except ReportInputError as exc:
+        return _fail(stderr, "invalid_input", str(exc))
+    except (TypeError, ValueError) as exc:
+        return _fail(stderr, "invalid_option", str(exc))
+
+    def record() -> int:
+        with _open_repository(database) as repository:
+            outcome = record_change_gaps(
+                repository, inventory, profile=profile, as_of=as_of, metadata=metadata
+            )
+        _write_diagnostics(stderr, outcome.diagnostics)
+        # Each list is in obligation order: what this run recorded, then what history held.
+        for gap in outcome.recorded:
+            _say(f"{gap.observation_id}: recorded {_change_gap_window(gap)}")
+        for gap in outcome.already_recorded:
+            _say(f"{gap.observation_id}: already_recorded {_change_gap_window(gap)}")
+        _say(
+            f"recorded {len(outcome.recorded)} change gap(s), "
+            f"skipped {len(outcome.already_recorded)} already-recorded change gap(s)"
+        )
+        # A recorded gap is a system-generated VDR-CSO-FAV record, so the run says so (ADR 0018).
+        return EXIT_DETECTION_FAILURES if outcome.recorded else 0
+
+    return _persisted_run(stderr, record)
+
+
+def _change_gap_window(gap: Observation) -> str:
+    """Name the window a change gap records, as its title does: rule, resource, change, close."""
+
+    rule = gap.context_key.split(":", 1)[0]
+    change_id = change_gap_change_id(gap.context_key)
+    closed = "n/a" if gap.observed_at is None else iso_utc(gap.observed_at)
+    resource = gap.resource
+    return (
+        f"{rule} window for {resource.resource_type}:{resource.resource_id} after change "
+        f"{change_id} closed {closed}"
+    )
+
+
 def _run_cases_list(args: argparse.Namespace) -> int:
     stderr = sys.stderr
     database = Path(args.db)
@@ -1312,6 +1437,13 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             f"report {command.name} --changes needs --inventory: a change is read against "
             "the inventory or not at all",
         )
+    if args.record_change_gaps and not changes_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} --record-change-gaps needs --changes: a change gap is the "
+            "closed window of a declared change",
+        )
     if args.record_coverage_gaps and not inventory_paths:
         return _fail(
             stderr,
@@ -1361,6 +1493,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             inventory=inventory,
             record_coverage_gaps=args.record_coverage_gaps,
             changes=change_set,
+            record_change_gaps=args.record_change_gaps,
         )
         evaluations = load_evaluations(evaluations_path) if evaluations_path else None
     except ReportInputError as exc:
@@ -1384,9 +1517,11 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
         status = _publish(stderr, report, output=output, markdown=markdown)
         # The output is already written: a recorded failure or gap is reported, not
         # refused, and the status is how a pipeline learns one was recorded. `--db` never
-        # gets here with either flag; each flag answers only for its own kind of record.
-        recorded = (args.record_failed_imports and report.metadata.detection_failures) or (
-            args.record_coverage_gaps and report.metadata.coverage_gaps
+        # gets here with any of the flags; each answers only for its own kind of record.
+        recorded = (
+            (args.record_failed_imports and report.metadata.detection_failures)
+            or (args.record_coverage_gaps and report.metadata.coverage_gaps)
+            or (args.record_change_gaps and report.metadata.change_gaps)
         )
         if status == 0 and recorded:
             return EXIT_DETECTION_FAILURES
@@ -1586,7 +1721,8 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     failures when `ingest` read them (ADR 0014). `--record-coverage-gaps` is on it because
     a report run never records a gap into a store; what a store holds is its own record
     (ADR 0015). `--changes` is on it because a compile from a store does not read a change
-    file (ADR 0018).
+    file (ADR 0018). `--record-change-gaps` is on it for the reason `--record-coverage-gaps`
+    is: `cases changes` records a change gap into a store, never a report run (ADR 0018).
     """
 
     named = [
@@ -1598,6 +1734,7 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
             ("--record-failed-imports", args.record_failed_imports),
             ("--record-coverage-gaps", args.record_coverage_gaps),
             ("--changes", bool(args.changes)),
+            ("--record-change-gaps", args.record_change_gaps),
         )
         if present
     ]
@@ -1849,11 +1986,12 @@ def _cases_missing_detection(cases: Sequence[CaseState]) -> tuple[str, ...]:
 def _case_table(cases: Sequence[CaseState]) -> tuple[str, ...]:
     """Render the case listing, header first, sized to its widest cell per column.
 
-    A listing with no coverage gap case keeps `CASE_COLUMNS` alone, byte for byte; one with
-    a gap case adds `GAP_CONTEXT_COLUMN` last (ADR 0015 amendment 2026-10-26).
+    A listing with no gap case keeps `CASE_COLUMNS` alone, byte for byte; one with a coverage
+    or change gap case adds `GAP_CONTEXT_COLUMN` last (ADR 0015 amendment 2026-10-26, ADR
+    0018).
     """
 
-    gaps_listed = any(case.source_type == COVERAGE_GAP_SOURCE_TYPE for case in cases)
+    gaps_listed = any(case.source_type in _GAP_CASE_SOURCE_TYPES for case in cases)
     columns = (*CASE_COLUMNS, GAP_CONTEXT_COLUMN) if gaps_listed else CASE_COLUMNS
     rows = [_case_row(case, gaps_listed) for case in cases]
     widths = [
@@ -1881,7 +2019,7 @@ def _case_row(case: CaseState, gaps_listed: bool) -> tuple[str, ...]:
     )
     if not gaps_listed:
         return cells
-    is_gap = case.source_type == COVERAGE_GAP_SOURCE_TYPE
+    is_gap = case.source_type in _GAP_CASE_SOURCE_TYPES
     return (*cells, case.context_key if is_gap else "-")
 
 

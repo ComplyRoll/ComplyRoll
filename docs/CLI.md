@@ -11,18 +11,18 @@ This page names `--db`'s argument `STORE` and an instant `T`, such as `2026-10-0
 
 | Command | What it does |
 |---|---|
-| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--inventory FILE] [--changes FILE] [--detected-at T] [--record-failed-imports] [--record-coverage-gaps] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, ARF, SARIF, HDF, and CycloneDX JSON files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. With `--kev`, a CISA Known Exploited Vulnerabilities catalog the operator supplies, each record also carries the KEV clock `VDR-TFR-KEV` sets from that catalog's due dates. With `--inventory`, an information resource inventory the operator supplies, every report also carries the coverage evidence described under Coverage against an inventory below. With `--changes`, which needs `--inventory`, a change file the operator supplies, every report also carries the detection status of each declared change described under Declared changes below. With `--record-failed-imports`, an artifact that cannot be parsed or holds no usable content no longer stops the run: it, and any log that reports a failed scanner invocation, becomes a system observation and a vulnerability of its own (`VDR-CSO-FAV`, ADR 0014), and the command writes the report and exits 3. A file that cannot be read, an unsupported or rejected format, a duplicate observation identity, a partial reading, or an unclassified error code still stops the run (ADR 0014 Decision 2). With `--record-coverage-gaps`, which needs `--inventory`, each coverage window that closed with no verification becomes a system observation and a vulnerability too (`VDR-CSO-FAV`, ADR 0015), and the command writes the report and exits 3; Coverage against an inventory below has the details. A SARIF run that reports no results under a successful invocation is not a failure: it imports as one PASS observation of the scope it names, with or without the flag, and is never proof that the scope is free of vulnerabilities (ADR 0015). CycloneDX documents below says what each kind of SBOM yields and which ones stop the run. Validated against the bundled official schema before anything is written |
-| `complyroll report avi ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--inventory FILE] [--changes FILE] [--detected-at T] [--record-failed-imports] [--record-coverage-gaps] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles the same artifacts into an official-format Accepted Vulnerability Information report (`VER-RPT-AVI`): every accepted vulnerability with recorded activity in the report period, each with the acceptance rationale the official item requires, and a count of the records that are not accepted, which the detail report reports or excludes by the same period. The detail report's "Accepted, reported under VER-RPT-AVI" row counts exactly the records this report carries for the period. An accepted record whose evaluation carries no rationale stops the compile |
-| `complyroll report historical ARTIFACT... --class C --package-uri URI [--evaluations FILE] [--kev FILE] [--inventory FILE] [--changes FILE] [--detected-at T] [--record-failed-imports] [--record-coverage-gaps] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles a Historical VER Activity snapshot (`VER-TFR-MRH`) as of `--as-of`, with no report period: every non-accepted vulnerability, disposed ones included, under `activeVulnerabilities` and every accepted one under `acceptedVulnerabilities`, each in its current state |
+| `complyroll report vdt ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--inventory FILE] [--changes FILE] [--detected-at T] [--record-failed-imports] [--record-coverage-gaps] [--record-change-gaps] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles CKLB, CKL, XCCDF, ARF, SARIF, HDF, and CycloneDX JSON files into an official-format Vulnerability Detail Report (`VER-RPT-VDT`): open findings grouped into vulnerabilities with stable tracking ids, class-aware deadlines with rule ids and force, overdue flags with explanations, and a Markdown twin rendered from the same records. With `--kev`, a CISA Known Exploited Vulnerabilities catalog the operator supplies, each record also carries the KEV clock `VDR-TFR-KEV` sets from that catalog's due dates. With `--inventory`, an information resource inventory the operator supplies, every report also carries the coverage evidence described under Coverage against an inventory below. With `--changes`, which needs `--inventory`, a change file the operator supplies, every report also carries the detection status of each declared change described under Declared changes below. With `--record-failed-imports`, an artifact that cannot be parsed or holds no usable content no longer stops the run: it, and any log that reports a failed scanner invocation, becomes a system observation and a vulnerability of its own (`VDR-CSO-FAV`, ADR 0014), and the command writes the report and exits 3. A file that cannot be read, an unsupported or rejected format, a duplicate observation identity, a partial reading, or an unclassified error code still stops the run (ADR 0014 Decision 2). With `--record-coverage-gaps`, which needs `--inventory`, each coverage window that closed with no verification becomes a system observation and a vulnerability too (`VDR-CSO-FAV`, ADR 0015), and the command writes the report and exits 3; Coverage against an inventory below has the details. With `--record-change-gaps`, which needs `--changes`, each change window that closed with no verification becomes a system observation too, and the windows of one change one vulnerability (`VDR-CSO-FAV`, ADR 0018), and the command writes the report and exits 3; Change gaps as cases below has the details. A SARIF run that reports no results under a successful invocation is not a failure: it imports as one PASS observation of the scope it names, with or without the flag, and is never proof that the scope is free of vulnerabilities (ADR 0015). CycloneDX documents below says what each kind of SBOM yields and which ones stop the run. Validated against the bundled official schema before anything is written |
+| `complyroll report avi ARTIFACT... --class C --package-uri URI --from T --to T [--evaluations FILE] [--kev FILE] [--inventory FILE] [--changes FILE] [--detected-at T] [--record-failed-imports] [--record-coverage-gaps] [--record-change-gaps] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles the same artifacts into an official-format Accepted Vulnerability Information report (`VER-RPT-AVI`): every accepted vulnerability with recorded activity in the report period, each with the acceptance rationale the official item requires, and a count of the records that are not accepted, which the detail report reports or excludes by the same period. The detail report's "Accepted, reported under VER-RPT-AVI" row counts exactly the records this report carries for the period. An accepted record whose evaluation carries no rationale stops the compile |
+| `complyroll report historical ARTIFACT... --class C --package-uri URI [--evaluations FILE] [--kev FILE] [--inventory FILE] [--changes FILE] [--detected-at T] [--record-failed-imports] [--record-coverage-gaps] [--record-change-gaps] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Compiles a Historical VER Activity snapshot (`VER-TFR-MRH`) as of `--as-of`, with no report period: every non-accepted vulnerability, disposed ones included, under `activeVulnerabilities` and every accepted one under `acceptedVulnerabilities`, each in its current state |
 | `complyroll changes pending ARTIFACT... --changes FILE --inventory FILE --class C --as-of T [--calendar-tz NAME] [--kev FILE] [--record-failed-imports] [-o FILE]` | Writes a `complyroll.detection-request` JSON document: the resources a declared change still waits on, for the pipeline that owns the scanner. It exits 0 whether or not anything is waiting, and `summary.pending` is the count (ADR 0018); Declared changes below has the details |
 | `complyroll changes pending --db STORE --inventory FILE --class C --as-of T [--calendar-tz NAME] [--kev FILE] [-o FILE]` | Writes the same request from the changes and the evidence a store holds. It refuses artifacts, `--changes`, and `--record-failed-imports`, and writes an empty request when the store recorded no change (ADR 0018) |
 | `complyroll changes record --db STORE --changes FILE [--as-of T] [--actor NAME]` | Appends each change the store lacks as a `change.recorded` event on a stream of its own, in one transaction, marking the store schema 5. A change already recorded is left alone; the same id with a different value is refused as `change_conflict` and nothing is written (ADR 0018). Exits 0 or 1 |
 | `complyroll ingest ARTIFACT... --db STORE [--as-of T] [--record-failed-imports] [--actor NAME]` | Records each artifact and its observations as typed events (`artifact.ingested`, `observation.recorded`) in an append-only SQLite store, validated against published contracts before they are written. Re-running over the same bytes appends nothing. With `--record-failed-imports`, each detection process failure is recorded on its own stream as a `failure.recorded` event and a system observation, and the run exits 3, while the readings ADR 0014 Decision 2 keeps fatal still stop it with exit 1 and nothing written, among them a standalone CycloneDX VEX document, a malformed CycloneDX inventory, and a malformed empty BOM, so one such file stops the whole glob; a failure another failure stream already holds is recorded as a hold on it, as a `failure.held` event; a failure whose bytes the store already holds an outranking reading of is refused with `failure_read_elsewhere`, and the run exits 1 with nothing appended (ADR 0014 Decision 13); a second identity under a tracking id the store or the run already holds is refused with `tracking_id_held`, with or without the flag, and the run exits 1 with nothing appended and, at a path with nothing behind it, no store published; an id the store already holds under two identities is closed, so a run bringing either side is refused the same way, a rerun included; a live pair, two current groups, is named by verify and refused by every report, and `cases correlate` says `store_conflict` when both groups meet in one correlate, and exits 0 and links the later side onto the first's case when the first was already correlated; every report and `cases correlate` name no collision in a latent pair, with at most one side current, and verify warns `tracking_id_latent_pair` and exits 0 on one when the store has no fault (ADR 0008 amendment 2026-11-04); and because that check reads the whole log, a log the read path refuses stops the run as `store_integrity` with nothing appended (ADR 0008 amendment 2026-11-03, second); a store that records a failure is marked schema 2, or 3 once it records a hold, which an earlier build's `ingest`, `cases`, and `report --db` refuse to open |
-| `complyroll cases correlate\|attest-detection\|evaluate\|coverage\|list\|history --db STORE` | Opens one case per vulnerability, records attested detection times and operator evaluations as events, lists cases, and prints one case's full history. A changed evaluation appends a second `case.evaluated` event; the earlier one stays readable. `cases correlate` folds each existing case stream it may extend before it appends anything, and refuses a store where one does not fold with the error `report vdt --db` prints, appending nothing. `cases coverage` records each coverage window the store's evidence closed with no verification as a system observation on a stream of its own, marks the store schema 4, and exits 3 when it recorded one (ADR 0015) |
-| `complyroll report vdt --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Vulnerability Detail Report from the event log through the same record compiler as the stateless path. The output is byte-identical to the stateless report for the same inputs, and that equality is a test; a store holding detection process failures matches the stateless run with `--record-failed-imports` when each failure was ingested at the report's `--as-of` or carries a scanner clock, no stream of its digest is superseded, no two input names share a digest, and no `ingest` reported `failure_held_by_another_stream` (ADR 0014). A store that recorded coverage gaps matches the stateless run with `--record-coverage-gaps` when `cases coverage` ran with the report's inventory, `--as-of`, class, and calendar zone and no evidence inside a recorded window arrived after it (ADR 0015). A store that recorded changes matches the stateless run with that change file but for the change block's `input` and its Markdown intro line (ADR 0008 amendment 2026-11-09) |
-| `complyroll report avi --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Accepted Vulnerability Information report from the same event log through the same record set. The output is byte-identical to the stateless report for the same inputs, and that equality is a test, including one that records the evaluations at two different instants and proves the recording instant never reaches the report. Detection process failures and coverage gaps carry the same conditions as `report vdt --db` (ADR 0014, ADR 0015), and recorded changes the same carve-out (ADR 0008 amendment 2026-11-09) |
-| `complyroll report historical --db STORE --class C --package-uri URI [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Historical VER Activity snapshot from the same event log; it takes no `--from` or `--to`. The output is byte-identical to the stateless snapshot for the same inputs, and that equality is a test. Detection process failures and coverage gaps carry the same conditions as `report vdt --db` (ADR 0014, ADR 0015), and recorded changes the same carve-out (ADR 0008 amendment 2026-11-09) |
-| `complyroll store verify --db STORE` | Walks the whole log checking every event column for valid UTF-8 (`event_text_invalid`), and every schema object the store never created (`schema_text_invalid`), event names against the append grammar, positive integer version columns, payload digests, stored JSON and timestamps against the append rules and the exact text `append` writes, sequence and stream-version contiguity, the sequence counter, each projection checkpoint for a non-negative integer count and a readable time (`projection_checkpoint_invalid`), the schema definitions, the header's schema marker and application id, and the migration records against the marker, then audits the domain (every payload against its published contract, every event against its stream kind and the artifact identity its stream names, every case stream id for its tracking id and every case stream for exactly one `case.created`, as its first event (`case_stream_mismatch`), every artifact stream for completeness in both directions and for repeated observation identifiers, every failure and coverage stream for its one head and one observation, every change stream for its one `change.recorded` and the change id its stream digests, every case that records a disposition with no evaluation, the current evaluation of each case a report would print against its detection time, every pair of current groups a report would publish under one tracking id (`tracking_id_collision`), every clock a store holds that a report, `cases coverage` or `cases correlate` cannot compute with: a source clock with no UTC instant, on an observation of any stream, and a detection time or evaluation `completedAt` whose deadline overflows, which only a report computes (`clock_out_of_range`), every metadata envelope), and exits non-zero on any fault, including on files the normal open refuses. On a store with no fault, each tracking id the log holds under two identities prints WARNING `tracking_id_latent_pair` on standard error and verify still exits 0 (ADR 0008 amendment 2026-11-04). A metadata envelope outside the rules, an event on a non-case stream it does not belong on (with the contract or count faults only that event causes) and a failure, coverage or change schema marker left low are reported here: no report and no case writer refuses them, `ingest --record-failed-imports` refuses only to resume a failure stream that holds such an event and `cases coverage` only a coverage stream, and none changes a report's bytes (ADR 0008). A misplaced event is the exception on change streams: an event on a change stream that does not belong there, or a `change.recorded` on any other stream, is refused as `history_invalid` by `report --db --inventory` and by `changes pending --db`, the two readers of change streams (ADR 0018 Decision 10) |
+| `complyroll cases correlate\|attest-detection\|evaluate\|coverage\|changes\|list\|history --db STORE` | Opens one case per vulnerability, records attested detection times and operator evaluations as events, lists cases, and prints one case's full history. A changed evaluation appends a second `case.evaluated` event; the earlier one stays readable. `cases correlate` folds each existing case stream it may extend before it appends anything, and refuses a store where one does not fold with the error `report vdt --db` prints, appending nothing. `cases coverage` records each coverage window the store's evidence closed with no verification as a system observation on a stream of its own, marks the store schema 4, and exits 3 when it recorded one (ADR 0015). `cases changes` does the same for each change window the store's recorded changes and evidence closed with no verification, marks the store schema 6, and exits 3 when it recorded one (ADR 0018) |
+| `complyroll report vdt --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Vulnerability Detail Report from the event log through the same record compiler as the stateless path. The output is byte-identical to the stateless report for the same inputs, and that equality is a test; a store holding detection process failures matches the stateless run with `--record-failed-imports` when each failure was ingested at the report's `--as-of` or carries a scanner clock, no stream of its digest is superseded, no two input names share a digest, and no `ingest` reported `failure_held_by_another_stream` (ADR 0014). A store that recorded coverage gaps matches the stateless run with `--record-coverage-gaps` when `cases coverage` ran with the report's inventory, `--as-of`, class, and calendar zone and no evidence inside a recorded window arrived after it (ADR 0015). A store that recorded changes matches the stateless run with that change file but for the change block's `input` and its Markdown intro line (ADR 0008 amendment 2026-11-12). A store that recorded change gaps matches the stateless run with `--record-change-gaps` under the same carve-out when `cases changes` ran with the report's inventory, `--as-of`, and class and no evidence inside a recorded window arrived after it (ADR 0008 amendment 2026-11-14) |
+| `complyroll report avi --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Accepted Vulnerability Information report from the same event log through the same record set. The output is byte-identical to the stateless report for the same inputs, and that equality is a test, including one that records the evaluations at two different instants and proves the recording instant never reaches the report. Detection process failures, coverage gaps, and change gaps carry the same conditions as `report vdt --db` (ADR 0014, ADR 0015, ADR 0018), and recorded changes the same carve-out (ADR 0008 amendment 2026-11-12) |
+| `complyroll report historical --db STORE --class C --package-uri URI [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Historical VER Activity snapshot from the same event log; it takes no `--from` or `--to`. The output is byte-identical to the stateless snapshot for the same inputs, and that equality is a test. Detection process failures, coverage gaps, and change gaps carry the same conditions as `report vdt --db` (ADR 0014, ADR 0015, ADR 0018), and recorded changes the same carve-out (ADR 0008 amendment 2026-11-12) |
+| `complyroll store verify --db STORE` | Walks the whole log checking every event column for valid UTF-8 (`event_text_invalid`), and every schema object the store never created (`schema_text_invalid`), event names against the append grammar, positive integer version columns, payload digests, stored JSON and timestamps against the append rules and the exact text `append` writes, sequence and stream-version contiguity, the sequence counter, each projection checkpoint for a non-negative integer count and a readable time (`projection_checkpoint_invalid`), the schema definitions, the header's schema marker and application id, and the migration records against the marker, then audits the domain (every payload against its published contract, every event against its stream kind and the artifact identity its stream names, every case stream id for its tracking id and every case stream for exactly one `case.created`, as its first event (`case_stream_mismatch`), every artifact stream for completeness in both directions and for repeated observation identifiers, every failure and coverage stream for its one head and one observation, every change stream for its one `change.recorded` and the change id its stream digests, every change gap stream for its one head and one observation, for the gap record its head restates, and for the recorded change its head names, every case that records a disposition with no evaluation, the current evaluation of each case a report would print against its detection time, every pair of current groups a report would publish under one tracking id (`tracking_id_collision`), every clock a store holds that a report, `cases coverage`, `cases changes` or `cases correlate` cannot compute with: a source clock with no UTC instant, on an observation of any stream, and a detection time or evaluation `completedAt` whose deadline overflows, which only a report computes (`clock_out_of_range`), every metadata envelope), and exits non-zero on any fault, including on files the normal open refuses. On a store with no fault, each tracking id the log holds under two identities prints WARNING `tracking_id_latent_pair` on standard error and verify still exits 0 (ADR 0008 amendment 2026-11-04). A metadata envelope outside the rules, an event on a non-case stream it does not belong on (with the contract or count faults only that event causes) and a failure, coverage, change or change gap schema marker left low are reported here: no report and no case writer refuses them, `ingest --record-failed-imports` refuses only to resume a failure stream that holds such an event and `cases coverage` only a coverage stream, and none changes a report's bytes (ADR 0008). A misplaced event is the exception on change, coverage, and change gap streams: an event on a change stream that does not belong there, or a `change.recorded` on any other stream, is refused as `history_invalid` by `report --db --inventory` and by `changes pending --db`, the two readers of change streams (ADR 0018 Decision 10), and an event on a coverage or change gap stream that does not belong there is refused as `history_invalid` by every command that reads the store's observations back (ADR 0015 Decision 34, ADR 0018 Decision 13) |
 | `complyroll validate REPORT --schema vulnerability-detail\|accepted-vulnerability\|historical-activity` | Validates a report against the pinned official schema, offline, printing JSON Pointers for every failure and the exact schema provenance |
 | `stigroll <files> [--cci-list U_CCI_List.xml] [--format markdown\|csv\|json] [-o FILE]` | The predecessor STIG roll-up, rebuilt on the hardened adapters; its roll-up is locked to its original output byte-for-byte, and its warning and error lines escape control characters |
 
@@ -43,11 +43,12 @@ options, because the artifacts are one run of positional arguments.
 | `ingest` | store | stored, or nothing new; also an execution-class failure without `--record-failed-imports`, which stays WARNING `execution_unsuccessful` (ADR 0014 Decision 3) | a refusal; a fatal-class failure without the flag; with the flag, a failure ADR 0014 Decision 2 keeps fatal, and the one rerun that meets a superseded holder (ADR 0014 Decisions 11 and 13); a mapped domain exception | with the flag, a failure recorded or found already recorded, reruns included |
 | `cases correlate`, `attest-detection`, `evaluate`, `list`, `history` | store | success; `attest-detection` and `evaluate` may print `warning:` lines | a refusal, a missing store, a mapped domain exception | never |
 | `cases coverage` | store | this run recorded no gap, including a rerun that finds every gap already recorded | a missing or second inventory, a missing store, a parse failure | this run recorded at least one gap |
-| `report vdt\|avi\|historical` | stateless | published with no flagged record; `--inventory` alone; an execution-class failure without the flag (WARNING) | a pre-flight refusal; a `ReportCompileError`, which carries every ERROR; a publish failure; `error_diagnostic_unpublished` | published, and `--record-failed-imports` with a failure or `--record-coverage-gaps` with a gap, once with both; a record outside the report period still counts (ADR 0015 Decision 31) |
+| `cases changes` | store | this run recorded no change gap, including a rerun that finds every gap already recorded and a store that holds no change | a missing or second inventory, a missing store, a parse failure, `change_rule_unavailable`, `history_invalid` | this run recorded at least one change gap |
+| `report vdt\|avi\|historical` | stateless | published with no flagged record; `--inventory` or `--changes` alone; an execution-class failure without the flag (WARNING) | a pre-flight refusal; a `ReportCompileError`, which carries every ERROR; a publish failure; `error_diagnostic_unpublished` | published, and `--record-failed-imports` with a failure, `--record-coverage-gaps` with a gap, or `--record-change-gaps` with a change gap, once when several apply; a record outside the report period still counts (ADR 0015 Decision 31) |
 | `changes pending` | stateless | the request was written, whether or not anything is waiting; also an execution-class failure without the flag, which stays WARNING `execution_unsuccessful`, and a failure noted by `--record-failed-imports` | a refusal; a missing or second input; a failed reading without the flag; a `ReportCompileError`; a publish failure | never |
 | `changes record` | store | every change is recorded or already recorded, including a rerun with nothing new | a refusal, a missing or second change file, a missing store, `change_conflict`, a damaged change stream | never |
 | `changes pending --db` | store | the request was written, including the empty request of a store that recorded no change | a refusal, a missing store, `history_invalid`, a `ReportCompileError` | never |
-| `report ... --db` | store | published, even when the store holds failures and gaps | the same refusals, and either record flag beside `--db` | never |
+| `report ... --db` | store | published, even when the store holds failures and gaps | the same refusals, and any record flag beside `--db` | never |
 | `store verify` | store | `ok: N event(s) verified`, failures and gaps included; may print `warning:` lines | an integrity or domain fault, a missing store | never |
 | `validate` | file | `valid: ID VERSION SHA256` | unreadable, too large, malformed, or schema-invalid; schema issue lines carry no `error:` prefix; `x-complyroll` is never read | never |
 | `stigroll` | files | any input yielded findings, even when others failed to parse | no findings, a bad CCI list, an `-o` failure as a traceback | never |
@@ -85,8 +86,8 @@ Four rules hold across the table:
   `error_diagnostic_unpublished` and never written; no current input reaches that refusal. So a
   job that fails on exit 1 fails on ERROR diagnostics. Exit 1 is not ERROR alone: it also covers
   refusals, publish failures and schema-invalid output.
-- Exit 3 comes from three places only: a stateless `report` with its flag, `ingest
-  --record-failed-imports`, and `cases coverage`.
+- Exit 3 comes from four places only: a stateless `report` with a record flag, `ingest
+  --record-failed-imports`, `cases coverage`, and `cases changes`.
 - Overdue state, KEV clocks, WARNING and INFO diagnostics, and `--inventory` alone never change an
   exit code. A report with overdue records exits 0.
 - `report --db` answers 0 or 1 only. No exit code depends on scanner severity or CVSS.
@@ -173,9 +174,10 @@ on standard error, exit 1, and nothing written:
 
 The command contract is 0 for success, 1 for failure, 3 when the output holds a system-generated
 `VDR-CSO-FAV` record, and 2 only for an argparse usage error. Each flag answers for its own kind:
-a run exits 3 when `--record-failed-imports` recorded a failure or `--record-coverage-gaps`
-recorded a coverage gap, and once with both. The output is written first, and a publish that
-fails still exits 1. Every command's codes are under [Exit status](#exit-status).
+a run exits 3 when `--record-failed-imports` recorded a failure, `--record-coverage-gaps`
+recorded a coverage gap, or `--record-change-gaps` recorded a change gap, and once with several.
+The output is written first, and a publish that fails still exits 1. Every command's codes are
+under [Exit status](#exit-status).
 
 An entry whose `driftLikely` is `"unknown"` carries `VDR-TFR-PDD`, the shorter drift window, and
 raises WARNING `drift_likelihood_unknown` once per entry. The warning goes to standard error and
@@ -298,14 +300,90 @@ recorded, when it holds at least one change stream and the run has an inventory,
 `changes pending --db STORE --inventory FILE --class C --as-of T` writes the request from the same
 rows. Without `--inventory` there is no block. Compiled from a store, the block's `input` and its
 Markdown intro line name the store and each file digest instead of the file; every other byte
-equals the stateless run over the same file (ADR 0008 amendment 2026-11-09). A pinned rules dataset
+equals the stateless run over the same file (ADR 0008 amendment 2026-11-12). A pinned rules dataset
 without `VDR-CSO-DAC` refuses a store holding changes too, in a message that says the store holds
 recorded changes. A store holding none reads no rule, so `changes pending --db` still writes its
 empty request, with `force` null, and exits 0.
 
+### Change gaps as cases
+
+With `--record-change-gaps` as well, each obligation row whose window closed, a `lapsed` row or a
+`detected` row with `late: true`, becomes a `VDR-CSO-FAV` system observation of its own (ADR
+0018). Its source type is `complyroll.change`, its record id `change-detection-gap`, and its
+context key `VDR-CSO-DAC:change:<changeId>`, so every closed window of one change is one case that
+lists every resource. It is detected at the window close, the change's `detectBy`, with
+`detectedAtSource` `system`, so `--detected-at` never applies to it, and it gets PAIN only from an
+evaluation. A later verification never closes it; only a disposition does. The command writes its
+outputs and exits 3. A gap detected after `--to` is left out of the official VDT with INFO
+`excluded_by_period` and still counts for exit 3. A gap records that ComplyRoll found no
+verification between the change and the window close. It is not a finding that the resource has a
+vulnerability.
+
+The flag is refused, with exit 1 and nothing written, without `--changes` and beside `--db`. The
+`--db` conflict is checked first, and beside `--changes` as well it names both:
+
+```text
+error: invalid_option: report vdt --record-change-gaps needs --changes: a change gap is the closed window of a declared change
+error: invalid_option: report vdt takes either --db or --record-change-gaps, never both
+```
+
+A run that can record a change gap is change-gap-aware. Its block adds two keys to every
+obligation row: `recorded`, true when a gap record carries the window and null when no window
+closed, and `trackingId`, that record's tracking id or null. The request document never carries
+them. The Markdown Obligations table gains Recorded and Tracking ID columns and opens with this
+sentence:
+
+```text
+A recorded row is a VDR-CSO-FAV system record of this run and names its tracking ID here even when this report does not select the record, such as one detected after the report period. A row whose window did not close records nothing and reads n/a.
+```
+
+A stateless run is aware with the flag. A run from a store is aware when the store holds a change
+gap stream, which `cases changes` records, and the run has `--inventory`; there a closed window no
+stored gap carries reads `recorded` false. Every other run writes the block exactly as before.
+When no attestation was needed, the Markdown Detection time attestation sentence names "for a
+change detection gap, from the instant its change window closed".
+
+An evaluation closes a change gap as it closes any record, matched on all three keys. Build the
+context key from the change id, or read it from the last column of `cases list`:
+
+```json
+{"sourceRecordId": "change-detection-gap", "sourceType": "complyroll.change", "contextKey": "VDR-CSO-DAC:change:CHG-2001"}
+```
+
+An entry without `contextKey` that matches several gaps is refused as `evaluation_ambiguous`, whose
+message gives each matching case's context key. An entry short of a key that matches a single gap
+is refused as `evaluation_context_key_required` by a report, and as `evaluation_unmatched` by
+`cases evaluate`, and the message ends "a change detection gap is matched by sourceRecordId,
+sourceType and contextKey together, so add" and the keys it leaves out. An evaluation completed
+before the window closed is refused as `evaluation_before_detection`, with the remedy "a change
+detection gap is detected when its window closed, so evaluate it at or after that instant, or
+correct completedAt". `cases attest-detection --case` on a change gap case warns
+`attestation_not_applicable`, and `--all-missing` never selects one.
+
+### Change gaps in a store
+
+On the persisted path `cases changes` records the gaps, and `report --db --inventory` reports
+them. A report from a store that recorded change gaps can disagree with what its own run derives,
+and says so with one of three INFO notes, in the report's diagnostics and on standard error (ADR
+0008, amendment 2026-11-14). Each note names the change id and is located at
+`<changes name> <changeId> <type>:<id>`. A recorded gap keeps its case in the report under every
+note:
+
+| Code | When | What to do |
+|---|---|---|
+| `change_gap_unrecorded` | The run derives a closed window the store holds no gap for, so no case carries it | Run `cases changes` with the report's inventory, `--as-of`, and `--class`, then `cases correlate` |
+| `change_gap_contradicted` | The store holds a gap the run derives no window for, and a verification lies inside the gap's window | Dispose the case as a false positive only when the note advises it, which it does when no other gap of the case still stands |
+| `change_gap_unmatched` | The store holds a gap the run derives no window for, and no verification lies inside it, so the report's inputs may differ from the run that recorded the gap | Check the report's inventory, `--as-of`, and `--class` against the `cases changes` run; no disposition answers this note |
+
+A store whose gaps were recorded with the report's inventory, `--as-of`, and class gives the
+stateless run's bytes with `--record-change-gaps`, but for the block's `input` and its Markdown
+intro line. One limit is open: a stored gap whose window closed after an earlier `--as-of` is not
+filtered out of a report at that instant, so it reads `change_gap_unmatched` and its record stays,
+as a stored coverage gap does today.
+
 ## The cases subcommands
 
-The `cases` row above names six subcommands. Each takes these options:
+The `cases` row above names seven subcommands. Each takes these options:
 
 ```text
 complyroll cases correlate --db STORE [--actor NAME]
@@ -314,17 +392,21 @@ complyroll cases attest-detection --db STORE --detected-at T --rationale TEXT
 complyroll cases evaluate --db STORE --evaluations FILE [--actor NAME]
 complyroll cases coverage --db STORE --inventory FILE --class C --as-of T
     [--calendar-tz NAME] [--actor NAME]
+complyroll cases changes --db STORE --inventory FILE --class C --as-of T
+    [--calendar-tz NAME] [--actor NAME]
 complyroll cases list --db STORE
 complyroll cases history TRACKING_ID --db STORE
 ```
 
-`cases list` prints one row per case. Once the store holds a coverage gap case it adds a last
-column, `CONTEXT KEY`, with the gap's context key, and `-` for every other case; a listing with no
-gap case is unchanged. It folds only the case streams, so it still lists the cases of a store that
-`store verify` rejects for damage elsewhere, such as a damaged artifact stream or an orphaned
-hold. Run `store verify` to check the whole store. `cases attest-detection` reads an artifact
-stream only when a case it attests carries an evaluation, so it can attest on a store whose
-artifact streams are damaged; `store verify` and every report from the store still refuse it.
+`cases list` prints one row per case. Once the store holds a coverage gap case or a change
+detection gap case it adds a last column, `CONTEXT KEY`, with the gap's context key, and `-` for
+every other case; a listing with neither is unchanged. A change id may hold spaces, so the key
+cell runs to the end of its line. It folds only the case streams, so it still lists the cases of
+a store that `store verify` rejects for damage elsewhere, such as a damaged artifact stream or an
+orphaned hold. Run `store verify` to check the whole store. `cases attest-detection` reads an
+artifact stream only when a case it attests carries an evaluation, so it can attest on a store
+whose artifact streams are damaged; `store verify` and every report from the store still refuse
+it.
 
 `cases coverage` derives the coverage windows from the store's evidence exactly as `report --db
 --inventory` does, and appends one `coverage/<fingerprint>` stream per window it has not
@@ -357,6 +439,40 @@ run with exit 1 and append nothing:
 | A coverage stream that is not whole, or holds an event no coverage stream carries | `history_invalid` |
 
 `--db`, `--class`, and `--as-of` are required, so leaving one out is a usage error with exit 2.
+
+`cases changes` derives the change windows from the store's recorded changes and evidence exactly
+as `report --db --inventory` does, and appends one `changegap/<fingerprint>` stream per closed
+window it has not recorded, written whole in one batch: a `change.gap_recorded` event and the
+gap's system observation. It prints one line per gap, first those it recorded and then those
+already recorded, each in obligation order, and a count:
+
+```text
+obs-228b7afeb4f5bb07934d17ec6f1693fd88825b96c48ad71deea3fe38db99fee1: recorded VDR-CSO-DAC window for image:registry.example.test/synthetic/example-service:1.4.0 after change CHG-2001 closed 2026-08-20T00:00:00Z
+obs-7293ce227cc7c7c514fe1d4af13ae7418b291b86e48ac3eb1d73c7ace04eac25: recorded VDR-CSO-DAC window for file:src/ui/render.js after change CHG-2003 closed 2026-09-01T01:00:00Z
+recorded 2 change gap(s), skipped 0 already-recorded change gap(s)
+```
+
+It exits 3 when it recorded a gap and 0 otherwise, so a rerun, which prints `already_recorded`
+lines, appends nothing. A store that holds no change exits 0, appends nothing, and marks no
+schema. A gap recorded once keeps its first payload. Warnings of the change block, such as
+`change_precedes_expected_since`, go to standard error. `--as-of` is required, because a window
+closes against it. `--calendar-tz` is accepted for parity with `cases coverage` and moves nothing,
+because a change window closes at an instant. It takes no `--kev` and no `--changes`, so either is
+a usage error with exit 2. The first gap it records marks the store schema 6, which an earlier
+build refuses to open, and the repository accepts a gap only of a change the store recorded. A
+recorded gap reaches a report from the store at once, but it is not a case until `cases
+correlate` runs, so `cases list` and `cases evaluate` reach it only after that. These stop the run
+with exit 1 and append nothing:
+
+| Refusal | Code |
+|---|---|
+| No `--inventory` | `invalid_option`: `cases changes needs --inventory: a change names inventory resources, so its windows are read against an inventory` |
+| A second `--inventory` | `invalid_option`: `cases changes takes one --inventory file, not 2` |
+| A store that does not exist | `store_missing`; no store is created |
+| An inventory the reader refuses, or an `--as-of` that does not parse or names an instant outside the years 1970 through 9000 UTC | `invalid_input` |
+| An unknown `--calendar-tz` | `invalid_option` |
+| A rules dataset without `VDR-CSO-DAC`, on a store that holds a change | `change_rule_unavailable` |
+| A change or change gap stream that is not whole, or holds an event its kind does not carry | `history_invalid` |
 
 For the Python API (`complyroll.adapters`, `complyroll.policy`, `complyroll.schemas`, and
 `complyroll.store`), see the Python API section of [`examples/README.md`](../examples/README.md).

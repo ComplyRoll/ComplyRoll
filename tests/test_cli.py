@@ -1326,8 +1326,9 @@ class RecordFailedImportsTests(unittest.TestCase):
             for path in GOLDEN.glob("*.json")
             if "x-complyroll" in json.loads(path.read_text(encoding="utf-8"))
         }
-        # The failure and coverage gap goldens exit 3 by design; each pair has its own
-        # reproduction, the gap pair in `test_coverage_gap_report`.
+        # The failure and gap goldens exit 3 by design; each has its own reproduction, the
+        # coverage gap pair in `test_coverage_gap_report` and the change gap golden in
+        # `test_change_gap_report`.
         system_goldens = {
             # Cut from a store, not from artifacts; `test_changes_persisted` reproduces it.
             "vdt-changes-replay",
@@ -1335,6 +1336,7 @@ class RecordFailedImportsTests(unittest.TestCase):
             "historical-failed",
             "vdt-coverage-gaps",
             "historical-coverage-gaps",
+            "vdt-change-gaps",
         }
         self.assertEqual(reports - system_goldens, {*runs, *compiled})
         for name, argv in runs.items():
@@ -1640,6 +1642,13 @@ COVERED_AUDIT_CODES = {
     "change_overfull",
     "change_schema_unmarked",
     "change_stream_mismatch",
+    # The five change gap codes' `store verify` command tests live in
+    # `tests/test_change_gap_streams.py`, and the content-neutral one's beside the others below.
+    "changegap_identity_breach",
+    "changegap_incomplete",
+    "changegap_overfull",
+    "changegap_schema_unmarked",
+    "changegap_stream_mismatch",
     # The five coverage codes' `store verify` command tests live in
     # `tests/test_coverage_streams.py`.
     "coverage_identity_breach",
@@ -7038,6 +7047,43 @@ class ContentNeutralFaultCommandTests(PersistedStoreTestCase):
 
         self.assert_content_neutral("coverage-schema", plant)
 
+    def test_a_change_gap_schema_marker_left_low_changes_no_report_and_no_writer(self) -> None:
+        # The twin holds the same change and change gap streams, as the coverage case above
+        # does: the fold reads a gap, so a stream planted in one copy alone would change the
+        # report (ADR 0018, PR 3 task 4).
+        self.copy_store(self.clean, "changegap-clean.db")
+        self.succeeds(
+            ["changes", "record", "--db", str(self.database), "--changes", str(EXAMPLE_CHANGES)]
+            + ["--as-of", INGESTED_AT]
+        )
+        code, _out, err = run(
+            [
+                "cases",
+                "changes",
+                "--db",
+                str(self.database),
+                "--class",
+                "C",
+                "--as-of",
+                INGESTED_AT,
+                "--inventory",
+                str(EXAMPLE_INVENTORY),
+            ]
+        )
+        self.assertEqual(code, 3, err)
+        self.clean = self.database
+        head = self.record("change.gap_recorded")
+        self.copy_store(self.clean, "changegap-twin.db")
+        self.twin_outputs = self.outputs("changegap-twin")
+        self.twin_reads = self.case_reads()
+        self.twin_appended = self.appended()
+
+        def plant() -> list[tuple[int, str]]:
+            self.mark_schema_by_hand(5)
+            return [(head.sequence, "changegap_schema_unmarked")]
+
+        self.assert_content_neutral("changegap-schema", plant)
+
 
 class ReportSourceConflictTests(unittest.TestCase):
     """Every `report` command takes a store or stateless inputs, never both, never neither.
@@ -7914,7 +7960,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 self.assertEqual(code, 1, err[:500])
                 self.assertIn(
                     "error: store_unavailable: database schema -1 is outside supported "
-                    "schemas 1 to 5",
+                    "schemas 1 to 6",
                     err,
                 )
                 self.assert_bounded(out, err)
@@ -7926,7 +7972,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1, err[:500])
         self.assertIn(
             "schema_version_unsupported: database is marked schema -1; this build opens "
-            "schemas 1 to 5",
+            "schemas 1 to 6",
             out + err,
         )
         self.assert_bounded(out, err)
@@ -9160,6 +9206,20 @@ class UnusableStoredClockTests(PersistedStoreTestCase):
         before = self.latest_sequence()
 
         argv = ["cases", "coverage", "--db", str(self.database), "--class", "C"]
+        argv += ["--as-of", INGESTED_AT, "--inventory", str(EXAMPLE_INVENTORY)]
+        self.assert_clock_refusal(argv, self.CONVERSION[0])
+        self.assertEqual(self.latest_sequence(), before)
+
+    def test_cases_changes_refuses_a_conversion_overflow_and_appends_nothing(self) -> None:
+        # ADR 0018: `cases changes` reads the store's observations as a report does, so a store
+        # holding a change stops it on the clock before any gap is judged.
+        self.ingest_clock(self.CONVERSION[0])
+        self.succeeds(
+            ["changes", "record", "--db", str(self.database), "--changes", str(EXAMPLE_CHANGES)]
+        )
+        before = self.latest_sequence()
+
+        argv = ["cases", "changes", "--db", str(self.database), "--class", "C"]
         argv += ["--as-of", INGESTED_AT, "--inventory", str(EXAMPLE_INVENTORY)]
         self.assert_clock_refusal(argv, self.CONVERSION[0])
         self.assertEqual(self.latest_sequence(), before)

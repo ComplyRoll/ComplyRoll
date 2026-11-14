@@ -183,6 +183,8 @@ def project_vdt(record_set: CompiledRecordSet) -> CompiledVdtReport:
         coverage_gaps=record_set.coverage_gaps,
         coverage_gap_records=record_set.coverage_gap_records,
         changes=record_set.changes,
+        change_gaps=record_set.change_gaps,
+        change_gap_records=record_set.change_gap_records,
     )
     document = _build_document(tuple(records), metadata, tuple(diagnostics))
     validation = validate_document(ReportSchema.VULNERABILITY_DETAIL, document)

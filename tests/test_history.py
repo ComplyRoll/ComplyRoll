@@ -2676,7 +2676,9 @@ class FoldContractSweepTests(unittest.TestCase):
     This is what the ADR 0008 amendment 2026-10-26 claims and no more: every field of every
     event a fold reads as a record, against these values. `observation.recorded` reads through
     its contract, so it has nothing to sweep, and a coverage head is compared to its gap record
-    by `coverage_record_disagreement` rather than read by a fold.
+    by `coverage_record_disagreement` rather than read by a fold. A change gap head is compared
+    the same way, to its record and to its change, by `change_gap_record_disagreement` and
+    `change_gap_change_disagreement`, and is never read into a record either.
     """
 
     BANK: tuple[Any, ...] = (
@@ -2762,7 +2764,12 @@ class FoldContractSweepTests(unittest.TestCase):
         passed = 0
         refused: set[tuple[str, str, Any]] = set()
         for (event_type, _), schema in EVENT_CONTRACTS.items():
-            if event_type in ("observation.recorded", "coverage.recorded", "change.recorded"):
+            if event_type in (
+                "observation.recorded",
+                "coverage.recorded",
+                "change.recorded",
+                "change.gap_recorded",
+            ):
                 continue
             self.fold(event_type, GOOD_PAYLOADS[event_type])
             for pointer in self.pointers(schema):
@@ -2829,6 +2836,7 @@ class AuditHistoryTests(WriterFixture):
         # A store carrying it is not folded: the check would raise on it and be swallowed, so
         # the ADR 0008 amendment 2026-10-26 keeps it outside this set (CL6A-D-07).
         self.assertNotIn("case_stream_mismatch", _ORDER_CHECKED_BESIDE)
+        # Moved on purpose in change PR 3 task 4: a change gap marker left low joins the set.
         self.assertEqual(
             _ORDER_CHECKED_BESIDE,
             {
@@ -2836,6 +2844,7 @@ class AuditHistoryTests(WriterFixture):
                 "failure_schema_unmarked",
                 "coverage_schema_unmarked",
                 "change_schema_unmarked",
+                "changegap_schema_unmarked",
             },
         )
 

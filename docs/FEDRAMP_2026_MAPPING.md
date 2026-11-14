@@ -130,8 +130,9 @@ evaluation. An InSpec impact or severity tag is evidence too, and never sets PAI
 Failures in the detection or response process are `VDR-CSO-FAV`, "Failures Are
 Vulnerabilities": "Providers MUST treat problems or failures with their vulnerability detection
 and response processes as vulnerabilities." ComplyRoll covers the detection half: the failures an
-import can see (ADR 0014), and coverage windows that closed with no verification (ADR 0015, under
-Coverage and freshness below). With `--record-failed-imports`, an artifact that cannot
+import can see (ADR 0014), coverage windows that closed with no verification (ADR 0015, under
+Coverage and freshness below), and change windows that closed with no verification (ADR 0018,
+under Change-triggered detection below). With `--record-failed-imports`, an artifact that cannot
 be parsed, an artifact with no usable content, and a scanner log that reports its own failed
 invocation each become a system observation and a vulnerability case, on the stateless and
 persisted paths alike, with the detection-time source `system`. PAIN, reachability, and
@@ -254,7 +255,7 @@ are the pinned dataset's own text.
 
 | Rule | Force | Statement | ComplyRoll |
 |---|---|---|---|
-| `VDR-CSO-DAC`, Detect After Changes | SHOULD | Providers SHOULD automatically perform vulnerability detection on representative samples of new or significantly changed information resources. | Each declared change and resource gets a status from the evidence at or after the change, and `changes pending` writes the resources still waiting as a document for the provider's pipeline. The window is the provider's own `detectBy`; none is read from the dataset and none is invented. |
+| `VDR-CSO-DAC`, Detect After Changes | SHOULD | Providers SHOULD automatically perform vulnerability detection on representative samples of new or significantly changed information resources. | Each declared change and resource gets a status from the evidence at or after the change, and `changes pending` writes the resources still waiting as a document for the provider's pipeline. The window is the provider's own `detectBy`; none is read from the dataset and none is invented. With `--record-change-gaps` or `cases changes`, a window that closed with no verification becomes a `VDR-CSO-FAV` record, and each change one case. |
 | `VDR-CSO-AKE`, Avoid KEVs | SHOULD NOT | Providers SHOULD NOT deploy or otherwise activate new machine-based information resources with Known Exploited Vulnerabilities. | A diagnostic and a row flag only: `kevAtActivation` and WARNING `kev_at_activation`, on a `created` change of a machine-based resource whose verifying artifact carries an open KEV-listed finding. No separate case, because the finding already has its own `VDR-TFR-KEV` clock. |
 | `KSI-CMT-LMC`, Logging Changes | Not stated | Modifications to the cloud service offering are logged and monitored. | The change file is the provider's log of what changed and why, and a non-significant change is still listed with status `logged`. Evidence toward the indicator, never proof of it. |
 | `KSI-CMT-VTD`, Validating Throughout Deployment | Not stated | Persistent testing and validation of changes throughout deployment is automated. | A status per change shows whether detection reached a resource after it changed. Evidence toward the indicator, never proof of it. |
@@ -263,6 +264,20 @@ Significance and the representative sample are the provider's judgments under a 
 ComplyRoll records `significant` and `rationale` and derives neither. A `detected` status says a
 detection process reached a resource at or after the change, not that the resource is free of
 vulnerabilities or that the rule is met. A change without `detectBy` is tracked but never lapses.
+
+A change window that closed with no verification can also become a `VDR-CSO-FAV` system
+observation and case (ADR 0018, third pull request). On the stateless path `--record-change-gaps`
+records each closed window of the run, and in the store `cases changes` records each one once, on
+a change gap stream of its own, in a store marked schema 6. The record is detected at the
+change's `detectBy`, carries no severity, and gets PAIN, reachability, and exploitability only
+from an operator evaluation matched on its source type, record id, and context key, so its
+evaluation clock (`VER-TFR-EVU`) runs from the close. A case is one change and lists every
+resource whose window closed, so the case is the scoped detection request as a reviewable object.
+It closes only by a disposition: a later verification marks the row late and never erases the
+gap. The run exits 3, as a recorded failure does. A gap records that ComplyRoll found no
+verification between the change and the window close, not that the resource has a vulnerability,
+and a closed SHOULD window is not a MUST violation. Without the flag or the command the block only
+lists the row.
 
 ## SBOM evidence
 
@@ -434,7 +449,7 @@ can publish them with authorization, logging, redaction, and availability contro
   inventory the provider supplied.
 - Do not read a coverage gap case as a weakness found on the resource. It records that no
   verification reached the resource inside a window, and a lapsed SHOULD window is not a MUST
-  violation.
+  violation. The same holds for a change detection gap case, whose window the provider stated.
 - Do not read an SBOM as a detection, an empty vulnerability list as a clean scan, or a
   supplier's VEX statement as the provider's disposition.
 

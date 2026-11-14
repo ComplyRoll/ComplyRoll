@@ -17,6 +17,7 @@ import hashlib
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from itertools import combinations
 from typing import Any, Final
 
 from complyroll.adapters.common import MAX_IDENTITY_CHARS
@@ -58,6 +59,7 @@ CASE_STREAM_PREFIX: Final = "case"
 FAILURE_STREAM_PREFIX: Final = "failure"
 COVERAGE_STREAM_PREFIX: Final = "coverage"
 CHANGE_STREAM_PREFIX: Final = "change"
+CHANGE_GAP_STREAM_PREFIX: Final = "changegap"
 #: The store schema a failure stream needs (ADR 0014). A store is created at schema 1 and
 #: marked 2 by the transaction that first writes a failure stream, so a store that never
 #: records a failure stays readable by a build that knows only schema 1.
@@ -74,6 +76,10 @@ COVERAGE_STREAM_SCHEMA_VERSION: Final = 4
 #: that first writes a `change.recorded` stream, so a store that never records a change stays
 #: at its version and readable by a build that knows only schema 4.
 CHANGE_STREAM_SCHEMA_VERSION: Final = 5
+#: The store schema a change gap stream needs (ADR 0018). A store is marked 6 by the transaction
+#: that first writes a `change.gap_recorded` stream, so a store that never records a change gap
+#: stays at its version and readable by a build that knows only schema 5.
+CHANGE_GAP_STREAM_SCHEMA_VERSION: Final = 6
 TRACKING_ID_PATTERN: Final = re.compile(r"^case-[0-9a-f]{16}$")
 
 #: Stream-id components may not contain the separator, so a stream id parses back.
@@ -494,6 +500,26 @@ CHANGE_RECORDED_V1: Final[dict[str, Any]] = _schema(
     },
 )
 
+#: The event type of a change gap stream's head (ADR 0018).
+CHANGE_GAP_RECORDED: Final = "change.gap_recorded"
+
+#: The head of a change gap stream, followed by exactly one `observation.recorded`: the gap
+#: record of one change window that closed with no verification (ADR 0018). It names the window
+#: as its gap record's metadata names it, and the change as that change's own stream records it,
+#: so the repository holds a head to both at append. Like a coverage head it carries no tracking
+#: id and no stream id: both are pure functions of the gap record that follows it.
+CHANGE_GAP_RECORDED_V1: Final[dict[str, Any]] = _schema(
+    CHANGE_GAP_RECORDED,
+    {
+        "changeId": _CHANGE_NAME,
+        "contextKey": _NON_BLANK_TEXT,
+        "windowClosedAt": _UTC_TIMESTAMP,
+        "occurredAt": _UTC_TIMESTAMP,
+        "changesSha256": _CHANGE_SHA256,
+        "inventorySha256": _CHANGE_SHA256,
+    },
+)
+
 #: The one registry every writer validates against (ADR 0008 Decision 1).
 EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("artifact.ingested", 1): ARTIFACT_INGESTED_V1,
@@ -509,19 +535,21 @@ EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     (FAILURE_HELD, 1): FAILURE_HELD_V1,
     (COVERAGE_RECORDED, 1): COVERAGE_RECORDED_V1,
     (CHANGE_RECORDED, 1): CHANGE_RECORDED_V1,
+    (CHANGE_GAP_RECORDED, 1): CHANGE_GAP_RECORDED_V1,
 }
 
 EVENT_TYPES: Final[tuple[str, ...]] = tuple(
     sorted({event_type for event_type, _ in EVENT_CONTRACTS})
 )
 
-#: The event types each stream kind may carry (ADR 0008 Decision 2, ADR 0014, ADR 0015). An
-#: event stored on the wrong kind of stream is not history the replay can read: it would be
-#: silently ignored there while `store verify` called the log healthy, so the repository
-#: refuses the combination at append. `observation.recorded` is the one type the three
-#: reading kinds share: an artifact stream records what a reading found, a failure stream
-#: the one system observation a failed reading mints, and a coverage stream the one gap
-#: record a closed window mints. A failure stream opens with either head.
+#: The event types each stream kind may carry (ADR 0008 Decision 2, ADR 0014, ADR 0015, ADR
+#: 0018). An event stored on the wrong kind of stream is not history the replay can read: it
+#: would be silently ignored there while `store verify` called the log healthy, so the
+#: repository refuses the combination at append. `observation.recorded` is the one type the four
+#: reading kinds share: an artifact stream records what a reading found, a failure stream the
+#: one system observation a failed reading mints, a coverage stream the one gap record a closed
+#: window mints, and a change gap stream the one gap record a closed change window mints. A
+#: failure stream opens with either head.
 ARTIFACT_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {"artifact.ingested", "observation.recorded"}
 )
@@ -535,12 +563,16 @@ COVERAGE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {COVERAGE_RECORDED, "observation.recorded"}
 )
 CHANGE_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset({CHANGE_RECORDED})
+CHANGE_GAP_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {CHANGE_GAP_RECORDED, "observation.recorded"}
+)
 STREAM_EVENT_TYPES: Final[Mapping[str, frozenset[str]]] = {
     ARTIFACT_STREAM_PREFIX: ARTIFACT_STREAM_EVENT_TYPES,
     CASE_STREAM_PREFIX: CASE_STREAM_EVENT_TYPES,
     FAILURE_STREAM_PREFIX: FAILURE_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_PREFIX: COVERAGE_STREAM_EVENT_TYPES,
     CHANGE_STREAM_PREFIX: CHANGE_STREAM_EVENT_TYPES,
+    CHANGE_GAP_STREAM_PREFIX: CHANGE_GAP_STREAM_EVENT_TYPES,
 }
 
 
@@ -550,26 +582,27 @@ def _placement_problem(
     failure: frozenset[str],
     coverage: frozenset[str],
     change: frozenset[str],
+    change_gap: frozenset[str],
     event_types: frozenset[str],
 ) -> str | None:
     """Return why a placement table is unsound, or None when every type has its place.
 
     Every published type must be on some kind, a case type on no other kind, a change type on
-    no other kind, and any two of the artifact, failure, and coverage kinds may share
-    `observation.recorded` and nothing else.
+    no other kind, and any two of the artifact, failure, coverage, and change gap kinds may
+    share `observation.recorded` and nothing else.
     """
 
-    if artifact | case | failure | coverage | change != event_types:
+    if artifact | case | failure | coverage | change | change_gap != event_types:
         return "every published event type must belong to a stream kind"
-    if case & (artifact | failure | coverage):
+    if case & (artifact | failure | coverage | change_gap):
         return "a case event type must belong to the case stream kind alone"
-    if change & (artifact | case | failure | coverage):
+    if change & (artifact | case | failure | coverage | change_gap):
         return "a change event type must belong to the change stream kind alone"
-    for first, second in ((artifact, failure), (artifact, coverage), (failure, coverage)):
+    for first, second in combinations((artifact, failure, coverage, change_gap), 2):
         if first & second != {"observation.recorded"}:
             return (
-                "artifact, failure, and coverage streams may share observation.recorded and "
-                "nothing else"
+                "artifact, failure, coverage, and change gap streams may share "
+                "observation.recorded and nothing else"
             )
     return None
 
@@ -580,6 +613,7 @@ _PLACEMENT_PROBLEM: Final = _placement_problem(
     FAILURE_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_EVENT_TYPES,
     CHANGE_STREAM_EVENT_TYPES,
+    CHANGE_GAP_STREAM_EVENT_TYPES,
     frozenset(EVENT_TYPES),
 )
 if _PLACEMENT_PROBLEM is not None:  # pragma: no cover - a new event type nobody placed
@@ -738,13 +772,15 @@ def stream_kind(stream_id: str) -> str | None:
         return COVERAGE_STREAM_PREFIX
     if is_change_stream(stream_id):
         return CHANGE_STREAM_PREFIX
+    if is_change_gap_stream(stream_id):
+        return CHANGE_GAP_STREAM_PREFIX
     return None
 
 
 def event_belongs_on_stream(event_type: str, stream_id: str) -> bool:
     """Return True when one event type may be stored on one stream (ADR 0008 Decision 2).
 
-    A stream that names none of the five aggregate kinds carries nothing: every published
+    A stream that names none of the six aggregate kinds carries nothing: every published
     event type belongs to at least one of them.
     """
 
@@ -830,6 +866,29 @@ def change_stream_id(change_id: str) -> str:
     return _require_stream_id(f"{CHANGE_STREAM_PREFIX}/{digest}")
 
 
+def change_gap_stream_id(fingerprint: str) -> str:
+    """Return `changegap/<fingerprint>` for one change gap record's identity hash (ADR 0018).
+
+    One stream per gap record, formed as a coverage stream is: every resource of one change
+    shares its context key and its window close, so neither names a gap alone, and the record's
+    own identity keeps the change id and every inventory identifier out of the stream id.
+    """
+
+    return _require_stream_id(
+        f"{CHANGE_GAP_STREAM_PREFIX}/{_require_digest(fingerprint, 'fingerprint')}"
+    )
+
+
+def change_gap_stream_fingerprint(stream_id: str) -> str:
+    """Return the gap record fingerprint a change gap stream id names, the inverse of the above."""
+
+    start = f"{CHANGE_GAP_STREAM_PREFIX}/"
+    if not isinstance(stream_id, str) or not stream_id.startswith(start):
+        raise ValueError(f"stream_id must start with {start!r}, got {shown(stream_id)}")
+    _require_stream_id(stream_id)
+    return _require_digest(stream_id[len(start) :], "fingerprint")
+
+
 def _reading_stream_id(prefix: str, sha256: str, parser_name: str, parser_version: str) -> str:
     """Return `<prefix>/<sha256>/<parser_name>/<parser_version>` for one reading's stream."""
 
@@ -905,6 +964,14 @@ def is_change_stream(stream_id: str) -> bool:
     return isinstance(stream_id, str) and stream_id.startswith(f"{CHANGE_STREAM_PREFIX}/")
 
 
+# NOTE: `changegap/` never starts with `change/`, and sorts after the whole `change/` range, so
+# neither predicate nor a store prefix scan ever reads one kind as the other.
+def is_change_gap_stream(stream_id: str) -> bool:
+    """Return True when a stream id names a recorded change gap (ADR 0018)."""
+
+    return isinstance(stream_id, str) and stream_id.startswith(f"{CHANGE_GAP_STREAM_PREFIX}/")
+
+
 def require_tracking_id(value: str) -> str:
     """Validate a correlation v0 tracking identifier, `case-` plus sixteen hex digits."""
 
@@ -978,6 +1045,11 @@ __all__ = [
     "CASE_PAIN_REDUCED_V1",
     "CASE_STREAM_EVENT_TYPES",
     "CASE_STREAM_PREFIX",
+    "CHANGE_GAP_RECORDED",
+    "CHANGE_GAP_RECORDED_V1",
+    "CHANGE_GAP_STREAM_EVENT_TYPES",
+    "CHANGE_GAP_STREAM_PREFIX",
+    "CHANGE_GAP_STREAM_SCHEMA_VERSION",
     "CHANGE_KIND_VALUES",
     "CHANGE_RECORDED",
     "CHANGE_RECORDED_V1",
@@ -1011,6 +1083,8 @@ __all__ = [
     "artifact_stream_components",
     "artifact_stream_id",
     "case_stream_id",
+    "change_gap_stream_fingerprint",
+    "change_gap_stream_id",
     "change_stream_id",
     "coverage_stream_fingerprint",
     "coverage_stream_id",
@@ -1019,6 +1093,7 @@ __all__ = [
     "failure_stream_id",
     "is_artifact_stream",
     "is_case_stream",
+    "is_change_gap_stream",
     "is_change_stream",
     "is_coverage_stream",
     "is_failure_stream",

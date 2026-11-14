@@ -149,6 +149,8 @@ def project_avi(record_set: CompiledRecordSet) -> CompiledAviReport:
         coverage_gaps=record_set.coverage_gaps,
         coverage_gap_records=record_set.coverage_gap_records,
         changes=record_set.changes,
+        change_gaps=record_set.change_gaps,
+        change_gap_records=record_set.change_gap_records,
     )
     document = _build_avi_document(
         tuple(reported), metadata, tuple(diagnostics), active_not_reported=active

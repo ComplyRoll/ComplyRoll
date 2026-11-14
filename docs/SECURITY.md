@@ -116,7 +116,8 @@ The standard-library ingestion layer currently enforces:
   it and never writes it to the event store, and a report records its SHA-256, size, and entry
   count, never its bytes. `cases coverage` reads it through the same reader, and each gap record
   it stores carries the clock's resource pair, the entry's `job`, and the inventory's SHA-256,
-  never the bytes
+  never the bytes; `cases changes` reads it the same way, and each change gap record it stores
+  carries the obligation's resource pair and the inventory's SHA-256, never the bytes
 - For a change file supplied with `--changes` (ADR 0018), 8 MiB maximum (`MAX_CHANGES_BYTES`), at
   most 20,000 changes (`MAX_CHANGES`) and 1,000 resources per change (`MAX_CHANGE_RESOURCES`), and
   16 levels of JSON nesting, with the standard 500,000-value bound unchanged. The change file is
@@ -308,8 +309,8 @@ those three match, and a test pins it.
   read from an untrusted store as untrusted text.
 - A clock an earlier build stored that no report can compute with is refused where it would
   overflow. A source clock whose UTC instant falls outside the years 1 to 9999 is
-  `clock_out_of_range` from a report or `cases coverage` and `history_invalid` from `cases
-  correlate`. A detection time whose VER-TFR-EVU deadline overflows, or an evaluation
+  `clock_out_of_range` from a report, `cases coverage` or `cases changes` and `history_invalid`
+  from `cases correlate`. A detection time whose VER-TFR-EVU deadline overflows, or an evaluation
   `completedAt` whose VDR-TFR-PVR or VER-TFR-MAV deadline does, is `clock_out_of_range` from a
   report only, since no other command computes a deadline. `store verify` names all three with
   the same predicate (ADR 0008 amendment 2026-10-25). A clock that computes, year 1 with no

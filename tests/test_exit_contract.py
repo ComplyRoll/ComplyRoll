@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from test_change_gap_report import CHANGE_GAP_ARGUMENTS
 from test_cli import (
     AVI_ARGUMENTS,
     CHANGES_ARGUMENTS,
@@ -82,7 +83,7 @@ GOLDEN_RUNS: dict[str, Sequence[str]] = {
     "vdt-changes": CHANGES_ARGUMENTS,
     "vdt-changes-timed": timed_changes_argv(),
 }
-#: The four system goldens, each cut by a run that records its records and exits 3.
+#: The five system goldens, each cut by a run that records its records and exits 3.
 SYSTEM_RUNS: dict[str, Sequence[str]] = {
     "vdt-failed": [
         *with_failed_artifacts(REPORT_ARGUMENTS[:-1]),
@@ -96,6 +97,7 @@ SYSTEM_RUNS: dict[str, Sequence[str]] = {
     ],
     "vdt-coverage-gaps": VDT_GAP_ARGUMENTS,
     "historical-coverage-gaps": HISTORICAL_GAP_ARGUMENTS,
+    "vdt-change-gaps": CHANGE_GAP_ARGUMENTS,
 }
 #: The report goldens compiled through the library, which no command-line run cuts.
 LIBRARY_GOLDENS = {"vdt-sarif", "vdt-hdf", "vdt-cyclonedx", "historical-cyclonedx"}

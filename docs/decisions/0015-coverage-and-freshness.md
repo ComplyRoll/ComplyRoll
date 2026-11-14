@@ -791,7 +791,7 @@ have been found, and that list is not closed. A diagnostic an adapter mints keep
 a report carries it, a stored one read back keeps the code it was stored with, and audit faults stay
 in `AUDIT_FAULT_CODES`. There is no run-time check, so no new refusal.
 
-## Amendment (2026-11-09): a coverage stream, not the marker, makes a store gap-aware
+## Amendment (2026-11-12): a coverage stream, not the marker, makes a store gap-aware
 
 ADR 0018 marks a store schema 5 at its first `changes record`, and `_mark_schema` inserts every
 migration record up to the one it needs, so a store that never ran `cases coverage` now carries
@@ -807,3 +807,48 @@ is gap-aware, because awareness follows the stream. The read is
 `EventRepository.holds_coverage_stream`, which loads no stream. Decision 28 follows the new rule,
 and no golden moved: every golden cut from a store that recorded a gap still holds a coverage
 stream.
+
+## Amendment (2026-11-14): change detection gaps join the gap shape
+
+ADR 0018's third section records a change window that closed with no verification as a system
+record under a third reserved source type, `complyroll.change`, with the record id
+`change-detection-gap`. It follows the shape of Decisions 20 to 40, and these decisions read wider
+from this date. Their text is not edited.
+
+- **Decision 23's kind names gain a third.** The refusal names a `complyroll.change` record a
+  "change detection gap", and its documented match is the full triple: `sourceRecordId`
+  `change-detection-gap`, `sourceType` `complyroll.change`, and the context key
+  `VDR-CSO-DAC:change:<changeId>`. A lone match short of a key is refused as
+  `evaluation_context_key_required`, ending "a change detection gap is matched by sourceRecordId,
+  sourceType and contextKey together, so add" and the keys it leaves out.
+- **Decision 24's remedies gain a third.** A change detection gap's `evaluation_before_detection`
+  remedy reads "a change detection gap is detected when its window closed, so evaluate it at or
+  after that instant, or correct completedAt", on the compiler, `cases evaluate`, and
+  `store verify` alike.
+- **Decision 25's walk test finds three reserved types.** Each has its kind name, its order
+  remedy, and its attestation clause, the change one being "for a change detection gap, from the
+  instant its change window closed". The three tables gained the type together, with the builder.
+- **Decisions 26, 30 and 31 hold for change detection gaps.** A gap closes only by a disposition,
+  `accepted` lists it in the AVI, `--record-change-gaps` and `cases changes` answer for exit 3 as
+  `--record-coverage-gaps` and `cases coverage` do, and the period rule applies unchanged.
+- **Decision 34 is mirrored with one check past it.** The `changegap_*` audits and reader refusals
+  follow it, and also hold a gap's head to the recorded change it names, because a change gap has
+  a parent stream and a coverage gap has none (ADR 0018 Decision 13).
+- **Decision 37 has a change twin.** A report from a store is change-gap-aware when the run has an
+  inventory and the store holds at least one `changegap/` stream, read by
+  `EventRepository.holds_change_gap_stream`. Each kind of awareness follows its own streams, so a
+  store holding gaps of one kind writes no key and no note of the other.
+- **Decisions 38 to 40 have change twins.** `change_gap_unrecorded`, `change_gap_contradicted`,
+  and `change_gap_unmatched` are worded for a change: each names the change id, is located
+  `<changes name> <changeId> <type>:<id>`, reads the window `[occurredAt, detectBy]` closed at both
+  ends, and names no calendar zone, which a change window never reads. `REPORT_DIAGNOSTIC_CODES`
+  holds them, 72 codes in all; the 61 of the 2026-10-27 amendment was the count on that date.
+- **The `cases list` column covers both gap kinds.** The amendment of 2026-10-26 adds
+  `CONTEXT KEY` once the store holds a coverage gap case; it now appears once the store holds a
+  coverage gap case or a change detection gap case, with `-` for every other case, and a listing
+  with neither keeps its seven columns byte for byte. A change id may hold spaces, so the key cell
+  runs to the end of its line.
+
+A stored gap whose window closed after a past as-of is still not filtered out of a run at that
+as-of, so it reads `coverage_gap_unmatched` or `change_gap_unmatched` and its record stays in the
+report. That is left for later for both kinds.

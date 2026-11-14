@@ -63,6 +63,7 @@ from complyroll.reports import (
 from complyroll.reports import checks as checks_module
 from complyroll.reports import markdown as markdown_module
 from complyroll.reports import records as records_module
+from complyroll.reports.change_gaps import CHANGE_GAP_SOURCE_TYPE
 from complyroll.reports.evaluations import EvaluationMatch
 from complyroll.reports.gaps import (
     COVERAGE_GAP_RECORD_ID,
@@ -679,8 +680,13 @@ class GapEvaluationOrderTests(unittest.TestCase):
             return diagnostic.message.partition(f"(source {detected_source}); ")[2]
 
         artifact = "supply the artifact that detected it earlier, or correct completedAt"
+        change_remedy = (
+            "a change detection gap is detected when its window closed, so evaluate it at or "
+            "after that instant, or correct completedAt"
+        )
         for label, detected_source, source_type, expected in (
             ("coverage gap", "system", COVERAGE_GAP_SOURCE_TYPE, GAP_REMEDY),
+            ("change detection gap", "system", CHANGE_GAP_SOURCE_TYPE, change_remedy),
             ("detection failure", "system", DETECTION_FAILURE_SOURCE_TYPE, SYSTEM_REMEDY),
             ("no source type", "system", None, SYSTEM_REMEDY),
             ("another reserved type", "system", OTHER_SOURCE_TYPE, SYSTEM_REMEDY),
@@ -816,8 +822,9 @@ class PersistedGapEvaluationTests(unittest.TestCase):
 def minted_reserved_types() -> set[str]:
     """Return every reserved source type a module of the package names as a constant.
 
-    The convention is a module-level `*_SOURCE_TYPE` constant, as `adapters.failures` and
-    `reports.gaps` spell theirs, so a third reserved type is found the day it is defined.
+    The convention is a module-level `*_SOURCE_TYPE` constant, as `adapters.failures`,
+    `reports.gaps` and `reports.change_gaps` spell theirs, so a new reserved type is found
+    the day it is defined.
     """
     found: set[str] = set()
     for info in pkgutil.walk_packages(complyroll.__path__, f"{complyroll.__name__}."):
@@ -839,13 +846,14 @@ class ReservedSourceTypeTableTests(unittest.TestCase):
 
     A refusal names the record by kind, an order refusal names its remedy, and the
     attestation sentence names what timed it. Each falls back to the detection failure's
-    text for a type it does not know, so a third type added to one and not the others would
+    text for a type it does not know, so a new type added to one and not the others would
     read as a failure in silence.
     """
 
-    def test_the_package_mints_the_two_reserved_types(self) -> None:
+    def test_the_package_mints_the_three_reserved_types(self) -> None:
         self.assertLessEqual(
-            {DETECTION_FAILURE_SOURCE_TYPE, COVERAGE_GAP_SOURCE_TYPE}, minted_reserved_types()
+            {DETECTION_FAILURE_SOURCE_TYPE, COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE},
+            minted_reserved_types(),
         )
 
     def test_every_minted_reserved_type_has_a_kind_a_remedy_and_a_sentence(self) -> None:

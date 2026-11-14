@@ -778,12 +778,12 @@ class CoverageSchemaMarkingTests(StoreCase):
 
     def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         record_coverage(self.repository, gap_record())
-        self.damage("PRAGMA user_version = 6")
+        self.damage("PRAGMA user_version = 7")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 6 is newer than supported schema 5", str(caught.exception))
+        self.assertIn("database schema 7 is newer than supported schema 6", str(caught.exception))
 
 
 # *--- Readers ---*
@@ -1398,6 +1398,44 @@ class CoverageStoreVerifyCommandTests(PersistedStoreTestCase):
                 self.assertEqual((code, out), (1, ""))
                 self.assertIn("error: history_invalid: ", err)
                 self.assertIn(message, err)
+
+    def test_an_event_that_does_not_belong_on_a_coverage_stream_is_refused_by_each_reader(
+        self,
+    ) -> None:
+        # ADR 0015 Decision 34: the fold reads a coverage stream's foreign event and refuses the
+        # store, where one on an artifact or failure stream leaves every report's bytes alone
+        # (`ContentNeutralFaultCommandTests` in test_cli.py).
+        sequences = self.smuggle(self.stream_id, [self.head, self.observation, FOREIGN_EVENT])
+        message = f"event 'case.identified' does not belong on stream {self.stream_id!r}"
+
+        self.assert_one_fault(sequences[2], "event_stream_mismatch", message)
+        for label, argv in (
+            (
+                "report vdt --db",
+                [
+                    "report",
+                    "vdt",
+                    "--db",
+                    str(self.database),
+                    "--class",
+                    "C",
+                    "--package-uri",
+                    "https://example.test/cpo",
+                    "--from",
+                    "2026-08-01T00:00:00Z",
+                    "--to",
+                    "2026-08-31T23:59:59Z",
+                    "--as-of",
+                    "2026-08-21T12:00:00Z",
+                ],
+            ),
+            ("cases correlate", ["cases", "correlate", "--db", str(self.database)]),
+        ):
+            with self.subTest(label):
+                code, out, err = run(argv)
+
+                self.assertEqual((code, out), (1, ""), msg=err)
+                self.assertIn(f"error: history_invalid: {message}", err)
 
     def test_a_whole_coverage_stream_verifies_and_its_gap_reaches_the_report(self) -> None:
         # Moved on purpose in PR 3 step 5: the fold reads the stream, so the report gains the

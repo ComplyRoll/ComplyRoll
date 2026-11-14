@@ -49,6 +49,7 @@ COMPILED_GOLDENS = (
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-changes-replay.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-changes-timed.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-coverage-gaps.json"),
+    (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-change-gaps.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-failed.json"),
     (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-failed.json"),
@@ -353,6 +354,22 @@ class CompiledGoldenValidationTests(unittest.TestCase):
             with_gaps | {"vdt-coverage.json"}, {name for _, name, _ in self.goldens}
         )
 
+    def test_every_golden_with_recorded_change_gaps_is_validated_here(self) -> None:
+        # A change-gap-aware run is the one whose obligation rows carry `recorded` (ADR 0018).
+        with_gaps: set[str] = set()
+        for path in sorted((TEST_ROOT / "golden").glob("*.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            extension = document.get("x-complyroll") if isinstance(document, dict) else None
+            changes = extension.get("changes") if isinstance(extension, dict) else None
+            rows = changes.get("obligations", ()) if isinstance(changes, dict) else ()
+            if any("recorded" in row for row in rows):
+                with_gaps.add(path.name)
+
+        self.assertEqual(with_gaps, {"vdt-change-gaps.json"})
+        self.assertLessEqual(
+            with_gaps | {"vdt-changes-timed.json"}, {name for _, name, _ in self.goldens}
+        )
+
     def test_every_golden_with_a_coverage_block_is_validated_here(self) -> None:
         with_coverage: set[str] = set()
         for path in sorted((TEST_ROOT / "golden").glob("*.json")):
@@ -365,6 +382,7 @@ class CompiledGoldenValidationTests(unittest.TestCase):
             with_coverage,
             {
                 "historical-coverage-gaps.json",
+                "vdt-change-gaps.json",
                 "vdt-changes-replay.json",
                 "vdt-changes-timed.json",
                 "vdt-changes.json",

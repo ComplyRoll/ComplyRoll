@@ -444,7 +444,7 @@ docstring whitespace, and every golden is byte-identical. With no file left to r
 step after a failed one too, so one run reports every gate. A later change keeps its files
 formatter-clean instead of earning another exception.
 
-## Amendment 2026-11-09: `changes pending` is the second command with both paths
+## Amendment 2026-11-12: `changes pending` is the second command with both paths
 
 Decision 1 says only `report` has a stateless and a persisted path. ADR 0018 gives `changes
 pending` both: the stateless form reads artifacts and a change file, and `changes pending --db`
@@ -460,3 +460,34 @@ amendment supersedes that sentence of Decision 1 and adds the rows its table lac
 The other rows and the five invariants stand. These three never exit 3, so I2 keeps its three
 places: a request holds no system record, and `changes record` writes no failure or gap. A usage
 error is still 2 on all three.
+
+## Amendment 2026-11-14: a third kind of system record and a fourth place for exit 3
+
+ADR 0018's third section adds a third system-generated `VDR-CSO-FAV` record, the change detection
+gap: a change window that closed with no verification. Exit 3 keeps the meaning Decision 3 gives
+it, that the output holds a system-generated record, now of any of three kinds. No exit code is
+added, and the reasons Decision 3 gives against a code per kind apply to a third kind as they did
+to the second.
+
+- `report vdt|avi|historical` take `--record-change-gaps`, which answers for change gaps as each
+  other record flag answers for its own kind. A run exits 3 once, whichever flags recorded.
+  `--record-change-gaps` needs `--changes` and is refused beside `--db`, so `report --db` still
+  answers 0 or 1 only (I4). It stays opt-in, as Decision 4 keeps the other two.
+- `cases changes` records change gaps into a store. It exits 3 when it recorded one and 0 when it
+  recorded none, including a rerun and a store that holds no change, as `cases coverage` does. The
+  last edge of Decision 12 now reads: an `ingest` rerun exits 3 while a `cases coverage` or
+  `cases changes` rerun exits 0.
+- I2 now reads: Exit 3 comes from four places only: a stateless `report` with one of its record
+  flags, `ingest --record-failed-imports`, `cases coverage`, and `cases changes`. This supersedes
+  I2's sentence and the "three places" of the amendment above.
+
+| Command | Path | 0 | 1 | 3 |
+|---|---|---|---|---|
+| `cases changes` | store | this run recorded no gap, including a rerun that finds every gap already recorded and a store that holds no change | a refusal, a missing or second inventory, a missing store, `change_rule_unavailable`, `history_invalid` | this run recorded at least one gap |
+| `report vdt\|avi\|historical` | stateless | as in Decision 1 | as in Decision 1 | published, and `--record-failed-imports` with a failure, `--record-coverage-gaps` with a coverage gap, or `--record-change-gaps` with a change gap, once however many recorded; a record outside the report period still counts |
+| `report ... --db` | store | as in Decision 1 | the same refusals, and any record flag beside `--db` | never |
+
+The reference gate is unchanged. It passes no change file, so its exit 3 never carries a change
+gap, and the probe of Decision 6 still tells a failure from a coverage gap. A gate policy that
+treats change gaps apart from failures, a `warn-changes` beside `warn-gaps`, is left for later.
+`tests/test_exit_contract.py` gains the `vdt-change-gaps` golden run among the runs that exit 3.

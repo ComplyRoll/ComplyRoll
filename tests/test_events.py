@@ -30,6 +30,7 @@ from complyroll.events import (
     ARTIFACT_IDENTITY_KEYS,
     ARTIFACT_STREAM_EVENT_TYPES,
     CASE_STREAM_EVENT_TYPES,
+    CHANGE_GAP_STREAM_EVENT_TYPES,
     CHANGE_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_EVENT_TYPES,
     EVENT_CONTRACTS,
@@ -302,6 +303,17 @@ GOOD_PAYLOADS["change.recorded"] = {
     "recordedAt": "2026-11-09T12:00:00Z",
 }
 
+#: The head of a change gap stream: CHG-1001's window on lab-win-01, which closed with no
+#: verification (ADR 0018).
+GOOD_PAYLOADS["change.gap_recorded"] = {
+    "changeId": "CHG-1001",
+    "contextKey": "VDR-CSO-DAC:change:CHG-1001",
+    "windowClosedAt": "2026-09-30T00:00:00Z",
+    "occurredAt": "2026-07-01T00:00:00Z",
+    "changesSha256": DIGEST,
+    "inventorySha256": DIGEST,
+}
+
 #: One field per contract that the schema requires in UTC `Z` form. The two contracts
 #: that accept a source offset are asserted separately below.
 UTC_ONLY_FIELDS: dict[str, str] = {
@@ -446,6 +458,7 @@ EXPECTED_TIMESTAMP_POINTERS: dict[str, tuple[str, ...]] = {
     "case.identified": (),
     "case.observation_linked": ("/observedAt",),
     "case.pain_reduced": ("/reducedAt",),
+    "change.gap_recorded": ("/occurredAt", "/windowClosedAt"),
     "change.recorded": ("/detectBy", "/occurredAt", "/recordedAt"),
     "coverage.recorded": ("/anchorAt", "/windowClosedAt"),
     "detection.attested": ("/attestedAt", "/detectedAt"),
@@ -1584,12 +1597,13 @@ class StreamCompatibilityTests(unittest.TestCase):
             expected_version=self.repository.current_version(stream_id),
         )
 
-    def test_the_five_stream_kinds_place_every_published_type(self) -> None:
+    def test_the_six_stream_kinds_place_every_published_type(self) -> None:
         readings = (
             ARTIFACT_STREAM_EVENT_TYPES,
             FAILURE_STREAM_EVENT_TYPES,
             COVERAGE_STREAM_EVENT_TYPES,
             CHANGE_STREAM_EVENT_TYPES,
+            CHANGE_GAP_STREAM_EVENT_TYPES,
         )
         self.assertEqual(
             CASE_STREAM_EVENT_TYPES.union(*readings),
@@ -1615,6 +1629,7 @@ class StreamCompatibilityTests(unittest.TestCase):
                 "failure": FAILURE_STREAM_EVENT_TYPES,
                 "coverage": COVERAGE_STREAM_EVENT_TYPES,
                 "change": CHANGE_STREAM_EVENT_TYPES,
+                "changegap": CHANGE_GAP_STREAM_EVENT_TYPES,
             },
         )
 
@@ -1626,8 +1641,11 @@ class StreamCompatibilityTests(unittest.TestCase):
         failure = frozenset(FAILURE_STREAM_EVENT_TYPES)
         coverage = frozenset(COVERAGE_STREAM_EVENT_TYPES)
         change = frozenset(CHANGE_STREAM_EVENT_TYPES)
+        change_gap = frozenset(CHANGE_GAP_STREAM_EVENT_TYPES)
         published = frozenset(EVENT_TYPES)
-        self.assertIsNone(_placement_problem(artifact, case, failure, coverage, change, published))
+        self.assertIsNone(
+            _placement_problem(artifact, case, failure, coverage, change, change_gap, published)
+        )
         for label, tables, expected in (
             (
                 "an unplaced type",
@@ -1681,7 +1699,7 @@ class StreamCompatibilityTests(unittest.TestCase):
             ),
         ):
             with self.subTest(shape=label):
-                problem = _placement_problem(*tables, change, published)
+                problem = _placement_problem(*tables, change, change_gap, published)
                 self.assertIsNotNone(problem)
                 self.assertIn(expected, str(problem))
 
@@ -1727,7 +1745,7 @@ class StreamCompatibilityTests(unittest.TestCase):
                     self.append("projection/case-list", event_type)
 
                 self.assertIn(
-                    "not an artifact, case, failure, coverage, or change stream",
+                    "not an artifact, case, failure, coverage, change, or change gap stream",
                     str(caught.exception),
                 )
 
@@ -3355,7 +3373,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
             connection.execute(statement)
 
     def test_a_new_store_is_created_at_schema_1(self) -> None:
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 5)
+        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 6)
         self.assertEqual(HELD_FAILURE_SCHEMA_VERSION, 3)
         self.assertEqual(self.store.schema_version, 1)
         self.assertEqual(self.migrations(), [self.FIRST])
@@ -3569,16 +3587,16 @@ class FailureSchemaMarkingTests(unittest.TestCase):
 
     def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         self.record_failure()
-        self.damage("PRAGMA user_version = 6")
+        self.damage("PRAGMA user_version = 7")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 6 is newer than supported schema 5", str(caught.exception))
+        self.assertIn("database schema 7 is newer than supported schema 6", str(caught.exception))
 
     def test_the_required_schema_must_be_one_this_build_knows(self) -> None:
         event = NewEvent("failure.recorded", NOW, failure_head())
-        for value in (0, 6, True, "2"):
+        for value in (0, 7, True, "2"):
             with self.subTest(requires_schema=value):
                 with self.assertRaises(ValueError) as caught:
                     self.store.append(
@@ -3588,7 +3606,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
                         requires_schema=value,  # type: ignore[arg-type]
                     )
 
-                self.assertIn("requires_schema must be between 1 and 5", str(caught.exception))
+                self.assertIn("requires_schema must be between 1 and 6", str(caught.exception))
         self.assertEqual(self.store.latest_sequence, 0)
 
 

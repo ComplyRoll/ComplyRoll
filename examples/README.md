@@ -137,6 +137,11 @@ A store that records coverage gaps adds `cases coverage` and a second `cases cor
 four writing commands, and its report takes `--inventory`; Coverage gaps in a store below walks
 through it. The first gap `cases coverage` records moves the store to schema version 4.
 
+A store that records declared changes adds `changes record`, and one that records change gaps
+adds `cases changes` and a second `cases correlate` after it, with the same `--inventory`, `--class`
+and `--as-of` the report takes; [`docs/CLI.md`](../docs/CLI.md) describes both under Declared
+changes. The first change moves the store to schema version 5, and the first change gap to 6.
+
 Only `ingest` creates a store, and it never deletes one. A store that does not exist yet is
 built at a temporary path beside the destination and linked into place once the whole run
 succeeded, so a failed ingest leaves the operator exactly what they had. If another run
@@ -1117,7 +1122,12 @@ that recorded coverage gaps is also audited for `coverage_incomplete` and `cover
 coverage stream without exactly one head and one gap record), `coverage_stream_mismatch` (a stream
 id or a record that is not its stream's own), `coverage_identity_breach` (a record that is not a
 gap record, or a head that disagrees with it), and `coverage_schema_unmarked` (a coverage stream
-in a store marked below schema 4). A healthy store prints one line:
+in a store marked below schema 4). Change streams are audited the same way, as
+`change_incomplete`, `change_overfull`, `change_stream_mismatch`, and `change_schema_unmarked`,
+and change gap streams as `changegap_incomplete`, `changegap_overfull`,
+`changegap_stream_mismatch`, `changegap_identity_breach`, and `changegap_schema_unmarked` (below
+schema 6); a change gap is also held to the recorded change its head names. A healthy store
+prints one line:
 
 ```text
 ok: 36 event(s) verified

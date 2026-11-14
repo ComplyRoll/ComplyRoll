@@ -65,6 +65,7 @@ from complyroll.events.contracts import (
     _CHANGE_NAME_REGEX,
     ARTIFACT_STREAM_EVENT_TYPES,
     CASE_STREAM_EVENT_TYPES,
+    CHANGE_GAP_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_EVENT_TYPES,
     FAILURE_STREAM_EVENT_TYPES,
     _placement_problem,
@@ -182,16 +183,16 @@ class ChangeStreamIdTests(TestCase):
         self.assertFalse(is_coverage_stream(stream_id))
 
     def test_a_sibling_prefix_is_no_change_stream(self) -> None:
-        # PR 3's `changegap/` stream kind must never read as this one.
-        for other in (
-            f"changegap/{'a' * 64}",
-            f"changes/{'a' * 64}",
-            "change",
-            f"changed/{'a' * 64}",
+        # PR 3's `changegap/` stream kind must never read as this one; it is a kind of its own.
+        for other, kind in (
+            (f"changegap/{'a' * 64}", "changegap"),
+            (f"changes/{'a' * 64}", None),
+            ("change", None),
+            (f"changed/{'a' * 64}", None),
         ):
             with self.subTest(other=other):
                 self.assertFalse(is_change_stream(other))
-                self.assertIsNone(stream_kind(other))
+                self.assertEqual(stream_kind(other), kind)
 
     def test_the_change_id_is_held_to_the_name_rule(self) -> None:
         for value in ("", " CHG-1", "CHG-1 ", "CHG-1\n", "CHÉ-1", "x" * 129, 7, None, True):
@@ -486,8 +487,11 @@ class ChangePlacementTests(TestCase):
         failure = frozenset(FAILURE_STREAM_EVENT_TYPES)
         coverage = frozenset(COVERAGE_STREAM_EVENT_TYPES)
         change = frozenset(CHANGE_STREAM_EVENT_TYPES)
+        change_gap = frozenset(CHANGE_GAP_STREAM_EVENT_TYPES)
         published = frozenset(EVENT_TYPES)
-        self.assertIsNone(_placement_problem(artifact, case, failure, coverage, change, published))
+        self.assertIsNone(
+            _placement_problem(artifact, case, failure, coverage, change, change_gap, published)
+        )
         for label, tables, expected in (
             (
                 "an unplaced change event",
@@ -511,7 +515,7 @@ class ChangePlacementTests(TestCase):
             ),
         ):
             with self.subTest(shape=label):
-                problem = _placement_problem(*tables, published)
+                problem = _placement_problem(*tables, change_gap, published)
                 self.assertIsNotNone(problem)
                 self.assertIn(expected, str(problem))
 
@@ -644,7 +648,7 @@ class ChangeSchemaMarkingTests(StoreCase):
 
     def test_the_constants(self) -> None:
         self.assertEqual(CHANGE_STREAM_SCHEMA_VERSION, 5)
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, CHANGE_STREAM_SCHEMA_VERSION)
+        self.assertGreaterEqual(SUPPORTED_SCHEMA_VERSION, CHANGE_STREAM_SCHEMA_VERSION)
         self.assertLess(COVERAGE_STREAM_SCHEMA_VERSION, CHANGE_STREAM_SCHEMA_VERSION)
         self.assertEqual(sqlite_module._MIGRATION_DESCRIPTIONS[5], FIFTH[1])
 
@@ -788,14 +792,14 @@ class ChangeSchemaMarkingTests(StoreCase):
             self.addCleanup(reopened.close)
             self.assertEqual(reopened.schema_version, 4)
 
-    def test_a_store_newer_than_schema_5_is_refused(self) -> None:
+    def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         record_change(self.repository)
-        self.damage("PRAGMA user_version = 6")
+        self.damage("PRAGMA user_version = 7")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 6 is newer than supported schema 5", str(caught.exception))
+        self.assertIn("database schema 7 is newer than supported schema 6", str(caught.exception))
 
 
 # *--- Layering ---*

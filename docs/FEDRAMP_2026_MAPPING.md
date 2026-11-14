@@ -144,9 +144,10 @@ Without the flag a failed import exits 1 and writes nothing, and a failed invoca
 warning, as before.
 
 The response half is not covered: a broken remediation or response workflow, and a vulnerability
-whose detection time is never attested, are the Phase 2 deliverable "Response-process and
-attestation failures". Stale coverage and missing resources are measured by the coverage and
-freshness checks below, and become cases when the operator asks for them. A clean SARIF run is
+whose detection time is never attested, are the deliverable "Response-process and attestation
+failures", carried from Phase 2 into Phase 3 on 2026-11-14. Stale coverage and missing resources
+are measured by the coverage and freshness checks below, and become cases when the operator asks
+for them. A clean SARIF run is
 evidence, as a PASS observation of its scope (ADR 0015 decision 1). Some detection failures still
 stop the run with the flag, because no honest record can be built for them: a file that could not
 be read, an unsupported or rejected format, a reading that repeats an observation identity, a

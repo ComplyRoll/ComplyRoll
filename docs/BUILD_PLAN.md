@@ -162,13 +162,20 @@ complyroll deadlines --db <store>
 
 Target: 3 to 4 weeks
 
+**Status: Complete, 2026-11-14.** Every exit criterion below is met. Three deliverables were not
+built and moved as a scope change rather than closed as done: two to Phase 3 and, of the third,
+the records and the recurrence clocks to Phase 3 and HTML report output to the unscheduled
+backlog. Each says so below.
+
 ### Deliverables
 
 - SARIF adapter. **Complete, 2026-09-20** (ADR 0011).
 - CycloneDX adapter. **Complete, 2026-10-19** (ADR 0016). SPDX is not read yet.
 - CISA KEV enrichment. **Complete, 2026-09-25** (ADR 0012).
 - HDF adapter (InSpec exec-json, native and `saf convert`). **Complete, 2026-09-29** (ADR 0013).
-- Initial cloud, container, or CSPM JSON adapter selected from design-partner demand.
+- Initial cloud, container, or CSPM JSON adapter selected from design-partner demand. **Moved to
+  Phase 3, 2026-11-14**, as a scope change: no design partner has asked for one, so nothing
+  selects the format yet.
 - Git/deployment change-event ingestion. **Contract shipped, 2026-11-09** (ADR 0018): a
   provider-supplied change file is read per run with `--changes`, beside `--inventory`. Source
   adapters are not built. **Recorded in the store, 2026-11-12** (ADR 0018): `changes record` appends
@@ -189,7 +196,9 @@ Target: 3 to 4 weeks
 - Response-process and attestation failures: a broken remediation or response workflow, and a
   vulnerability whose detection time is never attested, each recorded as a reviewable case. Added
   2026-09-30 as a scope change from the deliverable below, because neither is an import failure
-  and each needs inputs of its own (ADR 0014 Decision 17).
+  and each needs inputs of its own (ADR 0014 Decision 17). **Moved to Phase 3, 2026-11-14**, as a
+  scope change, and first there: a response-process failure needs the response action records
+  carried below.
 - System-generated observations for failed imports, stale coverage, missing resources, or broken
   response workflows. **Complete, 2026-10-16** (ADR 0014, ADR 0015): detection process
   failures shipped on 2026-09-30, so with `--record-failed-imports` an artifact that cannot be
@@ -199,7 +208,9 @@ Target: 3 to 4 weeks
   broken response workflows belong to the deliverable above.
 - Carried from Phase 1 as a scope change: information resource and response action records, the
   reporting recurrence clocks, and HTML report output. The KEV clock shipped with the KEV
-  enrichment above.
+  enrichment above. **Moved, 2026-11-14**, as a scope change: the records and the recurrence
+  clocks to Phase 3, and HTML report output to the unscheduled backlog below, because each report
+  already ships a Markdown twin rendered from the same records.
 
 ### Exit criteria
 
@@ -232,6 +243,14 @@ Target: 4 to 6 weeks
 
 ### Deliverables
 
+- Carried from Phase 2 as a scope change, 2026-11-14, and first in order: response-process and
+  attestation failures recorded as reviewable cases (a broken remediation or response workflow,
+  and a vulnerability whose detection time is never attested; ADR 0014 Decision 17), with the
+  information resource and response action records they need (the `InformationResource` and
+  `ResponseAction` entities in `docs/DATA_MODEL.md` are still planned), and the reporting
+  recurrence clocks.
+- Carried from Phase 2 as a scope change, 2026-11-14: an initial cloud, container, or CSPM JSON
+  adapter selected from design-partner demand.
 - Versioned validation definitions with objectives, scope, schedule, code reference, and explicit
   pass/fail/unknown criteria.
 - Validation runs with coverage, result, evidence, freshness, and execution provenance.
@@ -319,3 +338,11 @@ Target: after the local engine is stable
    under a successful invocation is one artifact-origin PASS observation of the scope it names,
    not the system-origin observation this item asked for, because it is bound to the log's
    bytes, ADR 0002; the log ingests on both paths and the `clean_scan` refusal is retired).
+
+## Unscheduled backlog
+
+Work no phase holds. An item here was planned once and is recorded so that it is not read as done.
+
+- HTML report output, carried from Phase 1 through Phase 2 and moved here on 2026-11-14 as a scope
+  change. Each report ships a Markdown twin rendered from the same records, so HTML is a second
+  presentation of them and adds no evidence.

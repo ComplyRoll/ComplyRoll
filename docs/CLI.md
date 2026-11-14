@@ -305,6 +305,37 @@ without `VDR-CSO-DAC` refuses a store holding changes too, in a message that say
 recorded changes. A store holding none reads no rule, so `changes pending --db` still writes its
 empty request, with `force` null, and exits 0.
 
+### Writing a change file from git
+
+`--changes` reads ComplyRoll's own `complyroll.changes` document, described in
+[`DATA_MODEL.md`](DATA_MODEL.md); there is no git adapter. This worked example, which needs `jq`,
+writes that document from `git log --format` for a repository whose commits name their resources
+in `Resource:` trailers, such as `Resource: image:registry.example.test/api:2.1`, and mark a
+change that is not significant with `Significant: false`:
+
+```bash
+format='%H%x09%cI%x09%(trailers:key=Resource,valueonly,separator=%x1F)%x09'
+format+='%(trailers:key=Significant,valueonly,separator=%x1F)%x09%s'
+git log --no-merges --since=2026-09-01 --format="$format" |
+jq -Rn '{
+  schema: "complyroll.changes", schemaVersion: 1, name: "git-changes",
+  changes: [inputs | split("\t") | select(.[2] != "") | {
+    changeId: ("git-" + .[0][:12]),
+    kind: "modified",
+    occurredAt: .[1],
+    source: {tool: "git", reference: ("commit " + .[0])},
+    resources: [.[2] | split("\u001f") | unique[]
+      | capture("^(?<resourceType>[^:]+):(?<resourceId>.+)$")],
+    significant: (.[3] != "false"),
+    rationale: (.[4:] | join("\t"))[:512]
+  }]
+}' > changes.json
+```
+
+It is an example to adapt, not a parser. It calls every commit a modification, sets no `detectBy`
+window, and takes the subject line as the rationale, so a commit it should not count is yours to
+filter. ComplyRoll refuses a file that breaks the contract; the only text it cleans is `rationale`.
+
 ### Change gaps as cases
 
 With `--record-change-gaps` as well, each obligation row whose window closed, a `lapsed` row or a

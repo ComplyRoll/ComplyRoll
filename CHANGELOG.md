@@ -2,7 +2,7 @@
 
 All notable project changes will be documented here.
 
-## Unreleased
+## 0.5.0a0 - 2026-11-14
 
 ### Added
 
@@ -55,6 +55,14 @@ All notable project changes will be documented here.
   can trigger a scoped detection request" Met, with the deliverable "Change-triggered detection
   jobs", and marks "Git/deployment change-event ingestion" Contract complete. No adapter for git,
   Terraform, Kubernetes, or a deployment record is built.
+- `docs/BUILD_PLAN.md` marks Phase 2 complete on its exit criteria, 2026-11-14, and moves the
+  three deliverables that were not built as a scope change rather than closing them as done.
+  Response-process and attestation failures, the information resource and response action
+  records, the reporting recurrence clocks, and an initial cloud, container, or CSPM adapter move
+  to Phase 3. HTML report output moves to a new unscheduled backlog. No code changed for it.
+- `README.md` is reorganized and shortened. The quick start leads, the status table follows what
+  the tool does, and the worked example that writes a change file from `git log` moved to
+  `docs/CLI.md` under Declared changes.
 - A report from a store is coverage-gap-aware when the store holds a `coverage/` stream, not when it
   is marked schema 4, so a store marked 4 by hand with no coverage stream reads unaware, and
   recording a change turns on no window key or `coverage_gap_*` note (ADR 0015 amendment

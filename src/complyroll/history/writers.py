@@ -32,6 +32,7 @@ from complyroll.adapters import (
 from complyroll.adapters.failures import DETECTION_FAILURE_RECORDED, failure_recorded_message
 from complyroll.correlation import VulnerabilityGroup, group_open_observations, tracking_id_for
 from complyroll.events import (
+    CHANGE_GAP_RECORDED,
     CHANGE_RECORDED,
     COVERAGE_RECORDED,
     FAILURE_HEAD_TYPES,
@@ -46,6 +47,8 @@ from complyroll.events import (
     artifact_stream_id,
     canonical_payload_digest,
     case_stream_id,
+    change_gap_head_payload,
+    change_gap_stream_id_of,
     change_identity_breach,
     change_stream_id,
     coverage_head_payload,
@@ -58,6 +61,8 @@ from complyroll.events import (
 )
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.policy import CertificationProfile
+from complyroll.reports.change_gaps import change_gap_observations
+from complyroll.reports.changes import ChangeProjection, StoredChangeSet
 from complyroll.reports.changes_input import Change, ChangeSet
 from complyroll.reports.checks import clock_problem, observation_clock_message, system_record_kind
 from complyroll.reports.coverage import CoverageResult
@@ -65,7 +70,11 @@ from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, recor
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
 from complyroll.reports.model import ReportDiagnostic
-from complyroll.reports.records import coverage_diagnostics, derive_report_coverage
+from complyroll.reports.records import (
+    coverage_diagnostics,
+    derive_report_changes,
+    derive_report_coverage,
+)
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 
@@ -89,6 +98,7 @@ from .fold import (
     _stream_tracking_id,
     artifact_history,
     fold_case_records,
+    read_stored_changes,
     rehydrate_observations,
 )
 from .order import EvaluationOrderError, case_order_diagnostic, current_groups
@@ -199,6 +209,24 @@ class CoverageOutcome:
     """
 
     coverage: CoverageResult
+    recorded: tuple[Observation, ...]
+    already_recorded: tuple[Observation, ...]
+    diagnostics: tuple[ReportDiagnostic, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeGapOutcome:
+    """What one `record_change_gaps` call did (ADR 0018).
+
+    `recorded` is each gap this call wrote and `already_recorded` each one whose stream the
+    store already held, both in obligation order: by occurrence, change id, then resource. A gap
+    already recorded keeps the payload its stream was first written with, so its entry here is
+    this run's rebuild of it, under the same id. `changes` is the projection the gaps came from,
+    and `diagnostics` the warnings its derivation raised, which a report of the same store and
+    inventory raises too.
+    """
+
+    changes: ChangeProjection
     recorded: tuple[Observation, ...]
     already_recorded: tuple[Observation, ...]
     diagnostics: tuple[ReportDiagnostic, ...] = ()
@@ -835,6 +863,92 @@ def _record_coverage_gaps(
         recorded=tuple(recorded),
         already_recorded=tuple(already),
         diagnostics=tuple(coverage_diagnostics(coverage)),
+    )
+
+
+def record_change_gaps(
+    repository: EventRepository,
+    inventory: Inventory,
+    *,
+    profile: CertificationProfile,
+    as_of: datetime,
+    metadata: EventMetadata,
+) -> ChangeGapOutcome:
+    """Record each change window the store's evidence closed empty, once and atomically.
+
+    The windows are derived as a report from this store derives them (ADR 0018): from the
+    recorded changes and the rehydrated observations, with the inventory, profile and as-of
+    given, and each gap is ingested at that as-of, as the stateless run ingests its gaps at its
+    own. A store that records no change derives no window, reads nothing against the rule and
+    writes nothing; one that records a change under a dataset without the rule is refused as
+    `change_rule_unavailable`. A gap's stream is named by its gap record, so the stream id is the
+    idempotence key: a stream already holding its head and record is left alone, and the first
+    recorded payload stands even where this run's inventory digest differs. A stream holding
+    anything else is refused, not resumed, because nothing ever writes one half of a change gap
+    stream. A new stream is written head first, as one batch at version 0.
+
+    The reads and every append run in one store transaction, or in the caller's, so a run
+    records every gap it derives or none of them.
+    """
+
+    if not isinstance(inventory, Inventory):
+        raise TypeError("inventory must be an Inventory")
+    _require_aware(as_of, "as_of")
+    with _transaction_scope(repository):
+        return _record_change_gaps(
+            repository, inventory, profile=profile, as_of=as_of, metadata=metadata
+        )
+
+
+def _record_change_gaps(
+    repository: EventRepository,
+    inventory: Inventory,
+    *,
+    profile: CertificationProfile,
+    as_of: datetime,
+    metadata: EventMetadata,
+) -> ChangeGapOutcome:
+    """Derive the gaps and write the streams the store lacks, inside the transaction."""
+
+    stored = read_stored_changes(repository)
+    changes = derive_report_changes(
+        rehydrate_observations(repository),
+        StoredChangeSet(changes=(), names=(), digests=()) if stored is None else stored,
+        inventory,
+        profile,
+        as_of,
+    )
+    recorded: list[Observation] = []
+    already: list[Observation] = []
+    # Every stream is read and judged before the first append, so a refusal writes nothing.
+    for gap in change_gap_observations(changes, ingested_at=as_of):
+        stream_id = change_gap_stream_id_of(gap)
+        existing = repository.read_stream(stream_id)
+        if not existing:
+            recorded.append(gap)
+            continue
+        held = [record.event_type for record in existing]
+        if held != [CHANGE_GAP_RECORDED, OBSERVATION_RECORDED]:
+            raise HistoryError(
+                f"change gap stream {stream_id!r} holds {len(held)} event(s) and not its "
+                f"{CHANGE_GAP_RECORDED} head and then its gap record; a change gap stream is "
+                "written whole, so it is refused rather than resumed"
+            )
+        already.append(gap)
+    for gap in recorded:
+        repository.append_batch(
+            change_gap_stream_id_of(gap),
+            (
+                _pending(CHANGE_GAP_RECORDED, change_gap_head_payload(gap), as_of, metadata),
+                _pending(OBSERVATION_RECORDED, gap.to_canonical_dict(), as_of, metadata),
+            ),
+            expected_version=0,
+        )
+    return ChangeGapOutcome(
+        changes=changes,
+        recorded=tuple(recorded),
+        already_recorded=tuple(already),
+        diagnostics=changes.warnings,
     )
 
 
@@ -1833,6 +1947,7 @@ __all__ = [
     "CLERICAL_FIELDS",
     "AttestationOutcome",
     "ChangeConflictError",
+    "ChangeGapOutcome",
     "ChangeRecordOutcome",
     "CorrelationOutcome",
     "CoverageOutcome",
@@ -1845,6 +1960,7 @@ __all__ = [
     "attest_detection",
     "content_digest",
     "correlate_cases",
+    "record_change_gaps",
     "record_changes",
     "record_coverage_gaps",
     "record_failure",

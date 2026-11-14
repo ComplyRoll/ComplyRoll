@@ -51,6 +51,8 @@ from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 from complyroll.store.sqlite import SHOWN_LIMIT, bounded, require_storable_payload, shown
 
 from .contracts import (
+    CHANGE_GAP_RECORDED,
+    CHANGE_GAP_STREAM_SCHEMA_VERSION,
     CHANGE_RECORDED,
     CHANGE_STREAM_SCHEMA_VERSION,
     COVERAGE_RECORDED,
@@ -64,12 +66,15 @@ from .contracts import (
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
     artifact_stream_components,
+    change_gap_stream_fingerprint,
+    change_gap_stream_id,
     change_stream_id,
     coverage_stream_fingerprint,
     coverage_stream_id,
     event_belongs_on_stream,
     failure_stream_components,
     is_artifact_stream,
+    is_change_gap_stream,
     is_change_stream,
     is_coverage_stream,
     is_failure_stream,
@@ -196,6 +201,43 @@ _COVERAGE_RECORD_PAIRS: Final[tuple[tuple[str, str], ...]] = (
     ("anchor", "coverage.anchor"),
     ("anchorAt", "coverage.anchorAt"),
     ("inventorySha256", "coverage.inventorySha256"),
+)
+
+#: The source type and metadata keys of a change gap stream's gap record, exactly what
+#: `reports.change_gaps` writes (ADR 0018). Spelled here for the reason the coverage identity is;
+#: the change gap stream tests hold each to its builder's.
+CHANGE_GAP_SOURCE_TYPE: Final = "complyroll.change"
+CHANGE_GAP_METADATA_KEYS: Final[tuple[str, ...]] = (
+    "change.basis",
+    "change.changesSha256",
+    "change.detectBy",
+    "change.force",
+    "change.id",
+    "change.inventorySha256",
+    "change.job",
+    "change.kind",
+    "change.occurredAt",
+    "change.rule",
+)
+
+#: How a change gap head names what its gap record names, one pair per head field in the
+#: contract's order. The context key is the record's own field; the rest are its metadata, the
+#: window close under `change.detectBy`, which is the instant the window closed.
+_CHANGE_GAP_RECORD_PAIRS: Final[tuple[tuple[str, str], ...]] = (
+    ("changeId", "change.id"),
+    ("contextKey", "context_key"),
+    ("windowClosedAt", "change.detectBy"),
+    ("occurredAt", "change.occurredAt"),
+    ("changesSha256", "change.changesSha256"),
+    ("inventorySha256", "change.inventorySha256"),
+)
+
+#: How a change gap head names what the `change.recorded` of its change records. A store keeps
+#: the digest of the file that first recorded a change, so a gap names that file (ADR 0018).
+_CHANGE_GAP_CHANGE_PAIRS: Final[tuple[tuple[str, str], ...]] = (
+    ("occurredAt", "occurredAt"),
+    ("windowClosedAt", "detectBy"),
+    ("changesSha256", "changesSha256"),
 )
 
 #: A size as `str(int)` spells it: digits only, no sign, no leading zero.
@@ -459,6 +501,10 @@ class EventRepository:
         # stream and a second append is never a resume (ADR 0018 Decision 10).
         if is_change_stream(stream_id) and (expected_version != 0 or len(pending) != 1):
             raise EventContractError(change_write_once_message(stream_id))
+        # A change gap stream is its head and its gap record, written together once, so the
+        # head is held to its record and to its change below, and a stream is never extended.
+        if is_change_gap_stream(stream_id) and expected_version != 0:
+            raise EventContractError(change_gap_write_once_message(stream_id))
         prepared: list[NewEvent] = []
         for index, event in enumerate(pending):
             if not isinstance(event, PendingEvent):
@@ -485,6 +531,11 @@ class EventRepository:
                 and event.event_type != COVERAGE_RECORDED
             ):
                 raise EventContractError(coverage_head_order_message(stream_id))
+            if is_change_gap_stream(stream_id):
+                if index == 0 and event.event_type != CHANGE_GAP_RECORDED:
+                    raise EventContractError(change_gap_head_order_message(stream_id))
+                if index > 0 and (index > 1 or event.event_type != OBSERVATION_RECORDED):
+                    raise EventContractError(change_gap_write_once_message(stream_id))
             metadata = event.metadata.to_dict()
             _require_valid_metadata(metadata)
             prepared.append(
@@ -505,6 +556,10 @@ class EventRepository:
                 if expected_version == 0
                 else self._failure_head_type(stream_id)
             )
+        if is_change_gap_stream(stream_id):
+            if len(pending) != 2:
+                raise EventContractError(change_gap_write_once_message(stream_id))
+            self._require_change_gap_agreement(stream_id, pending[0].payload, pending[1].payload)
         self._require_unseen_observations(
             stream_id, pending, head_type=head_type, opening=expected_version == 0
         )
@@ -539,7 +594,53 @@ class EventRepository:
                 expected_version=expected_version,
                 requires_schema=CHANGE_STREAM_SCHEMA_VERSION,
             )
+        if is_change_gap_stream(stream_id):
+            # A change gap stream needs schema 6, marked with its events in one transaction, so
+            # a rollback undoes both (ADR 0018).
+            return self._store.append(
+                stream_id,
+                prepared,
+                expected_version=expected_version,
+                requires_schema=CHANGE_GAP_STREAM_SCHEMA_VERSION,
+            )
         return self._store.append(stream_id, prepared, expected_version=expected_version)
+
+    def _require_change_gap_agreement(
+        self,
+        stream_id: str,
+        head: Mapping[str, Any],
+        observation: Mapping[str, Any],
+    ) -> None:
+        """Refuse a change gap head that names another gap than its record, or another change.
+
+        Each head field is held to the gap record field it restates, then the change id to a
+        change the store records, and the occurrence, the window close and the file digest to
+        what that change's stream holds (ADR 0018). Both payloads have passed their contracts.
+        """
+
+        problem = change_gap_record_disagreement(stream_id, head, observation)
+        if problem is None:
+            change = self._recorded_change_payload(str(head.get("changeId")))
+            problem = change_gap_change_disagreement(stream_id, head, change)
+        if problem is not None:
+            raise EventContractError(problem)
+
+    def _recorded_change_payload(self, change_id: str) -> Mapping[str, Any] | None:
+        """Return the first `change.recorded` the stream of one change id holds, or None.
+
+        The first recorded payload of a change stands (ADR 0018 Decision 10), so a stream the
+        audit would call overfull still answers with the payload every reader keeps. An id no
+        change stream can name answers None, so the caller refuses rather than raising.
+        """
+
+        try:
+            stream_id = change_stream_id(change_id)
+        except ValueError:
+            return None
+        for record in self.read_stream(stream_id):
+            if record.event_type == CHANGE_RECORDED:
+                return record.payload
+        return None
 
     def _require_unseen_observations(
         self,
@@ -580,7 +681,9 @@ class EventRepository:
 
         A coverage stream is held to the same-stream rule alone (ADR 0015): its id is its gap
         record's fingerprint, so a record on any other coverage stream is refused as the
-        gap record of another stream before it gets here.
+        gap record of another stream before it gets here. A change gap stream is held to it
+        too, though `append_batch` writes one only whole and once, so no repeat reaches here
+        through it (ADR 0018).
         """
 
         incoming = [
@@ -596,6 +699,7 @@ class EventRepository:
             is_artifact_stream(stream_id)
             or is_failure_stream(stream_id)
             or is_coverage_stream(stream_id)
+            or is_change_gap_stream(stream_id)
         ):
             return
         seen: set[str] = set()
@@ -1388,6 +1492,183 @@ def _gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
+def change_gap_stream_id_of(observation: Observation) -> str:
+    """Return the one stream a change gap record is recorded on, `changegap/<its fingerprint>`.
+
+    The writer names a gap's stream with it, and `change_gap_record_problem` recomputes a
+    stored record's with it, so both name a gap's stream one way (ADR 0018).
+    """
+
+    if not isinstance(observation, Observation):
+        raise TypeError("observation must be an Observation")
+    if (
+        observation.origin is not ObservationOrigin.SYSTEM
+        or observation.source_type != CHANGE_GAP_SOURCE_TYPE
+    ):
+        raise ValueError(
+            f"only a system record of source type {CHANGE_GAP_SOURCE_TYPE!r} names a change gap "
+            "stream"
+        )
+    return change_gap_stream_id(observation.fingerprint)
+
+
+def change_gap_stream_id_of_payload(payload: Mapping[str, Any]) -> str:
+    """Recompute the stream one recorded change gap record names, reading it back as replay does.
+
+    The fingerprint is rebuilt from the record's own fields rather than read from the payload's
+    `fingerprint`, which the reader holds equal to it anyway.
+    """
+
+    try:
+        observation = Observation.from_canonical_dict(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"the payload is not a readable observation: {exc}") from exc
+    return change_gap_stream_id_of(observation)
+
+
+def change_gap_head_payload(observation: Observation) -> dict[str, str]:
+    """Return the `change.gap_recorded` head of one change gap record, read off the record.
+
+    Built from the record, so a head and its record agree by construction; the writer and
+    every test that stages a change gap stream share it.
+    """
+
+    change_gap_stream_id_of(observation)
+    metadata = dict(observation.source_metadata)
+    missing = [key for key in CHANGE_GAP_METADATA_KEYS if key not in metadata]
+    if missing:
+        raise ValueError(f"the change gap record's metadata has no {', '.join(missing)}")
+    head: dict[str, str] = {}
+    for head_key, record_key in _CHANGE_GAP_RECORD_PAIRS:
+        if record_key == "context_key":
+            head[head_key] = observation.context_key
+        else:
+            head[head_key] = metadata[record_key]
+    return head
+
+
+def change_gap_record_problem(
+    stream_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    """Return the audit code and message for a change-gap-stream event its stream does not name.
+
+    A change gap stream id is its gap record's fingerprint (ADR 0018), so either event on a
+    stream whose id names none is a `changegap_stream_mismatch`, and so is a record whose
+    fingerprint is another stream's. A record that is not a change gap system record names no
+    such stream at all, a `changegap_identity_breach`. The repository refuses each at append
+    with the message. Whether the head agrees with its record takes both events, which is
+    `change_gap_record_disagreement`'s business.
+
+    Returns None for an event no change gap stream carries and for a stream of another kind,
+    which are the stream-kind check's business rather than this one's.
+    """
+
+    if not is_change_gap_stream(stream_id) or event_type not in (
+        CHANGE_GAP_RECORDED,
+        OBSERVATION_RECORDED,
+    ):
+        return None
+    try:
+        change_gap_stream_fingerprint(stream_id)
+    except ValueError as exc:
+        return ("changegap_stream_mismatch", f"stream {stream_id!r} names no gap record: {exc}")
+    if event_type == CHANGE_GAP_RECORDED:
+        return None
+    described = f"{OBSERVATION_RECORDED} on change gap stream {stream_id!r}"
+    try:
+        recomputed = change_gap_stream_id_of_payload(payload)
+    except ValueError as exc:
+        return ("changegap_identity_breach", f"{described} is not a change gap record: {exc}")
+    if recomputed != stream_id:
+        return (
+            "changegap_stream_mismatch",
+            f"{described} is the gap record of stream {recomputed!r}; a change gap stream is "
+            "named for its gap record's fingerprint",
+        )
+    return None
+
+
+def change_gap_record_disagreement(
+    stream_id: str,
+    head: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> str | None:
+    """Return why a change gap head and its gap record describe two different gaps.
+
+    The writer reads the head off the record (`change_gap_head_payload`), so each of the six
+    head fields restates one field of the record. The repository asks this at append, where
+    the batch carries both events, and so does any reader that reads both.
+    """
+
+    raw = observation.get("source_metadata")
+    metadata: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    for head_key, record_key in _CHANGE_GAP_RECORD_PAIRS:
+        recorded = head.get(head_key)
+        described = (
+            observation.get(record_key) if record_key == "context_key" else metadata.get(record_key)
+        )
+        if described != recorded:
+            return (
+                f"change gap stream {stream_id!r} records {head_key} {shown(recorded)} in its "
+                f"{CHANGE_GAP_RECORDED} and {record_key} {shown(described)} in its gap record; "
+                "the two describe one gap"
+            )
+    return None
+
+
+def change_gap_change_disagreement(
+    stream_id: str,
+    head: Mapping[str, Any],
+    change: Mapping[str, Any] | None,
+) -> str | None:
+    """Return why a change gap head is not a window of the change it names (ADR 0018).
+
+    `change` is the `change.recorded` payload of the head's change id, or None when the store
+    records no such change. A gap is derived only from a recorded change, so its head names that
+    change's occurrence, its `detectBy` as the window close, and the digest of the file the
+    store first recorded it from.
+    """
+
+    change_id = head.get("changeId")
+    if change is None:
+        return (
+            f"change gap stream {stream_id!r} records change id {shown(change_id)} in its "
+            f"{CHANGE_GAP_RECORDED}, and no change stream records that change; a change gap is "
+            "a window of a recorded change"
+        )
+    for head_key, change_key in _CHANGE_GAP_CHANGE_PAIRS:
+        recorded = head.get(head_key)
+        stored = change.get(change_key)
+        if recorded != stored:
+            return (
+                f"change gap stream {stream_id!r} records {head_key} {shown(recorded)} in its "
+                f"{CHANGE_GAP_RECORDED}, and change {shown(change_id)} records {change_key} "
+                f"{shown(stored)}; a change gap is a window of the change it names"
+            )
+    return None
+
+
+def change_gap_head_order_message(stream_id: str) -> str:
+    """Word a change gap stream whose first event is not its head, wherever it is reported."""
+
+    return (
+        f"change gap stream {stream_id!r} does not open with its {CHANGE_GAP_RECORDED} head; a "
+        "change gap stream is written head first"
+    )
+
+
+def change_gap_write_once_message(stream_id: str) -> str:
+    """Word a change gap stream being written as anything but its one whole batch (ADR 0018)."""
+
+    return (
+        f"change gap stream {stream_id!r} is written once, as its {CHANGE_GAP_RECORDED} head and "
+        "then its gap record in one batch; a recorded gap is append-only history, so the first "
+        "payload stands"
+    )
+
+
 def _canonical_instant(value: Any) -> datetime | None:
     """Return an instant spelled exactly as `iso_utc` spells it, or None for any other text."""
 
@@ -1412,6 +1693,8 @@ def duplicate_observation_message(stream_id: str, observation_id: str) -> str:
         kind = "failure"
     elif is_coverage_stream(stream_id):
         kind = "coverage"
+    elif is_change_gap_stream(stream_id):
+        kind = "change gap"
     else:
         kind = "artifact"
     return (
@@ -1488,14 +1771,15 @@ def _require_stream_compatible(
     `artifact.ingested` and an `observation.recorded` name their own stream the same way,
     through the artifact identity the stream id spells out. A failure stream's head and its
     system observation are held to the failed reading the stream id spells out (ADR 0014),
-    a coverage stream's gap record to the fingerprint its stream id spells out (ADR 0015), and
-    a change event to the change id its stream digests (ADR 0018).
+    a coverage stream's gap record to the fingerprint its stream id spells out (ADR 0015), a
+    change event to the change id its stream digests, and a change gap stream's gap record to
+    the fingerprint its stream id spells out (ADR 0018).
     """
 
     if not event_belongs_on_stream(event_type, stream_id):
         kind = stream_kind(stream_id)
         described = (
-            "not an artifact, case, failure, coverage, or change stream"
+            "not an artifact, case, failure, coverage, change, or change gap stream"
             if kind is None
             else f"a {kind} stream"
         )
@@ -1510,6 +1794,9 @@ def _require_stream_compatible(
         breach = None if problem is None else problem[1]
     if breach is None:
         breach = change_identity_breach(stream_id, event_type, payload)
+    if breach is None:
+        gap_problem = change_gap_record_problem(stream_id, event_type, payload)
+        breach = None if gap_problem is None else gap_problem[1]
     if breach is not None:
         raise EventContractError(breach)
     if event_type != CASE_CREATED:
@@ -1643,6 +1930,8 @@ def _json_pointer(parts: Any) -> str:
 
 __all__ = [
     "ARTIFACT_IDENTITY_KEYS",
+    "CHANGE_GAP_METADATA_KEYS",
+    "CHANGE_GAP_SOURCE_TYPE",
     "COVERAGE_BASIS_TEXTS",
     "COVERAGE_DESCRIPTION",
     "COVERAGE_METADATA_KEYS",
@@ -1667,6 +1956,14 @@ __all__ = [
     "PendingEvent",
     "artifact_identity_breach",
     "canonical_payload_digest",
+    "change_gap_change_disagreement",
+    "change_gap_head_order_message",
+    "change_gap_head_payload",
+    "change_gap_record_disagreement",
+    "change_gap_record_problem",
+    "change_gap_stream_id_of",
+    "change_gap_stream_id_of_payload",
+    "change_gap_write_once_message",
     "change_identity_breach",
     "change_write_once_message",
     "coverage_head_order_message",

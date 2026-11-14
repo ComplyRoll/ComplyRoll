@@ -7916,7 +7916,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 self.assertEqual(code, 1, err[:500])
                 self.assertIn(
                     "error: store_unavailable: database schema -1 is outside supported "
-                    "schemas 1 to 5",
+                    "schemas 1 to 6",
                     err,
                 )
                 self.assert_bounded(out, err)
@@ -7928,7 +7928,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1, err[:500])
         self.assertIn(
             "schema_version_unsupported: database is marked schema -1; this build opens "
-            "schemas 1 to 5",
+            "schemas 1 to 6",
             out + err,
         )
         self.assert_bounded(out, err)

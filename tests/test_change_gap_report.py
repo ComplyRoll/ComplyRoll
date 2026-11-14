@@ -22,7 +22,9 @@ from unittest import mock
 from test_changes import catalog, observation
 from test_cli import (
     AVI_ARGUMENTS,
+    EXAMPLES,
     HISTORICAL_ARGUMENTS,
+    KEV_CATALOG,
     REPORT_ARGUMENTS,
     TIMED_CHANGES,
     PersistedStoreTestCase,
@@ -544,8 +546,34 @@ class ChangeGapRefusalOrderTests(unittest.TestCase):
                 diagnostics = self.assert_same_refusal()
                 self.assertEqual({item.code for item in diagnostics}, {code})
 
+    def test_the_flag_reads_the_catalog_date_before_an_unmatched_evaluation(self) -> None:
+        # Call 9: a flagged run meets the catalog date, the rules and the clock before it
+        # matches evaluations, so a released-after-as-of catalog beside an unmatched entry stops
+        # on the catalog. An unflagged run, or one with the coverage flag alone, reads as before.
+        argv = [
+            *timed_changes_argv(),
+            "--kev",
+            str(KEV_CATALOG),
+            "--evaluations",
+            str(EXAMPLES / "evaluations.json"),
+        ]
+        for flags, first in (
+            ((), "evaluation_unmatched"),
+            ((COVERAGE_FLAG,), "evaluation_unmatched"),
+            ((CHANGE_FLAG,), "kev_catalog_after_as_of"),
+            ((COVERAGE_FLAG, CHANGE_FLAG), "kev_catalog_after_as_of"),
+        ):
+            with self.subTest(flags=flags):
+                code, out, err = run([*argv, *flags])
 
-# *--- Evidence ---*
+                self.assertEqual((code, out), (1, ""), msg=err)
+                codes = [
+                    line.split(": ", 2)[1]
+                    for line in err.splitlines()
+                    if line.startswith("error: ")
+                ]
+                self.assertTrue(codes, msg=err)
+                self.assertEqual(set(codes), {first}, msg=err)
 
 
 class ChangeGapEvidenceTests(unittest.TestCase):
@@ -1013,6 +1041,30 @@ class ChangeGapCommandTests(unittest.TestCase):
         self.assertEqual(extension["coverage"]["windows"], [])
         rows = extension["changes"]["obligations"]
         self.assertEqual([(row["recorded"], row["trackingId"]) for row in rows], [(None, None)])
+
+    def test_only_a_run_holding_a_gap_record_lists_the_change_parser(self) -> None:
+        # Decision 13: an aware run lists complyroll.change in parserVersions only beside a
+        # change gap record; where no window closed it lists its artifact parsers alone.
+        pending = list(timed_changes_argv())
+        pending[pending.index("--changes") + 1] = str(write_changes(self.workspace, PENDING_CHANGE))
+        for label, argv, closed in (
+            ("no window closed", pending, False),
+            ("a window closed", list(timed_changes_argv()), True),
+        ):
+            with self.subTest(label):
+                plain = json.loads(run(argv)[1])["x-complyroll"]["parserVersions"]
+                code, out, err = run([*argv, CHANGE_FLAG])
+
+                self.assertEqual(code, 3 if closed else 0, msg=err)
+                extension = json.loads(out)["x-complyroll"]
+                rows = extension["changes"]["obligations"]
+                # Aware either way: every row carries both keys.
+                self.assertTrue(rows)
+                self.assertTrue(all(ROW_KEYS <= set(row) for row in rows))
+                versions = dict(extension["parserVersions"])
+                self.assertEqual(versions.pop("complyroll.change", None), "1" if closed else None)
+                self.assertEqual(versions, plain)
+                self.assertNotIn("complyroll.change", plain)
 
     def test_the_change_flag_ignores_a_coverage_window(self) -> None:
         # Coverage windows close in the timed run, but only the change flag is given.

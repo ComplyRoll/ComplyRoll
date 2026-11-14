@@ -308,7 +308,7 @@ names each disagreement in an INFO note (the ADR 0008 amendment of 2026-10-16). 
 recorded changes gives the stateless run's bytes but for the change block's `input` and its
 Markdown intro line (the ADR 0008 amendment of 2026-11-12), and one that recorded change gaps
 gives them too when they were recorded with the report's inventory, as-of, and class, or names
-each disagreement in an INFO note (the ADR 0008 amendment of 2026-11-12, second). Event payloads
+each disagreement in an INFO note (the ADR 0008 amendment of 2026-11-14). Event payloads
 are validated against the contracts in `events/` on every append; the store itself stays a generic
 envelope log. The fold runs in memory at Phase 1 volumes; projection tables and checkpoints remain
 available for when that stops being enough. The domain model remains independent from all of it.

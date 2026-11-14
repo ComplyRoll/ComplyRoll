@@ -1112,7 +1112,7 @@ rest counted as `and K more`, the bound a contract error puts on its issue list,
 comes from an artifact, so it is quoted and cut as stored text is (`store.sqlite.shown`). Two
 transcripts in `examples/README.md` move by that text.
 
-## Amendment 2026-11-12: a third reserved source type
+## Amendment 2026-11-14: a third reserved source type
 
 ADR 0018's third section adds a third system-generated record, the change detection gap, under
 the source type `complyroll.change` beside `complyroll.detection-process` and

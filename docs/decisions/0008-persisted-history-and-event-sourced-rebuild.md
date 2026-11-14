@@ -1004,7 +1004,7 @@ each other with only those regions cut, and `tests/golden/vdt-changes-replay.{js
 replay pair of `tests/golden/vdt-changes.{json,md}`. A store that never records a change reads as it
 did, and no existing golden moved.
 
-## Amendment 2026-11-12 (second): change gap streams and the gap divergences
+## Amendment 2026-11-14: change gap streams and the gap divergences
 
 ADR 0018's third section records a change window that closed with no verification as a system
 observation, on the stateless path with `--record-change-gaps` and in the store with `cases

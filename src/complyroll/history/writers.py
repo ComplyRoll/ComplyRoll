@@ -888,8 +888,8 @@ def record_change_gaps(
     stream; the fold refuses every such stream before this reads it. A new stream is written
     head first, as one batch at version 0.
 
-    The reads and every append run in one store transaction, or in the caller's, so a run
-    records every gap it derives or none of them.
+    The run is one store transaction, so a later failure rolls it back; a caller that supplies
+    the transaction and catches the error owns that rollback.
     """
 
     if not isinstance(inventory, Inventory):

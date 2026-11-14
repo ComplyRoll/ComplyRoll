@@ -9210,6 +9210,20 @@ class UnusableStoredClockTests(PersistedStoreTestCase):
         self.assert_clock_refusal(argv, self.CONVERSION[0])
         self.assertEqual(self.latest_sequence(), before)
 
+    def test_cases_changes_refuses_a_conversion_overflow_and_appends_nothing(self) -> None:
+        # ADR 0018: `cases changes` reads the store's observations as a report does, so a store
+        # holding a change stops it on the clock before any gap is judged.
+        self.ingest_clock(self.CONVERSION[0])
+        self.succeeds(
+            ["changes", "record", "--db", str(self.database), "--changes", str(EXAMPLE_CHANGES)]
+        )
+        before = self.latest_sequence()
+
+        argv = ["cases", "changes", "--db", str(self.database), "--class", "C"]
+        argv += ["--as-of", INGESTED_AT, "--inventory", str(EXAMPLE_INVENTORY)]
+        self.assert_clock_refusal(argv, self.CONVERSION[0])
+        self.assertEqual(self.latest_sequence(), before)
+
     def test_store_verify_names_each_clock_in_the_words_a_reader_refuses_it_with(self) -> None:
         for clock, argv in (
             (self.CONVERSION[0], lambda: self.report_argv("vdt", inventory=True)),

@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import unittest
 from collections.abc import Sequence
+from contextlib import closing
 from datetime import UTC, datetime
 from typing import Any
 
@@ -48,6 +50,7 @@ from complyroll.reports.changes_input import ChangeSet
 from complyroll.reports.inventory import Inventory
 from complyroll.reports.records import derive_report_changes
 from complyroll.store import SQLiteEventStore
+from complyroll.store import sqlite as sqlite_module
 
 # *--- Fixtures ---*
 
@@ -86,6 +89,8 @@ TIMED_REPORT = (
     "2026-09-30T23:59:59Z",
 )
 RENDER = "file:src/ui/render.js"
+#: The type and id a group row and an entry spelled like the group share.
+GROUP_KEY = ("logical", "sample-group/web")
 
 
 def stored(change_set: ChangeSet) -> StoredChangeSet:
@@ -351,6 +356,43 @@ class ChangeGapNoteTests(unittest.TestCase):
             ],
         )
 
+    def test_an_entry_spelled_like_a_group_is_disproved_only_by_its_own_scan(self) -> None:
+        # An entry whose id is spelled sample-group/<name> under `logical` is the entry, not the
+        # group, so its recorded gap reads the entry's own verification and never a member's.
+        # Machine-based, so a scan of it verifies it, as a scan of the member verifies the member.
+        twin = inventory_of(
+            host("sample-group/web", resourceType="logical"), host("web-02", sampleGroup="web")
+        )
+        change_set = changes_of(timed("CHG-T", GROUP_PAIR))
+        (gap,) = recorded(change_set, inventory=twin)
+        self.assertEqual((gap.resource.resource_type, gap.resource.resource_id), GROUP_KEY)
+        own = scan("sample-group/web", T + HOUR / 2, resource_type="logical")
+        member = scan("web-02", T + HOUR / 4)
+
+        with self.subTest("a member's scan leaves the gap matched"):
+            record_set = compile_stored([gap], [member], change_set=change_set, inventory=twin)
+            self.assertEqual(notes(record_set), [])
+        with self.subTest("the entry's own scan disproves it"):
+            record_set = compile_stored([gap], [own], change_set=change_set, inventory=twin)
+            self.assertEqual(
+                [message for _, message, _ in notes(record_set)],
+                [
+                    contradicted(
+                        case_of(record_set, gap),
+                        "logical:sample-group/web",
+                        own,
+                        change_id="CHG-T",
+                    )
+                ],
+            )
+        with self.subTest("a member's scan never disproves it"):
+            # Before the close the run derives no window, so the stored gap is read against the
+            # evidence, and a member's scan is not the entry's.
+            record_set = compile_stored(
+                [gap], [member], change_set=change_set, inventory=twin, as_of=T + HOUR / 2
+            )
+            self.assertEqual([code for code, _, _ in notes(record_set)], ["change_gap_unmatched"])
+
     def test_a_contradicted_resource_beside_a_standing_sibling_gets_the_whole_case_advice(
         self,
     ) -> None:
@@ -471,15 +513,23 @@ class ChangeGapNoteTests(unittest.TestCase):
         self.assertIn(gap.observation_id, record_set.records[0].observation_ids)
 
     def test_the_notes_name_no_calendar_zone(self) -> None:
-        # Call 12: a change window closes at an instant, so no note points at the zone.
+        # Call 12: a change window closes at an instant, so no note points at the zone. Each
+        # fixture's notes are pinned first, so the check never runs over an empty list.
         lab_01, lab_02 = recorded()
         moved = inventory_of(host("lab-01"))
-        for record_set in (
-            compile_stored([lab_01]),
-            compile_stored([lab_01, lab_02], [scan("lab-01", T)], inventory=moved),
+        for label, record_set, codes in (
+            ("unrecorded", compile_stored([lab_01]), ["change_gap_unrecorded"]),
+            (
+                "contradicted and unmatched",
+                compile_stored([lab_01, lab_02], [scan("lab-01", T)], inventory=moved),
+                ["change_gap_contradicted", "change_gap_unmatched"],
+            ),
         ):
-            for _code, message, _location in notes(record_set):
-                self.assertNotIn("zone", message)
+            with self.subTest(label):
+                found = notes(record_set)
+                self.assertEqual([code for code, _, _ in found], codes)
+                for _code, message, _location in found:
+                    self.assertNotIn("zone", message)
 
     def test_a_record_set_that_is_not_aware_names_no_note(self) -> None:
         lab_01, _ = recorded()
@@ -619,6 +669,34 @@ class ChangeGapStoreTests(PersistedStoreTestCase):
         golden_markdown = (GOLDEN / "vdt-changes-timed.md").read_text(encoding="utf-8")
         self.assertEqual(without_block_input(stored_json), without_block_input(golden_json))
         self.assertEqual(without_intro(stored_markdown), without_intro(golden_markdown))
+
+    def test_a_store_marked_6_by_hand_with_no_stream_reads_exactly_as_before_the_mark(
+        self,
+    ) -> None:
+        # Awareness is read from a `changegap/` stream, never from the schema marker, as ADR
+        # 0015's amendment rules for coverage: a store marked 6 with no gap stays unaware.
+        self.populate(cases_changes=None)
+        unmarked = self.outputs("unmarked")
+        applied_at = sqlite_module._format_timestamp(
+            datetime(2026, 11, 9, 12, tzinfo=UTC), "applied_at"
+        )
+        with closing(sqlite3.connect(self.database, isolation_level=None)) as connection:
+            connection.execute(
+                "INSERT INTO complyroll_schema_migrations (version, description, applied_at) "
+                "VALUES (?, ?, ?)",
+                (6, sqlite_module._MIGRATION_DESCRIPTIONS[6], applied_at),
+            )
+            connection.execute("PRAGMA user_version = 6")
+        with SQLiteEventStore(self.database) as store:
+            self.assertEqual(store.schema_version, 6)
+            self.assertFalse(EventRepository(store).holds_change_gap_stream())
+        self.assertEqual(run(["store", "verify", "--db", str(self.database)])[0], 0)
+
+        marked = self.outputs("marked")
+
+        self.assertEqual(marked, unmarked)
+        for row in self.rows(marked[0]):
+            self.assertFalse(ROW_KEYS & set(row))
 
     def test_a_window_recorded_by_no_run_is_named_and_reads_recorded_false(self) -> None:
         # `cases changes` ran before CHG-2003 occurred, so only CHG-2001's window is a record.

@@ -173,14 +173,15 @@ Target: 3 to 4 weeks
   provider-supplied change file is read per run with `--changes`, beside `--inventory`. Source
   adapters are not built. **Recorded in the store, 2026-11-12** (ADR 0018): `changes record` appends
   each change as history, and `report --db` and `changes pending --db` read it back. **Met,
-  2026-11-12** (ADR 0018): the change file is the ingestion contract on both paths, and its
-  windows become cases. Adapters for git, Terraform, Kubernetes, or a deployment record are not
-  built; a provider's pipeline writes the change file.
+  2026-11-14** (ADR 0018): the change file is the ingestion contract on both paths, and a window
+  that closes with no verification can be recorded as a case (`--record-change-gaps`, `cases
+  changes`). Adapters for git, Terraform, Kubernetes, or a deployment record are not built; a
+  provider's pipeline writes the change file.
 - Expected-resource versus observed-resource coverage checks. **Complete, 2026-10-16** (ADR 0015).
 - Scanner and validation freshness checks. **Complete, 2026-10-16** (ADR 0015).
 - Change-triggered detection jobs. **Request document shipped, 2026-11-09** (ADR 0018): ComplyRoll
   runs no scanner, so `changes pending` writes the resources a declared change still waits on for
-  the pipeline that does. **Met, 2026-11-12** (ADR 0018): with `--record-change-gaps` on a report,
+  the pipeline that does. **Met, 2026-11-14** (ADR 0018): with `--record-change-gaps` on a report,
   or `cases changes` into a store, each change window that closed with no verification becomes a
   system observation, and the windows of one change one case listing every resource.
 - CI-friendly exit criteria and a reference GitHub Actions workflow. **Complete, 2026-10-20**
@@ -214,7 +215,7 @@ Target: 3 to 4 weeks
   and the stateless and persisted reports carry it; a gap records an absence of verification, not
   a vulnerability).
 - New or significantly changed resources can trigger a scoped detection request. **Met,
-  2026-11-12** (ADR 0018: a provider's change file names what changed, and the provider states
+  2026-11-14** (ADR 0018: a provider's change file names what changed, and the provider states
   which changes are significant and the window for each; `changes pending` writes the resources a
   change still waits on as a request document for the pipeline that owns the scanner, on both
   paths; with `--record-change-gaps` on a report, or `cases changes` into a store, a window that

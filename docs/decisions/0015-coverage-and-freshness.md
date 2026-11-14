@@ -808,7 +808,7 @@ is gap-aware, because awareness follows the stream. The read is
 and no golden moved: every golden cut from a store that recorded a gap still holds a coverage
 stream.
 
-## Amendment (2026-11-12, second): change detection gaps join the gap shape
+## Amendment (2026-11-14): change detection gaps join the gap shape
 
 ADR 0018's third section records a change window that closed with no verification as a system
 record under a third reserved source type, `complyroll.change`, with the record id

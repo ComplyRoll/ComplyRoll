@@ -406,7 +406,7 @@ one event per stream makes the idempotence check a stream-exists check.
 Why: every bump now has to say what each build does with the other's store, and a store that
 never recorded a change has to stay readable by the build that wrote it.
 
-## PR 3: closed windows as cases (2026-11-12)
+## PR 3: closed windows as cases (2026-11-14)
 
 A change window that closed with nothing verified in it becomes one system observation, and every
 such window of one change becomes one case, on the stateless path with `--record-change-gaps` and
@@ -418,7 +418,7 @@ the rest of Decision 13. Where the build departs from the approved plan, the dec
 the departures are listed together at the end of the section. One golden pair is new,
 `tests/golden/vdt-change-gaps.{json,md}`, and no existing golden moved.
 
-### Decision 9, continued (2026-11-12): the commands of change gaps
+### Decision 9, continued (2026-11-14): the commands of change gaps
 
 - `report vdt|avi|historical --record-change-gaps` records each change window the run derives that
   closed with no verification (Decision 11). It needs `--changes`, which needs `--inventory`, and
@@ -451,7 +451,7 @@ Why: a gap is a window of a declared change, and a report never records one into
 store holds is what `cases changes` recorded from the store's own changes and evidence, as
 `cases coverage` records coverage gaps.
 
-### Decision 11 (2026-11-12): a closed window is a system observation on a sixth stream kind
+### Decision 11 (2026-11-14): a closed window is a system observation on a sixth stream kind
 
 `reports/change_gaps.py` builds one SYSTEM-origin observation, under the ADR 0002 SYSTEM recipe,
 for every obligation row whose `windowClosedAt` is set: a `lapsed` row, a `lapsed` row of a
@@ -490,7 +490,10 @@ The gaps are derived once. On a flagged stateless run the compiler checks the KE
 its rule, refuses an unusable clock, derives coverage whenever the run has an inventory, adds the
 coverage gaps when asked, derives the change projection, adds the change gaps, and only then groups
 the observations and matches evaluations. So the block and the gap records come from one
-projection, and each refusal reads first in the same order with or without the flag.
+projection. Among the catalog date, rule, and clock refusals, the first is the same with or without
+the flag, but a flagged run reads them all before the evaluation-match refusal, so a flagged run
+that meets both stops on the catalog, rule, or clock refusal. An unflagged run, and one with
+`--record-coverage-gaps` alone, still matches evaluations first and reads as it did before.
 `compile_record_set` refuses a projection handed to it that was not derived from the run's own
 options. The projection reads only ARTIFACT-origin observations, so a gap never satisfies the
 obligation it reports, on either path, and neither does a coverage gap inside a change window.
@@ -523,7 +526,7 @@ Why: the record's identity is fixed by the inputs, so a past period rebuilds to 
 the coverage shape is already audited and understood. A change gap has a parent stream, so the
 writer checks the parent the reader checks, and leaves nothing the reader would refuse.
 
-### Decision 12 (2026-11-12): one case per change
+### Decision 12 (2026-11-14): one case per change
 
 Correlation groups by source type, record id, and context key, so with the key
 `VDR-CSO-DAC:change:<changeId>` every closed window of one change is one case, listing every
@@ -573,7 +576,7 @@ the case.
 Why: the request is scoped by the change, so the case is too, and every affected resource stays on
 it.
 
-### Decision 13, continued (2026-11-12): exit status, awareness, audits, and compatibility
+### Decision 13, continued (2026-11-14): exit status, awareness, audits, and compatibility
 
 - **Exit 3.** Exit 3 keeps its ADR 0017 meaning: the output holds a system-generated `VDR-CSO-FAV`
   record. `--record-change-gaps` answers for its own kind beside the other two record flags, and a
@@ -588,7 +591,9 @@ it.
   Recorded and Tracking ID columns and opens with one fixed sentence, "A recorded row is a
   VDR-CSO-FAV system record of this run and names its tracking ID here even when this report does
   not select the record, such as one detected after the report period. A row whose window did not
-  close records nothing and reads n/a." `parserVersions` gains `complyroll.change`.
+  close records nothing and reads n/a." A run that holds a change gap record lists
+  `complyroll.change` in `parserVersions`; an aware run that holds none, as where no window
+  closed, does not.
 - **Awareness.** A stateless run is change-gap-aware with the flag. A report from a store is aware
   when the run has an inventory and the store holds at least one `changegap/` stream, read by
   `EventRepository.holds_change_gap_stream`, which loads no stream. Change gap awareness and
@@ -623,8 +628,12 @@ it.
   observed instant as the writer spells it, `change.occurredAt` at or before the close, a rule
   force, a change kind, a basis text the writer records, both digests as SHA-256 text, and the one
   evidence id `sha256:<change.changesSha256>`; and the head's six fields against the record. A
-  field the fingerprint covers, edited on its own stream, reads as an identity breach that names
-  the field rather than as a stream mismatch, as on a coverage stream. The parent check is one
+  record edited in place in a field the fingerprint covers, with its fingerprint and id re-derived,
+  is an identity breach that names the field when the field is the source type, tool, parser name
+  or version, or record id, which are read before the stream id, and a stream mismatch when it is
+  the resource type or id, the context key, or the observed instant, because the record is then
+  another stream's gap record. Edited with neither re-derived, it is `payload_contract_invalid`,
+  because the observation contract recomputes the fingerprint first. The parent check is one
   past ADR 0015 Decision 34, because a coverage gap has no parent stream. Every command that reads
   the store's observations back, `report --db`, `cases correlate`, `cases changes`, and `changes
   pending --db` among them, refuses each shape the first four codes name with the audit's text, as
@@ -634,7 +643,7 @@ it.
 - **Divergences.** A store whose gaps were recorded with the report's inventory, as-of, and class
   gives the stateless run's bytes with `--record-change-gaps`, but for the block's `input` and its
   Markdown intro line, which the PR 2 section already names. Otherwise the three notes above name
-  where the two disagree. The ADR 0008 amendment (second) of this date records it.
+  where the two disagree. The ADR 0008 amendment of this date records it.
 - **Compatibility.** A store this build wrote, under the build that stops at the PR 2 section: the
   first `cases changes` that records a gap marks schema 6, so that build refuses the store at open
   ("database schema 6 is newer than supported schema 5") and its `store verify` reports
@@ -656,7 +665,7 @@ Why: where a change gap and a coverage gap have the same shape the answers are t
 and each difference follows from a change window being an instant pair the provider set and from
 a change gap having a parent stream.
 
-### Departures from the approved plan (2026-11-12)
+### Departures from the approved plan (2026-11-14)
 
 - The builder lives in `reports/change_gaps.py`, not `reports/changes.py` as Decision 11 of the
   plan said, so the projection module stays the projection's, as coverage splits `coverage.py` from

@@ -845,7 +845,7 @@ class GapAwareReportTests(CoverageStoreFixture):
     def test_a_store_marked_4_by_hand_with_no_stream_reads_exactly_as_before_the_mark(
         self,
     ) -> None:
-        # Moved by ADR 0015 Decision 37's amendment (2026-11-09): the marker no longer means
+        # Moved by ADR 0015 Decision 37's amendment (2026-11-12): the marker no longer means
         # gaps were recorded, so a marked store with no coverage stream is unaware.
         self.golden_store()
         unmarked = self.replay(inventory=INVENTORY)

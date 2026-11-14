@@ -32,18 +32,19 @@ All notable project changes will be documented here.
   verification, a `lapsed` row or a late `detected` one, as a `VDR-CSO-FAV` system observation
   (source type `complyroll.change`, record id `change-detection-gap`, context key
   `VDR-CSO-DAC:change:<changeId>`), so the windows of one change are one case listing every
-  resource, and the run exits 3. The case is detected at the change's `detectBy`, gets PAIN only
-  from an evaluation matched on all three keys, and closes only by a disposition. A gap-aware block
-  adds `recorded` and `trackingId` to each obligation row, and the Markdown Obligations table two
-  columns. In a store each gap is a `changegap/<fingerprint>` stream of a `change.gap_recorded`
-  head and the record, written whole, and the first marks the store schema 6, which 0.4.0a0 and
-  the build before this one refuse to open; a store that never records a change gap stays at its
-  version. A report from a store notes `change_gap_unrecorded`, `change_gap_contradicted`, or
-  `change_gap_unmatched` where its gaps and its run disagree (ADR 0008 amendment 2026-11-12,
-  second). `store verify` gains `changegap_incomplete`, `changegap_overfull`,
-  `changegap_stream_mismatch`, `changegap_identity_breach`, and `changegap_schema_unmarked`, and
-  `cases list` shows the `CONTEXT KEY` column for change gap cases too. A gap records an absence of
-  verification, not a vulnerability. No existing golden moved (ADR 0018).
+  resource, which a store persists once `cases correlate` runs, and the run exits 3. The case is
+  detected at the change's `detectBy`, gets PAIN only from an evaluation matched on all three
+  keys, and closes only by a disposition. A gap-aware block adds `recorded` and `trackingId` to
+  each obligation row, and the Markdown Obligations table two columns. In a store each gap is a
+  `changegap/<fingerprint>` stream of a `change.gap_recorded` head and the record, written whole,
+  and the first marks the store schema 6, which 0.4.0a0 and the build before this one refuse to
+  open; a store that never records a change gap stays at its version. A report from a store notes
+  `change_gap_unrecorded`, `change_gap_contradicted`, or `change_gap_unmatched` where its gaps and
+  its run disagree (ADR 0008 amendment 2026-11-14). `store verify` gains `changegap_incomplete`,
+  `changegap_overfull`, `changegap_stream_mismatch`, `changegap_identity_breach`, and
+  `changegap_schema_unmarked`, and `cases list` shows the `CONTEXT KEY` column for change gap
+  cases too. A gap records an absence of verification, not a vulnerability. No existing golden
+  moved (ADR 0018).
 
 ### Changed
 

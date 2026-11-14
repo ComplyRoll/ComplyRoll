@@ -202,6 +202,25 @@ FIXED_FIELD_EDITS: dict[str, tuple[Any, str]] = {
     "title": ("Nothing to see here", "its title is 'Nothing to see here'"),
     "description": ("x", "its description is 'x'"),
 }
+#: Each field the SYSTEM fingerprint covers, the `rebuilt` change that moves it, and the code an
+#: edit of it in place reads once the fingerprint and id are re-derived (ADR 0018 Decision 13).
+FINGERPRINTED_EDITS: dict[str, tuple[dict[str, Any], str]] = {
+    "source type": ({"source_type": "complyroll.synthetic-other"}, "changegap_identity_breach"),
+    "source tool": ({"source_tool": "other"}, "changegap_identity_breach"),
+    "parser name": ({"parser_name": "complyroll.other"}, "changegap_identity_breach"),
+    "parser version": ({"parser_version": "2"}, "changegap_identity_breach"),
+    "source record id": ({"source_record_id": "change-gap-2"}, "changegap_identity_breach"),
+    "resource type": (
+        {"resource": replace(LAB_01, resource_type="image")},
+        "changegap_stream_mismatch",
+    ),
+    "resource id": (
+        {"resource": replace(LAB_01, resource_id="lab-03")},
+        "changegap_stream_mismatch",
+    ),
+    "context key": ({"context_key": "VDR-CSO-DAC:change:CHG-9"}, "changegap_stream_mismatch"),
+    "observed instant": ({"observed_at": T + 2 * HOUR}, "changegap_stream_mismatch"),
+}
 #: The reason a record that is no change gap system record gives, at append and in the audit.
 NOT_A_CHANGE_GAP = (
     "only a system record of source type 'complyroll.change' names a change gap stream"
@@ -1362,6 +1381,30 @@ class ChangeGapReaderTests(ChangeGapStoreCase):
             [("changegap_stream_mismatch", message)],
         )
 
+    def test_a_head_is_held_to_the_first_change_recorded_of_an_overfull_change(self) -> None:
+        # Mutant M44: only a write past the repository leaves a second change.recorded, which
+        # the audit names change_overfull. The reader holds a head to the first, as the audit
+        # and the append do, so a gap of the first reading is read and named by no gap audit.
+        StoreCase.setUp(self)
+        first = stored_change_payload(CHANGE_SET)
+        second = {**first, "occurredAt": "2026-09-01T11:59:59Z"}
+        self.assertEqual(first["occurredAt"], OCCURRED_TEXT)
+        changes = self.stage(
+            change_stream_id("CHG-1"),
+            [(CHANGE_RECORDED, first), (CHANGE_RECORDED, second)],
+            requires_schema=CHANGE_STREAM_SCHEMA_VERSION,
+        )
+        gap = gap_of(stateless_gaps(CHANGE_SET))
+        self.plant(change_gap_events(gap), change_gap_stream_id_of(gap))
+        self.assertEqual(change_gap_head_payload(gap)["occurredAt"], OCCURRED_TEXT)
+
+        self.assertEqual(rehydrate_observations(self.repository), (gap,))
+        # One fault, at the change stream's first event: no changegap_* code names the gap.
+        self.assertEqual(
+            [(fault.sequence, fault.code) for fault in audit_history(self.repository)],
+            [(changes[0], "change_overfull")],
+        )
+
 
 # *--- Audits ---*
 
@@ -1705,6 +1748,73 @@ class ChangeGapIdentityAuditTests(ChangeGapStoreCase):
 
     def test_a_record_of_another_record_id_is_an_identity_breach(self) -> None:
         self.assert_moved("its source record id is 'change-gap-2'", source_record_id="change-gap-2")
+
+    def test_an_identity_field_edited_in_place_and_rederived_is_a_breach_naming_it(self) -> None:
+        # Left on the stream it was written to: the fixed fields are read before the stream id.
+        reasons = {
+            "source type": NOT_A_CHANGE_GAP,
+            "source tool": "its source tool is 'other'",
+            "parser name": "its parser is 'complyroll.other' version '1'",
+            "parser version": "its parser is 'complyroll.change' version '2'",
+            "source record id": "its source record id is 'change-gap-2'",
+        }
+        for label, reason in reasons.items():
+            changes, code = FINGERPRINTED_EDITS[label]
+            with self.subTest(label):
+                self.setUp()
+                self.assertEqual(code, "changegap_identity_breach")
+                self.assert_breach(rebuilt(self.record, **changes).to_canonical_dict(), reason)
+
+    def test_a_resource_key_or_instant_edited_in_place_and_rederived_is_a_stream_mismatch(
+        self,
+    ) -> None:
+        # These move only the fingerprint, so the record is another stream's gap record before
+        # its metadata is read, and the identity check never names the field.
+        labels = ("resource type", "resource id", "context key", "observed instant")
+        for label in labels:
+            changes, code = FINGERPRINTED_EDITS[label]
+            with self.subTest(label):
+                self.setUp()
+                moved = rebuilt(self.record, **changes)
+                self.assertNotEqual(moved.fingerprint, self.record.fingerprint)
+                sequences = self.plant(
+                    [self.head, ("observation.recorded", moved.to_canonical_dict())]
+                )
+                message = (
+                    f"observation.recorded on change gap stream {self.stream_id!r} is the gap "
+                    f"record of stream {change_gap_stream_id(moved.fingerprint)!r}; a change gap "
+                    "stream is named for its gap record's fingerprint"
+                )
+
+                self.assertEqual(self.faults(), [(sequences[1], code)])
+                self.assertEqual(audit_history(self.repository)[0].message, message)
+                self.assertEqual(
+                    self.refused(), f"event {sequences[1]} is on the wrong stream: {message}"
+                )
+        self.assertEqual(
+            {code for _, code in FINGERPRINTED_EDITS.values()} - {"changegap_identity_breach"},
+            {"changegap_stream_mismatch"},
+        )
+        self.assertEqual(len(FINGERPRINTED_EDITS), 5 + len(labels))
+
+    def test_a_fingerprinted_field_edited_without_rederiving_is_contract_invalid(self) -> None:
+        # The observation contract recomputes the fingerprint and id, so a raw edit of any field
+        # they cover is refused there first, on every store path.
+        canonical = self.record.to_canonical_dict()
+        kept = {key: canonical[key] for key in ("fingerprint", "observation_id")}
+        for label, (changes, _) in FINGERPRINTED_EDITS.items():
+            with self.subTest(label):
+                self.setUp()
+                edited = {**rebuilt(self.record, **changes).to_canonical_dict(), **kept}
+                self.assertNotEqual(edited, canonical)
+                sequences = self.plant([self.head, ("observation.recorded", edited)])
+
+                self.assertEqual(self.faults(), [(sequences[1], "payload_contract_invalid")])
+                (fault,) = audit_history(self.repository)
+                self.assertEqual(
+                    self.refused(),
+                    f"event {sequences[1]} is not a readable observation: {fault.message}",
+                )
 
     def test_a_record_of_another_origin_is_contract_invalid_and_not_a_change_gap_record(
         self,
@@ -2142,11 +2252,9 @@ class ChangeGapWriterTests(StoreCase):
         self.assertEqual(with_gaps, without)
         self.assertEqual(change_gap_observations(with_gaps, ingested_at=AS_OF), recorded)
 
-    def test_one_run_records_every_gap_or_none(self) -> None:
-        record_the_change(self.repository)
-        latest = self.store.latest_sequence
+    def second_gap_fails(self, calls: list[str]) -> Any:
+        """Patch `append_batch` to record each stream it is called for and fail the second."""
         real = EventRepository.append_batch
-        calls: list[str] = []
 
         def append_batch(repository: EventRepository, stream_id: str, *args: Any, **kw: Any) -> Any:
             calls.append(stream_id)
@@ -2154,10 +2262,14 @@ class ChangeGapWriterTests(StoreCase):
                 raise HistoryError("simulated failure on the second gap")
             return real(repository, stream_id, *args, **kw)
 
-        with (
-            mock.patch.object(EventRepository, "append_batch", append_batch),
-            self.assertRaises(HistoryError),
-        ):
+        return mock.patch.object(EventRepository, "append_batch", append_batch)
+
+    def test_one_run_records_every_gap_or_none(self) -> None:
+        record_the_change(self.repository)
+        latest = self.store.latest_sequence
+        calls: list[str] = []
+
+        with self.second_gap_fails(calls), self.assertRaises(HistoryError):
             self.record_gaps()
 
         # One batch per stream, head and record together, so the second call is the second gap.
@@ -2165,6 +2277,40 @@ class ChangeGapWriterTests(StoreCase):
         self.assertEqual(self.store.latest_sequence, latest)
         self.assertEqual(self.store.schema_version, 5)
         self.assertEqual(recorded_gaps(self.repository), [])
+
+    def test_the_run_joins_a_callers_transaction(self) -> None:
+        # The caller's rollback is the run's: every gap and the schema 6 mark go with it.
+        record_the_change(self.repository)
+        latest = self.store.latest_sequence
+
+        with self.assertRaisesRegex(RuntimeError, "^abandon the run$"):
+            with self.repository.transaction():
+                outcome = self.record_gaps()
+                self.assertEqual(len(outcome.recorded), 2)
+                self.assertEqual(self.store.schema_version, 6)
+                raise RuntimeError("abandon the run")
+
+        self.assertEqual(self.store.latest_sequence, latest)
+        self.assertEqual(self.store.schema_version, 5)
+        self.assertEqual(recorded_gaps(self.repository), [])
+
+    def test_a_caller_that_catches_the_error_and_commits_owns_that_rollback(self) -> None:
+        # The stated limit: no savepoint, so a run that joins a caller's transaction rolls
+        # nothing back itself. A caller that catches the failure and commits keeps the first gap.
+        record_the_change(self.repository)
+        latest = self.store.latest_sequence
+        first, _ = derived_gaps(self.repository)
+        calls: list[str] = []
+
+        with self.repository.transaction():
+            with self.second_gap_fails(calls), self.assertRaises(HistoryError):
+                self.record_gaps()
+
+        self.assertEqual(len(set(calls)), 2)
+        self.assertEqual(recorded_gaps(self.repository), [first])
+        self.assertEqual(self.store.latest_sequence, latest + 2)
+        self.assertEqual(self.store.schema_version, 6)
+        self.assertEqual(audit_history(self.repository), ())
 
     def shapes(self) -> dict[str, Any]:
         """Each damaged shape of one gap's stream, as the events planted on it."""

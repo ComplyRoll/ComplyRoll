@@ -461,7 +461,7 @@ The other rows and the five invariants stand. These three never exit 3, so I2 ke
 places: a request holds no system record, and `changes record` writes no failure or gap. A usage
 error is still 2 on all three.
 
-## Amendment 2026-11-12 (second): a third kind of system record and a fourth place for exit 3
+## Amendment 2026-11-14: a third kind of system record and a fourth place for exit 3
 
 ADR 0018's third section adds a third system-generated `VDR-CSO-FAV` record, the change detection
 gap: a change window that closed with no verification. Exit 3 keeps the meaning Decision 3 gives

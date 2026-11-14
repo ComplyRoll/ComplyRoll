@@ -172,9 +172,9 @@ Target: 3 to 4 weeks
 - Git/deployment change-event ingestion. **Contract shipped, 2026-11-09** (ADR 0018): a
   provider-supplied change file is read per run with `--changes`, beside `--inventory`. Source
   adapters are not built. **Recorded in the store, 2026-11-12** (ADR 0018): `changes record` appends
-  each change as history, and `report --db` and `changes pending --db` read it back. **Met,
-  2026-11-14** (ADR 0018): the change file is the ingestion contract on both paths, and a window
-  that closes with no verification can be recorded as a case (`--record-change-gaps`, `cases
+  each change as history, and `report --db` and `changes pending --db` read it back. **Contract
+  complete, 2026-11-14** (ADR 0018): the change file is the ingestion contract on both paths, and a
+  window that closes with no verification can be recorded as a case (`--record-change-gaps`, `cases
   changes`). Adapters for git, Terraform, Kubernetes, or a deployment record are not built; a
   provider's pipeline writes the change file.
 - Expected-resource versus observed-resource coverage checks. **Complete, 2026-10-16** (ADR 0015).

@@ -52,9 +52,9 @@ All notable project changes will be documented here.
   retaining every affected resource" Met, which has been true since ADR 0001. No code changed for
   it.
 - `docs/BUILD_PLAN.md` marks the Phase 2 exit criterion "New or significantly changed resources
-  can trigger a scoped detection request" Met, with the deliverables "Git/deployment change-event
-  ingestion" and "Change-triggered detection jobs". No adapter for git, Terraform, Kubernetes, or
-  a deployment record is built.
+  can trigger a scoped detection request" Met, with the deliverable "Change-triggered detection
+  jobs", and marks "Git/deployment change-event ingestion" Contract complete. No adapter for git,
+  Terraform, Kubernetes, or a deployment record is built.
 - A report from a store is coverage-gap-aware when the store holds a `coverage/` stream, not when it
   is marked schema 4, so a store marked 4 by hand with no coverage stream reads unaware, and
   recording a change turns on no window key or `coverage_gap_*` note (ADR 0015 amendment

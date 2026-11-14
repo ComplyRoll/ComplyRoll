@@ -11,64 +11,14 @@ ComplyRoll turns scanner observations, validation runs, and operational evidence
 vulnerability cases, class-aware response clocks, and official-format FedRAMP reports that a
 provider can publish and an independent assessor can recompute.
 
-## Status
-
-| Phase | Scope | State |
-|---|---|---|
-| 0 | Harden stigroll ingestion and provenance | Complete |
-| 1 | Build VDR cases, policy clocks, and VER exports | Complete |
-| 2 | Add automation, coverage, and change integration | In progress |
-| 3 | Add KSI validation and SDR evidence | Not started |
-| 4 | Integrate trust-center and ongoing certification workflows | Not started |
-
-ComplyRoll is pre-alpha; it does not produce a FedRAMP submission package and must not be
-represented as FedRAMP approved. The PyPI pre-release (`pip install --pre complyroll`) lags
-`main`, so follow this README from a source checkout.
-
-## Why ComplyRoll
-
-FedRAMP 20x is based on measured outcomes and persistent validation. A failed STIG rule or CVE is
-only a source observation. VDR also covers drift, failed validation pipelines, stale security
-decisions, supply-chain exposures, and failures in the detection and response process itself.
-ComplyRoll therefore keeps immutable observations apart from stateful vulnerability cases. A
-case's Potential Agency Impact (PAIN) rating comes from the operator's evaluation and is never
-derived from scanner severity, DISA CAT, or CVSS. Every deadline names its rule in the official
-FedRAMP rules dataset, pinned to one commit, and takes its timeframe from that rule. The KEV clock
-is the one exception: its rule comes from the dataset, but its due date comes from the CISA
-catalog the operator supplies.
-
-## What it does
-
-| Surface | What it does |
-|---|---|
-| CKLB, CKL, XCCDF, ARF, SARIF, HDF, and CycloneDX files | Become immutable observations with the artifact digest, parser identity, and timestamps |
-| `complyroll report vdt\|avi\|historical` | Compiles the Vulnerability Detail, Accepted Vulnerability Information, or Historical VER Activity report, with a Markdown twin rendered from the same records |
-| `--kev FILE` | Matches each record's CVE identifiers to a CISA KEV catalog the operator supplies and carries the catalog's due date as the `VDR-TFR-KEV` clock, without fetching anything |
-| `--inventory FILE` | Shows when detection last reached each resource the operator declares |
-| `--changes FILE`, `complyroll changes pending` | Shows whether detection reached each resource a declared change touched, at or after the change, and writes the resources still waiting as a document for the pipeline that owns the scanner |
-| `--record-failed-imports` | Records an artifact that cannot be parsed or holds no usable content, or a failed scanner invocation, as a system observation and a vulnerability of its own (`VDR-CSO-FAV`), and exits 3; `ingest` refuses with `failure_read_elsewhere`, appending nothing, a failure whose bytes the store already holds an outranking reading of |
-| `--record-coverage-gaps`, `complyroll cases coverage` | Record each coverage window that closed with no verification as a system observation of its own and a vulnerability case (`VDR-CSO-FAV`), on a report run or into a store, and exit 3; windows of one rule whose entries name the same `job` share a case, the windows of one sample group share a case, and every other window is a case of its own |
-| `--record-change-gaps`, `complyroll cases changes` | Record each declared change's window that closed with no verification as a system observation of its own (`VDR-CSO-FAV`), on a report run or into a store, and exit 3; the windows of one change share one case that lists every resource. A gap records an absence of verification, not a vulnerability |
-| `complyroll changes record` | Records each declared change in a store as history, for `report --db`, `changes pending --db`, and `cases changes` to read back |
-| `complyroll ingest`, `cases`, and `report --db` | Record the same work as append-only history and rebuild each report from it, byte-identical to the stateless report |
-| `complyroll store verify --db STORE` | Audits an event store's bytes and its domain, and exits non-zero on any fault |
-| `complyroll validate REPORT --schema KIND` | Validates a report offline against the pinned official schema, with a JSON Pointer for each failure |
-| `stigroll FILE...` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output |
-| `complyroll.adapters`, `.policy`, `.schemas`, `.store` | Ingest an artifact, calculate a deadline with its rule provenance, validate a report, or open the event store from Python |
-
-Not yet built, among others: failures in the response process, SPDX and cloud sources, and KSI and
-SDR evidence. [`docs/BUILD_PLAN.md`][build-plan] has the full list. A coverage
-gap records that no verification reached a resource in time, not that the resource is vulnerable.
-A SARIF log with no results ingests as a PASS observation of the scope it names, which is
-evidence that the tool ran, not that the scope is clean. A CycloneDX SBOM with no vulnerability
-records, or an empty list, ingests as a NOT_REVIEWED observation of its subject: an inventory is
-not a detection, and a standalone VEX document is refused.
-
-Every command and flag: [`docs/CLI.md`][cli].
+ComplyRoll is pre-alpha. It does not produce a FedRAMP submission package and must not be
+represented as FedRAMP approved.
 
 ## Quick start
 
-From a source checkout, with Python 3.11 or newer:
+Install the latest pre-release with `pip install --pre complyroll`. The walkthrough below uses the
+synthetic sample files in this repository, so run it from a source checkout, with Python 3.11 or
+newer:
 
 ```bash
 git clone https://github.com/ComplyRoll/ComplyRoll.git && cd ComplyRoll
@@ -104,36 +54,69 @@ The report includes internal resource identifiers and provider rationale, so red
 sharing with an agency. [`examples/README.md`][examples] continues from here with the other two
 reports, SARIF, KEV, coverage and coverage gaps, HDF, failed imports, and the Python API.
 
-## Declaring changes from git
+## What it does
 
-`--changes` reads ComplyRoll's own `complyroll.changes` document, described in
-[`docs/DATA_MODEL.md`][data-model]; there is no git adapter. This worked example, which needs
-`jq`, writes that document from `git log --format` for a repository whose commits name their
-resources in `Resource:` trailers, such as `Resource: image:registry.example.test/api:2.1`, and
-mark a change that is not significant with `Significant: false`:
+| Surface | What it does |
+|---|---|
+| CKLB, CKL, XCCDF, ARF, SARIF, HDF, and CycloneDX files | Become immutable observations with the artifact digest, parser identity, and timestamps |
+| `complyroll report vdt\|avi\|historical` | Compiles the Vulnerability Detail, Accepted Vulnerability Information, or Historical VER Activity report, with a Markdown twin rendered from the same records |
+| `complyroll validate REPORT --schema KIND` | Validates a report offline against the pinned official schema, with a JSON Pointer for each failure |
+| `--kev FILE` | Matches each record's CVE identifiers to a CISA KEV catalog the operator supplies and carries its due date as the `VDR-TFR-KEV` clock, without fetching anything |
+| `--inventory FILE` | Shows when detection last reached each resource the operator declares |
+| `--changes FILE`, `complyroll changes pending` | Shows whether detection reached each resource a declared change touched, and writes the resources still waiting as a document for the pipeline that owns the scanner |
+| `--record-failed-imports` | Records an artifact that cannot be parsed or holds no usable content, or a failed scanner invocation, as a vulnerability case of its own (`VDR-CSO-FAV`), and exits 3 |
+| `--record-coverage-gaps`, `complyroll cases coverage` | Record coverage windows that closed with no verification as vulnerability cases (`VDR-CSO-FAV`), on a report run or into a store, and exit 3 |
+| `--record-change-gaps`, `complyroll cases changes` | Record change windows that closed with no verification as vulnerability cases (`VDR-CSO-FAV`), one per change, on a report run or into a store, and exit 3 |
+| `complyroll ingest`, `cases`, and `report --db` | Record the same work as append-only history and rebuild each report from it, byte-identical to the stateless report |
+| `complyroll changes record` | Records each declared change in a store as history, for `report --db`, `changes pending --db`, and `cases changes` to read back |
+| `complyroll store verify --db STORE` | Audits an event store's bytes and its domain, and exits non-zero on any fault |
+| `stigroll FILE...` | The predecessor STIG roll-up, rebuilt on the hardened adapters and locked to its original output |
+| `complyroll.adapters`, `.policy`, `.schemas`, `.store` | Ingest an artifact, calculate a deadline with its rule provenance, validate a report, or open the event store from Python |
 
-```bash
-format='%H%x09%cI%x09%(trailers:key=Resource,valueonly,separator=%x1F)%x09'
-format+='%(trailers:key=Significant,valueonly,separator=%x1F)%x09%s'
-git log --no-merges --since=2026-09-01 --format="$format" |
-jq -Rn '{
-  schema: "complyroll.changes", schemaVersion: 1, name: "git-changes",
-  changes: [inputs | split("\t") | select(.[2] != "") | {
-    changeId: ("git-" + .[0][:12]),
-    kind: "modified",
-    occurredAt: .[1],
-    source: {tool: "git", reference: ("commit " + .[0])},
-    resources: [.[2] | split("\u001f") | unique[]
-      | capture("^(?<resourceType>[^:]+):(?<resourceId>.+)$")],
-    significant: (.[3] != "false"),
-    rationale: (.[4:] | join("\t"))[:512]
-  }]
-}' > changes.json
-```
+Every command, flag, and exit status: [`docs/CLI.md`][cli].
 
-It is an example to adapt, not a parser. It calls every commit a modification, sets no `detectBy`
-window, and takes the subject line as the rationale, so a commit it should not count is yours to
-filter. ComplyRoll refuses a file that breaks the contract; the only text it cleans is `rationale`.
+What a result does not mean:
+
+- A coverage gap or a change gap records that no verification reached a resource in time, not that
+  the resource is vulnerable.
+- A SARIF log with no results ingests as a PASS observation of the scope it names. That is evidence
+  that the tool ran, not that the scope is clean.
+- A CycloneDX SBOM with no vulnerability records, or an empty list, ingests as a NOT_REVIEWED
+  observation of its subject. An inventory is not a detection, and a standalone VEX document is
+  refused.
+- A scanner pass may support a Key Security Indicator (KSI). It does not prove the complete KSI.
+
+## Status
+
+| Phase | Scope | State |
+|---|---|---|
+| 0 | Harden stigroll ingestion and provenance | Complete |
+| 1 | Build VDR cases, policy clocks, and VER exports | Complete |
+| 2 | Add automation, coverage, and change integration | Complete |
+| 3 | Add response-process cases, KSI validation, and SDR evidence | Not started |
+| 4 | Integrate trust-center and ongoing certification workflows | Not started |
+
+Phase 2 closed on its exit criteria, with three deliverables moved on as a recorded scope change.
+Not yet built, among others: failures in the response process as cases, a cloud, container, or
+CSPM adapter, HTML report output, SPDX input, and KSI and SDR evidence.
+[`docs/BUILD_PLAN.md`][build-plan] has the full list. `main` can be ahead of the PyPI pre-release,
+and [`CHANGELOG.md`][changelog] says what is unreleased.
+
+## Design rules
+
+FedRAMP 20x is based on measured outcomes and persistent validation. A failed STIG rule or CVE is
+only a source observation. VDR also covers drift, failed validation pipelines, stale security
+decisions, supply-chain exposures, and failures in the detection and response process itself. So:
+
+- Observations are immutable source facts, kept apart from stateful vulnerability cases.
+- A case's Potential Agency Impact (PAIN) rating comes from the operator's evaluation. It is never
+  derived from scanner severity, DISA CAT, or CVSS.
+- Every deadline names its rule in the official FedRAMP rules dataset, pinned to one commit, and
+  takes its timeframe from that rule. The KEV clock is the one exception: its rule comes from the
+  dataset, but its due date comes from the CISA catalog the operator supplies.
+- Grouping observations must not destroy affected-resource or source-level details.
+- Human-readable and machine-readable reports must come from the same normalized records.
+- Historical evaluations and evidence must remain reproducible.
 
 ## For independent assessors
 
@@ -145,20 +128,11 @@ bytes in any argument order ([`docs/ARCHITECTURE.md`][architecture] has the deta
 do not configure or operate ComplyRoll on a provider's behalf; under the 2026 recognition rules,
 advisory work on an offering bars assessing that offering for two years.
 
-## Non-negotiable rules
-
-- Source severity, DISA CAT, CVSS, and PAIN are separate concepts.
-- ComplyRoll must never infer PAIN solely from source severity or CVSS.
-- A scanner pass may support a Key Security Indicator (KSI); it does not prove the complete KSI.
-- Grouping observations must not destroy affected-resource or source-level details.
-- Rule calculations must identify the exact pinned FedRAMP rules version used.
-- Human-readable and machine-readable reports must come from the same normalized records.
-- Historical evaluations and evidence must remain reproducible.
-
 ## Documentation
 
 - [`examples/README.md`][examples]: worked runs on the synthetic fixtures, Python API included
-- [`docs/CLI.md`][cli]: every command and flag, and the exit status of each
+- [`docs/CLI.md`][cli]: every command and flag, the exit status of each, and a worked example that
+  writes a change file from `git log`
 - [`examples/ci/`][examples-ci]: a reference GitHub Actions workflow and gate
 - [`docs/BUILD_PLAN.md`][build-plan]: phased implementation plan and exit criteria
 - [`docs/ARCHITECTURE.md`][architecture]: system boundaries and component design
@@ -185,20 +159,16 @@ provenance and license.
 Origin sign-off every commit carries. Report a vulnerability privately, as
 [`SECURITY.md`][security-policy] describes, rather than in a public issue.
 
-## Disclaimer
+## License and disclaimer
+
+ComplyRoll's code is licensed under the Apache License, Version 2.0 (see [`LICENSE`][license]
+and [`NOTICE`][notice]). The bundled FedRAMP data files are works of the U.S. Government and are
+not covered by that license. The ComplyRoll name is not licensed (Apache License, Section 6).
 
 ComplyRoll is informational tooling, not legal or compliance advice. A report that validates
 against an official schema satisfies that schema's minimum structure; it is not a FedRAMP
 determination, and the provider remains responsible for meeting the Consolidated Rules. Verify
 every clock against <https://www.fedramp.gov/2026/> before relying on it.
-
-## License
-
-ComplyRoll's code is licensed under the Apache License, Version 2.0 (see [`LICENSE`][license]
-and [`NOTICE`][notice]). The bundled FedRAMP data files are works of the U.S. Government and are
-not covered by that license. The ComplyRoll name is not licensed (Apache License, Section 6).
-Contributions require a Developer Certificate of Origin sign-off
-([`CONTRIBUTING.md`][contributing]).
 
 FedRAMP® is a registered trademark of the U.S. General Services Administration. ComplyRoll is an
 independent project and is not affiliated with, endorsed by, or approved by GSA or the FedRAMP

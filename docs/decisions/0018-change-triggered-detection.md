@@ -487,13 +487,15 @@ job, the force, or either digest. The title is `VDR-CSO-DAC window for <type>:<i
 this records the absence of a verification, not a vulnerability."
 
 The gaps are derived once. On a flagged stateless run the compiler checks the KEV catalog date and
-its rule, refuses an unusable clock, derives coverage whenever the run has an inventory, adds the
-coverage gaps when asked, derives the change projection, adds the change gaps, and only then groups
-the observations and matches evaluations. So the block and the gap records come from one
-projection. Among the catalog date, rule, and clock refusals, the first is the same with or without
-the flag, but a flagged run reads them all before the evaluation-match refusal, so a flagged run
-that meets both stops on the catalog, rule, or clock refusal. An unflagged run, and one with
-`--record-coverage-gaps` alone, still matches evaluations first and reads as it did before.
+its rule, derives coverage, which refuses a missing coverage rule and then an unusable source
+clock, adds the coverage gaps when asked, derives the change projection, which refuses a missing
+change rule, adds the change gaps, and only then groups the observations and matches evaluations.
+So the block and the gap records come from one projection, and among these refusals the first is
+the same with or without the flag. A flagged run reads every one of them before the
+evaluation-match refusal. An unflagged run matches evaluations first, as before this section. A
+run with `--record-coverage-gaps` alone keeps the order it had before this section: it derives
+coverage, so the coverage rule and the source clocks, before the match, and reads the catalog
+date, the KEV rule, and the change rule after it.
 `compile_record_set` refuses a projection handed to it that was not derived from the run's own
 options. The projection reads only ARTIFACT-origin observations, so a gap never satisfies the
 obligation it reports, on either path, and neither does a coverage gap inside a change window.

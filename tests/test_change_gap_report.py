@@ -62,6 +62,7 @@ from complyroll.reports import (
     compile_record_set_from_history,
     compile_vdt_report,
     load_changes,
+    load_evaluations,
     load_inventory,
     parse_changes,
 )
@@ -545,6 +546,82 @@ class ChangeGapRefusalOrderTests(unittest.TestCase):
             ):
                 diagnostics = self.assert_same_refusal()
                 self.assertEqual({item.code for item in diagnostics}, {code})
+
+    #: Each run the paragraph of Decision 11 names: (label, change flag, coverage flag).
+    FLAG_RUNS = (
+        ("no flag", False, False),
+        ("coverage flag", False, True),
+        ("change flag", True, False),
+        ("both flags", True, True),
+    )
+
+    def unmatched_run_codes(self, *, change: bool, coverage: bool, **arguments: Any) -> set[str]:
+        """Return the codes a run whose example evaluations match nothing is refused with."""
+        evaluations = load_evaluations(EXAMPLES / "evaluations.json")
+        diagnostics = refusal(
+            lambda: compile_record_set_from_artifacts(
+                list(TIMED_ARTIFACTS),
+                options=timed_options(flag=change, coverage=coverage, **arguments),
+                evaluations=evaluations,
+            )
+        )
+        return {item.code for item in diagnostics}
+
+    def test_a_coverage_derivation_reads_an_unusable_clock_before_an_unmatched_evaluation(
+        self,
+    ) -> None:
+        # Decision 11: a run that derives coverage before it matches evaluations, a coverage-only
+        # run as before this section and every flagged run, stops on the clock; an unflagged run
+        # matches evaluations first.
+        expected = {
+            "no flag": "evaluation_unmatched",
+            "coverage flag": "clock_out_of_range",
+            "change flag": "clock_out_of_range",
+            "both flags": "clock_out_of_range",
+        }
+        for label, change, coverage in self.FLAG_RUNS:
+            with (
+                self.subTest(label),
+                mock.patch.object(
+                    records_module, "_ingest_all", return_value=([], [self.UNUSABLE])
+                ),
+            ):
+                codes = self.unmatched_run_codes(change=change, coverage=coverage)
+                self.assertEqual(codes, {expected[label]})
+
+    def test_a_coverage_only_run_reads_its_rule_before_the_match_and_the_others_after(
+        self,
+    ) -> None:
+        # The coverage-only branch derives coverage alone before the match; the catalog date
+        # (above), the KEV rule and the change rule wait for the back half, as before this section.
+        unmatched = "evaluation_unmatched"
+        for name, patches, arguments, codes in (
+            (
+                "coverage rule",
+                (COVERAGE_RULE_IDS[0],),
+                {},
+                (unmatched, *(["coverage_rule_unavailable"] * 3)),
+            ),
+            (
+                "KEV rule",
+                ("VDR-TFR-KEV",),
+                {"kev_catalog": catalog()},
+                (unmatched, unmatched, "kev_rule_unavailable", "kev_rule_unavailable"),
+            ),
+            (
+                "change rule",
+                ("VDR-CSO-DAC",),
+                {},
+                (unmatched, unmatched, "change_rule_unavailable", "change_rule_unavailable"),
+            ),
+        ):
+            for (label, change, coverage), code in zip(self.FLAG_RUNS, codes, strict=True):
+                with (
+                    self.subTest(rule=name, run=label),
+                    mock.patch.object(records_module, "select_policy", stripped_policy(*patches)),
+                ):
+                    found = self.unmatched_run_codes(change=change, coverage=coverage, **arguments)
+                    self.assertEqual(found, {code})
 
     def test_the_flag_reads_the_catalog_date_before_an_unmatched_evaluation(self) -> None:
         # Call 9: a flagged run meets the catalog date, the rules and the clock before it

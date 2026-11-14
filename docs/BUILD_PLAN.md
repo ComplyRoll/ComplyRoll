@@ -171,13 +171,18 @@ Target: 3 to 4 weeks
 - Initial cloud, container, or CSPM JSON adapter selected from design-partner demand.
 - Git/deployment change-event ingestion. **Contract shipped, 2026-11-09** (ADR 0018): a
   provider-supplied change file is read per run with `--changes`, beside `--inventory`. Source
-  adapters are not built. **Recorded in the store, 2026-11-09** (ADR 0018): `changes record` appends
-  each change as history, and `report --db` and `changes pending --db` read it back.
+  adapters are not built. **Recorded in the store, 2026-11-12** (ADR 0018): `changes record` appends
+  each change as history, and `report --db` and `changes pending --db` read it back. **Met,
+  2026-11-12** (ADR 0018): the change file is the ingestion contract on both paths, and its
+  windows become cases. Adapters for git, Terraform, Kubernetes, or a deployment record are not
+  built; a provider's pipeline writes the change file.
 - Expected-resource versus observed-resource coverage checks. **Complete, 2026-10-16** (ADR 0015).
 - Scanner and validation freshness checks. **Complete, 2026-10-16** (ADR 0015).
 - Change-triggered detection jobs. **Request document shipped, 2026-11-09** (ADR 0018): ComplyRoll
   runs no scanner, so `changes pending` writes the resources a declared change still waits on for
-  the pipeline that does. An unmet window becoming a case is still to come.
+  the pipeline that does. **Met, 2026-11-12** (ADR 0018): with `--record-change-gaps` on a report,
+  or `cases changes` into a store, each change window that closed with no verification becomes a
+  system observation, and the windows of one change one case listing every resource.
 - CI-friendly exit criteria and a reference GitHub Actions workflow. **Complete, 2026-10-20**
   (ADR 0017). Overdue and KEV clocks do not fail a job yet.
 - Response-process and attestation failures: a broken remediation or response workflow, and a
@@ -208,7 +213,14 @@ Target: 3 to 4 weeks
   observation and a case per rule and job, else per rule and resource, evaluated like any other,
   and the stateless and persisted reports carry it; a gap records an absence of verification, not
   a vulnerability).
-- New or significantly changed resources can trigger a scoped detection request.
+- New or significantly changed resources can trigger a scoped detection request. **Met,
+  2026-11-12** (ADR 0018: a provider's change file names what changed, and the provider states
+  which changes are significant and the window for each; `changes pending` writes the resources a
+  change still waits on as a request document for the pipeline that owns the scanner, on both
+  paths; with `--record-change-gaps` on a report, or `cases changes` into a store, a window that
+  closed with no verification becomes a system observation and one case per change listing every
+  resource, evaluated like any other, and the stateless and persisted reports carry it; a gap
+  records an absence of verification, not a vulnerability).
 - A case can group equivalent observations while retaining every affected resource. **Met,
   2026-11-09** (shipped since ADR 0001: correlation keeps every distinct affected resource of a
   group, `correlation/__init__.py`, pinned by `tests/test_correlation.py`).

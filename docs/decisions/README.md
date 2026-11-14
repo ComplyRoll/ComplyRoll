@@ -70,4 +70,7 @@ read a record's amendments before relying on it.
 - [ADR 0018: Change-triggered detection](0018-change-triggered-detection.md): a provider-supplied
   change file is a per-run report input read against the inventory, each change and resource gets
   a status from the evidence at or after the change, and `changes pending` writes the resources
-  still waiting as a document for the pipeline that owns the scanner.
+  still waiting as a document for the pipeline that owns the scanner; `changes record` keeps the
+  changes in a schema 5 store, and a change window that closes with no verification becomes a
+  `VDR-CSO-FAV` system observation and one case per change, with `--record-change-gaps` on a
+  report or `cases changes` into a schema 6 store.

@@ -516,9 +516,81 @@ change stays at its version.
 A report from a store carries the block when the store holds at least one change stream and the
 run has `--inventory`. A replay of a store holding exactly the file a stateless run reads equals it
 byte for byte but for the block's `input`, the Markdown intro line that is its twin, and the
-request's `input` (ADR 0008 amendment 2026-11-09), and `recordedAt` reaches no output. Recording a
+request's `input` (ADR 0008 amendment 2026-11-12), and `recordedAt` reaches no output. Recording a
 change turns on no coverage window key and no `coverage_gap_*` note: gap awareness follows a
 coverage stream, not the schema marker.
+
+### Change gaps
+
+A change gap is a stored record, unlike the changes block. With `--record-change-gaps` on a
+report, or `cases changes` into a store, each obligation row whose `windowClosedAt` is set becomes
+one system observation, built by `change_gap_observations` in `reports/change_gaps.py` (ADR 0018).
+That is a `lapsed` row, a `lapsed` row of a resource decommissioned after the close, and a
+`detected` row with `late: true`; the builder keys on the field, never on the status. Without
+either, nothing is minted. The observation uses the SYSTEM identity recipe of the ADR 0002
+amendment, with these inputs:
+
+| Recipe input | Value |
+|---|---|
+| `source_type` | `complyroll.change`, which no adapter can emit for an artifact observation |
+| `source_tool` | `complyroll` |
+| `parser_name`, `parser_version` | `complyroll.change`, `1` |
+| `source_record_id` | `change-detection-gap` |
+| `resource_type`, `resource_id` | The obligation's resource: the entry's own pair, or `logical` and `sample-group/<name>` for a group row |
+| `context_key` | `VDR-CSO-DAC:change:<changeId>` |
+| `observed_at` | The window's close, which is the change's `detectBy`, never as-of or ingest time |
+
+The other fields are fixed: disposition open, source severity unknown, no source identifiers,
+`evidence_ids` holding `sha256:<change file digest>`, `ingested_at` from the report's as-of or from
+the `--as-of` of `cases changes`, which reaches neither the id nor a report, and the title
+`VDR-CSO-DAC window for <type>:<id> after change <changeId> closed <instant> with no verification
+recorded (VDR-CSO-FAV)`. The description reads "ComplyRoll recorded no verification of this
+resource between the change and the window close; this records the absence of a verification, not
+a vulnerability." On the store path the change file digest is that of the file that first recorded
+the change. The metadata always carries the same ten keys, and none of them moves the id:
+
+| Metadata key | Purpose |
+|---|---|
+| `change.rule`, `change.force` | `VDR-CSO-DAC` and the force the projection read from the pinned dataset |
+| `change.id`, `change.kind` | The change and its kind |
+| `change.occurredAt`, `change.detectBy` | When the change occurred and when its window closed, the same instant as `observed_at` |
+| `change.job` | The change's `job`, or empty text when it names none |
+| `change.changesSha256`, `change.inventorySha256` | The change file and the inventory the row was read from |
+| `change.basis` | The block's fixed basis text |
+
+Correlation groups by source type, record id, and context key, so every closed window of one change
+is one case that lists every resource and observation id; a `job` does not move the key. A change
+id may hold `:` and spaces, so a reader splits the key at its first two colons only. A gap record
+renders as a coverage gap does: `detectedAtSource` `system`, detection at the window close, one
+`VER-TFR-EVU` deadline from that close, and PAIN only from an evaluation matched on the full
+triple. A later verification never closes it. `parserVersions` gains `complyroll.change`. A
+change-gap-aware run, one with the flag or a report from a store holding a change gap stream given
+an inventory, adds two keys to every obligation row of the block, and the Markdown Obligations
+table gains a column for each. The request document never carries them:
+
+| Row key | Purpose |
+|---|---|
+| `recorded` | True when a gap record carries the window; null when no window closed; on the store path only, false for a closed window no stored gap carries |
+| `trackingId` | That record's effective tracking id, else null |
+
+On the persisted path each gap is recorded on its own stream, `changegap/<fingerprint>`, named for
+the gap record's SYSTEM identity hash. The stream holds exactly two events, written in one batch at
+version 0 and never extended: a `change.gap_recorded` v1 head and one `observation.recorded`
+carrying the gap record.
+
+| `change.gap_recorded` field | Purpose |
+|---|---|
+| `changeId` | The change, the record's `change.id` |
+| `contextKey` | The record's context key |
+| `windowClosedAt` | The window's close, the record's `change.detectBy` |
+| `occurredAt` | The record's `change.occurredAt` |
+| `changesSha256`, `inventorySha256` | The record's two digests |
+
+Every field is required and no other is allowed. At append the repository holds each field to the
+record it heads, and holds the head to the change it names: the store must hold that change's
+`change/` stream, recording the same occurrence, a `detectBy` equal to `windowClosedAt`, and the
+same change file digest. `store verify` checks the same. A store that holds a change gap stream is
+schema version 6, and one that never records a change gap stays at its version.
 
 ## Report extension (x-complyroll)
 
@@ -532,9 +604,9 @@ vulnerability carries every computed deadline with its rule and force (`deadline
 recorded, not that it was recorded by `dueAt`, and no field reports lateness, ADR 0007 amendment
 2026-10-26), the grouped observation ids and affected resources
 (`observationIds`, `resources`), the detection-time source (`detectedAtSource`: `artifact`,
-`artifact-partial`, `attestation`, or `system` for a detection process failure or a coverage
-gap), and the evaluator and rationale (`evaluator`, `rationale`). The KEV keys,
-`detectionFailures`, `coverage`, and `changes` described above live under the same key.
+`artifact-partial`, `attestation`, or `system` for a detection process failure, a coverage gap,
+or a change detection gap), and the evaluator and rationale (`evaluator`, `rationale`). The KEV
+keys, `detectionFailures`, `coverage`, and `changes` described above live under the same key.
 
 The JSON is the complete machine record. The Markdown twin renders the same records for a reader,
 with a detail section per vulnerability, and a parity test checks that the twin states every
@@ -620,7 +692,7 @@ Planned fields not carried yet: `service_id` (cloud service or component members
 | `disposition` | Open, pass, not applicable, not reviewed, error, or unknown |
 | `evidence_ids` | Content-addressed supporting evidence |
 | `source_artifact_digest` | Integrity and idempotency anchor (lowercase hex; blank for system observations) |
-| `origin` | `artifact` for observations parsed from a source file; `system` for observations ComplyRoll generates about its own detection and response process: detection process failures since ADR 0014, with stale scans and missing resources planned |
+| `origin` | `artifact` for observations parsed from a source file; `system` for observations ComplyRoll generates about its own detection and response process: detection process failures since ADR 0014, coverage gaps since ADR 0015, and change detection gaps since ADR 0018 |
 
 `observed_at` may be unknown when a source format does not declare an assessment timestamp.
 ComplyRoll records that absence and emits a diagnostic; it does not treat file modification or
@@ -636,8 +708,9 @@ identifier, resource, context key, and the UTC observation time (ADR 0002 amendm
 production recipe, for detection process failures, uses the failed artifact's digest as the
 context key, because ComplyRoll has no inventory of detection jobs yet; see Detection process
 failures above and the ADR 0002 amendment of 2026-09-30. The second, for coverage gaps (ADR
-0015), keys on the inventory entry's `job` when it names one; see Coverage gaps above. Failure
-cases stay keyed on the digest.
+0015), keys on the inventory entry's `job` when it names one; see Coverage gaps above. The third,
+for change detection gaps (ADR 0018), keys on the change id; see Change gaps above. Failure cases
+stay keyed on the digest.
 
 A SARIF observation (ADR 0011) takes its identity from the literal source type `sarif`, the
 driver name as `source_tool`, the rule identifier resolved in the spec's order as
@@ -741,7 +814,8 @@ evaluation is its latest. Durable history lives in the event log.
 
 `completedAt` is ordered against `detectedAt`. A report refuses a record whose evaluation completed
 strictly before a detection time that is the record's own (an artifact timestamp, an attestation,
-or a recorded detection process failure) with the ERROR `evaluation_before_detection`. A group
+a recorded detection process failure, or the window close of a coverage or change detection gap)
+with the ERROR `evaluation_before_detection`. A group
 with only some timestamps keeps its record and gets the WARNING
 `evaluation_before_partial_detection`, because an untimed observation may have detected the
 weakness earlier. `cases evaluate` checks every entry it matches, refuses on the ERROR and prints

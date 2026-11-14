@@ -973,7 +973,7 @@ Left out, on purpose. A report does not warn, since no reader refuses a latent p
 output is compared byte for byte. `cases correlate` does not either. No golden, fixture, example,
 tracking id or store byte moves, and verify on a store with no pair reads exactly as it did.
 
-## Amendment 2026-11-09: what a replay of recorded changes may word apart
+## Amendment 2026-11-12: what a replay of recorded changes may word apart
 
 ADR 0018 records declared changes in the store on a fifth stream kind, `change/<sha256(changeId)>`,
 so a report and a detection request can be derived from the log with no change file in hand.
@@ -1003,3 +1003,60 @@ The test of this carve-out compares the real output of both paths, not their der
 each other with only those regions cut, and `tests/golden/vdt-changes-replay.{json,md}` are the
 replay pair of `tests/golden/vdt-changes.{json,md}`. A store that never records a change reads as it
 did, and no existing golden moved.
+
+## Amendment 2026-11-12 (second): change gap streams and the gap divergences
+
+ADR 0018's third section records a change window that closed with no verification as a system
+observation, on the stateless path with `--record-change-gaps` and in the store with `cases
+changes`. It adds a sixth stream kind and a new event, and a store's recorded change gaps can
+disagree with the windows a run derives, so Decision 5 gets the coverage carve-out of the
+2026-10-16 amendment a second time, for change gaps. The amendment above calls the case "a lapsed
+window as a case"; the case is any closed window, a late detection's included (ADR 0018 Decision
+11). These rules bind from this date.
+
+- **Decision 5 has a carve-out for change gaps.** A change gap is observed at its window close, the
+  change's `detectBy`, which the inputs fix on both paths. What may differ is which gaps a store
+  holds against which windows a run derives. A closed window `cases changes` never recorded reads
+  `recorded: false` and `trackingId: null`, opens no case, and is INFO `change_gap_unrecorded`,
+  where the stateless run with the flag has its case. A stored gap the run derives no window for
+  keeps its case and is INFO `change_gap_contradicted` when the run's evidence holds a verification
+  inside its window, or INFO `change_gap_unmatched` when it holds none, where the stateless run has
+  no such record. A gap's evidence id names the change file that first recorded its change, and no
+  report reads it. The two paths give the same bytes, but for the carve-out of the amendment above,
+  when the store recorded exactly the change file the stateless run reads; `cases changes` ran with
+  the report's inventory, as-of, and class; no evidence observed inside a recorded window reached
+  the store after it; the stateless run passes `--record-change-gaps`; and the conditions of the
+  earlier carve-outs hold for any failure or coverage gap. `tests/test_change_gap_divergences.py`
+  pins each note and replays `tests/golden/vdt-change-gaps.{json,md}` from a store.
+- **Change gap awareness is a change gap stream.** A report from a store is change-gap-aware only
+  when the store holds at least one `changegap/` stream and the run has an inventory, and only an
+  aware run writes the row keys and the three notes above. Coverage gap awareness still follows a
+  coverage stream, so each kind turns on only its own keys and notes. A store that never recorded
+  a change gap compiles as it did before this date.
+- **A sixth stream kind, `changegap/<fingerprint>`.** It is named for the gap record's SYSTEM
+  identity hash and holds exactly one `change.gap_recorded` head and one `observation.recorded`
+  carrying the gap record. The repository accepts it only whole, in one batch at version 0, and
+  holds the head to its record and to the recorded change it names at append, so `cases changes`
+  cannot write a damaged one. `observation.recorded` is accepted on artifact, failure, coverage,
+  and change gap streams, and `change.gap_recorded` on change gap streams only.
+  `rehydrate_observations` reads each change gap stream's record in recorded order with every other
+  observation, and no rule supersedes a gap. The audit gains `changegap_incomplete`,
+  `changegap_overfull`, `changegap_stream_mismatch`, `changegap_identity_breach`, and
+  `changegap_schema_unmarked`, and every reader of the store's observations refuses the shapes the
+  first four name, and a foreign event on a change gap stream, as `history_invalid` with the audit's
+  text.
+- **`change.gap_recorded` v1.** The payload is `changeId`, `contextKey`, `windowClosedAt`,
+  `occurredAt`, `changesSha256`, and `inventorySha256`, every one required and no other allowed.
+  Like `coverage.recorded` it carries no tracking id and no stream id.
+- **A store that records a change gap is schema 6.** The first change gap append inserts migration
+  row 6 ("change gap streams, ADR 0018"), and every lower row the store lacks, and sets
+  `user_version` to 6 in the same transaction; a store that never records a change gap stays at its
+  version. This build opens 1 to 6. A build that opens only 1 to 5 refuses a schema 6 store at open
+  with `database schema 6 is newer than supported schema 5`, and its `store verify` reports
+  `schema_version_unsupported`.
+- **One more content-neutral fault.** `changegap_schema_unmarked`, a change gap stream in a store
+  below schema 6, joins `event_metadata_invalid`, `failure_schema_unmarked`,
+  `coverage_schema_unmarked`, and `change_schema_unmarked`: no reader and no case writer refuses
+  it, it changes no report's bytes, and `store verify` still checks evaluation order beside it.
+  `change_schema_unmarked` joined the set with ADR 0018's second section (its Decision 10), which
+  this record did not count, so the 2026-10-16 amendment's three codes are now five.

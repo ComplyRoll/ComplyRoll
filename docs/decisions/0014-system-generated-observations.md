@@ -1111,3 +1111,31 @@ the tracking ids before it in its own order, which is unchanged. The first ten a
 rest counted as `and K more`, the bound a contract error puts on its issue list, and each value
 comes from an artifact, so it is quoted and cut as stored text is (`store.sqlite.shown`). Two
 transcripts in `examples/README.md` move by that text.
+
+## Amendment 2026-11-12: a third reserved source type
+
+ADR 0018's third section adds a third system-generated record, the change detection gap, under
+the source type `complyroll.change` beside `complyroll.detection-process` and
+`complyroll.coverage`. The decisions the 2026-10-16 amendment widened for coverage gaps read wider
+again from this date; their text is not edited.
+
+- **Decision 8 holds for change gaps.** A change gap is timed by its window close, the change's
+  `detectBy`, so its `detectedAtSource` is `system` and `--detected-at` never applies to it.
+  `cases attest-detection --all-missing` never selects a change gap case, and `--case` reports it
+  `attestation_not_applicable`.
+- **Decision 9's attestation sentence names each kind present once.** A run whose system records
+  include change gaps adds the clause "for a change detection gap, from the instant its change
+  window closed", after the failure's clause and the coverage gap's when those are present, joined
+  by "and,". A run whose system records are all failures still prints Decision 9's sentence byte
+  for byte.
+- **Decision 10's refusal names the third kind.** `system_record_kind`, now in `reports.checks`,
+  names a `complyroll.change` record a "change detection gap", and its documented match is the full
+  triple: `sourceRecordId` `change-detection-gap`, `sourceType` `complyroll.change`, and the
+  context key `VDR-CSO-DAC:change:<changeId>` (ADR 0018 Decision 12).
+- **Decision 11's exit 3 is widened by a third flag.** `--record-change-gaps` answers for change
+  gaps, and a run that recorded any kind exits 3 once. `cases changes` exits 3 when it records a
+  gap and 0 when it records none. `report ... --db` keeps 0 and 1, and refuses the flag through
+  `_report_source_conflict` ("report vdt takes either --db or --record-change-gaps, never both").
+- **Decision 18 applies to change gaps.** A change gap detected after the report period ends is
+  left out of the official VDT with INFO `excluded_by_period`, still counts for exit 3, is listed
+  by the historical snapshot, and keeps its tracking id on its obligation row.

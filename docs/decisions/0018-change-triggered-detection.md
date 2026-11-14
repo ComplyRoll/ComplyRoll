@@ -318,14 +318,14 @@ the line read as open work.
 - One case per resource when a window closes. The request is scoped by the change, so a later
   section keeps the case at that scope with every resource listed on it.
 
-## PR 2: recorded changes (2026-11-09)
+## PR 2: recorded changes (2026-11-12)
 
 `changes record` appends each declared change as history, and `report --db` and `changes pending
 --db` derive the same projection from what the store holds. This section adds Decision 9's PR 2
 commands, Decision 10, and the compatibility items of Decision 13. The rest of Decision 13 and
 Decisions 11 and 12 belong to the section that makes an unmet window a case.
 
-### Decision 9, continued (2026-11-09): the commands of recorded changes
+### Decision 9, continued (2026-11-12): the commands of recorded changes
 
 - `changes record --db STORE --changes FILE [--as-of T] [--actor NAME]` appends each change the
   store lacks, one stream per change, in one transaction. A second `--changes` is `invalid_option`,
@@ -348,7 +348,7 @@ Decisions 11 and 12 belong to the section that makes an unmet window a case.
 Why: each path needs an inventory because no store holds one, by ADR 0015 Decision 4, and each
 refusal says what the store already answers for.
 
-### Decision 10 (2026-11-09): a change is a fifth stream kind behind schema 5
+### Decision 10 (2026-11-12): a change is a fifth stream kind behind schema 5
 
 A recorded change is the stream `change/<sha256(changeId)>` holding exactly one `change.recorded`
 v1 event and nothing else. The payload carries every contract field as the bounded reader read it,
@@ -390,7 +390,7 @@ recorded changes on the other, and nothing is published either way.
 Why: the digest keeps provider identifiers out of stream ids, as the coverage fingerprint does, and
 one event per stream makes the idempotence check a stream-exists check.
 
-### Decision 13, compatibility (2026-11-09): what each build does with the other's store
+### Decision 13, compatibility (2026-11-12): what each build does with the other's store
 
 - 0.4.0a0 against a store this build wrote: the first `changes record` marks schema 5, so 0.4.0a0
   refuses the store at open ("database schema 5 is newer than supported schema 4") and its `store
@@ -405,3 +405,281 @@ one event per stream makes the idempotence check a stream-exists check.
 
 Why: every bump now has to say what each build does with the other's store, and a store that
 never recorded a change has to stay readable by the build that wrote it.
+
+## PR 3: closed windows as cases (2026-11-12)
+
+A change window that closed with nothing verified in it becomes one system observation, and every
+such window of one change becomes one case, on the stateless path with `--record-change-gaps` and
+in a store with `cases changes`. With the request document of the first section, this meets the
+Phase 2 exit criterion "New or significantly changed resources can trigger a scoped detection
+request": the request names what is still waiting, and a case records each window that closed
+before detection reached it. This section adds Decision 9's PR 3 commands, Decisions 11 and 12, and
+the rest of Decision 13. Where the build departs from the approved plan, the decision says so, and
+the departures are listed together at the end of the section. One golden pair is new,
+`tests/golden/vdt-change-gaps.{json,md}`, and no existing golden moved.
+
+### Decision 9, continued (2026-11-12): the commands of change gaps
+
+- `report vdt|avi|historical --record-change-gaps` records each change window the run derives that
+  closed with no verification (Decision 11). It needs `--changes`, which needs `--inventory`, and
+  without it the run is refused before anything is read: "report vdt --record-change-gaps needs
+  --changes: a change gap is the closed window of a declared change". Beside `--db` it joins the
+  standard source conflict, which runs first: "report vdt takes either --db or
+  --record-change-gaps, never both", or "report vdt takes either --db or --changes,
+  --record-change-gaps, never both" when both are named. Each is `invalid_option`, exit 1, and
+  writes nothing. `ReportOptions` refuses the flag without a change set, and
+  `compile_record_set_from_history` refuses it outright, so a library caller cannot make it a
+  silent no-op.
+- `cases changes --db STORE --inventory FILE --class B|C --as-of T [--calendar-tz NAME] [--actor
+  NAME]` derives the change projection from the store's recorded changes and rehydrated
+  observations, through the function a report from the store uses, and appends one change gap
+  stream for each closed window the store lacks, every stream in one transaction. It prints one
+  line per gap, first those it recorded and then those already recorded, each in obligation order,
+  as `<observation id>: recorded <window>` or `<observation id>: already_recorded <window>`, where
+  the window reads `VDR-CSO-DAC window for <type>:<id> after change <changeId> closed <instant>`,
+  and then a count. It exits 3 when it recorded a gap and 0 otherwise, so a rerun exits 0. A store
+  that holds no change stream exits 0, appends nothing, and marks no schema. A dataset without
+  `VDR-CSO-DAC` refuses only a store that holds a change, with `change_rule_unavailable` in the
+  store's wording of Decision 9's PR 2 bullet. The stream id is the idempotence key, so a recorded
+  gap keeps its first payload, and every stream is judged before the first append, so a refusal
+  writes nothing. It takes no `--kev`, because KEV fills `kevAtActivation` and never moves a
+  status or a window, and no `--changes`, because the store holds them. `--calendar-tz` is
+  accepted for parity with `cases coverage` and moves nothing, because a change window closes at an
+  instant; its help says so.
+
+Why: a gap is a window of a declared change, and a report never records one into a store; what a
+store holds is what `cases changes` recorded from the store's own changes and evidence, as
+`cases coverage` records coverage gaps.
+
+### Decision 11 (2026-11-12): a closed window is a system observation on a sixth stream kind
+
+`reports/change_gaps.py` builds one SYSTEM-origin observation, under the ADR 0002 SYSTEM recipe,
+for every obligation row whose `windowClosedAt` is set: a `lapsed` row, a `lapsed` row of a
+resource decommissioned after the close, and a `detected` row with `late: true`. The builder keys
+on the field, never on the status, so a late verification does not withdraw the gap. The window
+did close empty, and the case closes by a disposition (Decision 12). The module is the twin of
+`reports/gaps.py`, and neither is importable from `adapters/`.
+
+| Recipe input | Value |
+|---|---|
+| `source_type` | `complyroll.change`, a reserved type no adapter can emit for an artifact observation |
+| `source_tool` | `complyroll` |
+| `parser_name`, `parser_version` | `complyroll.change`, `1` |
+| `source_record_id` | `change-detection-gap` |
+| `resource_type`, `resource_id` | The obligation's resource: the entry's own pair, or `logical` and `sample-group/<name>` for a group row |
+| `context_key` | `VDR-CSO-DAC:change:<changeId>` (Decision 12) |
+| `observed_at` | The window close, which is the change's `detectBy`, in UTC; never as-of or ingest time |
+
+The record is OPEN with severity UNKNOWN, no source identifiers, and no artifact name or digest.
+`evidence_ids` holds `sha256:<change file digest>`: the file a stateless run read, or on the store
+path the file that first recorded the change, which a later re-record never replaces. Neither
+digest enters the id, so both paths mint the same id for the same window. `ingested_at` is the
+report's as-of or the `--as-of` of `cases changes`, and reaches neither the id nor a report. The
+metadata always carries the same ten keys: `change.rule` (`VDR-CSO-DAC`), `change.force`,
+`change.id`, `change.kind`, `change.occurredAt`, `change.detectBy`, `change.job` (empty when the
+change names none), `change.changesSha256`, `change.inventorySha256`, and `change.basis` (the
+block's basis text). `change.force` is the force the projection read from the pinned dataset,
+SHOULD today, and never a value the builder writes. The id moves with the resource, the change id
+and `detectBy`, and with nothing else: not as-of, the ingest time, the occurrence, the kind, the
+job, the force, or either digest. The title is `VDR-CSO-DAC window for <type>:<id> after change
+<changeId> closed <instant> with no verification recorded (VDR-CSO-FAV)`. The description reads
+"ComplyRoll recorded no verification of this resource between the change and the window close;
+this records the absence of a verification, not a vulnerability."
+
+The gaps are derived once. On a flagged stateless run the compiler checks the KEV catalog date and
+its rule, refuses an unusable clock, derives coverage whenever the run has an inventory, adds the
+coverage gaps when asked, derives the change projection, adds the change gaps, and only then groups
+the observations and matches evaluations. So the block and the gap records come from one
+projection, and each refusal reads first in the same order with or without the flag.
+`compile_record_set` refuses a projection handed to it that was not derived from the run's own
+options. The projection reads only ARTIFACT-origin observations, so a gap never satisfies the
+obligation it reports, on either path, and neither does a coverage gap inside a change window.
+
+The persisted stream is `changegap/<fingerprint>`, named for the gap record's SYSTEM identity hash
+as `coverage/<fingerprint>` is. It holds one `change.gap_recorded` v1 head and one
+`observation.recorded` carrying the gap record. The head has six required fields and admits no
+other: `changeId`, `contextKey`, `windowClosedAt`, `occurredAt`, `changesSha256`, and
+`inventorySha256`, each restating a field of the record (`change.id`, the context key,
+`change.detectBy`, `change.occurredAt`, and the two digests). Two rules go past the coverage shape
+of ADR 0015 Decision 32:
+
+- The repository accepts a change gap stream only whole: one batch at version 0 holding the head
+  and then the record. The stream is written once and never extended, as a change stream is, so an
+  incomplete, overfull, or out-of-order stream cannot be written through the repository.
+- At append the repository holds each head field to the record field it restates, and holds the
+  head to the change it names. The store must hold the `change/` stream of `changeId`, and its
+  first `change.recorded` must record the head's `occurredAt`, a `detectBy` equal to
+  `windowClosedAt`, and the head's `changesSha256`. So neither `cases changes` nor a library caller
+  can write a gap of a change the store never recorded, or of another reading of it.
+
+A `changegap/` id never starts with `change/` and sorts after the whole `change/` range, so neither
+kind's prefix scan reads the other. A change gap stream append needs schema 6, marked inside the
+append's transaction by the existing linear marking, with migration record 6 ("change gap streams,
+ADR 0018"). It is a sixth schema rather than the fifth because a build that stops at the PR 2
+section would open a store holding `changegap/` streams without refusing it. Each of its readers
+filters to its own kind, so it would skip the streams and drop the cases in silence, which is the
+misread a schema bump exists to prevent (ADR 0015 Decision 33).
+Why: the record's identity is fixed by the inputs, so a past period rebuilds to the same ids, and
+the coverage shape is already audited and understood. A change gap has a parent stream, so the
+writer checks the parent the reader checks, and leaves nothing the reader would refuse.
+
+### Decision 12 (2026-11-12): one case per change
+
+Correlation groups by source type, record id, and context key, so with the key
+`VDR-CSO-DAC:change:<changeId>` every closed window of one change is one case, listing every
+resource and observation id. That case is the scoped detection request as a reviewable object. A
+change that names a `job` does not move the key. A change id may hold `:` and spaces, so every
+reader splits the key at its first two colons only, and every line that names the change names it
+whole.
+
+The evaluation match is the full triple, `{"sourceRecordId": "change-detection-gap",
+"sourceType": "complyroll.change", "contextKey": "VDR-CSO-DAC:change:<changeId>"}`, under the
+reserved-type refusals of ADR 0015 Decision 23, whose kind name for `complyroll.change` is "change
+detection gap". An entry short of a key that matches one gap is refused as
+`evaluation_context_key_required`, ending "a change detection gap is matched by sourceRecordId,
+sourceType and contextKey together, so add" and the keys it leaves out; `cases evaluate` refuses
+it as `evaluation_unmatched` with the same text. An entry that matches several gaps is
+`evaluation_ambiguous` and names each candidate's context key. The ADR 0015 Decision 25 walk test
+finds this third reserved type and holds it to its kind name, its order remedy, and its
+attestation clause.
+
+A case is detected at the earliest window close among its gaps, with `detectedAtSource` `system`,
+and an unevaluated one carries one deadline, `VER-TFR-EVU` from that close, whose timeframe is
+read from the pinned dataset. Every window of one change closes at its `detectBy`, so a case that
+a run or a store can hold has one close. `--detected-at` never applies, and `cases attest-detection`
+reports a change gap case `attestation_not_applicable`. An evaluation completed before the close
+is refused as `evaluation_before_detection`, with the remedy "a change detection gap is detected
+when its window closed, so evaluate it at or after that instant, or correct completedAt", by the
+compiler, `cases evaluate`, and `store verify` alike. With no attestation, the Markdown sentence
+names the kind as "for a change detection gap, from the instant its change window closed".
+
+A gap closes as a coverage gap closes (ADR 0015 Decision 26). A later verification never closes
+it: the row reads `detected` with `late: true` and `resumedAt`, and on the store path a
+verification inside the window makes the note `change_gap_contradicted` (Decision 13). Only a
+disposition from an evaluation matched on the full triple closes it, and any disposition the
+evaluations file accepts applies. `accepted` carries no `finalDisposition`, as for any record, and
+lists the gap in `VER-RPT-AVI`. A gap detected after the report period is left out of the official
+VDT with INFO `excluded_by_period` and still counts for exit 3 (ADR 0014 Decision 18).
+
+`cases list` adds its `CONTEXT KEY` column once the store holds a coverage gap case or a change
+detection gap case, with `-` for every other case, and a listing with neither is unchanged byte for
+byte. A change id may hold spaces, so the key cell runs to the end of its line.
+
+A known limit, left open: a case spanning several resources takes one member's title as its
+description, as the job and group cases of ADR 0015 do. The description names one resource while
+`resources` and `observationIds` list every member. The title carries the change id, which names
+the case.
+
+Why: the request is scoped by the change, so the case is too, and every affected resource stays on
+it.
+
+### Decision 13, continued (2026-11-12): exit status, awareness, audits, and compatibility
+
+- **Exit 3.** Exit 3 keeps its ADR 0017 meaning: the output holds a system-generated `VDR-CSO-FAV`
+  record. `--record-change-gaps` answers for its own kind beside the other two record flags, and a
+  run that recorded any kind exits 3 once. `cases changes` exits 3 when it recorded a gap, and
+  `report --db` keeps 0 and 1. No exit code is added, the reference gate is unchanged, and a
+  `warn-changes` gate policy is left for later (the ADR 0017 amendment of this date).
+- **Row keys.** On a change-gap-aware run every obligation row gains `recorded` and `trackingId`:
+  both null where no window closed; `true` and the effective tracking id of the record that carries
+  the gap; or, on the store path only, `false` and null for a closed window no stored gap carries.
+  A run that is not aware carries neither key, so every block written before this section keeps
+  its bytes, and the request document never carries them. The Markdown Obligations table gains
+  Recorded and Tracking ID columns and opens with one fixed sentence, "A recorded row is a
+  VDR-CSO-FAV system record of this run and names its tracking ID here even when this report does
+  not select the record, such as one detected after the report period. A row whose window did not
+  close records nothing and reads n/a." `parserVersions` gains `complyroll.change`.
+- **Awareness.** A stateless run is change-gap-aware with the flag. A report from a store is aware
+  when the run has an inventory and the store holds at least one `changegap/` stream, read by
+  `EventRepository.holds_change_gap_stream`, which loads no stream. Change gap awareness and
+  coverage gap awareness each follow their own stream kind, so recording one kind turns on no key
+  or note of the other, and a store with no `changegap/` stream reports as it did before this
+  section, byte for byte. An aware run maps each derived closed window to a stored gap by
+  rebuilding the gap and comparing ids.
+- **Notes.** An aware run from a store names each disagreement with its store in an INFO note, the
+  change twins of ADR 0015 Decisions 38 to 40. `change_gap_unrecorded` is a closed window no
+  stored gap carries, so no case does; `cases changes` with the run's inventory, as-of, and class
+  records it. `change_gap_contradicted` is a stored gap no window derives, with a verification
+  inside its window `[occurredAt, detectBy]`, closed at both ends as the derivation reads it.
+  `change_gap_unmatched` is a stored gap no window derives and nothing inside it disproves, so the
+  run's inventory, as-of, or class may differ from the run that recorded it. A stored change
+  cannot differ, because history is append-only, and no note names a calendar zone. Every note
+  names the change id, is located `<changes name> <changeId> <type>:<id>`, and follows the change
+  block's warnings: unrecorded windows in obligation order, then stored gaps by occurrence, change
+  id, and resource. A group gap is disproved by a member's verification under `VDR-TFR-PSD`, and a
+  verification under an alias disproves as the derivation files it. One case carries every
+  resource of a change, so the whole-case advice of ADR 0015 Decision 39 is the usual case here: a
+  contradicted note advises a false positive only when no other gap of its case stands.
+- **Audits and reader refusals.** `store verify` gains five codes in `AUDIT_FAULT_CODES`:
+  `changegap_incomplete` and `changegap_overfull` (a stream that is not one head and one record),
+  `changegap_stream_mismatch` (an id that names no fingerprint, a record that is another stream's,
+  a stream that does not open with its head, or a head whose change id names no recorded change or
+  whose occurrence, window close, or change file digest is not the one that change records),
+  `changegap_identity_breach`, and `changegap_schema_unmarked` (a change gap stream in a store
+  below schema 6). The identity check holds the record to every field its builder fixes: origin,
+  source type, tool, parser, record id, derived id, disposition, severity, identifiers,
+  description, and title; exactly the ten metadata keys, with `change.rule` the DAC rule, a
+  `change.id` that names a change and spells the context key, `change.detectBy` equal to the
+  observed instant as the writer spells it, `change.occurredAt` at or before the close, a rule
+  force, a change kind, a basis text the writer records, both digests as SHA-256 text, and the one
+  evidence id `sha256:<change.changesSha256>`; and the head's six fields against the record. A
+  field the fingerprint covers, edited on its own stream, reads as an identity breach that names
+  the field rather than as a stream mismatch, as on a coverage stream. The parent check is one
+  past ADR 0015 Decision 34, because a coverage gap has no parent stream. Every command that reads
+  the store's observations back, `report --db`, `cases correlate`, `cases changes`, and `changes
+  pending --db` among them, refuses each shape the first four codes name with the audit's text, as
+  `history_invalid`, and refuses an event on a change gap stream that does not belong there.
+  `changegap_schema_unmarked` is content-neutral, as the failure, coverage, and change markers are:
+  no reader refuses it, and the evaluation order check still runs beside it.
+- **Divergences.** A store whose gaps were recorded with the report's inventory, as-of, and class
+  gives the stateless run's bytes with `--record-change-gaps`, but for the block's `input` and its
+  Markdown intro line, which the PR 2 section already names. Otherwise the three notes above name
+  where the two disagree. The ADR 0008 amendment (second) of this date records it.
+- **Compatibility.** A store this build wrote, under the build that stops at the PR 2 section: the
+  first `cases changes` that records a gap marks schema 6, so that build refuses the store at open
+  ("database schema 6 is newer than supported schema 5") and its `store verify` reports
+  `schema_version_unsupported` ("database is marked schema 6; this build opens schemas 1 to 5"). A
+  store that never records a change gap stays at its version, and that build reads it unchanged.
+  Under 0.4.0a0: through the repository a gap is recorded only in a store that holds a change, which
+  is already schema 5 and already refused by 0.4.0a0 (the PR 2 bullets above), so the gap changes
+  only the schema its refusal names. This build against a store either earlier build wrote:
+  schemas 1 to 5 open as before, with no change gap stream and every report byte-identical, a read
+  never marks a schema, and a `cases changes` run that records nothing marks nothing. Every golden
+  cut before this section recompiles byte-identical. No parser version moves: no adapter changed,
+  and the SYSTEM recipe's parser is new.
+- **A known limit, left open.** A stored gap whose window closed after a past as-of is not
+  filtered out of a run at that as-of. The run derives no such window, so the gap reads
+  `change_gap_unmatched` and its record stays in the report, detected after the as-of. A stored
+  coverage gap reads the same way today, so this is cleanup for both kinds.
+
+Why: where a change gap and a coverage gap have the same shape the answers are the coverage ones,
+and each difference follows from a change window being an instant pair the provider set and from
+a change gap having a parent stream.
+
+### Departures from the approved plan (2026-11-12)
+
+- The builder lives in `reports/change_gaps.py`, not `reports/changes.py` as Decision 11 of the
+  plan said, so the projection module stays the projection's, as coverage splits `coverage.py` from
+  `gaps.py`.
+- A gap is built for every closed window, a late detection's included, where the plan said "each
+  lapsed window". A builder keyed on the `lapsed` status would stop deriving a recorded gap once a
+  late verification arrived, and would never record a late window on the stateless path, though
+  Decision 5 says the closed window stays a recorded fact.
+- The kind, remedy, and attestation tables of ADR 0015 Decision 25 landed with the builder, ahead
+  of the plan's evaluations step, so no build of this section read a change gap as a failure.
+- Awareness and orphans were open in the plan. A report from a store is aware when it has an
+  inventory and the store holds a `changegap/` stream. A head whose change id names no change
+  stream, or whose occurrence, close, or change file digest disagrees with that stored change, is
+  `changegap_stream_mismatch` in `store verify` and `history_invalid` on every reader, never an
+  uncaught exception.
+- A change gap stream is write-once at the repository: head and record in one batch at version 0.
+  The coverage shape of ADR 0015 Decision 32 does not enforce this.
+- The repository checks the head against the record and against the stored change at append.
+  Coverage checks head against record only in the reader and the audit.
+- `change.force` is the force the projection read from the pinned dataset, where the plan wrote
+  `SHOULD`; the value is the same today, and no force is written in code.
+- The builder refuses a row whose window does not close at its change's `detectBy`, so
+  `observed_at` and `change.detectBy` are one instant by construction. A derived projection never
+  reaches the refusal.
+- "The earliest window close of the case" is one close in practice, since every window of one
+  change closes at its `detectBy`; a case with two closes can only be built through the library.

@@ -78,6 +78,15 @@ All notable project changes will be documented here.
   fields are now `payload_contract_invalid` alone, and a `case.created` tracking id is named by
   both. No released writer leaves such a value, so this stops nothing a store the writers produced
   could do, and no golden moved (ADR 0008 amendment 2026-11-14, second).
+- An evaluation entry can now state a `match.contextKey` of only whitespace, and it matches the
+  stored key exactly, on the stateless path and through `cases evaluate` alike. An XCCDF
+  `TestResult id=" "` under a benchmark with no id stores such a key, and the entry was refused as
+  `invalid_input`, so once a twin under a real name made the source record ambiguous no entry could
+  name the claimant, and a `tracking_id_collision` on it could not be cleared. A new override on it
+  now clears it, as on any claimant. An empty `contextKey` or one that is not a string is still
+  refused, now as "must be non-empty text when present", and `sourceRecordId` and `sourceType`
+  stay non-blank. Nothing changes at ingest, and no id or golden moved (ADR 0008 amendment
+  2026-11-14, third).
 
 ## 0.4.0a0 - 2026-11-05
 

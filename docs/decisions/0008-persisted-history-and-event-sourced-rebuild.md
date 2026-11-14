@@ -1108,3 +1108,27 @@ newline, or through a reader stricter than the pattern, except one: `ingest` res
 stream an earlier build left short reads the stored head's `ingestedAt` without checking the head
 against its contract. A short stream whose head carries the newline is resumed exactly as before,
 and `store verify` still names the head afterward.
+
+## Amendment 2026-11-14 (third): a match states a context key of only whitespace
+
+The 2026-11-03 amendment left one claimant out of reach: one whose stored context key is only
+whitespace, which an XCCDF `TestResult id=" "` under a benchmark with no id gives. `contextKey`
+had to be non-blank, so once a twin under a real name made its source record ambiguous, no entry
+reached it, and a collision on it could not be cleared through the command line. That amendment
+left reaching such a key to its own ruling. The ruling: `match.contextKey` accepts a string of only
+whitespace and matches it exactly, as it matches every key. This supersedes that amendment's
+sentence that such a claimant "cannot be named either", which stays as written above.
+
+- **One parser, both paths.** `parse_evaluations` reads the file for the stateless compiler and for
+  `cases evaluate`, and `reports.records._matches` and `history.writers._matches` both compare the
+  stated key with the stored one with no stripping, so a key of one space and a key of two spaces
+  are two records on both paths.
+- **What stays refused.** An empty `contextKey` and one that is not a string are refused as before,
+  now in the words "must be non-empty text when present", since "non-blank" no longer describes the
+  rule. `sourceRecordId` and `sourceType` keep their non-blank rule and their words.
+- **What moves.** An entry stating `contextKey` of only whitespace was refused as `invalid_input`
+  by every command that reads an evaluations file and is now read: it selects the record whose key
+  it equals, or none. A new override on such a claimant clears the collision and the refusal, as
+  it does for any other claimant. Nothing changes at ingest, where XCCDF keeps the key it stores,
+  no event records a match, and no tracking id or golden moves. Two groups under one correlation
+  id are unchanged: they share one case, so no override parts them.

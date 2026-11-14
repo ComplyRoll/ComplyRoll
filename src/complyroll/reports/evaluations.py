@@ -387,9 +387,21 @@ def _parse_match(value: Any, prefix: str) -> EvaluationMatch:
     _reject_unknown_keys(value, _MATCH_KEYS, f"{prefix}.match")
     return EvaluationMatch(
         source_record_id=_parse_text(value.get("sourceRecordId"), f"{prefix}.match.sourceRecordId"),
-        context_key=_parse_optional_text(value.get("contextKey"), f"{prefix}.match.contextKey"),
+        context_key=_parse_optional_key(value.get("contextKey"), f"{prefix}.match.contextKey"),
         source_type=_parse_optional_text(value.get("sourceType"), f"{prefix}.match.sourceType"),
     )
+
+
+# An adapter can store a context key of only whitespace, such as an XCCDF `TestResult id=" "`,
+# so an entry states it as stored and matches it exactly (ADR 0008 amendment 2026-11-14, third).
+def _parse_optional_key(value: Any, field_name: str) -> str | None:
+    """Return a stated context key unchanged, refusing only empty or non-text values."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ReportInputError(f"{field_name} must be non-empty text when present")
+    return value
 
 
 def _parse_projection(value: Any, prefix: str) -> ProjectedReduction | None:

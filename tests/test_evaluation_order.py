@@ -83,6 +83,7 @@ from complyroll.reports import (
     EvaluationSet,
     ReportCompileError,
     ReportDiagnostic,
+    ReportInputError,
     compile_record_set_from_artifacts,
     parse_evaluations,
 )
@@ -2420,24 +2421,87 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
         )
         return path
 
-    def test_a_context_key_of_only_whitespace_leaves_no_entry_to_name_a_claimant(self) -> None:
-        # So a new override cannot clear this collision. `contextKey` must be non-blank, and the
-        # twin under a real name makes each source record ambiguous.
+    def test_an_entry_naming_a_context_key_of_only_whitespace_clears_the_collision(self) -> None:
+        # The twin under a real name makes the source record ambiguous, and an entry stating the
+        # stored key exactly still names the claimant, so a new override clears the collision.
         second = self.plain_xccdf("second.xml", "", " ", "rule_two")
         self.ingest(self.plain_xccdf("first.xml", "", " ", "rule_one"))
         self.correlate()
-        self.assertEqual(self.case_of("rule_one"), tracking_id_for("xccdf", "rule_one", " "))
+        claimant = tracking_id_for("xccdf", "rule_one", " ")
+        self.assertEqual(self.case_of("rule_one"), claimant)
         match = {"sourceRecordId": "rule_one"}
         target = self.tracking_id_of(second)
         self.evaluate(self.evaluation_of("rule_one", match=match, trackingId=target))
         self.ingest(second, self.plain_xccdf("real.xml", "real", "named", "rule_one", "rule_two"))
         self.correlate()
         self.assertEqual(len(audit_history(self.repository)), 1)
-
         (ambiguous,) = self.run_refusals(self.evaluation_of("rule_one", match=match))
         self.assertIn("matches 2 cases", ambiguous)
-        with self.assertRaisesRegex(ValueError, "contextKey must be non-blank"):
-            self.evaluation_of("rule_one", match={**match, "contextKey": " "})
+        self.assertIn(f"{claimant} has contextKey=' ' and sourceType='xccdf'", ambiguous)
+
+        named = {**match, "contextKey": " "}
+        self.evaluate(self.evaluation_of("rule_one", match=named, trackingId="PROV-RENAMED"))
+
+        self.assertEqual(audit_history(self.repository), ())
+        self.assertEqual(self.refused_collisions(), set())
+        self.assertEqual(verify_store(self.database)[0], 0)
+        renamed = {
+            case.tracking_id: case.provider_tracking_id
+            for case in fold_all_cases(self.repository)
+            if case.source_record_id == "rule_one"
+        }
+        twin = tracking_id_for("xccdf", "rule_one", "real|named")
+        self.assertEqual(renamed, {claimant: "PROV-RENAMED", twin: None})
+
+    def test_an_empty_context_key_is_still_refused(self) -> None:
+        with self.assertRaises(ReportInputError) as caught:
+            self.evaluation_of("rule_one", match={"sourceRecordId": "rule_one", "contextKey": ""})
+
+        self.assertEqual(
+            str(caught.exception),
+            "evaluations[0].match.contextKey must be non-empty text when present",
+        )
+
+    def test_both_paths_select_a_context_key_of_only_whitespace_alike(self) -> None:
+        # One parser feeds both paths, and each compares the stated key with the stored one exactly,
+        # so a key of two spaces is another record.
+        paths = (
+            self.plain_xccdf("first.xml", "", " ", "rule_one"),
+            self.plain_xccdf("spaces.xml", "", "  ", "rule_one"),
+            self.plain_xccdf("real.xml", "real", "named", "rule_one"),
+        )
+        claimant = tracking_id_for("xccdf", "rule_one", " ")
+        named = self.evaluation_of(
+            "rule_one",
+            match={"sourceRecordId": "rule_one", "contextKey": " "},
+            trackingId="PROV-SPACE",
+        )
+        bare = self.evaluation_of("rule_one", match={"sourceRecordId": "rule_one"})
+        with self.assertRaises(ReportCompileError) as caught:
+            compile_record_set_from_artifacts(
+                paths, options=options(detected_at=None), evaluations=bare
+            )
+        (stateless_refusal,) = caught.exception.diagnostics
+        stateless = compile_record_set_from_artifacts(
+            paths, options=options(detected_at=None), evaluations=named
+        )
+        self.ingest(*paths)
+        self.correlate()
+        (persisted_refusal,) = self.run_refusals(bare)
+        self.evaluate(named)
+        persisted = self.report()
+
+        remedy = stateless_refusal.message.split("; ", 1)[1]
+        self.assertEqual(stateless_refusal.code, "evaluation_ambiguous")
+        self.assertIn(f"{claimant} has contextKey=' '", remedy)
+        self.assertEqual(persisted_refusal.split("; ", 1)[1], remedy)
+        for record_set in (stateless, persisted):
+            renamed = {
+                (record.original_tracking_id, record.tracking_id)
+                for record in record_set.records
+                if record.is_evaluated
+            }
+            self.assertEqual(renamed, {(claimant, "PROV-SPACE")})
 
     def test_a_cklb_file_with_a_blank_stig_name_stays_reachable(self) -> None:
         # Its context key is stored as `cklb`, so an entry can name either claimant.
@@ -2570,6 +2634,55 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
 
         self.evaluate("RENAMED-1")
 
+        self.succeeds("store", "verify", "--db", self.database)
+        self.assertEqual(self.report("vdt")[0], 0)
+
+    def test_a_claimant_with_a_context_key_of_only_whitespace_is_cleared_by_name(self) -> None:
+        def scan(name: str, benchmark: str, result: str, *rules: str) -> str:
+            path = self.directory / name
+            verdicts = "".join(
+                f'<rule-result idref="{rule}"><result>fail</result></rule-result>' for rule in rules
+            )
+            path.write_text(
+                '<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" '
+                f'id="{benchmark}"><TestResult id="{result}" end-time="{TIMED_AT}">'
+                f"<target>lab-01</target>{verdicts}</TestResult></Benchmark>",
+                encoding="utf-8",
+            )
+            return str(path)
+
+        def evaluate(match: dict[str, str], override: str) -> tuple[int, str, str]:
+            path = self.directory / "evaluations.json"
+            fields = {"completedAt": "2026-08-11T12:00:00Z", "trackingId": override}
+            path.write_text(evaluation_json(match=match, **fields), encoding="utf-8")
+            return run(["cases", "evaluate", "--db", self.database, "--evaluations", str(path)])
+
+        bare = {"sourceRecordId": "rule_one"}
+        target = tracking_id_for("xccdf", "rule_two", " ")
+        self.succeeds("ingest", scan("first.xml", "", " ", "rule_one"), "--db", self.database)
+        self.succeeds("cases", "correlate", "--db", self.database)
+        self.assertEqual(evaluate(bare, target)[0], 0)
+        later = (scan("second.xml", "", " ", "rule_two"), scan("real.xml", "real", "n", "rule_one"))
+        self.succeeds("ingest", *later, "--db", self.database)
+        self.succeeds("cases", "correlate", "--db", self.database)
+        self.assertEqual(run(["store", "verify", "--db", self.database])[0], 1)
+        sequence = SQLiteEventStore(self.database)
+        self.addCleanup(sequence.close)
+        before = sequence.latest_sequence
+
+        refused = evaluate({**bare, "contextKey": ""}, "PROV-RENAMED")
+
+        self.assertEqual(
+            refused,
+            (
+                1,
+                "",
+                "error: invalid_input: evaluations[0].match.contextKey must be non-empty text "
+                "when present\n",
+            ),
+        )
+        self.assertEqual(sequence.latest_sequence, before)
+        self.assertEqual(evaluate({**bare, "contextKey": " "}, "PROV-RENAMED")[0], 0)
         self.succeeds("store", "verify", "--db", self.database)
         self.assertEqual(self.report("vdt")[0], 0)
 

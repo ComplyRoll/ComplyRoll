@@ -1367,6 +1367,37 @@ class EvaluationInputValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ReportInputError, field_name):
                     parse_evaluations(payload.encode("utf-8"))
 
+    def test_a_context_key_is_kept_exactly_as_stated(self) -> None:
+        # An XCCDF result id of only whitespace is stored as given, so an entry must state it.
+        for value in (" ", "   ", "\t", " \n ", chr(0xA0), " lead", "trail ", " both "):
+            with self.subTest(value=value):
+                match = {"sourceRecordId": "V-260470", "contextKey": value}
+                (entry,) = evaluations_from(match=match).entries
+                self.assertEqual(entry.match.context_key, value)
+
+    def test_an_empty_or_non_text_context_key_is_refused(self) -> None:
+        for value in ("", 0, 1, False, True, [], [" "], {}, {"key": " "}):
+            with self.subTest(value=value):
+                match = {"sourceRecordId": "V-260470", "contextKey": value}
+                with self.assertRaises(ReportInputError) as caught:
+                    evaluations_from(match=match)
+                self.assertEqual(
+                    str(caught.exception),
+                    "evaluations[0].match.contextKey must be non-empty text when present",
+                )
+
+    def test_the_other_match_keys_stay_non_blank(self) -> None:
+        for key, message in (
+            ("sourceRecordId", "is required and must be non-blank text"),
+            ("sourceType", "must be non-blank text when present"),
+        ):
+            for value in ("", " ", "\t"):
+                with self.subTest(key=key, value=value):
+                    match = {"sourceRecordId": "V-260470", key: value}
+                    with self.assertRaises(ReportInputError) as caught:
+                        evaluations_from(match=match)
+                    self.assertEqual(str(caught.exception), f"evaluations[0].match.{key} {message}")
+
     def test_completed_at_requires_an_offset(self) -> None:
         with self.assertRaisesRegex(ReportInputError, "UTC offset"):
             parse_evaluations(evaluation_json(completedAt="2026-08-04T12:00:00").encode("utf-8"))

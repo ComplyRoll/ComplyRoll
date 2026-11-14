@@ -59,6 +59,7 @@ from complyroll.events import (
     iso_utc,
     parse_utc,
 )
+from complyroll.events.contracts import TRACKING_ID_PATTERN
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
 from complyroll.policy import CertificationProfile
 from complyroll.reports.change_gaps import change_gap_observations
@@ -1347,10 +1348,11 @@ def apply_evaluations(
     skipped; any difference appends a second evaluation, and the earlier one stays
     readable (ADR 0008 Decision 4).
 
-    Two cases may not end this run sharing one effective tracking id, which the
-    compiler refuses as well. That check runs before the first append, so a refused
-    run leaves history exactly as it found it. Facts the store holds and the file no
-    longer states are kept and reported in `EvaluationOutcome.warnings`.
+    Two records a report publishes may not end this run under one tracking id, a group
+    no case holds yet included, which the compiler refuses as well. That check runs
+    before the first append, so a refused run leaves history exactly as it found it.
+    Facts the store holds and the file no longer states are kept and reported in
+    `EvaluationOutcome.warnings`.
 
     Every matched entry, an unchanged one included, is ordered against its case's
     detection time, resolved from the current open group and the case's recorded
@@ -1560,64 +1562,101 @@ def _require_unique_effective_ids(
     cases: Sequence[CaseState],
     matched: Mapping[str, EvaluationInput],
 ) -> None:
-    """Refuse a run that would leave two cases published under one effective tracking id.
+    """Refuse a run that would leave two records a report publishes under one tracking id.
 
-    A case counts for what a report would publish for it once this run is written. A case with
-    no current group publishes nothing, so it claims nothing, whether this run touches it or not.
-    A case this run touches claims the entry's `trackingId`, else the recorded
+    The claimants are the current groups a report from the store compiles once this run is
+    written, each under the id it would publish (ADR 0008 amendment 2026-11-14, fourth). A case
+    with no current group publishes nothing, so it claims nothing, whether this run touches it or
+    not. A case this run touches claims the entry's `trackingId`, else the recorded
     `providerTrackingId`, else its correlation id. A case it does not touch claims its override
     only through a current evaluation, which is how an override reaches a report, else its
-    correlation id; a case holding an override no report reads, other than its own id, claims
-    nothing, because counting the correlation id it never claimed here would refuse a run that used
-    to pass.
+    correlation id, so a case holding an override no report reads claims its correlation id. A
+    current group no case holds yet claims its correlation id, and a line naming it names its
+    record and the case whose new `trackingId` clears it.
 
-    So each claim is one `_stated_tracking_id` already gave, and this refuses no run it accepted
-    when it counted every folded case. It still sees no group a case does not hold, and `store
-    verify` names what that leaves (ADR 0008 amendment 2026-11-03). A line located at `recorded
-    history` means two current records already claim one id, so verify rejects that store too; a
-    line naming an entry is located at the entry.
+    Claimants are walked in id order and each later claim pairs with the first. Every claim is
+    what `store verify` reads once the run is written, so every refusal is of a run after which
+    verify would name a `tracking_id_collision` and no report from the store compiles. A line
+    located at `recorded history` names two claimants this run does not touch, so verify already
+    rejects the store; a line naming an entry is located at the entry. Two groups under one
+    correlation id hold one place in `current_groups` and claim once here, as before; verify names
+    that pair, and no override parts it.
     """
 
-    stated = {
-        case.tracking_id: _stated_tracking_id(case, matched.get(case.tracking_id)) for case in cases
+    claims = {
+        case.tracking_id: _published_claim(case, matched.get(case.tracking_id)) for case in cases
     }
-    # Every claim below is one of these, so with no duplicate here there is no group to read.
-    if len(set(stated.values())) == len(stated):
+    if not _claims_may_meet(claims):
         return
     grouped = current_groups(repository)
-    claimed: dict[str, tuple[CaseState, str]] = {}
+    folded = {case.tracking_id: case for case in cases}
+    # Each claim's first claimant: its correlation id, its side as a line names it, its location,
+    # and whether it is a group no case holds.
+    claimed: dict[str, tuple[str, str, str, bool]] = {}
     problems: list[str] = []
-    for case in cases:
-        entry = matched.get(case.tracking_id)
-        if case.tracking_id not in grouped:
-            continue
-        unread = case.current_evaluation is None and case.effective_tracking_id != case.tracking_id
-        if entry is None and unread:
-            continue
-        effective = stated[case.tracking_id]
+    for tracking_id in sorted(grouped):
+        unheld = tracking_id not in folded
+        entry = None if unheld else matched.get(tracking_id)
         location = "recorded history" if entry is None else entry.location
-        previous = claimed.get(effective)
+        if unheld:
+            claim, side = tracking_id, _unheld_group_side(grouped[tracking_id])
+        else:
+            claim, side = claims[tracking_id], f"{location} (originally {tracking_id})"
+        previous = claimed.get(claim)
         if previous is None:
-            claimed[effective] = (case, location)
+            claimed[claim] = (tracking_id, side, location, unheld)
             continue
-        previous_case, previous_location = previous
+        previous_id, previous_side, previous_location, previous_unheld = previous
         where = previous_location if entry is None else location
+        tail = "an override may rename one case but may not merge two"
+        # A group no case holds claims only its own id, so the other side is the case renamed.
+        if unheld or previous_unheld:
+            renamed = previous_id if unheld else tracking_id
+            tail = f"{tail}, and another trackingId for {renamed} clears it"
         problems.append(
-            f"{where}: effective tracking id {shown(effective)} is claimed by "
-            f"{previous_location} (originally {previous_case.tracking_id}) and "
-            f"{location} (originally {case.tracking_id}); an override may rename one "
-            "case but may not merge two"
+            f"{where}: effective tracking id {shown(claim)} is claimed by {previous_side} and "
+            f"{side}; {tail}"
         )
     if problems:
         raise EvaluationMatchError(problems)
 
 
-def _stated_tracking_id(case: CaseState, entry: EvaluationInput | None) -> str:
-    """Return the entry's override when it states one, else the id the case already holds."""
+def _published_claim(case: CaseState, entry: EvaluationInput | None) -> str:
+    """Return the id a report would publish the case's group under once this run is written."""
 
-    if entry is not None and entry.tracking_id is not None:
-        return entry.tracking_id
-    return case.effective_tracking_id
+    # The run gives a case it touches a current evaluation, which carries the recorded override
+    # when the entry states none.
+    if entry is not None:
+        return case.effective_tracking_id if entry.tracking_id is None else entry.tracking_id
+    if case.current_evaluation is not None:
+        return case.effective_tracking_id
+    return case.tracking_id
+
+
+def _claims_may_meet(claims: Mapping[str, str]) -> bool:
+    """Return True when two current records could end the run under one id.
+
+    Two cases' claims alike are one way. The other is a claim on a group no case holds, whose id
+    is a correlation id no folded case has, so only a case's override of that shape can make it.
+    With neither, `_require_unique_effective_ids` would refuse nothing, and reads no group.
+    """
+
+    if len(set(claims.values())) != len(claims):
+        return True
+    # A case's own id is a folded case's id, so this asks only of an override.
+    return any(
+        claim not in claims and TRACKING_ID_PATTERN.fullmatch(claim) is not None
+        for claim in claims.values()
+    )
+
+
+def _unheld_group_side(group: VulnerabilityGroup) -> str:
+    """Name a current group no case holds, as a refusal names one claimant."""
+
+    return (
+        f"a current group no case holds yet (originally {group.tracking_id}: sourceRecordId="
+        f"{shown(group.source_record_id)}, contextKey={shown(group.context_key)})"
+    )
 
 
 def _require_evaluation_order(

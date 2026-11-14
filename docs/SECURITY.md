@@ -317,11 +317,13 @@ those three match, and a test pins it.
   offset among them, is never refused.
 - `store verify` names two current groups a report would publish under one tracking id as
   `tracking_id_collision`, by the report's own rule and in its words (ADR 0008 amendment
-  2026-11-03). `cases evaluate` refuses to write such a store, but a later `ingest` can leave one,
-  by bringing a group whose correlation id an override already names. Every report refuses it. A new
-  override clears it where an entry can name a claimant. A match states a context key exactly as
-  stored, so a key of only whitespace no longer keeps an entry from naming one (ADR 0008 amendment
-  2026-11-14, third).
+  2026-11-03). `cases evaluate` refuses to write such a store, and counts a group no case holds
+  yet, and a case whose override no report reads, under the id a report would publish for each
+  (ADR 0008 amendment 2026-11-14, fourth). A later `ingest` can still leave one, by bringing a
+  group whose correlation id an override already names, and `cases evaluate` then refuses every
+  run that does not move a claimant off that id. Every report refuses it. A new override clears it
+  where an entry can name a claimant. A match states a context key exactly as stored, so a key of
+  only whitespace no longer keeps an entry from naming one (ADR 0008 amendment 2026-11-14, third).
 - `ingest` refuses a second identity under a tracking id already held, as `tracking_id_held` with
   nothing recorded and exit 1 (ADR 0008 amendment 2026-11-03, second). A tracking id is 64 bits of
   SHA-256, so one crafted file can hold two identities under one id, and an untrusted file must not

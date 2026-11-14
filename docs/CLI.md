@@ -411,6 +411,19 @@ artifact stream only when a case it attests carries an evaluation, so it can att
 whose artifact streams are damaged; `store verify` and every report from the store still refuse
 it.
 
+`cases evaluate` refuses a file with exit 1 and appends nothing when the store it would leave holds
+two records a report publishes under one tracking id, one `evaluation_unmatched` line per pair. It
+counts what a report would publish once the run is written: a case the file evaluates under the
+entry's `trackingId`, else its recorded override, else its correlation id; any other case under
+its override only while it has a current evaluation, else under its correlation id; and a group
+`ingest` brought that no case holds yet, before `cases correlate` runs, under its correlation id.
+A line naming such a group gives its source record id and context key, and the case whose new
+`trackingId` clears it. An override naming a correlation id no current group has is accepted, and
+an `ingest` that later brings that group leaves a collision `store verify` names. A line located
+at `recorded history` names a collision the store already holds: every run is then refused unless
+it moves a claimant off that id, as an entry stating another `trackingId` for it does (ADR 0008
+amendments 2026-11-03 and 2026-11-14, fourth).
+
 `cases coverage` derives the coverage windows from the store's evidence exactly as `report --db
 --inventory` does, and appends one `coverage/<fingerprint>` stream per window it has not
 recorded: a `coverage.recorded` event and the gap's system observation. It prints one line per

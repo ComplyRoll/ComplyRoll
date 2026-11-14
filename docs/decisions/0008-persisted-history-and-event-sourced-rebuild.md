@@ -1132,3 +1132,51 @@ sentence that such a claimant "cannot be named either", which stays as written a
   it does for any other claimant. Nothing changes at ingest, where XCCDF keeps the key it stores,
   no event records a match, and no tracking id or golden moves. Two groups under one correlation
   id are unchanged: they share one case, so no override parts them.
+
+## Amendment 2026-11-14 (fourth): `cases evaluate` counts every record a report publishes
+
+The 2026-11-03 amendment made `cases evaluate` count what a report would publish and left two
+claimants out on purpose, so as to add no refusal. A case holding an override no report reads
+claimed nothing, though a report publishes its group under its correlation id. A current group no
+case holds yet claimed nothing, though a report publishes it under its correlation id. Either gap
+let the writer accept a run after which `store verify` names `tracking_id_collision` and no report
+compiles. The fix was approved on 2026-11-05 as two new refusals. This supersedes that amendment's
+sentences that such a case "claims nothing, not its correlation id" and that the change "adds no
+refusal" and "still misses what it missed", which stay as written above, and narrows its route:
+`cases evaluate` now refuses an override naming a correlation id a current group already has,
+before or after `cases correlate`.
+
+- **The claims.** A case the run does not touch, with no current evaluation, claims its
+  correlation id whatever override it holds. A current group no case holds claims its correlation
+  id. The rest is as before: a case with no current group claims nothing, a case the run touches
+  claims the entry's `trackingId`, else its recorded override, else its correlation id, and an
+  untouched case with a current evaluation claims its override, else its correlation id. Each
+  claim is the id verify reads once the run is written, so a refused run is always one after which
+  verify would name the collision, and the writer refuses no run whose result verifies clean of it.
+  The stateless compiler already refuses the same file, because it compiles every group, so the two
+  paths now agree.
+- **The lines.** Claimants are walked in id order and each later claim pairs with the first, at
+  the entry when an entry is a claimant, else at `recorded history`, in the words of the writer's
+  other collision lines. A group no case holds is named `a current group no case holds yet
+  (originally <id>: sourceRecordId=<value>, contextKey=<value>)`, and its line ends "and another
+  trackingId for <case> clears it", naming the case whose override meets it. Where a new claimant
+  sorts first, a line that paired two entries now pairs each with it, so a refusal can carry more
+  lines; none carries fewer. The order check still runs first.
+- **Still accepted.** An override naming a correlation id no current group has: nothing publishes
+  under it. A later `ingest` that brings the group leaves the collision verify names, as on the
+  2026-11-03 route.
+- **Stores that already hold one.** A store a build before this one or a later `ingest` left with
+  either collision now refuses every run at `recorded history` unless the run moves a claimant off
+  the id, as 2026-11-03 already did for two cases: an entry stating another `trackingId` for the
+  case whose override meets the id, or any entry for a case whose override was unread, which makes
+  that override current. Such a run, when its claims meet no other, is accepted and clears the
+  fault and every report's refusal.
+  Before, the writer did not see such a collision and refused no run for it.
+- **Reads.** The check reads the groups only when two cases' claims are alike, or a claim is an
+  override shaped like a correlation id (`TRACKING_ID_PATTERN`) that no folded case holds. A group
+  no case holds has a correlation id and no case has it, so only such an override can meet one,
+  and the check skips no run it would refuse. An ordinary run reads the groups once, for the order
+  check, or not at all.
+- **Unchanged.** Two groups under one correlation id hold one place in the writer's group map, as
+  before, so the writer neither sees that pair nor refuses for it; verify names it, and no override
+  parts it.

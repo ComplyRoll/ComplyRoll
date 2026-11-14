@@ -53,6 +53,7 @@ from complyroll.correlation import (
     tracking_id_for,
 )
 from complyroll.events import EventMetadata, EventRepository, case_stream_id, iso_utc
+from complyroll.events.contracts import TRACKING_ID_PATTERN
 from complyroll.history import (
     ARTIFACT_INGESTED,
     AUDIT_FAULT_CODES,
@@ -1856,6 +1857,25 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
             self.evaluate_around(self.evaluation_of(BANNER_RULE), tracking_id)
             self.identify(tracking_id, "PROV-STALE")
 
+    def unread_case_named_by_an_override(self) -> None:
+        # The report publishes the first under its correlation id, its override unread, and the
+        # second's override names that id. A build before CL-87 wrote this through the writer.
+        banner = self.timed(BANNER_RULE)
+        self.ingest(banner, self.timed(SSHD_RULE))
+        self.correlate()
+        self.identify(self.case_of(BANNER_RULE), "PROV-UNREAD")
+        self.evaluate_around_writers(SSHD_RULE)
+        self.identify(self.case_of(SSHD_RULE), self.tracking_id_of(banner))
+
+    def override_onto_a_stale_case_s_id(self) -> None:
+        # No group can hold a folded case's id but that case's own, and this one has none.
+        self.ingest(self.timed(BANNER_RULE))
+        self.correlate()
+        self.append_around(ORPHAN_CASE, CASE_CREATED, orphan_created(ORPHAN_CASE))
+        self.evaluate_around(self.evaluation_of(BANNER_RULE), ORPHAN_CASE)
+        self.identify(ORPHAN_CASE, "PROV-STALE")
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=ORPHAN_CASE))
+
     def refused_collisions(self) -> set[str]:
         """Return the messages a report refuses this store with, under either class."""
 
@@ -1889,6 +1909,8 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
             (self.real_pair_after_the_new_override, 1),
             (self.real_pair_on_the_one_case_an_old_build_made, 1),
             (self.real_pair_on_one_case_with_its_override, 1),
+            (self.unread_case_named_by_an_override, 1),
+            (self.override_onto_a_stale_case_s_id, 0),
         ):
             with self.subTest(store=build.__name__):
                 self.open_store(f"{build.__name__}.db")
@@ -2105,8 +2127,9 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
         return ()
 
     def test_a_refusal_at_recorded_history_means_verify_names_a_fault(self) -> None:
+        # The bystander's entry touches no claimant, so a store holding a collision refuses it.
         for build, refused in (
-            (self.later_ingest_without_correlate, 0),
+            (self.later_ingest_without_correlate, 1),
             (self.later_ingest_correlated, 1),
             (self.two_evaluated_cases_sharing_one_override, 1),
             (self.override_onto_an_evaluated_natural_id, 1),
@@ -2116,12 +2139,14 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
             (self.distinct_overrides, 0),
             (self.override_equal_to_its_own_id, 0),
             (self.real_pair_alone, 0),
-            (self.real_pair_with_an_override_onto_its_id, 0),
+            (self.real_pair_with_an_override_onto_its_id, 1),
             (self.real_pair_on_one_case_with_its_override, 0),
             (self.unread_override_beside_the_same_override_read, 0),
             (self.two_unread_overrides_alike, 0),
             (self.unread_override_naming_its_own_id_beside_a_claim, 1),
             (self.two_stale_cases_sharing_an_override, 0),
+            (self.unread_case_named_by_an_override, 1),
+            (self.override_onto_a_stale_case_s_id, 0),
         ):
             with self.subTest(store=build.__name__):
                 self.open_store(f"bystander-{build.__name__}.db")
@@ -2210,21 +2235,43 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
                 prepare()
                 yield
 
-    def test_an_unread_override_adds_no_claim_on_its_correlation_id(self) -> None:
-        # Counting that id would be a new refusal: the writer never counted it for this case. The
-        # report publishes the case under it, so the store can then hold the collision verify names.
+    CASE_TAIL = "an override may rename one case but may not merge two"
+
+    def sides(self, *claimants: tuple[str, str]) -> str:
+        """Join `(original id, side text)` claimants in the id order the writer walks them in."""
+
+        return " and ".join(text for _, text in sorted(claimants))
+
+    def unheld_side(self, group: VulnerabilityGroup) -> tuple[str, str]:
+        return (
+            group.tracking_id,
+            f"a current group no case holds yet (originally {group.tracking_id}: sourceRecordId="
+            f"{group.source_record_id!r}, contextKey={group.context_key!r})",
+        )
+
+    def test_an_unread_override_leaves_its_case_claiming_its_correlation_id(self) -> None:
+        # A report publishes that case under its correlation id, so an override onto it merges two.
         for _ in self.with_and_without_a_duplicate_elsewhere():
             banner, sshd = self.timed(BANNER_RULE), self.timed(SSHD_RULE)
             self.ingest(banner, sshd)
             self.correlate()
             self.identify(self.case_of(BANNER_RULE), "PROV-UNREAD")
+            target, own = self.tracking_id_of(banner), self.tracking_id_of(sshd)
+            claimed = self.sides(
+                (target, f"recorded history (originally {target})"),
+                (own, f"evaluations[0] (originally {own})"),
+            )
 
-            self.evaluate(self.evaluation_of(SSHD_RULE, trackingId=self.tracking_id_of(banner)))
+            problems = self.run_refusals(self.evaluation_of(SSHD_RULE, trackingId=target))
 
             self.assertEqual(
-                [fault.code for fault in audit_history(self.repository)], ["tracking_id_collision"]
+                problems,
+                (
+                    f"evaluations[0]: effective tracking id {target!r} is claimed by {claimed}; "
+                    f"{self.CASE_TAIL}",
+                ),
             )
-            self.assertEqual(len(self.refused_collisions()), 1)
+            self.assertEqual(audit_history(self.repository), ())
 
     def test_a_touched_case_claims_its_recorded_override(self) -> None:
         # This run makes the override current, so the report would publish it.
@@ -2237,19 +2284,118 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
         self.assertTrue(problem.startswith("evaluations[0]: "), problem)
         self.assertEqual(audit_history(self.repository), ())
 
-    def test_a_group_no_case_holds_is_still_not_counted(self) -> None:
-        # Seeing it would be a new refusal. Verify names what this leaves.
+    def test_an_override_onto_a_group_no_case_holds_is_refused(self) -> None:
+        # A report publishes that group under its correlation id before `cases correlate` runs.
         for _ in self.with_and_without_a_duplicate_elsewhere():
             banner, sshd = self.timed(BANNER_RULE), self.timed(SSHD_RULE)
             self.ingest(banner)
             self.correlate()
             self.ingest(sshd)
+            (group,) = groups_of((sshd,))
+            case = self.case_of(BANNER_RULE)
+            claimed = self.sides(
+                (case, f"evaluations[0] (originally {case})"), self.unheld_side(group)
+            )
+            entry = self.evaluation_of(BANNER_RULE, trackingId=group.tracking_id)
 
-            self.evaluate(self.evaluation_of(BANNER_RULE, trackingId=self.tracking_id_of(sshd)))
+            problems = self.run_refusals(entry)
 
             self.assertEqual(
-                [fault.code for fault in audit_history(self.repository)], ["tracking_id_collision"]
+                problems,
+                (
+                    f"evaluations[0]: effective tracking id {group.tracking_id!r} is claimed by "
+                    f"{claimed}; {self.CASE_TAIL}, and another trackingId for {case} clears it",
+                ),
             )
+            self.assertEqual(audit_history(self.repository), ())
+            # The stateless compiler refuses the same file, so the writer is now in parity.
+            with self.assertRaises(ReportCompileError) as caught:
+                compile_record_set_from_artifacts(
+                    (banner, sshd), options=options(detected_at=None), evaluations=entry
+                )
+            self.assertEqual(
+                [item.code for item in caught.exception.diagnostics], ["tracking_id_collision"]
+            )
+
+    def test_a_line_naming_a_group_no_case_holds_lists_its_sides_in_id_order(self) -> None:
+        # The group can be either side of the pair, and the line is at the entry either way.
+        banner, sshd = self.timed(BANNER_RULE), self.timed(SSHD_RULE)
+        ordered = sorted(
+            (
+                (self.tracking_id_of(banner), banner, BANNER_RULE),
+                (self.tracking_id_of(sshd), sshd, SSHD_RULE),
+            )
+        )
+        for case_side, group_side in (ordered, ordered[::-1]):
+            case, case_path, rule = case_side
+            target, group_path, _ = group_side
+            with self.subTest(case_first=case < target):
+                self.open_store(f"{rule}.db")
+                self.ingest(case_path)
+                self.correlate()
+                self.ingest(group_path)
+                (group,) = groups_of((group_path,))
+                side = self.unheld_side(group)[1]
+                entry_side = f"evaluations[0] (originally {case})"
+                claimed = (
+                    f"{entry_side} and {side}" if case < target else f"{side} and {entry_side}"
+                )
+
+                (problem,) = self.run_refusals(self.evaluation_of(rule, trackingId=target))
+
+                self.assertEqual(
+                    problem,
+                    f"evaluations[0]: effective tracking id {target!r} is claimed by {claimed}; "
+                    f"{self.CASE_TAIL}, and another trackingId for {case} clears it",
+                )
+
+    def test_an_override_onto_an_id_no_group_has_is_still_accepted(self) -> None:
+        # Nothing publishes under that id yet. A later ingest can bring the group, and verify then
+        # names the collision, every later run is refused until a new override clears it.
+        self.ingest(self.timed(self.BYSTANDER_RULE))
+        self.correlate()
+        self.later_ingest_without_correlate()
+        bystander = self.evaluation_of(self.BYSTANDER_RULE)
+        (fault,) = audit_history(self.repository)
+        sshd = self.tracking_id_of(self.timed(SSHD_RULE))
+        (group,) = [
+            group for group in current_groups(self.repository).values() if group.tracking_id == sshd
+        ]
+        banner = self.case_of(BANNER_RULE)
+        claimed = self.sides(
+            (banner, f"recorded history (originally {banner})"), self.unheld_side(group)
+        )
+
+        self.assertEqual(
+            self.run_refusals(bystander),
+            (
+                f"recorded history: effective tracking id {sshd!r} is claimed by {claimed}; "
+                f"{self.CASE_TAIL}, and another trackingId for {banner} clears it",
+            ),
+        )
+        self.assertEqual(fault.code, "tracking_id_collision")
+
+        self.evaluate(self.evaluation_of(BANNER_RULE, trackingId="PROV-RENAMED"))
+
+        self.assertEqual(self.run_refusals(bystander), ())
+        self.assertEqual(audit_history(self.repository), ())
+
+    def test_a_new_override_on_either_claimant_clears_an_unread_case_s_collision(self) -> None:
+        for rule in (SSHD_RULE, BANNER_RULE):
+            with self.subTest(rule=rule):
+                self.open_store(f"recover-{rule}.db")
+                self.ingest(self.timed(self.BYSTANDER_RULE))
+                self.correlate()
+                self.unread_case_named_by_an_override()
+                bystander = self.evaluation_of(self.BYSTANDER_RULE)
+                (problem,) = self.run_refusals(bystander)
+                self.assertTrue(problem.startswith("recorded history: "), problem)
+
+                self.evaluate(self.evaluation_of(rule, trackingId="PROV-RENAMED"))
+
+                self.assertEqual(audit_history(self.repository), ())
+                self.assertEqual(self.refused_collisions(), set())
+                self.assertEqual(self.run_refusals(bystander), ())
 
     def test_a_run_reads_no_group_for_this_check_when_no_two_cases_can_collide(self) -> None:
         self.distinct_overrides()
@@ -2259,6 +2405,88 @@ class TrackingIdCollisionFaultTests(HistoryOrderFixture):
             self.assertEqual(self.run_refusals(empty), ())
 
         reader.assert_not_called()
+
+    def test_a_run_reads_no_group_when_no_claim_can_meet_another(self) -> None:
+        # Claims come from case state alone, and only an override shaped like a correlation id
+        # that no folded case holds can name a group no case holds.
+        empty = parse_evaluations(json.dumps({"evaluations": []}).encode("utf-8"))
+        for build in (
+            self.distinct_overrides,
+            self.two_unread_overrides_alike,
+            self.override_with_no_current_evaluation,
+            self.override_onto_a_stale_case_s_id,
+        ):
+            with self.subTest(store=build.__name__):
+                self.open_store(f"quiet-{build.__name__}.db")
+                build()
+
+                with mock.patch.object(history_writers, "current_groups") as reader:
+                    self.assertEqual(self.run_refusals(empty), ())
+
+                reader.assert_not_called()
+
+    def test_a_run_with_entries_reads_the_groups_once_for_the_order_check(self) -> None:
+        self.distinct_overrides()
+
+        with mock.patch.object(history_writers, "current_groups", wraps=current_groups) as reader:
+            self.assertEqual(self.run_refusals(self.evaluation_of(BANNER_RULE)), ())
+
+        self.assertEqual(reader.call_count, 1)
+
+    def collision_problems(self, evaluations: EvaluationSet) -> tuple[str, ...] | None:
+        """Return what the collision check alone says of a run, or None when no entry matches."""
+
+        cases = tuple(sorted(fold_all_cases(self.repository), key=lambda case: case.tracking_id))
+        try:
+            matched = history_writers._match_cases(evaluations, cases)
+        except EvaluationMatchError:
+            return None
+        try:
+            history_writers._require_unique_effective_ids(self.repository, cases, matched)
+        except EvaluationMatchError as caught:
+            return caught.problems
+        return ()
+
+    def test_the_guard_skips_no_run_the_full_check_refuses(self) -> None:
+        # Forced open, the check reads the groups of every run and must say exactly the same.
+        builds = (
+            self.later_ingest_without_correlate,
+            self.later_ingest_correlated,
+            self.two_evaluated_cases_sharing_one_override,
+            self.three_claimants,
+            self.override_with_no_current_evaluation,
+            self.stale_case_with_the_override,
+            self.distinct_overrides,
+            self.real_pair_with_an_override_onto_its_id,
+            self.unread_override_beside_the_same_override_read,
+            self.two_unread_overrides_alike,
+            self.unread_override_naming_its_own_id_beside_a_claim,
+            self.unread_case_named_by_an_override,
+            self.override_onto_a_stale_case_s_id,
+        )
+        refused = 0
+        for build in builds:
+            self.open_store(f"guard-{build.__name__}.db")
+            build()
+            groups = current_groups(self.repository)
+            self.assertTrue(all(TRACKING_ID_PATTERN.fullmatch(key) for key in groups))
+            targets = (*groups, ORPHAN_CASE, "PROV-SHARED", "PROV-UNREAD", None)
+            runs = [parse_evaluations(json.dumps({"evaluations": []}).encode("utf-8"))]
+            for rule in (BANNER_RULE, SSHD_RULE, "third_rule"):
+                runs.extend(
+                    self.evaluation_of(rule)
+                    if target is None
+                    else self.evaluation_of(rule, trackingId=target)
+                    for target in targets
+                )
+            for index, run in enumerate(runs):
+                with self.subTest(store=build.__name__, run=index):
+                    guarded = self.collision_problems(run)
+                    with mock.patch.object(history_writers, "_claims_may_meet", return_value=True):
+                        self.assertEqual(self.collision_problems(run), guarded)
+                    refused += bool(guarded)
+        # The table is not vacuous: the guard is open on many of these runs.
+        self.assertGreater(refused, 20)
 
     def test_a_run_with_no_entry_is_refused_only_for_a_collision_verify_names(self) -> None:
         empty = parse_evaluations(json.dumps({"evaluations": []}).encode("utf-8"))
@@ -2683,6 +2911,119 @@ class TrackingIdCollisionCommandTests(unittest.TestCase):
         )
         self.assertEqual(sequence.latest_sequence, before)
         self.assertEqual(evaluate({**bare, "contextKey": " "}, "PROV-RENAMED")[0], 0)
+        self.succeeds("store", "verify", "--db", self.database)
+        self.assertEqual(self.report("vdt")[0], 0)
+
+    # *--- Claimants the writer counted from CL-87 on ---*
+
+    #: The banner group's record in the OpenSCAP fixture, as a line naming it prints it.
+    BANNER_GROUP = (
+        f"a current group no case holds yet (originally {BANNER_ID}: sourceRecordId="
+        "'banner_etc_issue', contextKey='test|xccdf_org.open-scap_testresult_default')"
+    )
+
+    def latest_sequence(self) -> int:
+        with SQLiteEventStore(self.database) as store:
+            return store.latest_sequence
+
+    def evaluate_entries(self, *indexes: int, override: str | None = None) -> tuple[int, str, str]:
+        """Run `cases evaluate` on the example entries named, the first given the override."""
+
+        payload = json.loads((EXAMPLES / "evaluations.json").read_text(encoding="utf-8"))
+        entries = [payload["evaluations"][index] for index in indexes]
+        if override is not None:
+            entries[0] = {**entries[0], "trackingId": override}
+        path = self.directory / "entries.json"
+        path.write_text(json.dumps({**payload, "evaluations": entries}), encoding="utf-8")
+        return run(["cases", "evaluate", "--db", self.database, "--evaluations", str(path)])
+
+    def assert_refused_whole(self, outcome: tuple[int, str, str], *problems: str) -> None:
+        """Require one `evaluation_unmatched` line naming these problems, and nothing appended."""
+
+        before = self.latest_sequence()
+        self.assertEqual(
+            outcome,
+            (
+                1,
+                "",
+                "error: evaluation_unmatched: evaluations could not be applied: "
+                f"{'; '.join(problems)}\n",
+            ),
+        )
+        self.assertEqual(self.latest_sequence(), before)
+
+    def test_an_override_onto_a_group_ingest_brought_is_refused_before_correlate(self) -> None:
+        self.ingest("ubuntu-host.cklb", "windows-host.ckl")
+        self.correlate_and_attest()
+        self.ingest("openscap-results.xml")
+        self.succeeds("store", "verify", "--db", self.database)
+        before = self.latest_sequence()
+
+        refused = self.evaluate_entries(0, 1, override=self.BANNER_ID)
+
+        self.assertEqual(self.latest_sequence(), before)
+        self.assert_refused_whole(
+            refused,
+            f"evaluations[0]: effective tracking id {self.BANNER_ID!r} is claimed by "
+            f"{self.BANNER_GROUP} and evaluations[0] (originally {self.UBUNTU_ID}); an override "
+            f"may rename one case but may not merge two, and another trackingId for "
+            f"{self.UBUNTU_ID} clears it",
+        )
+        self.succeeds("store", "verify", "--db", self.database)
+        # Once the group has a case, the case claims its id and the line is the plain one.
+        self.succeeds("cases", "correlate", "--db", self.database)
+        self.assert_refused_whole(
+            self.evaluate_entries(0, 1, override=self.BANNER_ID),
+            f"evaluations[0]: effective tracking id {self.BANNER_ID!r} is claimed by recorded "
+            f"history (originally {self.BANNER_ID}) and evaluations[0] (originally "
+            f"{self.UBUNTU_ID}); an override may rename one case but may not merge two",
+        )
+        self.assertEqual(self.evaluate_entries(0, 1, override="RENAMED-1")[0], 0)
+        self.succeeds("store", "verify", "--db", self.database)
+
+    def test_an_override_onto_an_id_no_group_has_leaves_what_a_later_ingest_brings(self) -> None:
+        # Still accepted: nothing publishes under that id yet. The ingest that brings the group
+        # leaves the collision, and every run but one that renames a claimant is then refused.
+        self.ingest("ubuntu-host.cklb", "windows-host.ckl")
+        self.correlate_and_attest()
+        self.assertEqual(self.evaluate_entries(0, 1, override=self.BANNER_ID)[0], 0)
+        self.ingest("openscap-results.xml")
+        self.assertEqual(run(["store", "verify", "--db", self.database])[0], 1)
+
+        self.assert_refused_whole(
+            self.evaluate_entries(1),
+            f"recorded history: effective tracking id {self.BANNER_ID!r} is claimed by "
+            f"{self.BANNER_GROUP} and recorded history (originally {self.UBUNTU_ID}); an override "
+            f"may rename one case but may not merge two, and another trackingId for "
+            f"{self.UBUNTU_ID} clears it",
+        )
+
+        self.assertEqual(self.evaluate_entries(0, 1, override="RENAMED-1")[0], 0)
+        self.succeeds("store", "verify", "--db", self.database)
+        self.assertEqual(self.evaluate_entries(1)[0], 0)
+
+    def test_an_override_onto_a_case_whose_override_no_report_reads_is_refused(self) -> None:
+        # Only a store written around the writers holds an override with no evaluation.
+        self.ingest("ubuntu-host.cklb", "windows-host.ckl", "openscap-results.xml")
+        self.correlate_and_attest()
+        with SQLiteEventStore(self.database) as store:
+            stream_id = case_stream_id(self.BANNER_ID)
+            EventRepository(store).append(
+                stream_id,
+                CASE_IDENTIFIED,
+                {"providerTrackingId": "PROV-UNREAD"},
+                occurred_at=WRITTEN_AT,
+                metadata=EventMetadata(actor="tester"),
+                expected_version=len(store.read_stream(stream_id)),
+            )
+        self.succeeds("store", "verify", "--db", self.database)
+
+        self.assert_refused_whole(
+            self.evaluate_entries(0, 1, override=self.BANNER_ID),
+            f"evaluations[0]: effective tracking id {self.BANNER_ID!r} is claimed by recorded "
+            f"history (originally {self.BANNER_ID}) and evaluations[0] (originally "
+            f"{self.UBUNTU_ID}); an override may rename one case but may not merge two",
+        )
         self.succeeds("store", "verify", "--db", self.database)
         self.assertEqual(self.report("vdt")[0], 0)
 

@@ -61,6 +61,16 @@ All notable project changes will be documented here.
   2026-11-12). No golden moved.
 - `changes pending` with neither artifacts nor `--db` is `invalid_option` with exit 1, as `report`
   is, instead of an argparse usage error with exit 2. Not in a release.
+- `cases evaluate` refuses two runs it accepted, each with exit 1, `evaluation_unmatched`, and
+  nothing appended. An override naming the correlation id of a group `ingest` brought that no case
+  holds yet, before `cases correlate`, is refused, and its line names that group's source record
+  id and context key and the case whose new `trackingId` clears it. An override naming the
+  correlation id of a case whose own override no report reads, because it has no current
+  evaluation, is refused too. Each run left a store that `store verify` names as
+  `tracking_id_collision` and no report compiled, and the stateless compiler already refused the
+  same file. A store that already holds either collision now refuses every run at `recorded
+  history` until one moves a claimant off the id. An override naming a correlation id no current
+  group has is still accepted. No golden moved (ADR 0008 amendment 2026-11-14, fourth).
 
 ### Fixed
 

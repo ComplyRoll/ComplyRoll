@@ -1060,3 +1060,51 @@ window as a case"; the case is any closed window, a late detection's included (A
   it, it changes no report's bytes, and `store verify` still checks evaluation order beside it.
   `change_schema_unmarked` joined the set with ADR 0018's second section (its Decision 10), which
   this record did not count, so the 2026-10-16 amendment's three codes are now five.
+
+## Amendment 2026-11-14 (second): contract patterns end at the end of the text
+
+Decision 1's contracts spell digests, tracking ids and instants as `pattern`s anchored `^...$`.
+JSON Schema runs a pattern as a search, and a Python `$` also matches just before a final newline,
+so a value followed by one `\n` passed its contract on 28 fields of 13 contracts. Only the change
+contract's names and digests, and the change gap contract's, already ended on `(?!\n)$` (ADR
+0018). Twelve of the 28 verified clean, because `parse_utc` strips and every reader read the
+instant as if the newline were not there: `ingestedAt` on `artifact.ingested`, `failure.recorded`
+and `failure.held`, `createdAt`, `observedAt` and `sourceArtifactSha256` on
+`case.observation_linked`, `detectedAt`, `attestedAt`, `completedAt`, `estimatedAt`, `reducedAt`,
+and `recordedAt` on `case.disposition_recorded`. The others were named by another fault.
+
+Every anchored pattern in every contract now ends on `(?!\n)$`, which matches only at the end of the
+text in Python and means the same in ECMA-262. The contract documents change by that suffix and
+nothing else, no event version changes, and `tests/test_contract_patterns.py` fails on any pattern
+that ends on a bare `$`. The repository refuses such a value at append, and `store verify` names it
+as `payload_contract_invalid` at its sequence, in the pattern's words.
+
+- **The twelve.** `store verify` exits 1 where it said ok. On a case stream, every command that
+  folds cases refuses the store as `event_contract_invalid`: the three reports from a store, `cases
+  correlate`, `cases evaluate`, `cases attest-detection` and `cases list`; `cases history` still
+  prints the case. An artifact or failure head's `ingestedAt` is refused as `history_invalid`
+  ("event N is not a readable ...") by the reports, `cases correlate` and `cases evaluate`; `cases
+  list`, `cases history`, `cases attest-detection` and an `ingest` of other bytes pass the store as
+  before.
+- **The rest.** The identity checks read only a payload its contract passes, so the code moves to
+  `payload_contract_invalid` for `sha256` on `artifact.ingested` (from `artifact_stream_mismatch`)
+  and on both failure heads (from `failure_stream_mismatch`), for the three `coverage.recorded`
+  fields (from `coverage_identity_breach`), and for `windowClosedAt` and `occurredAt` on
+  `change.gap_recorded` (from `changegap_identity_breach`). `case.created`'s `trackingId` keeps
+  `case_tracking_id_mismatch` and gains `payload_contract_invalid` at the same sequence, and the
+  readers that refused it as `history_invalid` now say `event_contract_invalid`. The four
+  `observation.recorded` fields and `change.recorded`'s `occurredAt`, `detectBy` and `recordedAt`
+  were already `payload_contract_invalid`, and now carry the pattern's words rather than the
+  reader's. Every reader that refused one of these stores still refuses it with exit 1.
+
+No released writer leaves such a value. 0.3.0a0 and 0.4.0a0 write every one of these fields from a
+computed value (`iso_utc`, `isoformat`, a SHA-256 hex digest, or the tracking id correlation
+derives), and 0.2.0a0 has no event writer, so only a store written around the repository holds one.
+A store the writers produced verifies and reads byte for byte as before, and no golden moves.
+`providerTrackingId` is free text with no pattern and is unchanged.
+
+`parse_utc` keeps its `strip()`. Every input reaches it through a contract that now refuses the
+newline, or through a reader stricter than the pattern, except one: `ingest` resuming an artifact
+stream an earlier build left short reads the stored head's `ingestedAt` without checking the head
+against its contract. A short stream whose head carries the newline is resumed exactly as before,
+and `store verify` still names the head afterward.

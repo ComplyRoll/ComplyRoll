@@ -62,6 +62,23 @@ All notable project changes will be documented here.
 - `changes pending` with neither artifacts nor `--db` is `invalid_option` with exit 1, as `report`
   is, instead of an argparse usage error with exit 2. Not in a release.
 
+### Fixed
+
+- The event contracts' anchored patterns now end at the end of the text. A JSON Schema `pattern`
+  is a search, and Python's `$` also matches before a final newline, so a digest, a tracking id
+  or an instant followed by `\n` passed its contract on 28 fields, and on 12 of them `store verify`
+  said ok because `parse_utc` strips: every `ingestedAt` on an artifact or failure head, and
+  `createdAt`, `observedAt`, `sourceArtifactSha256`, `detectedAt`, `attestedAt`, `completedAt`,
+  `estimatedAt`, `reducedAt` and `recordedAt` on a case stream. Every such pattern ends on
+  `(?!\n)$`, the change contract's spelling. The repository refuses the value, and `store verify`
+  names it as `payload_contract_invalid` at its sequence. The commands that fold cases refuse a
+  case stream holding one as `event_contract_invalid`, and the reports, `cases correlate` and
+  `cases evaluate` refuse an artifact or failure head holding one as `history_invalid`. Where
+  another fault named the value before, `sha256` on a head and the coverage and change gap heads'
+  fields are now `payload_contract_invalid` alone, and a `case.created` tracking id is named by
+  both. No released writer leaves such a value, so this stops nothing a store the writers produced
+  could do, and no golden moved (ADR 0008 amendment 2026-11-14, second).
+
 ## 0.4.0a0 - 2026-11-05
 
 ### Fixed

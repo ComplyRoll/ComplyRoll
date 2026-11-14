@@ -144,6 +144,8 @@ def project_historical(record_set: CompiledRecordSet) -> CompiledHistoricalRepor
         coverage_gaps=record_set.coverage_gaps,
         coverage_gap_records=record_set.coverage_gap_records,
         changes=record_set.changes,
+        change_gaps=record_set.change_gaps,
+        change_gap_records=record_set.change_gap_records,
     )
     document = _build_historical_document(records, active, accepted, metadata, diagnostics)
     validation = validate_document(ReportSchema.HISTORICAL_ACTIVITY, document)

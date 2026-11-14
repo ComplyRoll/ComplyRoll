@@ -59,7 +59,8 @@ from complyroll.policy import (
 )
 from complyroll.policy.source import RuleSourceSnapshot
 
-from .changes import DAC_RULE, ChangeProjection, StoredChangeSet, derive_changes
+from .change_gaps import CHANGE_GAP_SOURCE_TYPE, change_gap_observations
+from .changes import DAC_RULE, ChangeObligation, ChangeProjection, StoredChangeSet, derive_changes
 from .changes_input import ChangeSet
 from .checks import (
     CLOCK_OUT_OF_RANGE,
@@ -131,7 +132,10 @@ def compile_record_set_from_artifacts(
     becomes a system observation instead of stopping the run (ADR 0014); without it
     every failure stops the run exactly as before. With `options.record_coverage_gaps`,
     each coverage window that closed with no verification becomes a coverage gap system
-    observation, added before grouping so an evaluation finds its record (ADR 0015).
+    observation, added before grouping so an evaluation finds its record (ADR 0015). With
+    `options.record_change_gaps`, each change window that closed with no verification
+    becomes a change gap system observation the same way, read after the coverage gaps
+    joined, which never verify a change (ADR 0018).
     """
 
     if not isinstance(options, ReportOptions):
@@ -149,8 +153,25 @@ def compile_record_set_from_artifacts(
     # Derived once, from the evidence alone, before its gaps join the list; each gap is
     # ingested at the run's as-of, as every artifact and failure of this path is.
     coverage = None
+    changes = None
     inventory = options.inventory
-    if options.record_coverage_gaps and inventory is not None:
+    change_set = options.changes
+    if options.record_change_gaps and inventory is not None and change_set is not None:
+        policy = select_policy(load_bundled_rule_source_snapshot(), options.profile)
+        # The back half's refusals in its order: the catalog, then coverage, whose derivation
+        # refuses an unusable clock after its own rule, then the changes (ADR 0018).
+        if options.kev_catalog is not None:
+            _require_kev_catalog_by_as_of(options.kev_catalog, options)
+            _kev_rule(policy, options.kev_catalog)
+        coverage = _coverage(observations, inventory, policy, options.as_of)
+        if options.record_coverage_gaps:
+            observations.extend(coverage_gap_observations(coverage, ingested_at=options.as_of))
+        # A coverage gap is a system record, so it never satisfies a change.
+        changes = _changes(
+            observations, change_set, inventory, policy, options.as_of, options.kev_catalog
+        )
+        observations.extend(change_gap_observations(changes, ingested_at=options.as_of))
+    elif options.record_coverage_gaps and inventory is not None:
         policy = select_policy(load_bundled_rule_source_snapshot(), options.profile)
         coverage = _coverage(observations, inventory, policy, options.as_of)
         observations.extend(coverage_gap_observations(coverage, ingested_at=options.as_of))
@@ -165,6 +186,8 @@ def compile_record_set_from_artifacts(
         options=options,
         coverage=coverage,
         gap_aware=options.record_coverage_gaps,
+        changes=changes,
+        change_gap_aware=options.record_change_gaps,
     )
 
 
@@ -217,7 +240,9 @@ def derive_request_changes(
         _require_kev_catalog_by_as_of(options.kev_catalog, options)
     _refuse_unusable_clocks(observations)
     policy = select_policy(load_bundled_rule_source_snapshot(), options.profile)
-    projection = _changes(observations, change_input, inventory, policy, options)
+    projection = _changes(
+        observations, change_input, inventory, policy, options.as_of, options.kev_catalog
+    )
     return projection, (
         *sorted(ingest_diagnostics, key=_diagnostic_order),
         *projection.warnings,
@@ -235,6 +260,8 @@ def compile_record_set(
     coverage: CoverageResult | None = None,
     gap_aware: bool = False,
     stored_changes: StoredChangeSet | None = None,
+    changes: ChangeProjection | None = None,
+    change_gap_aware: bool = False,
 ) -> CompiledRecordSet:
     """Compile the period-agnostic record set from already-normalized inputs.
 
@@ -250,6 +277,10 @@ def compile_record_set(
     each window no record carries and each gap record no window derives is named in an
     INFO note, which only a compile from history can meet (ADR 0015, divergences 1 and 2).
     `stored_changes` is what a store recorded, the persisted twin of `options.changes` (ADR 0018).
+    `changes` is a change projection the caller already derived from these observations and
+    that input, which must belong to the options as `coverage` must. With `change_gap_aware`,
+    every row whose change window closed is mapped to the record that carries its gap, or to
+    None when none does (ADR 0018).
     """
 
     if not isinstance(options, ReportOptions):
@@ -300,11 +331,21 @@ def compile_record_set(
     # After coverage, which has refused any out-of-range clock by name; a coverage gap in
     # these observations is a system record, so it never satisfies a change.
     change_input = options.changes if stored_changes is None else stored_changes
-    changes = (
-        None
-        if change_input is None or inventory is None
-        else _changes(observations, change_input, inventory, policy, options)
-    )
+    if changes is None:
+        changes = (
+            None
+            if change_input is None or inventory is None
+            else _changes(
+                observations, change_input, inventory, policy, options.as_of, options.kev_catalog
+            )
+        )
+    elif not _changes_belongs(changes, change_input, inventory, policy, options):
+        raise ValueError(
+            "changes must be derived from these options' change set, inventory, as-of, policy "
+            "and KEV catalog"
+        )
+    if change_gap_aware and changes is None:
+        raise ValueError("a change-gap-aware compile needs a change set and an inventory")
 
     compiled: list[CompiledVulnerability] = []
     # Each record with no detection time, as (correlation id, label), named in id order.
@@ -316,6 +357,8 @@ def compile_record_set(
     # and to the record as a diagnostic names it.
     gap_tracking: dict[str, str] = {}
     gap_labels: dict[str, str] = {}
+    # Each change gap observation's id, to the published id of the record carrying it.
+    change_gap_tracking: dict[str, str] = {}
 
     for group in groups:
         evaluation = evaluations_by_tracking_id.get(group.tracking_id)
@@ -414,6 +457,12 @@ def compile_record_set(
         ]
         gap_tracking.update((gap_id, record.tracking_id) for gap_id in gaps)
         gap_labels.update((gap_id, record.label) for gap_id in gaps)
+        change_gap_tracking.update(
+            (item.observation_id, record.tracking_id)
+            for item in group.observations
+            if item.origin is ObservationOrigin.SYSTEM
+            and item.source_type == CHANGE_GAP_SOURCE_TYPE
+        )
         if kev_rule is not None and any(cve_may_be_missing(item) for item in group.observations):
             kev_incomplete.append(record)
 
@@ -449,6 +498,13 @@ def compile_record_set(
         diagnostics.extend(
             _coverage_gap_divergences(coverage, window_ids, gap_tracking, gap_labels, observations)
         )
+    change_gap_records: dict[ChangeObligation, str | None] | None = None
+    if change_gap_aware and changes is not None:
+        # Built from the published projection, whose rows are the ones the block prints.
+        change_gap_records = {
+            row: change_gap_tracking.get(gap_id)
+            for row, gap_id in _change_window_gap_ids(changes, options).items()
+        }
     if changes is not None:
         diagnostics.extend(changes.warnings)
     return CompiledRecordSet(
@@ -464,6 +520,8 @@ def compile_record_set(
         coverage_gaps=tuple(sorted(set(gap_tracking.values()))),
         coverage_gap_records=gap_records,
         changes=changes,
+        change_gaps=tuple(sorted(set(change_gap_tracking.values()))),
+        change_gap_records=change_gap_records,
     )
 
 
@@ -1183,12 +1241,41 @@ def _refuse_unusable_clocks(observations: Sequence[Observation]) -> None:
         raise ReportCompileError(unusable)
 
 
+def derive_report_changes(
+    observations: Sequence[Observation],
+    change_input: ChangeSet | StoredChangeSet,
+    inventory: Inventory,
+    profile: CertificationProfile,
+    as_of: datetime,
+) -> ChangeProjection:
+    """Derive the change block a report of these inputs carries, as the report derives it.
+
+    `cases changes` records the gaps of exactly this projection (ADR 0018): the policy the
+    profile selects from the pinned dataset, the same refusals of an unusable clock and of a
+    dataset that lacks the rule, and a derivation that never reads a system observation as
+    evidence. It reads no KEV catalog, which never moves a status or a window.
+    """
+
+    if not isinstance(change_input, ChangeSet | StoredChangeSet):
+        raise TypeError("change_input must be a ChangeSet or a StoredChangeSet")
+    if not isinstance(inventory, Inventory):
+        raise TypeError("inventory must be an Inventory")
+    if not isinstance(profile, CertificationProfile):
+        raise TypeError("profile must be a CertificationProfile")
+    require_aware(as_of, "as_of")
+    # Refused by name before the derivation converts every clock, as a request refuses it.
+    _refuse_unusable_clocks(observations)
+    policy = select_policy(load_bundled_rule_source_snapshot(), profile)
+    return _changes(observations, change_input, inventory, policy, as_of, None)
+
+
 def _changes(
     observations: Sequence[Observation],
     change_set: ChangeSet | StoredChangeSet,
     inventory: Inventory,
     policy: SelectedPolicy,
-    options: ReportOptions,
+    as_of: datetime,
+    kev_catalog: KevCatalog | None,
 ) -> ChangeProjection:
     """Return the change projection, or stop the run when the policy lacks its rule.
 
@@ -1218,8 +1305,8 @@ def _changes(
         change_set,
         inventory,
         policy,
-        options.as_of,
-        kev_catalog=options.kev_catalog,
+        as_of,
+        kev_catalog=kev_catalog,
     )
 
 
@@ -1246,6 +1333,41 @@ def _coverage_belongs(
         and coverage.profile == policy.profile
         and coverage.provenance == policy.provenance
     )
+
+
+def _changes_belongs(
+    changes: ChangeProjection,
+    change_input: ChangeSet | StoredChangeSet | None,
+    inventory: Inventory | None,
+    policy: SelectedPolicy,
+    options: ReportOptions,
+) -> bool:
+    """Return whether a handed change projection was derived from these inputs and policy."""
+
+    return (
+        change_input is not None
+        and inventory is not None
+        and changes.change_set == change_input
+        and changes.inventory == inventory
+        and changes.as_of == options.as_of
+        and changes.profile == policy.profile
+        and changes.provenance == policy.provenance
+        and changes.kev_catalog == options.kev_catalog
+    )
+
+
+def _change_window_gap_ids(
+    changes: ChangeProjection, options: ReportOptions
+) -> dict[ChangeObligation, str]:
+    """Return the id of each closed window's gap, rebuilt from its row alone.
+
+    The id never depends on the ingest time or either digest, so rebuilding the gap here
+    names the observation whichever path recorded it.
+    """
+
+    closed = [row for row in changes.obligations if row.window_closed_at is not None]
+    gaps = change_gap_observations(changes, ingested_at=options.as_of)
+    return {row: gap.observation_id for row, gap in zip(closed, gaps, strict=True)}
 
 
 def _window_gap_ids(coverage: CoverageResult, options: ReportOptions) -> dict[CoverageWindow, str]:

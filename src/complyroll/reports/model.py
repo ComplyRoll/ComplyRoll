@@ -29,7 +29,7 @@ from .kev import KevCatalog, KevClock
 # NOTE: `changes` imports `ReportDiagnostic` from this module, so its projection is a
 # type-only import here.
 if TYPE_CHECKING:
-    from .changes import ChangeProjection
+    from .changes import ChangeObligation, ChangeProjection
 
 # *--- Configuration ---*
 
@@ -190,7 +190,8 @@ class ReportOptions:
     rules and no report changes. `record_coverage_gaps` makes each window of that block a
     system record of the run, so it needs the inventory; only a compile from artifacts
     reads it (ADR 0015). `changes` is a per-run input read against that inventory, so it
-    needs one too (ADR 0018).
+    needs one too (ADR 0018). `record_change_gaps` makes each change window that closed with
+    no verification a system record of the run, so it needs the change set (ADR 0018).
     """
 
     certification_class: CertificationClass
@@ -204,6 +205,7 @@ class ReportOptions:
     inventory: Inventory | None = None
     record_coverage_gaps: bool = False
     changes: ChangeSet | None = None
+    record_change_gaps: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.certification_class, CertificationClass):
@@ -233,6 +235,12 @@ class ReportOptions:
             raise TypeError("changes must be a ChangeSet")
         if self.changes is not None and self.inventory is None:
             raise ValueError("changes needs an inventory, which every change is read against")
+        if not isinstance(self.record_change_gaps, bool):
+            raise TypeError("record_change_gaps must be a bool")
+        if self.record_change_gaps and self.changes is None:
+            raise ValueError(
+                "record_change_gaps needs changes, whose closed windows the gaps record"
+            )
         # Constructing the profile validates the calendar timezone at the boundary.
         CertificationProfile(
             self.certification_class,
@@ -562,6 +570,8 @@ class ReportMetadata:
     coverage_gaps: tuple[str, ...] = ()
     coverage_gap_records: Mapping[CoverageWindow, str | None] | None = None
     changes: ChangeProjection | None = None
+    change_gaps: tuple[str, ...] = ()
+    change_gap_records: Mapping[ChangeObligation, str | None] | None = None
 
     @property
     def attestation(self) -> datetime | None:
@@ -612,7 +622,9 @@ class CompiledRecordSet:
     gap-aware compile sets `coverage_gap_records`: each window of `coverage` mapped to the
     tracking id of the record carrying its gap, or None when the set holds none. `changes`
     is the change projection when the options carry a change file, published whole at as-of
-    as coverage is.
+    as coverage is. `change_gaps` and `change_gap_records` are its twins of the two coverage
+    gap fields: the second maps each obligation row whose window closed, and only those, and
+    only a change-gap-aware compile sets it (ADR 0018).
     """
 
     records: tuple[CompiledVulnerability, ...]
@@ -627,6 +639,8 @@ class CompiledRecordSet:
     coverage_gaps: tuple[str, ...] = ()
     coverage_gap_records: Mapping[CoverageWindow, str | None] | None = None
     changes: ChangeProjection | None = None
+    change_gaps: tuple[str, ...] = ()
+    change_gap_records: Mapping[ChangeObligation, str | None] | None = None
 
 
 # *--- Helper Functions ---*

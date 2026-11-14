@@ -53,6 +53,13 @@ _RECORDED_WINDOW_NOTE = (
     "here even when this report does not select the record, such as one detected after the "
     "report period."
 )
+#: The Obligations subsection of a change-gap-aware run opens with this, for the same reason,
+#: and because a row whose window is still open has nothing to record (ADR 0018).
+_RECORDED_ROW_NOTE = (
+    "A recorded row is a VDR-CSO-FAV system record of this run and names its tracking ID here "
+    "even when this report does not select the record, such as one detected after the report "
+    "period. A row whose window did not close records nothing and reads n/a."
+)
 
 
 # *--- Section Writers ---*
@@ -562,17 +569,31 @@ def write_changes(write: Callable[[str], None], metadata: ReportMetadata) -> Non
 
     write("### Obligations")
     write("")
+    # Only a change-gap-aware run grows the table, so every earlier twin keeps its bytes.
+    gap_records = metadata.change_gap_records
     if not changes.obligations:
         write("No obligation is measured at this as-of.")
     else:
-        write(
+        header = (
             "| Change | Resource | Entry | Sample group | Matched as | Status | Force | Evidence "
             "| Stand-in | Lag seconds | Age seconds | Late | Window closed | Resumed | Untimed "
             "| KEV at activation | KEV tracking IDs |"
         )
-        write("|---|---|---|---|---|---|---|---|---|---:|---:|---|---|---|---:|---|---|")
+        rule = "|---|---|---|---|---|---|---|---|---|---:|---:|---|---|---|---:|---|---|"
+        if gap_records is not None:
+            write(_RECORDED_ROW_NOTE)
+            write("")
+            header += " Recorded | Tracking ID |"
+            rule += "---|---|"
+        write(header)
+        write(rule)
         for row in changes.obligations:
-            write(_change_obligation_row(row, changes))
+            line = _change_obligation_row(row, changes)
+            if gap_records is not None:
+                tracking_id = gap_records.get(row)
+                recorded = "n/a" if row.window_closed_at is None else _flag(tracking_id is not None)
+                line += f" {recorded} | {_cell(tracking_id or 'n/a')} |"
+            write(line)
     write("")
 
     write("### Unregistered resources")

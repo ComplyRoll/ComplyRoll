@@ -108,6 +108,8 @@ def compile_record_set_from_history(
     stream has recorded gaps, so with an inventory the report is gap aware, each window naming
     the recorded gap that carries it or none. A store that never recorded a gap reads exactly
     as the stateless run without the flag, whatever the build that reads it.
+    `options.record_change_gaps` is refused for the same reason: `cases changes` records a
+    change gap, never a report (ADR 0018).
     `options.changes` is refused too: a store never read that file, so a block built here
     would claim an input the history does not hold. The store's own recorded changes feed the
     block instead, and with no inventory there is no block to feed (ADR 0018).
@@ -119,6 +121,12 @@ def compile_record_set_from_history(
         raise ValueError(
             "record_coverage_gaps applies only to a compile from artifacts; a report from "
             "history never records a coverage gap"
+        )
+    # Before the change file it needs, so the refusal names the flag that asked for it.
+    if options.record_change_gaps:
+        raise ValueError(
+            "record_change_gaps applies only to a compile from artifacts; a report from "
+            "history never records a change gap"
         )
     if options.changes is not None:
         raise ValueError(

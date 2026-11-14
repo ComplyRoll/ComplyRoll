@@ -737,8 +737,12 @@ class GoldenRegistryTests(unittest.TestCase):
             if "x-complyroll" in json.loads(path.read_text(encoding="utf-8"))
         }
         # The replay golden is cut from a store, not from artifacts; `test_changes_persisted`
-        # reproduces it.
-        self.assertEqual(reports - set(GAP_GOLDENS) - {"vdt-changes-replay"}, {*runs, *compiled})
+        # reproduces it. The change gap golden is `test_change_gap_report`'s, cut with its own
+        # flag.
+        self.assertEqual(
+            reports - set(GAP_GOLDENS) - {"vdt-changes-replay", "vdt-change-gaps"},
+            {*runs, *compiled},
+        )
         self.assertLessEqual(set(GAP_GOLDENS), reports)
         for name, (argv, status) in runs.items():
             self.assertNotIn(GAP_FLAG, argv)

@@ -535,6 +535,14 @@ def _add_report_arguments(parser: argparse.ArgumentParser, *, period: bool) -> N
         ),
     )
     parser.add_argument(
+        "--record-change-gaps",
+        action="store_true",
+        help=(
+            "record each change window that closed with no verification as a VDR-CSO-FAV "
+            "system record; needs --changes; exits 3 when one is recorded"
+        ),
+    )
+    parser.add_argument(
         "--as-of",
         metavar="RFC3339",
         help="instant the overdue flags are calculated against (default: now, UTC)",
@@ -1312,6 +1320,13 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             f"report {command.name} --changes needs --inventory: a change is read against "
             "the inventory or not at all",
         )
+    if args.record_change_gaps and not changes_paths:
+        return _fail(
+            stderr,
+            "invalid_option",
+            f"report {command.name} --record-change-gaps needs --changes: a change gap is the "
+            "closed window of a declared change",
+        )
     if args.record_coverage_gaps and not inventory_paths:
         return _fail(
             stderr,
@@ -1361,6 +1376,7 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
             inventory=inventory,
             record_coverage_gaps=args.record_coverage_gaps,
             changes=change_set,
+            record_change_gaps=args.record_change_gaps,
         )
         evaluations = load_evaluations(evaluations_path) if evaluations_path else None
     except ReportInputError as exc:
@@ -1384,9 +1400,11 @@ def _run_report(args: argparse.Namespace, command: _ReportCommand) -> int:
         status = _publish(stderr, report, output=output, markdown=markdown)
         # The output is already written: a recorded failure or gap is reported, not
         # refused, and the status is how a pipeline learns one was recorded. `--db` never
-        # gets here with either flag; each flag answers only for its own kind of record.
-        recorded = (args.record_failed_imports and report.metadata.detection_failures) or (
-            args.record_coverage_gaps and report.metadata.coverage_gaps
+        # gets here with any of the flags; each answers only for its own kind of record.
+        recorded = (
+            (args.record_failed_imports and report.metadata.detection_failures)
+            or (args.record_coverage_gaps and report.metadata.coverage_gaps)
+            or (args.record_change_gaps and report.metadata.change_gaps)
         )
         if status == 0 and recorded:
             return EXIT_DETECTION_FAILURES
@@ -1586,7 +1604,8 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
     failures when `ingest` read them (ADR 0014). `--record-coverage-gaps` is on it because
     a report run never records a gap into a store; what a store holds is its own record
     (ADR 0015). `--changes` is on it because a compile from a store does not read a change
-    file (ADR 0018).
+    file (ADR 0018). `--record-change-gaps` is on it for the reason `--record-coverage-gaps`
+    is: `cases changes` records a change gap into a store, never a report run (ADR 0018).
     """
 
     named = [
@@ -1598,6 +1617,7 @@ def _report_source_conflict(args: argparse.Namespace, command_name: str) -> str 
             ("--record-failed-imports", args.record_failed_imports),
             ("--record-coverage-gaps", args.record_coverage_gaps),
             ("--changes", bool(args.changes)),
+            ("--record-change-gaps", args.record_change_gaps),
         )
         if present
     ]

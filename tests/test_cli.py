@@ -1326,8 +1326,9 @@ class RecordFailedImportsTests(unittest.TestCase):
             for path in GOLDEN.glob("*.json")
             if "x-complyroll" in json.loads(path.read_text(encoding="utf-8"))
         }
-        # The failure and coverage gap goldens exit 3 by design; each pair has its own
-        # reproduction, the gap pair in `test_coverage_gap_report`.
+        # The failure and gap goldens exit 3 by design; each has its own reproduction, the
+        # coverage gap pair in `test_coverage_gap_report` and the change gap golden in
+        # `test_change_gap_report`.
         system_goldens = {
             # Cut from a store, not from artifacts; `test_changes_persisted` reproduces it.
             "vdt-changes-replay",
@@ -1335,6 +1336,7 @@ class RecordFailedImportsTests(unittest.TestCase):
             "historical-failed",
             "vdt-coverage-gaps",
             "historical-coverage-gaps",
+            "vdt-change-gaps",
         }
         self.assertEqual(reports - system_goldens, {*runs, *compiled})
         for name, argv in runs.items():

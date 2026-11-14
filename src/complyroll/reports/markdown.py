@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 from complyroll.models import CaseStatus, ResourceRef
 
+from .change_gaps import CHANGE_GAP_SOURCE_TYPE
 from .changes import (
     CHANGE_BASIS,
     DAC_RULE,
@@ -237,13 +238,16 @@ def _system_detection_sentence(source_types: set[str]) -> str:
     """Say what timed each kind of system record; a failure-only run reads as it always has."""
 
     clauses = []
-    if source_types - {COVERAGE_GAP_SOURCE_TYPE}:
+    # Any type that is not a gap reads as a failure, as the other two tables fall back.
+    if source_types - {COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE}:
         clauses.append(
             "for a detection process failure, from the instant ComplyRoll or the scanner "
             "recorded it"
         )
     if COVERAGE_GAP_SOURCE_TYPE in source_types:
         clauses.append("for a coverage gap, from the instant its coverage window closed")
+    if CHANGE_GAP_SOURCE_TYPE in source_types:
+        clauses.append("for a change detection gap, from the instant its change window closed")
     return (
         "Every reported vulnerability carried a detection time from its source artifact or, "
         + " and, ".join(clauses)

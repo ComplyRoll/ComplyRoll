@@ -19,6 +19,7 @@ from complyroll.models import NO_UTC_INSTANT, ObservationOrigin, PainRating
 from complyroll.policy import SelectedPolicy
 from complyroll.store.sqlite import bounded, shown
 
+from .change_gaps import CHANGE_GAP_SOURCE_TYPE
 from .evaluations import EvaluationInput
 from .gaps import COVERAGE_GAP_SOURCE_TYPE
 from .model import DetectionAttestation, ReportDiagnostic, iso
@@ -36,6 +37,7 @@ _ACCEPTANCE_RULE = "VER-TFR-MAV"
 _SYSTEM_RECORD_KINDS = {
     DETECTION_FAILURE_SOURCE_TYPE: "detection process failure",
     COVERAGE_GAP_SOURCE_TYPE: "coverage gap",
+    CHANGE_GAP_SOURCE_TYPE: "change detection gap",
 }
 
 
@@ -217,6 +219,10 @@ _SYSTEM_ORDER_REMEDIES = {
     COVERAGE_GAP_SOURCE_TYPE: (
         "a coverage gap is detected when its window closed, so evaluate it at or after that "
         "instant, or correct completedAt"
+    ),
+    CHANGE_GAP_SOURCE_TYPE: (
+        "a change detection gap is detected when its window closed, so evaluate it at or "
+        "after that instant, or correct completedAt"
     ),
 }
 

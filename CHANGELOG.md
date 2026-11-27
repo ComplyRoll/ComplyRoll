@@ -37,7 +37,8 @@ All notable project changes will be documented here.
   and every command that reads a store's observations refuses the first four as `history_invalid`
   with the audit's text. A lapse's force must be the one the pinned rules give `VER-TFR-EVU`. In a
   store that holds a response gap stream, a first sighting whose deadline no timestamp holds is
-  `clock_out_of_range` in the audit and the report alike (ADR 0019).
+  `clock_out_of_range`: `store verify` rejects it, and a report that must derive the window refuses
+  it; the audit is the stricter, as it is for policy (ADR 0019).
 - A report from a store that holds a response gap names each one the run derives that no record
   carries (`response_gap_unrecorded`), and each recorded one it cannot rebuild from its own record,
   as `response_gap_contradicted` when the store holds evidence against it and

@@ -143,8 +143,9 @@ attestation that dates detection after S can leave a recorded lapse before the d
 attestation gives. The lapse records that the run found the case untimed at or after the first
 sighting's deadline, and an attestation entered after the deadline but before the first run that
 sees it prevents the record. A first sighting whose deadline falls past what a timestamp holds is
-an invalid store clock: a report refuses the store with `clock_out_of_range` and `store verify`
-rejects it, never an uncaught overflow.
+an invalid store clock: `store verify` rejects it, and a report that must derive the window refuses
+it with `clock_out_of_range`, never an uncaught overflow; the audit is the stricter, as it is for
+policy.
 
 | Recipe input | Value |
 |---|---|

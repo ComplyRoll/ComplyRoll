@@ -55,13 +55,22 @@ from complyroll.history import (
     audit_history,
     fold_all_cases,
     record_ingest,
+    record_response_gaps,
     rehydrate_observations,
 )
 from complyroll.models import ObservationOrigin
-from complyroll.policy import RuleForce, RuleTimeframe, TimeframeUnit
+from complyroll.policy import (
+    CertificationClass,
+    CertificationProfile,
+    RuleForce,
+    RuleTimeframe,
+    TimeframeUnit,
+)
 from complyroll.reports import (
     DetectionAttestation,
+    ReportCompileError,
     compile_record_set,
+    compile_vdt_report_from_history,
     parse_evaluations,
 )
 from complyroll.reports import records as records_module
@@ -85,6 +94,7 @@ RECURRENCE_KEY = f"{REMEDIATED_CASE}:remediated:2026-09-05T15:00:00Z:1"
 #: The last instant `datetime` holds, as a first sighting no deadline fits after (F06).
 LAST_DAY = "9999-12-31T00:00:00Z"
 NOW = datetime(2026, 11, 27, tzinfo=UTC)
+LAST_INSTANT = datetime(9999, 12, 31, tzinfo=UTC)
 
 
 def evaluation_entry(**overrides: object) -> dict[str, Any]:
@@ -346,6 +356,61 @@ class FirstSightingClockTests(FixCase):
         self.assertEqual(code, 1)
         self.assertIn(": clock_out_of_range: ", err)
 
+    def test_the_writer_names_an_overflowing_window_as_a_report_refusal(self) -> None:
+        # Round 2 F1 (R19): the writer's derivation reaches the window at the last day, and the
+        # typed clock error comes out as the report's `clock_out_of_range`, never raw.
+        self.write_reading(LAST_DAY)
+        self.correlate()
+        with SQLiteEventStore(self.database) as store:
+            repository = EventRepository(store)
+            with self.assertRaises(ReportCompileError) as caught:
+                record_response_gaps(
+                    repository,
+                    profile=CertificationProfile(certification_class=CertificationClass.C),
+                    as_of=LAST_INSTANT,
+                    metadata=EventMetadata(actor="test"),
+                )
+            self.assertFalse(repository.holds_response_gap_stream())
+        self.assertNotIsInstance(caught.exception, LapseClockError)
+        (diagnostic,) = caught.exception.diagnostics
+        self.assertEqual(diagnostic.code, "clock_out_of_range")
+        self.assertIn("was first recorded 9999-12-31", diagnostic.message)
+
+    def test_a_report_deriving_an_overflowing_window_refuses_by_the_clock(self) -> None:
+        # Round 2 F1 (R20): a store that holds a response gap stream makes the report derive
+        # every lapse window. The case's only reading is superseded by a newer one that no
+        # longer holds the finding, so the report has no group to refuse as untimed, and the
+        # first sighting on the last day refuses the report by the clock, never raw.
+        with SQLiteEventStore(self.database) as store:
+            record_gap(EventRepository(store), recurrence_record())
+        self.write_reading(LAST_DAY)
+        self.correlate()
+        later = datetime(9999, 12, 31, 12, tzinfo=UTC)
+        emptied = replace(
+            bumped(ingest_stig_artifact(Path(UNTIMED), ingested_at=later), "3"), observations=()
+        )
+        with SQLiteEventStore(self.database) as store:
+            repository = EventRepository(store)
+            record_ingest(
+                repository, emptied, metadata=EventMetadata(actor="test"), ingested_at=later
+            )
+            with self.assertRaises(ReportCompileError) as caught:
+                compile_vdt_report_from_history(
+                    repository,
+                    options=options(
+                        as_of=LAST_INSTANT, detected_at=None, period_from=None, period_to=None
+                    ),
+                )
+        self.assertNotIsInstance(caught.exception, LapseClockError)
+        (diagnostic,) = caught.exception.diagnostics
+        self.assertEqual(diagnostic.code, "clock_out_of_range")
+        self.assertIn("was first recorded 9999-12-31", diagnostic.message)
+        # The store is legal but for that clock, which `store verify` names alone.
+        code, out, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual((code, out), (1, ""), msg=err)
+        self.assertEqual(err.count(": clock_out_of_range: "), 1, msg=err)
+        self.assertIn("faults: 1 domain fault(s)", err)
+
 
 # *--- Sol F08 ---*
 
@@ -487,6 +552,33 @@ class SelfConsistentRecurrenceTests(FixCase):
             self.assertIn("not after its remediation", faults[0].message)
             with self.assertRaisesRegex(HistoryError, "not after its remediation"):
                 rehydrate_observations(repository)
+
+
+class RecurrenceEpisodeKeyAuditTests(FixCase):
+    """`store verify` refuses a recurrence whose episode is not `str(int)` of a positive integer
+    (round 2 F2)."""
+
+    def test_a_zero_padded_or_signed_episode_is_refused(self) -> None:
+        good = recurrence_record()
+        stem = good.context_key.rsplit(":", 1)[0]
+        for episode in ("0", "01", "+1"):
+            with self.subTest(episode=episode):
+                forged = rebuilt(good, context_key=f"{stem}:{episode}")
+                database = self.workspace / f"episode-{len(episode)}-{episode[0]}.db"
+                with SQLiteEventStore(database) as store:
+                    with self.assertRaisesRegex(EventContractError, "<episode>"):
+                        record_gap(EventRepository(store), forged)
+                    for version, (event_type, payload) in enumerate(events_of(forged)):
+                        store.append(
+                            response_gap_stream_id_of(forged),
+                            [NewEvent(event_type, NOW, payload, metadata().to_dict())],
+                            expected_version=version,
+                            requires_schema=7,
+                        )
+                code, out, err = run(["store", "verify", "--db", str(database)])
+                self.assertEqual((code, out), (1, ""), msg=err)
+                self.assertIn(": responsegap_identity_breach: ", err)
+                self.assertIn(f"its context key is '{stem}:{episode}'", err)
 
 
 # *--- Sol F11 ---*

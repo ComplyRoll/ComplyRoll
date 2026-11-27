@@ -500,6 +500,8 @@ def compile_record_set(
             and detected_source == "attestation"
             and detected_at <= remediation
         ):
+            # NOTE: the `replace` arm is defensive and unreachable today: a record detected from
+            # an attestation has no timed member, so nothing in it can have recurred.
             recurrence = replace(recurrence, untimed=()) if recurrence.recurring else None
         if recurrence is not None:
             diagnostics.append(_recurrence_warning(recurrence, label, group.source_record_id))

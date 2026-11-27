@@ -120,6 +120,7 @@ from .model import (
     iso,
     require_aware,
 )
+from .response_gaps import RemediationRecurrence, remediation_recurrence
 
 # *--- Configuration ---*
 
@@ -458,6 +459,12 @@ def compile_record_set(
             errors.extend(record_errors)
             continue
         compiled.append(record)
+        # A remediation the scanner contradicts keeps the operator's disposition: ComplyRoll
+        # warns and never sets one (ADR 0019).
+        remediated_at = _remediation_instant(evaluation)
+        recurrence = None if remediated_at is None else remediation_recurrence(group, remediated_at)
+        if recurrence is not None:
+            diagnostics.append(_recurrence_warning(recurrence, label, group.source_record_id))
         # Only the failure type carries the metadata `_detection_failure` reads; any other
         # reserved source type is a record like any other and is never listed (ADR 0015).
         detection_failures.extend(
@@ -1854,6 +1861,63 @@ def coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
 
 def _records_carry(count: int) -> str:
     return "1 compiled record carries" if count == 1 else f"{count} compiled records carry"
+
+
+# *--- Response Gaps ---*
+
+
+def _remediation_instant(evaluation: EvaluationInput | None) -> datetime | None:
+    """Return when a remediated record was remediated, or None for any other record.
+
+    The instant is the evaluation's `completedAt`, never a store's recording instant (ADR
+    0010). Only a disposition that resolves to `remediated` counts: a mitigated weakness
+    still exists, and a false positive or an accepted risk is the operator's standing ruling.
+    """
+
+    if evaluation is None or evaluation.resolved_status is not CaseStatus.REMEDIATED:
+        return None
+    return evaluation.completed_at
+
+
+def _recurrence_warning(
+    recurrence: RemediationRecurrence, label: str, location: str
+) -> ReportDiagnostic:
+    """Warn that open observations contradict a record's remediation (ADR 0019).
+
+    One WARNING per record, on both paths and whatever the run records: it names the
+    remediation instant and the earliest recurring detection, and counts the members whose
+    time cannot be ordered against the remediation at all.
+    """
+
+    clauses = [f"{label} is recorded remediated at {iso(recurrence.remediated_at)}"]
+    if recurrence.recurring:
+        earliest = recurrence.recurring[0]
+        detected_at = earliest.observed_at
+        if detected_at is None:  # pragma: no cover - recurring members are timed
+            raise AssertionError("a recurring observation is timed")
+        clauses.append(
+            f"{len(recurrence.recurring)} open observation(s) of it were detected after that "
+            f"instant, the earliest at {iso(detected_at)} on {coverage_label(earliest.resource)}"
+        )
+    if recurrence.untimed:
+        clauses.append(
+            f"{len(recurrence.untimed)} open observation(s) of it declare no source timestamp, "
+            "so they cannot be ordered against the remediation"
+        )
+    verdict = (
+        "the remediation did not hold"
+        if recurrence.recurring
+        else "whether the remediation held cannot be told"
+    )
+    return ReportDiagnostic(
+        level=DiagnosticLevel.WARNING,
+        code="recurrence_after_remediation",
+        message=(
+            ", and ".join(clauses)
+            + f"; {verdict}, and the record keeps its disposition until an evaluation changes it"
+        ),
+        location=location,
+    )
 
 
 # *--- Record Building ---*

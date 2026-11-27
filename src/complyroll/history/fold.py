@@ -32,6 +32,8 @@ from complyroll.events import (
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
     OBSERVATION_ID_KEY,
+    RESPONSE_GAP_RECORDED,
+    RESPONSE_GAP_STREAM_SCHEMA_VERSION,
     EventContractError,
     EventRepository,
     artifact_identity_breach,
@@ -59,8 +61,12 @@ from complyroll.events import (
     is_change_stream,
     is_coverage_stream,
     is_failure_stream,
+    is_response_gap_stream,
     metadata_breaches,
     parse_utc,
+    response_gap_head_order_message,
+    response_gap_record_disagreement,
+    response_gap_record_problem,
     tracking_id_from_stream,
 )
 from complyroll.models import (
@@ -125,6 +131,11 @@ AUDIT_FAULT_CODES: Final[tuple[str, ...]] = (
     "failure_schema_unmarked",
     "failure_stream_mismatch",
     "payload_contract_invalid",
+    "responsegap_identity_breach",
+    "responsegap_incomplete",
+    "responsegap_overfull",
+    "responsegap_schema_unmarked",
+    "responsegap_stream_mismatch",
     "tracking_id_collision",
 )
 
@@ -439,8 +450,8 @@ def rehydrate_observation_records(
     it does any other (ADR 0014). A dormant hold contributes nothing: its observation is the
     one the failure carrying it contributes, under R6. Every coverage stream is current and
     contributes its one gap record, so a gap becomes a case the same way (ADR 0015), and so
-    does every change gap stream (ADR 0018). A gap is a system record, so no projection reads
-    it as evidence.
+    does every change gap stream (ADR 0018) and every response gap stream (ADR 0019). A gap is a
+    system record, so no projection reads it as evidence.
     """
 
     split = _split_streams(_read_artifact_streams(repository), _read_failure_streams(repository))
@@ -450,6 +461,7 @@ def rehydrate_observation_records(
             *(view.observation for view in split.current_failures),
             *(view.observation for view in _read_coverage_streams(repository)),
             *(view.observation for view in _read_change_gap_streams(repository)),
+            *(view.observation for view in _read_response_gap_streams(repository)),
         ),
         key=lambda event: event.sequence,
     )
@@ -624,6 +636,7 @@ _ORDER_CHECKED_BESIDE: Final[frozenset[str]] = frozenset(
         "coverage_schema_unmarked",
         "change_schema_unmarked",
         "changegap_schema_unmarked",
+        "responsegap_schema_unmarked",
     }
 )
 
@@ -719,6 +732,22 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     - `changegap_schema_unmarked`: a change gap stream in a store below schema 6, which a
       build that predates change gap streams would open and misread.
 
+    Response gap streams (ADR 0019) have five of their own, the mirror of a coverage stream's:
+
+    - `responsegap_incomplete` and `responsegap_overfull`: a response gap stream that is not
+      exactly one `response_gap.recorded` head and one observation.
+    - `responsegap_stream_mismatch`: a response gap stream id that names no fingerprint, a
+      record whose fingerprint is not the one its stream id names, or a stream that does not
+      open with its head.
+    - `responsegap_identity_breach`: an observation on a response gap stream that is not a
+      recurrence or lapsed attestation record (origin, source type, tool, parser, record id,
+      derived id, disposition, severity, identifiers, description, title, evidence id), whose
+      metadata is not exactly its kind's keys with the values its writer records, or whose head
+      names another kind, case, context key or instant than its record. The head is held to its
+      own record alone, never to the case it names.
+    - `responsegap_schema_unmarked`: a response gap stream in a store below schema 7, which a
+      build that predates response gap streams would open and misread.
+
     One fault names a case a report cannot carry:
 
     - `disposition_without_evaluation`: a case stream recording a disposition and no
@@ -736,8 +765,9 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
       one, and so can a store written around the writers. It folds every case and
       rehydrates observations, which a damaged log cannot do dependably, so it is checked
       only when every other fault found is `event_metadata_invalid`,
-      `failure_schema_unmarked`, `coverage_schema_unmarked`, `change_schema_unmarked`, or
-      `changegap_schema_unmarked`, the five no reader refuses on any stream. Beside those it
+      `failure_schema_unmarked`, `coverage_schema_unmarked`, `change_schema_unmarked`,
+      `changegap_schema_unmarked`, or `responsegap_schema_unmarked`, the six no reader refuses
+      on any stream. Beside those it
       is skipped when it cannot fold, and the faults found are reported alone (ADR 0008
       amendment 2026-10-14, second).
 
@@ -793,6 +823,10 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
     change_gap_shapes: dict[str, list[int]] = {}
     change_gap_openers: dict[str, EventRecord] = {}
     change_gap_pairs: dict[str, dict[str, EventRecord]] = {}
+    # Per response gap stream, the same three again, read the same way.
+    response_gap_shapes: dict[str, list[int]] = {}
+    response_gap_openers: dict[str, EventRecord] = {}
+    response_gap_pairs: dict[str, dict[str, EventRecord]] = {}
     # Every case stream seen so far, so one whose id names no tracking id is named once.
     case_streams: set[str] = set()
     # Per case stream: its first event, every `case.created` after it, whether it records an
@@ -862,6 +896,17 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
                 if not contract_faults and not identity_faults:
                     pair = change_gap_pairs.setdefault(record.stream_id, {})
                     pair.setdefault(record.event_type, record)
+        if is_response_gap_stream(record.stream_id):
+            shape = response_gap_shapes.setdefault(record.stream_id, [record.sequence, 0, 0])
+            if record.event_type == RESPONSE_GAP_RECORDED:
+                shape[1] += 1
+            elif record.event_type == OBSERVATION_RECORDED:
+                shape[2] += 1
+            if record.event_type in (RESPONSE_GAP_RECORDED, OBSERVATION_RECORDED):
+                response_gap_openers.setdefault(record.stream_id, record)
+                if not contract_faults and not identity_faults:
+                    pair = response_gap_pairs.setdefault(record.stream_id, {})
+                    pair.setdefault(record.event_type, record)
         if record.event_type == ARTIFACT_INGESTED:
             count = record.payload.get("observationCount")
             if record.stream_id not in declared and _is_whole_number(count):
@@ -924,6 +969,19 @@ def audit_history(repository: EventRepository) -> tuple[HistoryFault, ...]:
             )
         )
     faults.extend(_change_gap_schema_faults(repository, change_gap_shapes))
+    for stream_id, (first, heads, observations) in response_gap_shapes.items():
+        problem = _response_gap_stream_problem(stream_id, heads, observations)
+        if problem is not None:
+            faults.append(HistoryFault(sequence=first, code=problem[0], message=problem[1]))
+        faults.extend(
+            _response_gap_pair_faults(
+                stream_id,
+                heads,
+                response_gap_openers.get(stream_id),
+                None if problem is not None else response_gap_pairs.get(stream_id, {}),
+            )
+        )
+    faults.extend(_response_gap_schema_faults(repository, response_gap_shapes))
     faults.extend(_case_shape_faults(case_openers, case_recreations))
     faults.extend(_disposition_faults(dispositions, evaluated))
     for stream_id, (sequence, count) in declared.items():
@@ -1469,6 +1527,66 @@ def _read_change_gap_streams(repository: EventRepository) -> tuple[_ChangeGapStr
     return tuple(views)
 
 
+@dataclass(frozen=True, slots=True)
+class _ResponseGapStreamView:
+    """One response gap stream: its `response_gap.recorded` head and its one record event."""
+
+    stream_id: str
+    head: EventRecord
+    observation: EventRecord
+
+
+def _read_response_gap_streams(repository: EventRepository) -> tuple[_ResponseGapStreamView, ...]:
+    """Read every response gap stream back, in the order the streams were opened (ADR 0019).
+
+    A response gap stream is one `response_gap.recorded` head and the one record it names,
+    written whole and once, so the reader refuses what the audit names, with the audit's
+    message, as `_read_change_gap_streams` does: an event no response gap stream carries, read
+    by its stream kind before its type, a contract-invalid event, a record its stream does not
+    name, a missing half, a second head or record, a record ahead of its head, and a head and a
+    record that describe two gaps. The head is held to its own record alone: a case missing or
+    moved since is not a fault, because a response gap is a fact about the run that recorded it.
+    A record is never superseded, so every response gap stream is current.
+    """
+
+    heads: dict[str, list[EventRecord]] = {}
+    observations: dict[str, list[EventRecord]] = {}
+    opened_by: dict[str, str] = {}
+    for record in repository.read_all():
+        if not is_response_gap_stream(record.stream_id):
+            continue
+        # A foreign event is refused rather than skipped, so no report runs on top of it.
+        if not event_belongs_on_stream(record.event_type, record.stream_id):
+            raise HistoryError(_misplaced_event_message(record))
+        _require_readable_artifact_event(repository, record)
+        problem = response_gap_record_problem(record.stream_id, record.event_type, record.payload)
+        if problem is not None:
+            raise HistoryError(f"event {record.sequence} is on the wrong stream: {problem[1]}")
+        opened_by.setdefault(record.stream_id, record.event_type)
+        found = heads if record.event_type == RESPONSE_GAP_RECORDED else observations
+        found.setdefault(record.stream_id, []).append(record)
+
+    views: list[_ResponseGapStreamView] = []
+    for stream_id, opener in opened_by.items():
+        stream_heads = heads.get(stream_id, [])
+        stream_observations = observations.get(stream_id, [])
+        shape = _response_gap_stream_problem(stream_id, len(stream_heads), len(stream_observations))
+        if shape is not None:
+            raise HistoryError(shape[1])
+        if opener != RESPONSE_GAP_RECORDED:
+            raise HistoryError(response_gap_head_order_message(stream_id))
+        head, observation = stream_heads[0], stream_observations[0]
+        disagreement = response_gap_record_disagreement(
+            stream_id, head.payload, observation.payload
+        )
+        if disagreement is not None:
+            raise HistoryError(disagreement)
+        views.append(
+            _ResponseGapStreamView(stream_id=stream_id, head=head, observation=observation)
+        )
+    return tuple(views)
+
+
 def _change_gap_parent_problem(
     stream_id: str,
     head: EventRecord,
@@ -1557,10 +1675,11 @@ def _stored_change(payload: Mapping[str, Any]) -> tuple[Change, str, str]:
     return change, _text(payload, "changesName"), _text(payload, "changesSha256")
 
 
-#: What an unreadable artifact-, failure-, coverage-, change- or change-gap-stream event is
-#: called in the message the fold raises.
+#: What an unreadable artifact-, failure-, coverage-, change-, change-gap- or response-gap-stream
+#: event is called in the message the fold raises.
 _ARTIFACT_EVENT_NAMES: Final[dict[str, str]] = {
     ARTIFACT_INGESTED: "artifact record",
+    RESPONSE_GAP_RECORDED: "response gap head",
     CHANGE_GAP_RECORDED: "change gap head",
     CHANGE_RECORDED: "change record",
     COVERAGE_RECORDED: "coverage record",
@@ -2041,7 +2160,9 @@ def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
     to be that gap record (ADR 0015), under the code `coverage_record_problem` gives. A change
     stream id is the digest of its change id, and its event has to record that change (ADR
     0018). A change gap stream id is a change gap record's fingerprint, and its observation has
-    to be that gap record, under the code `change_gap_record_problem` gives (ADR 0018).
+    to be that gap record, under the code `change_gap_record_problem` gives (ADR 0018). A
+    response gap stream id is a response gap record's fingerprint, and its observation has to be
+    that record, under the code `response_gap_record_problem` gives (ADR 0019).
     """
 
     breach = artifact_identity_breach(record.stream_id, record.event_type, record.payload)
@@ -2058,6 +2179,10 @@ def _identity_faults(record: EventRecord) -> tuple[HistoryFault, ...]:
         code = "change_stream_mismatch"
     if breach is None:
         problem = change_gap_record_problem(record.stream_id, record.event_type, record.payload)
+        if problem is not None:
+            code, breach = problem
+    if breach is None:
+        problem = response_gap_record_problem(record.stream_id, record.event_type, record.payload)
         if problem is not None:
             code, breach = problem
     if breach is None:
@@ -2383,6 +2508,105 @@ def _change_gap_schema_faults(
                 f"change gap stream {stream_id!r} is in a store at schema {version}; a store "
                 f"holding change gap streams is marked schema {CHANGE_GAP_STREAM_SCHEMA_VERSION}, "
                 "so a build that cannot read them refuses it rather than misreading it"
+            ),
+        ),
+    )
+
+
+def _response_gap_stream_problem(
+    stream_id: str,
+    heads: int,
+    observations: int,
+) -> tuple[str, str] | None:
+    """Return the fault code and message for a response gap stream that is not whole, else None.
+
+    A response gap stream is one `response_gap.recorded` head and the one record it names,
+    written once as one batch (ADR 0019), so the shape is the declaration, as it is for a change
+    gap stream: a second head or record is overfull, and a missing half is incomplete.
+    """
+
+    found = f"found {heads} head(s) and {observations} observation(s)"
+    if heads > 1 or observations > 1:
+        return (
+            "responsegap_overfull",
+            f"response gap stream {stream_id!r} is overfull: a response gap stream holds one "
+            f"{RESPONSE_GAP_RECORDED} head and one observation, {found}",
+        )
+    if heads < 1 or observations < 1:
+        return (
+            "responsegap_incomplete",
+            f"response gap stream {stream_id!r} is incomplete: a response gap stream holds one "
+            f"{RESPONSE_GAP_RECORDED} head and one observation, {found}",
+        )
+    return None
+
+
+def _response_gap_pair_faults(
+    stream_id: str,
+    heads: int,
+    opener: EventRecord | None,
+    pair: Mapping[str, EventRecord] | None,
+) -> tuple[HistoryFault, ...]:
+    """Report a response gap stream out of order, or whose head names another record.
+
+    The mirror of `_coverage_pair_faults` (ADR 0019). Only a stream holding a head is out of
+    order when its record opens it, a `responsegap_stream_mismatch` at that record. `pair` is
+    None for a stream that is not whole; otherwise the two are compared only when both read,
+    and a head that disagrees with its record is a `responsegap_identity_breach` at the record.
+    The head is held to its own record alone, never to the case it names (ADR 0019).
+    """
+
+    faults: list[HistoryFault] = []
+    if heads and opener is not None and opener.event_type != RESPONSE_GAP_RECORDED:
+        faults.append(
+            HistoryFault(
+                sequence=opener.sequence,
+                code="responsegap_stream_mismatch",
+                message=response_gap_head_order_message(stream_id),
+            )
+        )
+    if pair is None or RESPONSE_GAP_RECORDED not in pair or OBSERVATION_RECORDED not in pair:
+        return tuple(faults)
+    head, observation = pair[RESPONSE_GAP_RECORDED], pair[OBSERVATION_RECORDED]
+    disagreement = response_gap_record_disagreement(stream_id, head.payload, observation.payload)
+    if disagreement is not None:
+        faults.append(
+            HistoryFault(
+                sequence=observation.sequence,
+                code="responsegap_identity_breach",
+                message=disagreement,
+            )
+        )
+    return tuple(faults)
+
+
+def _response_gap_schema_faults(
+    repository: EventRepository,
+    response_gap_streams: Mapping[str, Sequence[int]],
+) -> tuple[HistoryFault, ...]:
+    """Report response gap streams in a store that never marked itself for them (ADR 0019).
+
+    The first response gap append marks the store schema 7 in the same transaction, so a store
+    below 7 holding a response gap stream was written past the repository, and a build that
+    predates response gap streams would open it and misread them instead of refusing it. One
+    fault names the store's condition once, at the first response gap stream's first event.
+    """
+
+    if not response_gap_streams:
+        return ()
+    version = repository.store.schema_version
+    if version >= RESPONSE_GAP_STREAM_SCHEMA_VERSION:
+        return ()
+    stream_id, shape = min(response_gap_streams.items(), key=lambda item: item[1][0])
+    return (
+        HistoryFault(
+            sequence=shape[0],
+            code="responsegap_schema_unmarked",
+            message=(
+                f"response gap stream {stream_id!r} is in a store at schema {version}; a store "
+                "holding response gap streams is marked schema "
+                f"{RESPONSE_GAP_STREAM_SCHEMA_VERSION}, so a build that cannot read them refuses "
+                "it rather than misreading it"
             ),
         ),
     )

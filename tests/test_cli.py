@@ -1667,6 +1667,13 @@ COVERED_AUDIT_CODES = {
     "changegap_overfull",
     "changegap_schema_unmarked",
     "changegap_stream_mismatch",
+    # The five response gap codes' `store verify` command tests live in
+    # `tests/test_response_gap_streams.py`.
+    "responsegap_identity_breach",
+    "responsegap_incomplete",
+    "responsegap_overfull",
+    "responsegap_schema_unmarked",
+    "responsegap_stream_mismatch",
     # The five coverage codes' `store verify` command tests live in
     # `tests/test_coverage_streams.py`.
     "coverage_identity_breach",
@@ -7978,7 +7985,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 self.assertEqual(code, 1, err[:500])
                 self.assertIn(
                     "error: store_unavailable: database schema -1 is outside supported "
-                    "schemas 1 to 6",
+                    "schemas 1 to 7",
                     err,
                 )
                 self.assert_bounded(out, err)
@@ -7990,7 +7997,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1, err[:500])
         self.assertIn(
             "schema_version_unsupported: database is marked schema -1; this build opens "
-            "schemas 1 to 6",
+            "schemas 1 to 7",
             out + err,
         )
         self.assert_bounded(out, err)

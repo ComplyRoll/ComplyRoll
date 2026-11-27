@@ -68,6 +68,7 @@ from complyroll.events.contracts import (
     CHANGE_GAP_STREAM_EVENT_TYPES,
     COVERAGE_STREAM_EVENT_TYPES,
     FAILURE_STREAM_EVENT_TYPES,
+    RESPONSE_GAP_STREAM_EVENT_TYPES,
     _placement_problem,
 )
 from complyroll.history import audit_history, rehydrate_observations
@@ -488,9 +489,12 @@ class ChangePlacementTests(TestCase):
         coverage = frozenset(COVERAGE_STREAM_EVENT_TYPES)
         change = frozenset(CHANGE_STREAM_EVENT_TYPES)
         change_gap = frozenset(CHANGE_GAP_STREAM_EVENT_TYPES)
+        response_gap = frozenset(RESPONSE_GAP_STREAM_EVENT_TYPES)
         published = frozenset(EVENT_TYPES)
         self.assertIsNone(
-            _placement_problem(artifact, case, failure, coverage, change, change_gap, published)
+            _placement_problem(
+                artifact, case, failure, coverage, change, change_gap, response_gap, published
+            )
         )
         for label, tables, expected in (
             (
@@ -515,7 +519,7 @@ class ChangePlacementTests(TestCase):
             ),
         ):
             with self.subTest(shape=label):
-                problem = _placement_problem(*tables, change_gap, published)
+                problem = _placement_problem(*tables, change_gap, response_gap, published)
                 self.assertIsNotNone(problem)
                 self.assertIn(expected, str(problem))
 
@@ -794,12 +798,12 @@ class ChangeSchemaMarkingTests(StoreCase):
 
     def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         record_change(self.repository)
-        self.damage("PRAGMA user_version = 7")
+        self.damage("PRAGMA user_version = 8")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 7 is newer than supported schema 6", str(caught.exception))
+        self.assertIn("database schema 8 is newer than supported schema 7", str(caught.exception))
 
 
 # *--- Layering ---*

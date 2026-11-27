@@ -67,6 +67,11 @@ from .contracts import (
     FAILURE_STREAM_PREFIX,
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
+    RESPONSE_GAP_ATTESTATION_RULE,
+    RESPONSE_GAP_RECORDED,
+    RESPONSE_GAP_STREAM_PREFIX,
+    RESPONSE_GAP_STREAM_SCHEMA_VERSION,
+    TRACKING_ID_PATTERN,
     artifact_stream_components,
     change_gap_stream_fingerprint,
     change_gap_stream_id,
@@ -80,8 +85,11 @@ from .contracts import (
     is_change_stream,
     is_coverage_stream,
     is_failure_stream,
+    is_response_gap_stream,
     iso_utc,
     parse_utc,
+    response_gap_stream_fingerprint,
+    response_gap_stream_id,
     schema_for,
     stream_kind,
     timestamp_pointers_for,
@@ -282,6 +290,112 @@ _CHANGE_GAP_CHANGE_PAIRS: Final[tuple[tuple[str, str], ...]] = (
     ("occurredAt", "occurredAt"),
     ("windowClosedAt", "detectBy"),
     ("changesSha256", "changesSha256"),
+)
+
+#: The identity of a response gap stream's records, exactly what `reports.response_gaps` writes
+#: (ADR 0019). Spelled here for the reason the coverage identity is; the response gap stream
+#: tests hold each to its builder's.
+RESPONSE_GAP_SOURCE_TOOL: Final = "complyroll"
+RECURRENCE_SOURCE_TYPE: Final = "complyroll.recurrence"
+RECURRENCE_PARSER_NAME: Final = "complyroll.recurrence"
+RECURRENCE_PARSER_VERSION: Final = "1"
+RECURRENCE_RECORD_ID: Final = "remediation-recurrence"
+RECURRENCE_TITLE: Final = (
+    "remediation of {tracking_id} recorded {remediated_at} did not hold: "
+    "{resource_type}:{resource_id} detected again {detected_at} "
+    f"({DETECTION_FAILURE_RULE})"
+)
+RECURRENCE_DESCRIPTION: Final = (
+    "ComplyRoll recorded an open observation of this weakness on this resource after its case "
+    "was recorded remediated; this records that the remediation did not hold, a failure of the "
+    "response process."
+)
+RECURRENCE_METADATA_KEYS: Final[tuple[str, ...]] = (
+    "recurrence.caseTrackingId",
+    "recurrence.observationDetectedAt",
+    "recurrence.observationId",
+    "recurrence.remediatedAt",
+)
+ATTESTATION_LAPSE_SOURCE_TYPE: Final = "complyroll.attestation"
+ATTESTATION_LAPSE_PARSER_NAME: Final = "complyroll.attestation"
+ATTESTATION_LAPSE_PARSER_VERSION: Final = "1"
+ATTESTATION_LAPSE_RECORD_ID: Final = "attestation-lapse"
+ATTESTATION_LAPSE_RESOURCE_TYPE: Final = "logical"
+ATTESTATION_LAPSE_RESOURCE_PREFIX: Final = "case/"
+ATTESTATION_LAPSE_TITLE: Final = (
+    "detection time of {tracking_id} was not attested within {rule} from {first_seen_at} "
+    f"({DETECTION_FAILURE_RULE})"
+)
+ATTESTATION_LAPSE_DESCRIPTION: Final = (
+    "No source timestamp, attestation or system time gave this case a detection time by the "
+    "close of its evaluation window, measured from when ComplyRoll first recorded its evidence, "
+    "so its evaluation clock could not start; this records a failure of the response process, "
+    "not a vulnerability."
+)
+ATTESTATION_LAPSE_METADATA_KEYS: Final[tuple[str, ...]] = (
+    "attestation.caseTrackingId",
+    "attestation.firstSeenAt",
+    "attestation.force",
+    "attestation.rule",
+    "attestation.windowClosedAt",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ResponseGapKind:
+    """What one kind of response gap record fixes, and how its head restates the record."""
+
+    kind: str
+    source_type: str
+    parser_name: str
+    parser_version: str
+    record_id: str
+    description: str
+    metadata_keys: tuple[str, ...]
+    #: One pair per head field after `kind`, in the contract's order: the context key is the
+    #: record's own field, and the rest are its metadata.
+    record_pairs: tuple[tuple[str, str], ...]
+
+
+_RESPONSE_GAP_KINDS: Final[dict[str, _ResponseGapKind]] = {
+    RECURRENCE_SOURCE_TYPE: _ResponseGapKind(
+        kind="recurrence",
+        source_type=RECURRENCE_SOURCE_TYPE,
+        parser_name=RECURRENCE_PARSER_NAME,
+        parser_version=RECURRENCE_PARSER_VERSION,
+        record_id=RECURRENCE_RECORD_ID,
+        description=RECURRENCE_DESCRIPTION,
+        metadata_keys=RECURRENCE_METADATA_KEYS,
+        record_pairs=(
+            ("caseTrackingId", "recurrence.caseTrackingId"),
+            ("contextKey", "context_key"),
+            ("remediatedAt", "recurrence.remediatedAt"),
+            ("observationId", "recurrence.observationId"),
+            ("observationDetectedAt", "recurrence.observationDetectedAt"),
+        ),
+    ),
+    ATTESTATION_LAPSE_SOURCE_TYPE: _ResponseGapKind(
+        kind="attestation",
+        source_type=ATTESTATION_LAPSE_SOURCE_TYPE,
+        parser_name=ATTESTATION_LAPSE_PARSER_NAME,
+        parser_version=ATTESTATION_LAPSE_PARSER_VERSION,
+        record_id=ATTESTATION_LAPSE_RECORD_ID,
+        description=ATTESTATION_LAPSE_DESCRIPTION,
+        metadata_keys=ATTESTATION_LAPSE_METADATA_KEYS,
+        record_pairs=(
+            ("caseTrackingId", "attestation.caseTrackingId"),
+            ("contextKey", "context_key"),
+            ("firstSeenAt", "attestation.firstSeenAt"),
+            ("windowClosedAt", "attestation.windowClosedAt"),
+            ("rule", "attestation.rule"),
+        ),
+    ),
+}
+
+#: Why a record of any other kind names no response gap stream, at append and in the audit.
+_NOT_A_RESPONSE_GAP_RECORD: Final = (
+    f"only a system record of source type {RECURRENCE_SOURCE_TYPE!r} or "
+    f"{ATTESTATION_LAPSE_SOURCE_TYPE!r} names a response gap stream"
 )
 
 #: A size as `str(int)` spells it: digits only, no sign, no leading zero.
@@ -552,6 +666,9 @@ class EventRepository:
         # head is held to its record and to its change below, and a stream is never extended.
         if is_change_gap_stream(stream_id) and expected_version != 0:
             raise EventContractError(change_gap_write_once_message(stream_id))
+        # A response gap stream is written whole and once in the same way (ADR 0019).
+        if is_response_gap_stream(stream_id) and expected_version != 0:
+            raise EventContractError(response_gap_write_once_message(stream_id))
         prepared: list[NewEvent] = []
         for index, event in enumerate(pending):
             if not isinstance(event, PendingEvent):
@@ -583,6 +700,11 @@ class EventRepository:
                     raise EventContractError(change_gap_head_order_message(stream_id))
                 if index > 0 and (index > 1 or event.event_type != OBSERVATION_RECORDED):
                     raise EventContractError(change_gap_write_once_message(stream_id))
+            if is_response_gap_stream(stream_id):
+                if index == 0 and event.event_type != RESPONSE_GAP_RECORDED:
+                    raise EventContractError(response_gap_head_order_message(stream_id))
+                if index > 0 and (index > 1 or event.event_type != OBSERVATION_RECORDED):
+                    raise EventContractError(response_gap_write_once_message(stream_id))
             metadata = event.metadata.to_dict()
             _require_valid_metadata(metadata)
             prepared.append(
@@ -607,6 +729,16 @@ class EventRepository:
             if len(pending) != 2:
                 raise EventContractError(change_gap_write_once_message(stream_id))
             self._require_change_gap_agreement(stream_id, pending[0].payload, pending[1].payload)
+        if is_response_gap_stream(stream_id):
+            if len(pending) != 2:
+                raise EventContractError(response_gap_write_once_message(stream_id))
+            # Held to its own record alone: a case's current state moves, and the record is a
+            # fact about the run that recorded it (ADR 0019).
+            disagreement = response_gap_record_disagreement(
+                stream_id, pending[0].payload, pending[1].payload
+            )
+            if disagreement is not None:
+                raise EventContractError(disagreement)
         self._require_unseen_observations(
             stream_id, pending, head_type=head_type, opening=expected_version == 0
         )
@@ -649,6 +781,15 @@ class EventRepository:
                 prepared,
                 expected_version=expected_version,
                 requires_schema=CHANGE_GAP_STREAM_SCHEMA_VERSION,
+            )
+        if is_response_gap_stream(stream_id):
+            # A response gap stream needs schema 7, marked with its events in one transaction,
+            # so a rollback undoes both (ADR 0019).
+            return self._store.append(
+                stream_id,
+                prepared,
+                expected_version=expected_version,
+                requires_schema=RESPONSE_GAP_STREAM_SCHEMA_VERSION,
             )
         return self._store.append(stream_id, prepared, expected_version=expected_version)
 
@@ -730,7 +871,7 @@ class EventRepository:
         record's fingerprint, so a record on any other coverage stream is refused as the
         gap record of another stream before it gets here. A change gap stream is held to it
         too, though `append_batch` writes one only whole and once, so no repeat reaches here
-        through it (ADR 0018).
+        through it (ADR 0018), and so is a response gap stream (ADR 0019).
         """
 
         incoming = [
@@ -747,6 +888,7 @@ class EventRepository:
             or is_failure_stream(stream_id)
             or is_coverage_stream(stream_id)
             or is_change_gap_stream(stream_id)
+            or is_response_gap_stream(stream_id)
         ):
             return
         seen: set[str] = set()
@@ -823,6 +965,11 @@ class EventRepository:
         """
 
         return self._store.holds_stream_with_prefix(f"{CHANGE_GAP_STREAM_PREFIX}/")
+
+    def holds_response_gap_stream(self) -> bool:
+        """Return whether the store holds a response gap stream, without loading any (ADR 0019)."""
+
+        return self._store.holds_stream_with_prefix(f"{RESPONSE_GAP_STREAM_PREFIX}/")
 
     def read_stream(self, stream_id: str) -> tuple[EventRecord, ...]:
         """Read one whole stream in stream-version order, across pages."""
@@ -1873,6 +2020,383 @@ def _change_gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
+def response_gap_stream_id_of(observation: Observation) -> str:
+    """Return the one stream a response gap record is recorded on, `response-gap/<fingerprint>`.
+
+    The writer names a record's stream with it, and `response_gap_record_problem` recomputes a
+    stored record's with it, so both name a record's stream one way (ADR 0019).
+    """
+
+    if not isinstance(observation, Observation):
+        raise TypeError("observation must be an Observation")
+    if (
+        observation.origin is not ObservationOrigin.SYSTEM
+        or observation.source_type not in _RESPONSE_GAP_KINDS
+    ):
+        raise ValueError(_NOT_A_RESPONSE_GAP_RECORD)
+    return response_gap_stream_id(observation.fingerprint)
+
+
+def response_gap_stream_id_of_payload(payload: Mapping[str, Any]) -> str:
+    """Recompute the stream one recorded response gap record names, reading it as replay does."""
+
+    try:
+        observation = Observation.from_canonical_dict(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"the payload is not a readable observation: {exc}") from exc
+    return response_gap_stream_id_of(observation)
+
+
+def response_gap_head_payload(observation: Observation) -> dict[str, str | None]:
+    """Return the `response_gap.recorded` head of one response gap record, read off the record.
+
+    Built from the record, so a head and its record agree by construction; the writer and every
+    test that stages a response gap stream share it.
+    """
+
+    response_gap_stream_id_of(observation)
+    kind = _RESPONSE_GAP_KINDS[observation.source_type]
+    metadata = dict(observation.source_metadata)
+    missing = [key for key in kind.metadata_keys if key not in metadata]
+    if missing:
+        raise ValueError(f"the response gap record's metadata has no {', '.join(missing)}")
+    # Every field is required, so the other kind's fields are written as null.
+    head: dict[str, str | None] = {
+        "kind": kind.kind,
+        **{
+            head_key: None
+            for other in _RESPONSE_GAP_KINDS.values()
+            for head_key, _ in other.record_pairs
+        },
+    }
+    for head_key, record_key in kind.record_pairs:
+        head[head_key] = (
+            observation.context_key if record_key == "context_key" else metadata[record_key]
+        )
+    return head
+
+
+def response_gap_record_problem(
+    stream_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    """Return the audit code and message for a response-gap-stream event its stream does not name.
+
+    A response gap stream id is its record's fingerprint (ADR 0019), so either event on a stream
+    whose id names none is a `responsegap_stream_mismatch`, and so is a record whose fingerprint
+    is another stream's. The record must be one a failed response mints, else a
+    `responsegap_identity_breach`: a system record of the recurrence or the lapsed attestation
+    source type, which a record of any other kind names no such stream by; that kind's tool,
+    parser and record id, its derived id, disposition `open`, severity `unknown`, no source
+    identifier or artifact, and the builder's description; and exactly that kind's metadata
+    keys, with the values `_response_gap_metadata_problem` holds, the title included. Whether
+    the head agrees with its record takes both events, which is
+    `response_gap_record_disagreement`'s business.
+
+    Returns None for an event no response gap stream carries and for a stream of another kind,
+    which are the stream-kind check's business rather than this one's.
+    """
+
+    if not is_response_gap_stream(stream_id) or event_type not in (
+        RESPONSE_GAP_RECORDED,
+        OBSERVATION_RECORDED,
+    ):
+        return None
+    try:
+        response_gap_stream_fingerprint(stream_id)
+    except ValueError as exc:
+        return ("responsegap_stream_mismatch", f"stream {stream_id!r} names no record: {exc}")
+    if event_type == RESPONSE_GAP_RECORDED:
+        return None
+    described = f"{OBSERVATION_RECORDED} on response gap stream {stream_id!r}"
+    # A record of another kind is named as one first, in the words the stream id read gives.
+    problem = _response_gap_record_identity_problem(payload)
+    if problem is None:
+        try:
+            recomputed = response_gap_stream_id_of_payload(payload)
+        except ValueError as exc:
+            problem = str(exc)
+        else:
+            if recomputed != stream_id:
+                return (
+                    "responsegap_stream_mismatch",
+                    f"{described} is the record of stream {recomputed!r}; a response gap "
+                    "stream is named for its record's fingerprint",
+                )
+            problem = _response_gap_metadata_problem(payload)
+    if problem is not None:
+        return (
+            "responsegap_identity_breach",
+            f"{described} is not a response gap record: {problem}",
+        )
+    return None
+
+
+def response_gap_record_disagreement(
+    stream_id: str,
+    head: Mapping[str, Any],
+    observation: Mapping[str, Any],
+) -> str | None:
+    """Return why a response gap head and its record describe two different gaps.
+
+    The writer reads the head off the record (`response_gap_head_payload`), so its kind names the
+    record's source type and every other field restates one field of the record. The repository
+    asks this at append, where the batch carries both events, and so does any reader that reads
+    both. A record of neither kind is the record check's business, so it answers None here.
+    """
+
+    kind = _RESPONSE_GAP_KINDS.get(str(observation.get("source_type")))
+    if kind is None:
+        return None
+    if head.get("kind") != kind.kind:
+        return (
+            f"response gap stream {stream_id!r} records kind {shown(head.get('kind'))} in its "
+            f"{RESPONSE_GAP_RECORDED} and a record of source type {kind.source_type!r}; the two "
+            "describe one gap"
+        )
+    raw = observation.get("source_metadata")
+    metadata: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    for head_key, record_key in kind.record_pairs:
+        recorded = head.get(head_key)
+        described = (
+            observation.get(record_key) if record_key == "context_key" else metadata.get(record_key)
+        )
+        if described != recorded:
+            return (
+                f"response gap stream {stream_id!r} records {head_key} {shown(recorded)} in its "
+                f"{RESPONSE_GAP_RECORDED} and {record_key} {shown(described)} in its record; the "
+                "two describe one gap"
+            )
+    return None
+
+
+def response_gap_head_order_message(stream_id: str) -> str:
+    """Word a response gap stream whose first event is not its head, wherever it is reported."""
+
+    return (
+        f"response gap stream {stream_id!r} does not open with its {RESPONSE_GAP_RECORDED} head; "
+        "a response gap stream is written head first"
+    )
+
+
+def response_gap_write_once_message(stream_id: str) -> str:
+    """Word a response gap stream being written as anything but its one whole batch (ADR 0019)."""
+
+    return (
+        f"response gap stream {stream_id!r} is written once, as its {RESPONSE_GAP_RECORDED} head "
+        "and then its record in one batch; a recorded response gap is append-only history, so "
+        "the first payload stands"
+    )
+
+
+def _response_gap_record_identity_problem(payload: Mapping[str, Any]) -> str | None:
+    """Return the first way one payload's fixed fields are not a response gap record's."""
+
+    kind = _RESPONSE_GAP_KINDS.get(str(payload.get("source_type")))
+    if payload.get("origin") != ObservationOrigin.SYSTEM.value or kind is None:
+        return _NOT_A_RESPONSE_GAP_RECORD
+    if payload.get("source_record_id") != kind.record_id:
+        return f"its source record id is {shown(payload.get('source_record_id'))}"
+    if payload.get("source_tool") != RESPONSE_GAP_SOURCE_TOOL:
+        return f"its source tool is {shown(payload.get('source_tool'))}"
+    parser = (payload.get("parser_name"), payload.get("parser_version"))
+    if parser != (kind.parser_name, kind.parser_version):
+        return f"its parser is {shown(parser[0])} version {shown(parser[1])}"
+    derived = f"obs-{payload.get('fingerprint')}"
+    if payload.get(OBSERVATION_ID_KEY) != derived:
+        return (
+            f"its id is {shown(payload.get(OBSERVATION_ID_KEY))}, not its derived id "
+            f"{shown(derived)}"
+        )
+    # The builder fixes these, and a report reads each of them back from the record.
+    if payload.get("disposition") != ObservationDisposition.OPEN.value:
+        return f"its disposition is {shown(payload.get('disposition'))}"
+    if payload.get("source_severity") != SourceSeverity.UNKNOWN.value:
+        return f"its source severity is {shown(payload.get('source_severity'))}"
+    if payload.get("source_identifiers") != []:
+        return f"its source identifiers are {shown(payload.get('source_identifiers'))}"
+    if payload.get("description") != kind.description:
+        return f"its description is {shown(payload.get('description'))}"
+    # NOTE: The observation contract refuses either artifact field on a system record first,
+    # so on a store path these two answer only a direct call.
+    if payload.get("source_artifact_digest") != "":
+        return f"its source artifact digest is {shown(payload.get('source_artifact_digest'))}"
+    if payload.get("source_artifact_name") != "":
+        return f"its source artifact name is {shown(payload.get('source_artifact_name'))}"
+    return None
+
+
+def _response_gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
+    """Return the first way a response gap record's metadata is not what its writer stores.
+
+    Exactly the kind's keys, then the kind's own values. Every value is compared as text or read
+    through a parser that refuses, so a value written past the repository is named, never
+    raised on. The head restates most of them, which `response_gap_record_disagreement` holds
+    it to.
+    """
+
+    kind = _RESPONSE_GAP_KINDS[str(payload.get("source_type"))]
+    raw = payload.get("source_metadata")
+    if not isinstance(raw, Mapping):
+        return "its metadata is not an object"
+    for key in kind.metadata_keys:
+        if key not in raw:
+            return f"its metadata has no {key!r}"
+    for key in raw:
+        if key not in kind.metadata_keys:
+            return f"its metadata carries {shown(key)}, which a {kind.kind} record does not"
+    if kind.source_type == RECURRENCE_SOURCE_TYPE:
+        return _recurrence_metadata_problem(payload, raw)
+    return _attestation_lapse_metadata_problem(payload, raw)
+
+
+def _recurrence_metadata_problem(payload: Mapping[str, Any], raw: Mapping[str, Any]) -> str | None:
+    """Return the first way a recurrence record's metadata is not what its writer stores.
+
+    The case is a correlation tracking id; the remediation instant is spelled as the writer
+    spells one, and with the case it spells the context key; the recurring detection is the
+    instant the record is observed at, strictly after the remediation; the one evidence id is
+    the recurring observation's id; and the title is the one those values build.
+    """
+
+    tracking_id = raw["recurrence.caseTrackingId"]
+    if not isinstance(tracking_id, str) or TRACKING_ID_PATTERN.fullmatch(tracking_id) is None:
+        return (
+            f"its metadata recurrence.caseTrackingId is {shown(tracking_id)}, not a correlation "
+            "tracking id"
+        )
+    remediated_text = raw["recurrence.remediatedAt"]
+    remediated_at = _canonical_instant(remediated_text)
+    if remediated_at is None:
+        return (
+            f"its metadata recurrence.remediatedAt is {shown(remediated_text)}, not an instant "
+            "as its writer spells one"
+        )
+    keyed = f"{tracking_id}:remediated:{remediated_text}"
+    if payload.get("context_key") != keyed:
+        return (
+            f"its context key is {shown(payload.get('context_key'))}, where its metadata names "
+            f"{shown(keyed)}"
+        )
+    observed = _utc_text(payload.get("observed_at"))
+    detected_text = raw["recurrence.observationDetectedAt"]
+    if observed is None or detected_text != observed:
+        return (
+            f"its metadata recurrence.observationDetectedAt is {shown(detected_text)}, where the "
+            f"record is observed at {shown(observed)}"
+        )
+    if parse_utc(observed) <= remediated_at:
+        return (
+            f"its metadata recurrence.observationDetectedAt is {shown(detected_text)}, which is "
+            f"not after its remediation {shown(remediated_text)}"
+        )
+    observation_id = raw["recurrence.observationId"]
+    if not isinstance(observation_id, str) or not observation_id.strip():
+        return f"its metadata recurrence.observationId is {shown(observation_id)}"
+    if payload.get("evidence_ids") != [observation_id]:
+        return (
+            f"its evidence ids are {shown(payload.get('evidence_ids'))}, where its metadata "
+            f"recurrence.observationId names {shown([observation_id])}"
+        )
+    resource = payload.get("resource")
+    subject = (
+        (resource.get("resource_type"), resource.get("resource_id"))
+        if isinstance(resource, Mapping)
+        else (None, None)
+    )
+    title = RECURRENCE_TITLE.format(
+        tracking_id=tracking_id,
+        remediated_at=remediated_text,
+        resource_type=subject[0],
+        resource_id=subject[1],
+        detected_at=detected_text,
+    )
+    if payload.get("title") != title:
+        return f"its title is {shown(payload.get('title'))}"
+    return None
+
+
+def _attestation_lapse_metadata_problem(
+    payload: Mapping[str, Any], raw: Mapping[str, Any]
+) -> str | None:
+    """Return the first way a lapsed attestation's metadata is not what its writer stores.
+
+    The case is a correlation tracking id, which is also the context key and names the record's
+    resource; the window close is the instant the record is observed at, after the first
+    sighting, which is spelled as the writer spells an instant; the rule is `VER-TFR-EVU` and the
+    force a rule force; the one evidence id names the case; and the title is the one those
+    values build. Whether the close is the rule's deadline from the sighting depends on the
+    class the run read, which the record does not hold.
+    """
+
+    tracking_id = raw["attestation.caseTrackingId"]
+    if not isinstance(tracking_id, str) or TRACKING_ID_PATTERN.fullmatch(tracking_id) is None:
+        return (
+            f"its metadata attestation.caseTrackingId is {shown(tracking_id)}, not a correlation "
+            "tracking id"
+        )
+    if payload.get("context_key") != tracking_id:
+        return (
+            f"its context key is {shown(payload.get('context_key'))}, where its metadata names "
+            f"case {shown(tracking_id)}"
+        )
+    resource = payload.get("resource")
+    subject = (
+        (resource.get("resource_type"), resource.get("resource_id"))
+        if isinstance(resource, Mapping)
+        else (None, None)
+    )
+    expected = (
+        ATTESTATION_LAPSE_RESOURCE_TYPE,
+        f"{ATTESTATION_LAPSE_RESOURCE_PREFIX}{tracking_id}",
+    )
+    if subject != expected:
+        return (
+            f"its resource is {shown(subject[0])}:{shown(subject[1])}, where its metadata names "
+            f"{expected[0]}:{expected[1]}"
+        )
+    observed = _utc_text(payload.get("observed_at"))
+    closed_text = raw["attestation.windowClosedAt"]
+    if observed is None or closed_text != observed:
+        return (
+            f"its metadata attestation.windowClosedAt is {shown(closed_text)}, where the record "
+            f"is observed at {shown(observed)}"
+        )
+    seen_text = raw["attestation.firstSeenAt"]
+    seen_at = _canonical_instant(seen_text)
+    if seen_at is None:
+        return (
+            f"its metadata attestation.firstSeenAt is {shown(seen_text)}, not an instant as its "
+            "writer spells one"
+        )
+    if seen_at >= parse_utc(observed):
+        return (
+            f"its metadata attestation.firstSeenAt is {shown(seen_text)}, which is not before "
+            f"its window close {shown(closed_text)}"
+        )
+    if raw["attestation.rule"] != RESPONSE_GAP_ATTESTATION_RULE:
+        return (
+            f"its metadata attestation.rule is {shown(raw['attestation.rule'])}, not "
+            f"{RESPONSE_GAP_ATTESTATION_RULE!r}"
+        )
+    if raw["attestation.force"] not in _RULE_FORCE_VALUES:
+        return (
+            f"its metadata attestation.force is {shown(raw['attestation.force'])}, not a rule force"
+        )
+    if payload.get("evidence_ids") != [f"case:{tracking_id}"]:
+        return (
+            f"its evidence ids are {shown(payload.get('evidence_ids'))}, where its metadata "
+            f"names case {shown(tracking_id)}"
+        )
+    title = ATTESTATION_LAPSE_TITLE.format(
+        tracking_id=tracking_id, rule=RESPONSE_GAP_ATTESTATION_RULE, first_seen_at=seen_text
+    )
+    if payload.get("title") != title:
+        return f"its title is {shown(payload.get('title'))}"
+    return None
+
+
 def _utc_text(value: Any) -> str | None:
     """Return a stored instant as `iso_utc` spells it, or None for text that is no instant."""
 
@@ -1910,6 +2434,8 @@ def duplicate_observation_message(stream_id: str, observation_id: str) -> str:
         kind = "coverage"
     elif is_change_gap_stream(stream_id):
         kind = "change gap"
+    elif is_response_gap_stream(stream_id):
+        kind = "response gap"
     else:
         kind = "artifact"
     return (
@@ -1988,13 +2514,14 @@ def _require_stream_compatible(
     system observation are held to the failed reading the stream id spells out (ADR 0014),
     a coverage stream's gap record to the fingerprint its stream id spells out (ADR 0015), a
     change event to the change id its stream digests, and a change gap stream's gap record to
-    the fingerprint its stream id spells out (ADR 0018).
+    the fingerprint its stream id spells out (ADR 0018), as a response gap stream's record is
+    (ADR 0019).
     """
 
     if not event_belongs_on_stream(event_type, stream_id):
         kind = stream_kind(stream_id)
         described = (
-            "not an artifact, case, failure, coverage, change, or change gap stream"
+            "not an artifact, case, failure, coverage, change, change gap, or response gap stream"
             if kind is None
             else f"a {kind} stream"
         )
@@ -2012,6 +2539,9 @@ def _require_stream_compatible(
     if breach is None:
         gap_problem = change_gap_record_problem(stream_id, event_type, payload)
         breach = None if gap_problem is None else gap_problem[1]
+    if breach is None:
+        response_problem = response_gap_record_problem(stream_id, event_type, payload)
+        breach = None if response_problem is None else response_problem[1]
     if breach is not None:
         raise EventContractError(breach)
     if event_type != CASE_CREATED:

@@ -84,6 +84,7 @@ from complyroll.events import (
     COVERAGE_RECORDED,
     EVENT_CONTRACTS,
     EVENT_TYPES,
+    RESPONSE_GAP_STREAM_EVENT_TYPES,
     STREAM_EVENT_TYPES,
     EventContractError,
     EventRepository,
@@ -381,7 +382,7 @@ class ChangeGapIdentityConstantTests(unittest.TestCase):
 
     def test_a_change_gap_stream_needs_schema_6_and_this_build_opens_it(self) -> None:
         self.assertEqual(CHANGE_GAP_STREAM_SCHEMA_VERSION, 6)
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, CHANGE_GAP_STREAM_SCHEMA_VERSION)
+        self.assertGreaterEqual(SUPPORTED_SCHEMA_VERSION, CHANGE_GAP_STREAM_SCHEMA_VERSION)
         self.assertLess(CHANGE_STREAM_SCHEMA_VERSION, CHANGE_GAP_STREAM_SCHEMA_VERSION)
         self.assertEqual(sqlite_module._MIGRATION_DESCRIPTIONS[6], SIXTH[1])
 
@@ -629,7 +630,7 @@ class ChangeGapPlacementTests(StoreCase):
         self.assertEqual(STREAM_EVENT_TYPES["changegap"], CHANGE_GAP_STREAM_EVENT_TYPES)
         self.assertEqual(
             set(STREAM_EVENT_TYPES),
-            {"artifact", "case", "failure", "coverage", "change", "changegap"},
+            {"artifact", "case", "failure", "coverage", "change", "changegap", "response-gap"},
         )
 
     def test_the_head_belongs_on_a_change_gap_stream_alone(self) -> None:
@@ -674,7 +675,7 @@ class ChangeGapPlacementTests(StoreCase):
                 expected_version=0,
             )
         self.assertIn(
-            "not an artifact, case, failure, coverage, change, or change gap stream",
+            "not an artifact, case, failure, coverage, change, change gap, or response gap stream",
             str(caught.exception),
         )
 
@@ -685,9 +686,12 @@ class ChangeGapPlacementTests(StoreCase):
         coverage = frozenset(COVERAGE_STREAM_EVENT_TYPES)
         change = frozenset(CHANGE_STREAM_EVENT_TYPES)
         gap = frozenset(CHANGE_GAP_STREAM_EVENT_TYPES)
+        response_gap = frozenset(RESPONSE_GAP_STREAM_EVENT_TYPES)
         published = frozenset(EVENT_TYPES)
         self.assertIsNone(
-            _placement_problem(artifact, case, failure, coverage, change, gap, published)
+            _placement_problem(
+                artifact, case, failure, coverage, change, gap, response_gap, published
+            )
         )
         for label, tables, expected in (
             (
@@ -722,7 +726,7 @@ class ChangeGapPlacementTests(StoreCase):
             ),
         ):
             with self.subTest(shape=label):
-                problem = _placement_problem(*tables, published)
+                problem = _placement_problem(*tables, response_gap, published)
                 self.assertIsNotNone(problem)
                 self.assertIn(expected, str(problem))
 
@@ -1160,14 +1164,14 @@ class ChangeGapSchemaMarkingTests(StoreCase):
             self.addCleanup(reopened.close)
             self.assertEqual(reopened.schema_version, 5)
 
-    def test_a_store_newer_than_schema_6_is_refused(self) -> None:
+    def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         self.record_one_gap()
-        self.damage("PRAGMA user_version = 7")
+        self.damage("PRAGMA user_version = 8")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 7 is newer than supported schema 6", str(caught.exception))
+        self.assertIn("database schema 8 is newer than supported schema 7", str(caught.exception))
 
 
 # *--- Reader ---*

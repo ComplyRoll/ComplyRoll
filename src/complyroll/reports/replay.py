@@ -12,7 +12,9 @@ not read back (ADR 0014, amendment 2026-10-13). A coverage stream reads back as 
 record, and a store holding one compiles gap aware, naming each window no recorded gap
 carries and each recorded gap this run derives no window for (ADR 0015). A recorded change
 feeds the change block when the run has an inventory, and a change gap stream reads back as
-its gap record and makes the block change-gap aware the same way (ADR 0018).
+its gap record and makes the block change-gap aware the same way (ADR 0018). A response gap
+stream reads back as its record, and a store holding one names each response gap this run
+derives that no record carries and each recorded one this run cannot rebuild (ADR 0019).
 
 Detection-time attestations are per case here rather than one flag on the command line.
 An attestation still applies only to a group where no observation declares a source
@@ -146,12 +148,18 @@ def compile_record_set_from_history(
         fold_all_cases,
         read_stored_changes,
         rehydrate_observations,
+        response_gap_history,
     )
 
     history = artifact_history(repository)
     artifacts = tuple(_compiled_artifact(record) for record in history.current)
     observations = rehydrate_observations(repository)
     cases = fold_all_cases(repository)
+    # Aware only once `cases response-gaps` has recorded one, so every other store reads as
+    # it did before (ADR 0019, as ADR 0015's amendment of 2026-11-12 makes a coverage stream do).
+    gap_history = (
+        response_gap_history(repository, cases) if repository.holds_response_gap_stream() else None
+    )
     return compile_record_set(
         artifacts=artifacts,
         observations=observations,
@@ -165,6 +173,7 @@ def compile_record_set_from_history(
         # a change gap stream holds the changes its block is derived from.
         change_gap_aware=(options.inventory is not None and repository.holds_change_gap_stream()),
         remediated_at=remediation_instants(cases),
+        response_gap_history=gap_history,
     )
 
 

@@ -742,7 +742,9 @@ class GoldenRegistryTests(unittest.TestCase):
         # reproduces it. The change gap golden is `test_change_gap_report`'s, cut with its own
         # flag.
         self.assertEqual(
-            reports - set(GAP_GOLDENS) - {"vdt-changes-replay", "vdt-change-gaps"},
+            reports
+            - set(GAP_GOLDENS)
+            - {"vdt-changes-replay", "vdt-change-gaps", "historical-response-gaps"},
             {*runs, *compiled},
         )
         self.assertLessEqual(set(GAP_GOLDENS), reports)

@@ -136,6 +136,20 @@ class AttestationLapse:
 
 
 @dataclass(frozen=True, slots=True)
+class ResponseGapHistory:
+    """What a store holds that a response gap reads (ADR 0019).
+
+    `cases` are the folded cases, `ingested_at` maps every recorded artifact observation id to
+    the ingest `--as-of` that recorded it, and `remediated_at` maps each case recorded remediated
+    to its remediation instant. No wall-clock store instant is among them.
+    """
+
+    cases: Sequence[CaseTiming]
+    ingested_at: Mapping[str, datetime]
+    remediated_at: Mapping[str, datetime]
+
+
+@dataclass(frozen=True, slots=True)
 class RemediationRecurrence:
     """The open artifact observations of one remediated record its remediation cannot explain.
 
@@ -384,6 +398,111 @@ def attestation_lapse_resource(tracking_id: str) -> ResourceRef:
     )
 
 
+def derive_response_gaps(
+    groups: Sequence[VulnerabilityGroup],
+    history: ResponseGapHistory,
+    policy: SelectedPolicy,
+    as_of: datetime,
+    *,
+    ingested_at: datetime,
+) -> tuple[Observation, ...]:
+    """Return every response gap a store's state shows at `as_of`: recurrences, then lapses.
+
+    `groups` are the report's own, every current open observation linked or not, so a run
+    agrees with the report's warning before `cases correlate` links what came back. Each
+    record is ingested at `ingested_at`, which reaches neither its id nor a report.
+    """
+
+    if not isinstance(history, ResponseGapHistory):
+        raise TypeError("history must be a ResponseGapHistory")
+    records = [
+        record
+        for recurrence in remediation_recurrences(groups, history.remediated_at)
+        for record in recurrence_observations(recurrence, ingested_at=ingested_at)
+    ]
+    records.extend(
+        attestation_lapse_observation(lapse, ingested_at=ingested_at)
+        for lapse in attestation_lapses(history.cases, history.ingested_at, policy, as_of)
+    )
+    return tuple(records)
+
+
+def rebuilt_recurrence(
+    record: Observation, groups: Sequence[VulnerabilityGroup]
+) -> Observation | None:
+    """Rebuild a recorded recurrence from its own remediation instant, or None for no backing.
+
+    The rebuild reads the record's case and remediation instant, never the case's current ones:
+    a recorded failure of a remediation is a permanent fact, so a later re-evaluation does not
+    unmake it (ADR 0015 Decision 40, applied here). It is the earliest current open artifact
+    observation of that case on the record's resource detected after that instant.
+    """
+
+    tracking_id = record.metadata_value("recurrence.caseTrackingId")
+    remediated_at = datetime.fromisoformat(record.metadata_value("recurrence.remediatedAt"))
+    group = next((item for item in groups if item.tracking_id == tracking_id), None)
+    if group is None:
+        return None
+    found = remediation_recurrence(group, remediated_at)
+    if found is None:
+        return None
+    backing = [item for item in found.recurring if item.resource == record.resource]
+    if not backing:
+        return None
+    return _recurrence(backing[0], tracking_id, remediated_at, record.ingested_at)
+
+
+def rebuilt_lapse(
+    record: Observation, history: ResponseGapHistory, policy: SelectedPolicy
+) -> Observation | None:
+    """Rebuild a recorded lapse from its case's first sighting under this run's profile.
+
+    A lapse recorded by a run that found the case untimed is permanent, so the rebuild does not
+    ask whether the case is timed now: it asks only whether the case's first sighting and this
+    run's window close name the recorded instant. None when the case has no first sighting.
+    """
+
+    tracking_id = record.metadata_value("attestation.caseTrackingId")
+    case = next((item for item in history.cases if item.tracking_id == tracking_id), None)
+    seen = None if case is None else first_sighting(case, history.ingested_at)
+    if seen is None:
+        return None
+    deadline = policy.deadline_for_rule(ATTESTATION_LAPSE_RULE, seen)
+    lapse = AttestationLapse(
+        tracking_id=tracking_id,
+        first_seen_at=seen,
+        window_closed_at=deadline.due_at.astimezone(UTC),
+        force=deadline.force.value,
+    )
+    return attestation_lapse_observation(lapse, ingested_at=record.ingested_at)
+
+
+def lapse_disproof(record: Observation, history: ResponseGapHistory) -> tuple[str, datetime] | None:
+    """Return a linked observation that timed a recorded lapse's case inside its window.
+
+    The window is the record's own, closed at its observed instant. A linked observation that
+    declares a source timestamp and that the store recorded at or before that close gave the
+    case a detection time in time, so the lapse is disproved; the earliest such observation is
+    returned with the instant it was recorded. A later one does not disprove it (F1).
+    """
+
+    tracking_id = record.metadata_value("attestation.caseTrackingId")
+    closed_at = record.observed_at
+    case = next((item for item in history.cases if item.tracking_id == tracking_id), None)
+    if case is None or closed_at is None:
+        return None
+    timed = sorted(
+        (history.ingested_at[link.observation_id], link.observation_id)
+        for link in case.links
+        if link.observed_at is not None and link.observation_id in history.ingested_at
+    )
+    early = [(seen, observation_id) for seen, observation_id in timed if seen <= closed_at]
+    if not early:
+        return None
+    seen, observation_id = early[0]
+    return observation_id, seen
+
+
 # *--- Helper Functions ---*
 
 
@@ -517,13 +636,18 @@ __all__ = [
     "RECURRENCE_TITLE",
     "RESPONSE_GAP_RULE",
     "RemediationRecurrence",
+    "ResponseGapHistory",
     "attestation_lapse",
     "attestation_lapse_observation",
     "attestation_lapse_resource",
     "attestation_lapses",
+    "derive_response_gaps",
     "first_sighting",
+    "lapse_disproof",
     "recurrence_case_tracking_id",
     "recurrence_context_key",
+    "rebuilt_lapse",
+    "rebuilt_recurrence",
     "recurrence_observations",
     "remediation_recurrence",
     "remediation_recurrences",

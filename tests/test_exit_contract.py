@@ -104,7 +104,7 @@ SYSTEM_RUNS: dict[str, Sequence[str]] = {
 #: The report goldens compiled through the library, which no command-line run cuts.
 LIBRARY_GOLDENS = {"vdt-sarif", "vdt-hdf", "vdt-cyclonedx", "historical-cyclonedx"}
 #: The goldens cut from a store rather than from artifacts; each has its own reproduction.
-STORE_GOLDENS = {"vdt-changes-replay"}
+STORE_GOLDENS = {"vdt-changes-replay", "historical-response-gaps"}
 #: Each stateless report command's golden run, whose artifacts are argv[2:5].
 COMMANDS = (
     ("vdt", REPORT_ARGUMENTS),

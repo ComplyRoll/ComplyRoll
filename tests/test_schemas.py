@@ -55,6 +55,7 @@ COMPILED_GOLDENS = (
     (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-failed.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-coverage-gaps.json"),
+    (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-response-gaps.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-cyclonedx.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-fixtures.json"),
 )

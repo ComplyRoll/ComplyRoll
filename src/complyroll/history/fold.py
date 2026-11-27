@@ -82,6 +82,7 @@ from complyroll.reports.changes_input import Change, ChangeKind, ChangeSource
 from complyroll.reports.checks import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
+from complyroll.reports.response_gaps import ResponseGapHistory
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 
@@ -432,6 +433,40 @@ def rehydrate_observations(repository: EventRepository) -> tuple[Observation, ..
     """
 
     return tuple(observation for _, observation in rehydrate_observation_records(repository))
+
+
+def observation_ingest_instants(repository: EventRepository) -> dict[str, datetime]:
+    """Map every artifact observation the store recorded to the ingest instant that recorded it.
+
+    Every artifact stream is read, current or superseded, because a case's first sighting is the
+    first time the store saw any of its evidence (ADR 0019). The instant is the observation's own
+    `ingested_at`, the ingest `--as-of` an operator set, never the store's wall-clock recording
+    time. An id recorded twice keeps its earliest instant.
+    """
+
+    instants: dict[str, datetime] = {}
+    for view in _read_artifact_streams(repository):
+        for record in view.observations:
+            observation_id = str(record.payload.get(OBSERVATION_ID_KEY))
+            ingested_at = datetime.fromisoformat(str(record.payload.get("ingested_at")))
+            known = instants.get(observation_id)
+            if known is None or ingested_at < known:
+                instants[observation_id] = ingested_at
+    return instants
+
+
+def response_gap_history(
+    repository: EventRepository, cases: Sequence[CaseState]
+) -> ResponseGapHistory:
+    """Return what the store holds that a response gap reads, from already-folded cases."""
+
+    return ResponseGapHistory(
+        cases=tuple(cases),
+        ingested_at=observation_ingest_instants(repository),
+        remediated_at={
+            case.tracking_id: case.remediated_at for case in cases if case.remediated_at is not None
+        },
+    )
 
 
 def rehydrate_observation_records(
@@ -3059,7 +3094,9 @@ __all__ = [
     "history_entries",
     "read_stored_changes",
     "reading_elsewhere",
+    "observation_ingest_instants",
     "rehydrate_observations",
+    "response_gap_history",
     "summarize",
     "superseded_artifact_records",
 ]

@@ -39,6 +39,7 @@ from complyroll.events import (
     FAILURE_HELD,
     MAX_BATCH_EVENTS,
     OBSERVATION_ID_KEY,
+    RESPONSE_GAP_RECORDED,
     UNDISPOSED_STATUSES,
     EventContractError,
     EventMetadata,
@@ -58,6 +59,8 @@ from complyroll.events import (
     is_case_stream,
     iso_utc,
     parse_utc,
+    response_gap_head_payload,
+    response_gap_stream_id_of,
 )
 from complyroll.events.contracts import TRACKING_ID_PATTERN
 from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
@@ -75,6 +78,7 @@ from complyroll.reports.records import (
     coverage_diagnostics,
     derive_report_changes,
     derive_report_coverage,
+    derive_report_response_gaps,
 )
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
@@ -98,9 +102,11 @@ from .fold import (
     _failure_stream_problem,
     _stream_tracking_id,
     artifact_history,
+    fold_all_cases,
     fold_case_records,
     read_stored_changes,
     rehydrate_observations,
+    response_gap_history,
 )
 from .order import EvaluationOrderError, case_order_diagnostic, current_groups
 
@@ -231,6 +237,20 @@ class ChangeGapOutcome:
     recorded: tuple[Observation, ...]
     already_recorded: tuple[Observation, ...]
     diagnostics: tuple[ReportDiagnostic, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseGapOutcome:
+    """What one `record_response_gaps` call did (ADR 0019).
+
+    `recorded` is each response gap this call wrote and `already_recorded` each one whose stream
+    the store already held, both in derivation order: recurrences by case and then by detection,
+    then lapses by case. A gap already recorded keeps the payload its stream was first written
+    with, so its entry here is this run's rebuild of it, under the same id.
+    """
+
+    recorded: tuple[Observation, ...]
+    already_recorded: tuple[Observation, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -955,6 +975,82 @@ def _record_change_gaps(
         already_recorded=tuple(already),
         diagnostics=changes.warnings,
     )
+
+
+def record_response_gaps(
+    repository: EventRepository,
+    *,
+    profile: CertificationProfile,
+    as_of: datetime,
+    metadata: EventMetadata,
+) -> ResponseGapOutcome:
+    """Record each response gap the store's state shows at `as_of`, once and atomically.
+
+    The gaps are derived as a report from this store reads them (ADR 0019): a remediation that
+    did not hold, from the report's own grouping of every current open observation and each
+    case's remediation instant, and a lapsed attestation, from each case's links, attestation
+    and first sighting under the profile's `VER-TFR-EVU` window. Each is ingested at `as_of`,
+    which reaches neither its id nor a report. A record's stream is named by the record, so the
+    stream id is the idempotence key: a stream already holding its head and record is left
+    alone and its first payload stands. A stream holding anything else is refused, not resumed.
+    A new stream is written head first, as one batch at version 0. A lapse is recorded only by
+    a run that finds its case untimed, so an attestation made before any run prevents it.
+
+    The run is one store transaction, so a later failure rolls it back; a caller that supplies
+    the transaction and catches the error owns that rollback.
+    """
+
+    if not isinstance(profile, CertificationProfile):
+        raise TypeError("profile must be a CertificationProfile")
+    _require_aware(as_of, "as_of")
+    with _transaction_scope(repository):
+        return _record_response_gaps(repository, profile=profile, as_of=as_of, metadata=metadata)
+
+
+def _record_response_gaps(
+    repository: EventRepository,
+    *,
+    profile: CertificationProfile,
+    as_of: datetime,
+    metadata: EventMetadata,
+) -> ResponseGapOutcome:
+    """Derive the gaps and write the streams the store lacks, inside the transaction."""
+
+    observations = rehydrate_observations(repository)
+    cases = fold_all_cases(repository)
+    gaps = derive_report_response_gaps(
+        observations, response_gap_history(repository, cases), profile, as_of
+    )
+    recorded: list[Observation] = []
+    already: list[Observation] = []
+    # Every stream is read and judged before the first append, so a refusal writes nothing.
+    for gap in gaps:
+        stream_id = response_gap_stream_id_of(gap)
+        existing = repository.read_stream(stream_id)
+        if not existing:
+            recorded.append(gap)
+            continue
+        held = [record.event_type for record in existing]
+        # NOTE: Unreachable today: `_read_response_gap_streams`, run by `rehydrate_observations`
+        # above, refuses every such shape first. The check stays so this writer refuses a stream
+        # it would resume on its own, whatever that reader comes to accept.
+        if held != [RESPONSE_GAP_RECORDED, OBSERVATION_RECORDED]:
+            raise HistoryError(
+                f"response gap stream {stream_id!r} holds {len(held)} event(s) and not its "
+                f"{RESPONSE_GAP_RECORDED} head and then its record; a response gap stream is "
+                "written whole, so it is refused rather than resumed"
+            )
+        already.append(gap)
+    for gap in recorded:
+        repository.append_batch(
+            response_gap_stream_id_of(gap),
+            (
+                _pending(RESPONSE_GAP_RECORDED, response_gap_head_payload(gap), as_of, metadata),
+                _pending(OBSERVATION_RECORDED, gap.to_canonical_dict(), as_of, metadata),
+            ),
+            expected_version=0,
+        )
+    return ResponseGapOutcome(recorded=tuple(recorded), already_recorded=tuple(already))
 
 
 def record_changes(
@@ -1999,6 +2095,7 @@ __all__ = [
     "EvaluationOutcome",
     "FailureOutcome",
     "IngestOutcome",
+    "ResponseGapOutcome",
     "apply_evaluations",
     "attest_detection",
     "content_digest",
@@ -2008,4 +2105,5 @@ __all__ = [
     "record_coverage_gaps",
     "record_failure",
     "record_ingest",
+    "record_response_gaps",
 ]

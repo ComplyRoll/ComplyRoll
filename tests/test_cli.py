@@ -1355,6 +1355,8 @@ class RecordFailedImportsTests(unittest.TestCase):
             "vdt-coverage-gaps",
             "historical-coverage-gaps",
             "vdt-change-gaps",
+            # Cut from a store by `cases response-gaps`; `test_response_gap_history` reproduces it.
+            "historical-response-gaps",
         }
         self.assertEqual(reports - system_goldens, {*runs, *compiled})
         for name, argv in runs.items():

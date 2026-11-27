@@ -104,7 +104,12 @@ EVALUATION: dict[str, Any] = {
 }
 #: The stateless golden pair carrying the warning, and every golden that does.
 WARNING_GOLDEN = "vdt-recurrence-warning"
-WARNING_GOLDENS = (f"{WARNING_GOLDEN}.json", f"{WARNING_GOLDEN}.md")
+WARNING_GOLDENS = (
+    f"{WARNING_GOLDEN}.json",
+    f"{WARNING_GOLDEN}.md",
+    "historical-response-gaps.json",
+    "historical-response-gaps.md",
+)
 #: When the fold tests ingest both scans, before any evaluation.
 INGEST_TEXT = "2026-09-13T00:00:00Z"
 #: The dispositions that are not a remediation, each with the fields its consistency needs.

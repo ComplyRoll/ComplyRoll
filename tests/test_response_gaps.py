@@ -19,10 +19,12 @@ from typing import Any
 
 from test_coverage import observation
 from test_coverage_gap_evaluations import system_observation
-from test_reports import options
+from test_reports import AS_OF, options
 
 from complyroll.correlation import group_open_observations
+from complyroll.events.contracts import TRACKING_ID_PATTERN
 from complyroll.models import (
+    RESERVED_SOURCE_TYPE_PREFIX,
     Observation,
     ObservationDisposition,
     ObservationOrigin,
@@ -36,8 +38,22 @@ from complyroll.reports import (
     parse_evaluations,
     project_vdt,
 )
+from complyroll.reports import checks as checks_module
 from complyroll.reports import records as records_module
-from complyroll.reports.response_gaps import remediation_recurrence
+from complyroll.reports import response_gaps as response_gaps_module
+from complyroll.reports.response_gaps import (
+    RECURRENCE_DESCRIPTION,
+    RECURRENCE_METADATA_KEYS,
+    RECURRENCE_PARSER_NAME,
+    RECURRENCE_PARSER_VERSION,
+    RECURRENCE_RECORD_ID,
+    RECURRENCE_SOURCE_TYPE,
+    recurrence_case_tracking_id,
+    recurrence_context_key,
+    recurrence_observations,
+    remediation_recurrence,
+    remediation_recurrences,
+)
 
 # *--- Fixtures ---*
 
@@ -244,6 +260,221 @@ class RemediationRecurrenceTests(unittest.TestCase):
     def test_a_non_group_is_refused(self) -> None:
         with self.assertRaises(TypeError):
             remediation_recurrence(object(), REMEDIATED_AT)  # type: ignore[arg-type]
+
+
+# *--- Recurrence Identity ---*
+
+
+def recurrence_records(
+    *found: Observation, remediated_at: datetime = REMEDIATED_AT, ingested_at: datetime = AS_OF
+) -> tuple[Observation, ...]:
+    """Return the records one remediated group's recurrence mints."""
+    (group,) = group_open_observations(found)
+    (recurrence,) = remediation_recurrences((group,), {group.tracking_id: remediated_at})
+    return recurrence_observations(recurrence, ingested_at=ingested_at)
+
+
+class RecurrenceIdentityTests(unittest.TestCase):
+    """One system record per failed remediation and resource, named by its inputs (D4, F11)."""
+
+    def test_the_constants_are_the_recorded_decision(self) -> None:
+        self.assertEqual(RECURRENCE_SOURCE_TYPE, "complyroll.recurrence")
+        self.assertEqual(RECURRENCE_RECORD_ID, "remediation-recurrence")
+        self.assertEqual(RECURRENCE_PARSER_NAME, "complyroll.recurrence")
+        self.assertEqual(RECURRENCE_PARSER_VERSION, "1")
+        self.assertTrue(RECURRENCE_SOURCE_TYPE.startswith(RESERVED_SOURCE_TYPE_PREFIX))
+
+    def test_the_tracking_id_rule_is_the_event_layers(self) -> None:
+        self.assertEqual(response_gaps_module._TRACKING_ID.pattern, "case-[0-9a-f]{16}")
+        self.assertTrue(TRACKING_ID_PATTERN.pattern.startswith("^case-[0-9a-f]{16}"))
+
+    def test_one_record_per_resource_names_its_earliest_recurring_detection(self) -> None:
+        found = (
+            fail("lab-01", FIRST_SEEN),
+            fail("lab-01", LATER_AT),
+            fail("lab-01", BACK_AT),
+            fail("lab-02", LATER_AT),
+        )
+        records = recurrence_records(*found)
+        self.assertEqual(
+            [(item.resource.resource_id, item.observed_at) for item in records],
+            [("lab-01", BACK_AT), ("lab-02", LATER_AT)],
+        )
+        case_id = tracking_id(*found)
+        first = records[0]
+        self.assertEqual(first.origin, ObservationOrigin.SYSTEM)
+        self.assertEqual(first.source_type, RECURRENCE_SOURCE_TYPE)
+        self.assertEqual(first.source_tool, "complyroll")
+        self.assertEqual(first.source_record_id, RECURRENCE_RECORD_ID)
+        self.assertEqual(first.disposition, ObservationDisposition.OPEN)
+        self.assertEqual(first.source_severity.value, "unknown")
+        self.assertEqual(first.source_identifiers, ())
+        self.assertEqual(first.source_artifact_name, "")
+        self.assertEqual(first.source_artifact_digest, "")
+        self.assertEqual(first.context_key, f"{case_id}:remediated:{REMEDIATED_TEXT}")
+        self.assertEqual(first.observation_id, first.derived_observation_id)
+        self.assertEqual(first.evidence_ids, (found[2].observation_id,))
+        self.assertEqual(
+            dict(first.source_metadata),
+            {
+                "recurrence.caseTrackingId": case_id,
+                "recurrence.observationDetectedAt": "2026-08-10T09:00:00Z",
+                "recurrence.observationId": found[2].observation_id,
+                "recurrence.remediatedAt": REMEDIATED_TEXT,
+            },
+        )
+        self.assertEqual(tuple(sorted(dict(first.source_metadata))), RECURRENCE_METADATA_KEYS)
+        self.assertEqual(
+            first.title,
+            f"remediation of {case_id} recorded {REMEDIATED_TEXT} did not hold: host:lab-01 "
+            "detected again 2026-08-10T09:00:00Z (VDR-CSO-FAV)",
+        )
+        self.assertEqual(first.description, RECURRENCE_DESCRIPTION)
+
+    def test_two_detections_at_one_instant_mint_one_record_for_the_lowest_id(self) -> None:
+        low = replace(fail("lab-01", BACK_AT), observation_id="obs/a-low")
+        high = replace(fail("lab-01", BACK_AT), observation_id="obs/z-high")
+        (record,) = recurrence_records(fail("lab-01", FIRST_SEEN), high, low)
+        self.assertEqual(record.metadata_value("recurrence.observationId"), "obs/a-low")
+
+    def test_the_id_holds_across_ingest_time_and_the_observation_id(self) -> None:
+        (built,) = recurrence_records(fail("lab-01", FIRST_SEEN), fail("lab-01", BACK_AT))
+        (later,) = recurrence_records(
+            fail("lab-01", FIRST_SEEN),
+            replace(fail("lab-01", BACK_AT), observation_id="obs/reread-by-a-newer-parser"),
+            ingested_at=datetime(2026, 9, 30, tzinfo=UTC),
+        )
+        self.assertEqual(built.observation_id, later.observation_id)
+        self.assertNotEqual(built.evidence_ids, later.evidence_ids)
+
+    def test_a_second_failed_remediation_is_a_second_case(self) -> None:
+        found = (fail("lab-01", FIRST_SEEN), fail("lab-01", BACK_AT), fail("lab-01", LATER_AT))
+        first = recurrence_records(*found)
+        second = recurrence_records(*found, remediated_at=datetime(2026, 8, 11, tzinfo=UTC))
+        cases = group_open_observations((*first, *second))
+        self.assertEqual(len(cases), 2)
+        self.assertEqual([len(case.observations) for case in cases], [1, 1])
+
+    def test_every_resource_of_one_failed_remediation_is_one_case(self) -> None:
+        records = recurrence_records(
+            fail("lab-01", FIRST_SEEN), fail("lab-01", BACK_AT), fail("lab-02", LATER_AT)
+        )
+        (case,) = group_open_observations(records)
+        self.assertEqual([item.resource_id for item in case.resources], ["lab-01", "lab-02"])
+        self.assertEqual(case.earliest_observed_at, BACK_AT)
+
+    def test_the_identity_names_the_correlation_id_not_a_provider_override(self) -> None:
+        found = (fail("lab-01", FIRST_SEEN), fail("lab-01", BACK_AT))
+        record_set = compile_of(found, trackingId="PROVIDER-0100")
+        (warning,) = recurrences(record_set)
+        case_id = tracking_id(*found)
+        self.assertTrue(warning.message.startswith(f"PROVIDER-0100 ({case_id}) is recorded"))
+        (record,) = recurrence_records(*found)
+        self.assertEqual(recurrence_case_tracking_id(record.context_key), case_id)
+
+    def test_an_untimed_member_and_the_remediation_instant_are_never_recorded(self) -> None:
+        (record,) = recurrence_records(
+            fail("lab-01", FIRST_SEEN),
+            fail("lab-02", None),
+            fail("lab-03", REMEDIATED_AT),
+            fail("lab-04", BACK_AT),
+        )
+        self.assertEqual(record.resource.resource_id, "lab-04")
+
+    def test_only_a_group_with_a_remediation_instant_is_read(self) -> None:
+        groups = group_open_observations(
+            (
+                fail("lab-01", FIRST_SEEN),
+                fail("lab-01", BACK_AT),
+                fail("lab-01", BACK_AT, record="CVE-2099-0200"),
+            )
+        )
+        remediated = {groups[0].tracking_id: REMEDIATED_AT}
+        (found,) = remediation_recurrences(groups, remediated)
+        self.assertEqual(found.tracking_id, groups[0].tracking_id)
+        self.assertEqual(remediation_recurrences(groups, {}), ())
+
+    def test_the_context_key_reads_back_and_refuses_other_keys(self) -> None:
+        key = recurrence_context_key("case-0123456789abcdef", REMEDIATED_AT)
+        self.assertEqual(key, f"case-0123456789abcdef:remediated:{REMEDIATED_TEXT}")
+        self.assertEqual(recurrence_case_tracking_id(key), "case-0123456789abcdef")
+        for other in (
+            "synthetic",
+            "case-0123456789abcdef",
+            "case-0123456789abcdef:remediated:",
+            "case-0123456789ABCDEF:remediated:x",
+            "case-0123456789abcdef:accepted:x",
+            "VDR-CSO-DAC:change:CHG-1",
+        ):
+            with self.subTest(key=other):
+                self.assertIsNone(recurrence_case_tracking_id(other))
+        with self.assertRaises(ValueError):
+            recurrence_context_key("PROVIDER-0100", REMEDIATED_AT)
+        with self.assertRaises(ValueError):
+            recurrence_context_key("case-0123456789abcdef", datetime(2026, 8, 5))
+
+    def test_the_builder_refuses_what_is_not_a_recurrence(self) -> None:
+        (group,) = group_open_observations((fail("lab-01", BACK_AT),))
+        for recurring, why in (
+            (fail("lab-01", REMEDIATED_AT), "strictly after"),
+            (fail("lab-01", None), "untimed"),
+            (replace(fail("lab-01", BACK_AT), disposition=ObservationDisposition.PASS), "open"),
+        ):
+            with self.subTest(why=why):
+                found = response_gaps_module.RemediationRecurrence(
+                    tracking_id=group.tracking_id,
+                    remediated_at=REMEDIATED_AT,
+                    recurring=(recurring,),
+                    untimed=(),
+                )
+                with self.assertRaisesRegex(ValueError, why):
+                    recurrence_observations(found, ingested_at=AS_OF)
+
+
+class RecurrenceRecordTests(unittest.TestCase):
+    """A recurrence compiles as a system record of its own kind (D6)."""
+
+    def test_its_case_is_detected_at_the_earliest_recurring_detection(self) -> None:
+        records = recurrence_records(
+            fail("lab-01", FIRST_SEEN), fail("lab-01", LATER_AT), fail("lab-02", BACK_AT)
+        )
+        record_set = compile_record_set(
+            artifacts=(),
+            observations=records,
+            ingest_diagnostics=(),
+            evaluations_by_tracking_id={},
+            attestation=DetectionAttestation(),
+            options=options(detected_at=None),
+        )
+        (record,) = record_set.records
+        self.assertEqual(record.detected_at, BACK_AT)
+        self.assertEqual(record.detected_at_source, "system")
+        self.assertEqual([item.rule_id for item in record.deadlines], ["VER-TFR-EVU"])
+        markdown = project_vdt(record_set).to_markdown()
+        self.assertIn(
+            "for a remediation recurrence, from the instant its recurring observation was detected",
+            markdown,
+        )
+
+    def test_the_kind_tables_name_it(self) -> None:
+        self.assertEqual(
+            checks_module.system_record_kind(RECURRENCE_SOURCE_TYPE), "remediation recurrence"
+        )
+        diagnostic = checks_module.evaluation_order_diagnostic(
+            tracking_id="case-0000000000000000",
+            location="here",
+            detected_at=BACK_AT,
+            detected_source="system",
+            completed_at=REMEDIATED_AT,
+            source_type=RECURRENCE_SOURCE_TYPE,
+        )
+        assert diagnostic is not None
+        self.assertTrue(
+            diagnostic.message.endswith(
+                "; a remediation recurrence is detected when its recurring observation was "
+                "detected, so evaluate it at or after that instant, or correct completedAt"
+            )
+        )
 
 
 # *--- Golden Census ---*

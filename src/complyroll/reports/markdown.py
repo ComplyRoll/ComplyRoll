@@ -43,6 +43,7 @@ from .model import (
     iso,
 )
 from .projection import attestation_groups
+from .response_gaps import RECURRENCE_SOURCE_TYPE
 
 # *--- Configuration ---*
 
@@ -245,8 +246,8 @@ def _system_detection_sentence(source_types: set[str]) -> str:
     """Say what timed each kind of system record; a failure-only run reads as it always has."""
 
     clauses = []
-    # Any type that is not a gap reads as a failure, as the other two tables fall back.
-    if source_types - {COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE}:
+    # Any type without a clause of its own reads as a failure, as the other two tables fall back.
+    if source_types - {COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE, RECURRENCE_SOURCE_TYPE}:
         clauses.append(
             "for a detection process failure, from the instant ComplyRoll or the scanner "
             "recorded it"
@@ -255,6 +256,10 @@ def _system_detection_sentence(source_types: set[str]) -> str:
         clauses.append("for a coverage gap, from the instant its coverage window closed")
     if CHANGE_GAP_SOURCE_TYPE in source_types:
         clauses.append("for a change detection gap, from the instant its change window closed")
+    if RECURRENCE_SOURCE_TYPE in source_types:
+        clauses.append(
+            "for a remediation recurrence, from the instant its recurring observation was detected"
+        )
     return (
         "Every reported vulnerability carried a detection time from its source artifact or, "
         + " and, ".join(clauses)

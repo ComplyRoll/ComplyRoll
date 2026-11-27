@@ -23,6 +23,7 @@ from .change_gaps import CHANGE_GAP_SOURCE_TYPE
 from .evaluations import EvaluationInput
 from .gaps import COVERAGE_GAP_SOURCE_TYPE
 from .model import DetectionAttestation, ReportDiagnostic, iso
+from .response_gaps import RECURRENCE_SOURCE_TYPE
 
 # *--- Configuration ---*
 
@@ -38,6 +39,7 @@ _SYSTEM_RECORD_KINDS = {
     DETECTION_FAILURE_SOURCE_TYPE: "detection process failure",
     COVERAGE_GAP_SOURCE_TYPE: "coverage gap",
     CHANGE_GAP_SOURCE_TYPE: "change detection gap",
+    RECURRENCE_SOURCE_TYPE: "remediation recurrence",
 }
 
 
@@ -223,6 +225,10 @@ _SYSTEM_ORDER_REMEDIES = {
     CHANGE_GAP_SOURCE_TYPE: (
         "a change detection gap is detected when its window closed, so evaluate it at or "
         "after that instant, or correct completedAt"
+    ),
+    RECURRENCE_SOURCE_TYPE: (
+        "a remediation recurrence is detected when its recurring observation was detected, so "
+        "evaluate it at or after that instant, or correct completedAt"
     ),
 }
 

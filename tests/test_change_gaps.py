@@ -850,9 +850,10 @@ class ChangeGapReservedTypeTests(unittest.TestCase):
     """The walk finds the third reserved type, and each table names it as itself."""
 
     def test_the_walk_finds_three_reserved_types(self) -> None:
-        self.assertEqual(
-            minted_reserved_types(),
+        # The two response gap types of ADR 0019 came later; `test_response_gaps` names all five.
+        self.assertLessEqual(
             {DETECTION_FAILURE_SOURCE_TYPE, COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE},
+            minted_reserved_types(),
         )
 
     def test_the_change_gap_has_a_kind_a_remedy_and_a_sentence(self) -> None:

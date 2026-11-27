@@ -14,27 +14,41 @@ import unittest
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
+from test_cli import (
+    KEV_ARGUMENTS,
+    KEV_AS_OF,
+    KEV_PERIOD,
+    RECURRENCE_ARGUMENTS,
+    RECURRENCE_ARTIFACTS,
+    RECURRENCE_EVALUATIONS,
+    PersistedStoreTestCase,
+    run,
+)
 from test_coverage import observation
 from test_coverage_gap_evaluations import system_observation
-from test_reports import AS_OF, options
+from test_reports import AS_OF, EXAMPLES, GOLDEN, options
 
 from complyroll.correlation import group_open_observations
+from complyroll.events import EventRepository
 from complyroll.events.contracts import TRACKING_ID_PATTERN
+from complyroll.history import CaseState, fold_all_cases
 from complyroll.models import (
     RESERVED_SOURCE_TYPE_PREFIX,
     Observation,
     ObservationDisposition,
     ObservationOrigin,
 )
+from complyroll.policy import CertificationClass
 from complyroll.reports import (
     REPORT_DIAGNOSTIC_CODES,
     CompiledRecordSet,
     DetectionAttestation,
     ReportDiagnostic,
+    ReportOptions,
     compile_record_set,
+    compile_record_set_from_history,
     parse_evaluations,
     project_vdt,
 )
@@ -54,6 +68,8 @@ from complyroll.reports.response_gaps import (
     remediation_recurrence,
     remediation_recurrences,
 )
+from complyroll.schemas import ReportSchema, validate_bundled_report_bytes
+from complyroll.store import SQLiteEventStore
 
 # *--- Fixtures ---*
 
@@ -76,6 +92,11 @@ EVALUATION: dict[str, Any] = {
     "evaluator": "Example Provider vulnerability team (synthetic recurrence fixture)",
     "disposition": "remediated",
 }
+#: The stateless golden pair carrying the warning, and every golden that does.
+WARNING_GOLDEN = "vdt-recurrence-warning"
+WARNING_GOLDENS = (f"{WARNING_GOLDEN}.json", f"{WARNING_GOLDEN}.md")
+#: When the fold tests ingest both scans, before any evaluation.
+INGEST_TEXT = "2026-09-13T00:00:00Z"
 #: The dispositions that are not a remediation, each with the fields its consistency needs.
 NOT_REMEDIATED: tuple[dict[str, Any], ...] = (
     {"disposition": "fully_mitigated"},
@@ -116,6 +137,17 @@ def compile_of(
         evaluations_by_tracking_id=matches,
         attestation=DetectionAttestation(),
         options=options(detected_at=None),
+    )
+
+
+def replay_options() -> ReportOptions:
+    """Return the options of the recurrence golden's run, for a compile from a store."""
+    return ReportOptions(
+        certification_class=CertificationClass.C,
+        package_uri="https://example.test/cpo",
+        as_of=datetime(2026, 9, 15, 12, 0, tzinfo=UTC),
+        period_from=datetime(2026, 9, 1, tzinfo=UTC),
+        period_to=datetime(2026, 9, 30, 23, 59, 59, tzinfo=UTC),
     )
 
 
@@ -484,14 +516,14 @@ class GoldenCensusTests(unittest.TestCase):
     """No fixture behind an existing golden has a remediated record that came back (D11).
 
     The golden byte comparisons prove the WARNING never reaches an existing golden; this
-    names the two remediated evaluations the examples hold and why neither recurs.
+    names the remediated evaluations the examples hold and why only the new one recurs.
     """
 
-    def test_the_example_remediations_are_a_gap_and_an_unrepeated_finding(self) -> None:
-
-        examples = Path(__file__).resolve().parents[1] / "examples"
+    def test_the_example_remediations_are_a_gap_an_unrepeated_finding_and_the_new_one(
+        self,
+    ) -> None:
         remediated = []
-        for path in sorted(examples.glob("evaluations*.json")):
+        for path in sorted(EXAMPLES.glob("evaluations*.json")):
             for entry in json.loads(path.read_text(encoding="utf-8"))["evaluations"]:
                 status = entry.get("disposition")
                 if status == "remediated" or entry.get("closedDisposition") == "remediated":
@@ -501,15 +533,173 @@ class GoldenCensusTests(unittest.TestCase):
             [
                 ("evaluations-coverage.json", "coverage-gap"),
                 ("evaluations-kev.json", "CVE-2099-0005"),
+                ("evaluations-recurrence.json", "CVE-2099-0101"),
             ],
         )
 
-    def test_no_golden_carries_the_warning(self) -> None:
+    def test_only_the_new_goldens_carry_the_warning(self) -> None:
+        carrying = {
+            path.name
+            for path in sorted(GOLDEN.iterdir())
+            if RECURRENCE in path.read_text(encoding="utf-8")
+        }
+        self.assertEqual(carrying, set(WARNING_GOLDENS))
 
-        golden = Path(__file__).resolve().parent / "golden"
-        for path in sorted(golden.iterdir()):
-            with self.subTest(golden=path.name):
-                self.assertNotIn(RECURRENCE, path.read_text(encoding="utf-8"))
+
+# *--- Warning Golden ---*
+
+
+class RecurrenceWarningGoldenTests(PersistedStoreTestCase):
+    """The `vdt-recurrence-warning` pair, cut statelessly and rebuilt from a store (D11)."""
+
+    def test_the_command_line_cuts_the_golden_and_exits_0(self) -> None:
+        json_path = self.workspace / "report.json"
+        markdown_path = self.workspace / "report.md"
+        code, _, err = run(
+            [*RECURRENCE_ARGUMENTS, "-o", str(json_path), "--markdown", str(markdown_path)]
+        )
+        self.assertEqual(code, 0, msg=err)
+        self.assertIn(f"warning: {RECURRENCE}: ", err)
+        self.assertEqual(json_path.read_bytes(), (GOLDEN / f"{WARNING_GOLDEN}.json").read_bytes())
+        self.assertEqual(markdown_path.read_bytes(), (GOLDEN / f"{WARNING_GOLDEN}.md").read_bytes())
+
+    def test_the_golden_validates_and_keeps_the_remediated_disposition(self) -> None:
+        payload = (GOLDEN / f"{WARNING_GOLDEN}.json").read_bytes()
+        self.assertTrue(
+            validate_bundled_report_bytes(ReportSchema.VULNERABILITY_DETAIL, payload).is_valid
+        )
+        document = json.loads(payload)
+        (record,) = document["vulnerabilities"]
+        self.assertEqual(record["finalDisposition"], "Remediated")
+        codes = [item["code"] for item in document["x-complyroll"]["diagnostics"]]
+        self.assertEqual(codes, [RECURRENCE])
+
+    def test_a_store_reports_the_same_bytes_before_correlating_what_came_back(self) -> None:
+        self.build_recurrence_store()
+        json_path = self.workspace / "replay.json"
+        markdown_path = self.workspace / "replay.md"
+        self.succeeds(
+            [
+                "report",
+                "vdt",
+                "--db",
+                str(self.database),
+                *KEV_ARGUMENTS,
+                "--as-of",
+                KEV_AS_OF,
+                *KEV_PERIOD,
+                "-o",
+                str(json_path),
+                "--markdown",
+                str(markdown_path),
+            ]
+        )
+        self.assertEqual(json_path.read_bytes(), (GOLDEN / f"{WARNING_GOLDEN}.json").read_bytes())
+        self.assertEqual(markdown_path.read_bytes(), (GOLDEN / f"{WARNING_GOLDEN}.md").read_bytes())
+
+    def build_recurrence_store(self) -> None:
+        """Ingest the first scan, remediate it, then ingest the scan that found it again."""
+        database = str(self.database)
+        before, after = RECURRENCE_ARTIFACTS
+        self.succeeds(["ingest", before, "--db", database, "--as-of", "2026-09-03T00:00:00Z"])
+        self.succeeds(["cases", "correlate", "--db", database])
+        self.succeeds(
+            ["cases", "evaluate", "--db", database, "--evaluations", str(RECURRENCE_EVALUATIONS)]
+        )
+        self.succeeds(["ingest", after, "--db", database, "--as-of", "2026-09-13T00:00:00Z"])
+
+
+# *--- Persisted Remediation Instant ---*
+
+
+class RemediationInstantFoldTests(PersistedStoreTestCase):
+    """History reads the instant from the evaluation in force when remediated was first recorded.
+
+    F3: a re-evaluation that keeps the disposition moves the current `completedAt`, never the
+    remediation instant, and no store recording instant reaches the report (ADR 0010).
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.database_text = str(self.database)
+        before, after = RECURRENCE_ARTIFACTS
+        self.succeeds(["ingest", before, "--db", self.database_text, "--as-of", INGEST_TEXT])
+        self.succeeds(["ingest", after, "--db", self.database_text, "--as-of", INGEST_TEXT])
+        self.succeeds(["cases", "correlate", "--db", self.database_text])
+
+    def evaluate(self, **overrides: object) -> None:
+        entry: dict[str, Any] = {
+            **json.loads(RECURRENCE_EVALUATIONS.read_text(encoding="utf-8"))["evaluations"][0],
+            **overrides,
+        }
+        entry = {key: value for key, value in entry.items() if value is not None}
+        path = self.workspace / "evaluations.json"
+        path.write_text(json.dumps({"evaluations": [entry]}), encoding="utf-8")
+        self.succeeds(["cases", "evaluate", "--db", self.database_text, "--evaluations", str(path)])
+
+    def case(self) -> CaseState:
+        with SQLiteEventStore(self.database) as store:
+            (case,) = fold_all_cases(EventRepository(store))
+        return case
+
+    def warning(self) -> str | None:
+        with SQLiteEventStore(self.database) as store:
+            record_set = compile_record_set_from_history(
+                EventRepository(store), options=replay_options()
+            )
+        found = recurrences(record_set)
+        return None if not found else found[0].message
+
+    def test_the_first_remediated_evaluation_sets_the_instant(self) -> None:
+        self.evaluate()
+        self.assertEqual(self.case().remediated_at, datetime(2026, 9, 5, 15, 0, tzinfo=UTC))
+        message = self.warning()
+        assert message is not None
+        self.assertIn("recorded remediated at 2026-09-05T15:00:00Z", message)
+
+    def test_a_re_evaluation_that_keeps_remediated_keeps_the_instant(self) -> None:
+        self.evaluate()
+        self.evaluate(completedAt="2026-09-14T09:00:00Z", rationale="SYNTHETIC. Re-reviewed.")
+        case = self.case()
+        assert case.current_evaluation is not None
+        self.assertEqual(
+            case.current_evaluation.completed_at, datetime(2026, 9, 14, 9, 0, tzinfo=UTC)
+        )
+        self.assertEqual(case.remediated_at, datetime(2026, 9, 5, 15, 0, tzinfo=UTC))
+        message = self.warning()
+        assert message is not None
+        self.assertIn("recorded remediated at 2026-09-05T15:00:00Z", message)
+
+    def test_closed_as_remediated_continues_the_run(self) -> None:
+        self.evaluate()
+        self.evaluate(
+            completedAt="2026-09-14T09:00:00Z",
+            disposition="closed",
+            closedDisposition="remediated",
+        )
+        self.assertEqual(self.case().remediated_at, datetime(2026, 9, 5, 15, 0, tzinfo=UTC))
+
+    def test_a_disposition_between_two_remediations_restarts_the_instant(self) -> None:
+        self.evaluate()
+        self.evaluate(completedAt="2026-09-13T09:00:00Z", disposition="partially_mitigated")
+        self.assertIsNone(self.case().remediated_at)
+        self.assertIsNone(self.warning())
+        self.evaluate(completedAt="2026-09-14T09:00:00Z")
+        self.assertEqual(self.case().remediated_at, datetime(2026, 9, 14, 9, 0, tzinfo=UTC))
+        # The scan of 12 September is before the second remediation, so nothing came back.
+        self.assertIsNone(self.warning())
+
+    def test_a_new_disposition_on_an_unchanged_evaluation_reads_the_one_in_force(self) -> None:
+        self.evaluate(disposition="partially_mitigated")
+        self.evaluate()
+        self.assertEqual(self.case().remediated_at, datetime(2026, 9, 5, 15, 0, tzinfo=UTC))
+
+    def test_no_other_disposition_sets_an_instant(self) -> None:
+        for overrides in NOT_REMEDIATED:
+            with self.subTest(disposition=overrides["disposition"]):
+                self.evaluate(**overrides)
+                self.assertIsNone(self.case().remediated_at)
+                self.assertIsNone(self.warning())
 
 
 if __name__ == "__main__":

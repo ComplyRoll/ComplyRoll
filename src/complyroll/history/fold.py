@@ -350,6 +350,10 @@ class CaseState:
     disposition: DispositionRecord | None
     identified_sequence: int | None
     last_sequence: int
+    #: When the case was remediated, while its disposition resolves to `remediated`: the
+    #: `completedAt` of the evaluation in force when that disposition was first recorded, so a
+    #: re-evaluation that keeps it does not move the instant (ADR 0019). None otherwise.
+    remediated_at: datetime | None = None
 
     @property
     def stream_id(self) -> str:
@@ -1012,6 +1016,7 @@ def fold_case_records(
     evaluations: list[EvaluationRecord] = []
     reductions: list[PainReductionRecord] = []
     disposition: DispositionRecord | None = None
+    remediated_at: datetime | None = None
 
     for record in ordered[1:]:
         body = record.payload
@@ -1046,6 +1051,7 @@ def fold_case_records(
                 )
             )
         elif record.event_type == CASE_DISPOSITION_RECORDED:
+            previous = disposition
             disposition = DispositionRecord(
                 sequence=record.sequence,
                 status=_status(body, "status"),
@@ -1053,6 +1059,11 @@ def fold_case_records(
                 acceptance_rationale=_optional_text(body, "acceptanceRationale"),
                 recorded_at=_timestamp(body, "recordedAt"),
             )
+            # A run of remediated dispositions keeps the instant its first one recorded.
+            if disposition.resolved_status is not CaseStatus.REMEDIATED:
+                remediated_at = None
+            elif previous is None or previous.resolved_status is not CaseStatus.REMEDIATED:
+                remediated_at = evaluations[-1].completed_at if evaluations else None
         elif record.event_type == CASE_IDENTIFIED:
             provider_tracking_id = _text(body, "providerTrackingId")
             identified_sequence = record.sequence
@@ -1084,6 +1095,7 @@ def fold_case_records(
         disposition=disposition,
         identified_sequence=identified_sequence,
         last_sequence=ordered[-1].sequence,
+        remediated_at=remediated_at,
     )
 
 

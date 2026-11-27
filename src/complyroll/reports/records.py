@@ -276,6 +276,7 @@ def compile_record_set(
     stored_changes: StoredChangeSet | None = None,
     changes: ChangeProjection | None = None,
     change_gap_aware: bool = False,
+    remediated_at: Mapping[str, datetime] | None = None,
 ) -> CompiledRecordSet:
     """Compile the period-agnostic record set from already-normalized inputs.
 
@@ -297,6 +298,10 @@ def compile_record_set(
     None when none does, and each closed window no record carries and each change gap record no
     window derives is named in an INFO note, which only a compile from history can meet (ADR
     0018 Decision 13).
+    `remediated_at` is each remediated case's remediation instant by correlation tracking id,
+    which history reads from the evaluation in force when the disposition was first recorded;
+    without it, as on the stateless path, a remediated evaluation's `completedAt` is the
+    instant (ADR 0019).
     """
 
     if not isinstance(options, ReportOptions):
@@ -461,8 +466,8 @@ def compile_record_set(
         compiled.append(record)
         # A remediation the scanner contradicts keeps the operator's disposition: ComplyRoll
         # warns and never sets one (ADR 0019).
-        remediated_at = _remediation_instant(evaluation)
-        recurrence = None if remediated_at is None else remediation_recurrence(group, remediated_at)
+        remediation = _remediation_instant(group.tracking_id, evaluation, remediated_at)
+        recurrence = None if remediation is None else remediation_recurrence(group, remediation)
         if recurrence is not None:
             diagnostics.append(_recurrence_warning(recurrence, label, group.source_record_id))
         # Only the failure type carries the metadata `_detection_failure` reads; any other
@@ -1866,17 +1871,25 @@ def _records_carry(count: int) -> str:
 # *--- Response Gaps ---*
 
 
-def _remediation_instant(evaluation: EvaluationInput | None) -> datetime | None:
+def _remediation_instant(
+    tracking_id: str,
+    evaluation: EvaluationInput | None,
+    remediated_at: Mapping[str, datetime] | None,
+) -> datetime | None:
     """Return when a remediated record was remediated, or None for any other record.
 
-    The instant is the evaluation's `completedAt`, never a store's recording instant (ADR
-    0010). Only a disposition that resolves to `remediated` counts: a mitigated weakness
-    still exists, and a false positive or an accepted risk is the operator's standing ruling.
+    The instant is an evaluation's `completedAt`, never a store's recording instant (ADR
+    0010): the record's own on the stateless path, and on the persisted path the one in force
+    when the disposition was first recorded, which `remediated_at` carries. Only a disposition
+    that resolves to `remediated` counts: a mitigated weakness still exists, and a false
+    positive or an accepted risk is the operator's standing ruling.
     """
 
     if evaluation is None or evaluation.resolved_status is not CaseStatus.REMEDIATED:
         return None
-    return evaluation.completed_at
+    if remediated_at is None:
+        return evaluation.completed_at
+    return remediated_at.get(tracking_id)
 
 
 def _recurrence_warning(

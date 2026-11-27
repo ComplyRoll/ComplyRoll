@@ -33,6 +33,7 @@ from test_cli import (
     HISTORICAL_ARGUMENTS,
     INGESTED_AT,
     PERSISTED_ARTIFACTS,
+    RECURRENCE_ARGUMENTS,
     REPORT_ARGUMENTS,
     PersistedStoreTestCase,
     kev_argv,
@@ -82,6 +83,7 @@ GOLDEN_RUNS: dict[str, Sequence[str]] = {
     "vdt-cyclonedx-coverage": CYCLONEDX_COVERAGE_ARGUMENTS,
     "vdt-changes": CHANGES_ARGUMENTS,
     "vdt-changes-timed": timed_changes_argv(),
+    "vdt-recurrence-warning": RECURRENCE_ARGUMENTS,
 }
 #: The five system goldens, each cut by a run that records its records and exits 3.
 SYSTEM_RUNS: dict[str, Sequence[str]] = {

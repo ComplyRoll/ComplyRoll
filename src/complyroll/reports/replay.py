@@ -26,6 +26,7 @@ the records it covers instead of asserting one that would be false for some of t
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from complyroll.adapters import DiagnosticLevel
@@ -163,6 +164,7 @@ def compile_record_set_from_history(
         # The fold has refused a gap whose change the store does not record, so a store holding
         # a change gap stream holds the changes its block is derived from.
         change_gap_aware=(options.inventory is not None and repository.holds_change_gap_stream()),
+        remediated_at=remediation_instants(cases),
     )
 
 
@@ -424,6 +426,19 @@ def _attestation(cases: Sequence[CaseState]) -> DetectionAttestation:
     )
 
 
+def remediation_instants(cases: Sequence[CaseState]) -> dict[str, datetime]:
+    """Map each case recorded remediated to its remediation instant (ADR 0019).
+
+    The instant is the fold's: the `completedAt` of the evaluation in force when the current
+    remediated disposition was first recorded, so a re-evaluation that keeps the disposition
+    keeps the instant, and no store recording instant reaches a report.
+    """
+
+    return {
+        case.tracking_id: case.remediated_at for case in cases if case.remediated_at is not None
+    }
+
+
 def disposition_without_evaluation_message(tracking_id: str, status: str) -> str:
     """Word a case that records a disposition and no evaluation, for the report and the audit."""
 
@@ -505,4 +520,5 @@ __all__ = [
     "compile_vdt_report_from_history",
     "derive_changes_from_history",
     "disposition_without_evaluation_message",
+    "remediation_instants",
 ]

@@ -230,6 +230,23 @@ KEV_ARGUMENTS = (
 )
 #: The reporting period the two period-taking commands use; `historical` is a snapshot.
 KEV_PERIOD = ("--from", "2026-09-01T00:00:00Z", "--to", "2026-09-30T23:59:59Z")
+#: The `vdt-recurrence-warning` run: a remediated finding a later scan found again (ADR 0019).
+RECURRENCE_EVALUATIONS = EXAMPLES / "evaluations-recurrence.json"
+RECURRENCE_ARTIFACTS = (
+    str(FIXTURES / "recurrence-api-before.sarif"),
+    str(FIXTURES / "recurrence-api-after.sarif"),
+)
+RECURRENCE_ARGUMENTS = (
+    "report",
+    "vdt",
+    *RECURRENCE_ARTIFACTS,
+    "--evaluations",
+    str(RECURRENCE_EVALUATIONS),
+    *KEV_ARGUMENTS,
+    "--as-of",
+    KEV_AS_OF,
+    *KEV_PERIOD,
+)
 
 
 def kev_argv(
@@ -1314,6 +1331,7 @@ class RecordFailedImportsTests(unittest.TestCase):
             "vdt-cyclonedx-coverage": CYCLONEDX_COVERAGE_ARGUMENTS,
             "vdt-changes": CHANGES_ARGUMENTS,
             "vdt-changes-timed": timed_changes_argv(),
+            "vdt-recurrence-warning": RECURRENCE_ARGUMENTS,
         }
         compiled = {
             "vdt-sarif": compile_sarif_golden(record_failed_imports=True),

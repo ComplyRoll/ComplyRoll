@@ -248,7 +248,14 @@ Target: 4 to 6 weeks
   and a vulnerability whose detection time is never attested; ADR 0014 Decision 17), with the
   information resource and response action records they need (the `InformationResource` and
   `ResponseAction` entities in `docs/DATA_MODEL.md` are still planned), and the reporting
-  recurrence clocks.
+  recurrence clocks. **Partly delivered, 2026-11-26** (ADR 0019), as a scope note and not a close:
+  both failures are Met in a store, with no new operator input. `cases response-gaps` records a
+  remediation that a later open observation contradicts, one case per failed remediation listing
+  every resource that came back, which every report also warns about while the case keeps its
+  disposition; and a case whose detection time was not attested within `VER-TFR-EVU` of the
+  store's first record of its evidence. `ResponseAction` records and a lapsed planned response
+  are carried to the second pull request of the slice, and the `VER-TFR-MHR` and `VER-TFR-MRH`
+  recurrence clocks to the third.
 - Carried from Phase 2 as a scope change, 2026-11-14: an initial cloud, container, or CSPM JSON
   adapter selected from design-partner demand.
 - Versioned validation definitions with objectives, scope, schedule, code reference, and explicit

@@ -2,6 +2,54 @@
 
 All notable project changes will be documented here.
 
+## Unreleased
+
+### Added
+
+- Every report, stateless and from a store, adds one WARNING `recurrence_after_remediation` for a
+  record whose disposition resolves to `remediated` and whose group holds an open artifact
+  observation detected strictly after the remediation, or an open member that declares no source
+  timestamp. It names the remediation instant and the earliest detection after it. The record keeps
+  its `finalDisposition`: ComplyRoll never sets a disposition. The instant is the evaluation's
+  `completedAt`; from a store, that of the evaluation in force when the current remediated
+  disposition was first recorded, so a re-evaluation that keeps it does not move it (ADR 0019).
+- `cases response-gaps --db STORE --class C --as-of T [--calendar-tz NAME]` records two failures
+  of the response process as `VDR-CSO-FAV` system observations, in a store only: a remediation
+  that did not hold, one record per resource that came back (source type
+  `complyroll.recurrence`, record id `remediation-recurrence`, context key `<tracking
+  id>:remediated:<instant>`), so one failed remediation is one case; and a case with linked
+  evidence, no source timestamp and no attestation once the `VER-TFR-EVU` window from the earliest
+  ingest `--as-of` of that evidence has closed (source type `complyroll.attestation`, record id
+  `attestation-lapse`, resource `logical:case/<tracking id>`). It exits 3 when it records one and 0
+  otherwise, so a rerun exits 0. Each record is a `response-gap/<fingerprint>` stream of a
+  `response_gap.recorded` head and the record, written whole, and the first marks the store schema
+  7, which 0.5.0a0 refuses to open; a store that never records one stays at its version and reads
+  unchanged in both builds (ADR 0019).
+- `store verify` gains `responsegap_incomplete`, `responsegap_overfull`,
+  `responsegap_stream_mismatch`, `responsegap_identity_breach`, and `responsegap_schema_unmarked`,
+  and every command that reads a store's observations refuses the first four as `history_invalid`
+  with the audit's text (ADR 0019).
+- A report from a store that holds a response gap names each one the run derives that no record
+  carries (`response_gap_unrecorded`), and each recorded one it cannot rebuild from its own record,
+  as `response_gap_contradicted` when the store holds evidence against it and
+  `response_gap_unmatched` when it holds none. A recorded gap it rebuilds writes no note, so an
+  attestation after a lapse, or a re-evaluation after a recurrence, leaves the report quiet (ADR
+  0019).
+- `tests/golden/vdt-recurrence-warning.{json,md}`: a stateless run over two scans of one image, the
+  second after the remediation recorded in `examples/evaluations-recurrence.json`, carrying only the
+  new warning. A store built from the same scans reports the same bytes before `cases correlate`.
+- `tests/golden/historical-response-gaps.{json,md}`: a historical snapshot of a store in which
+  `cases response-gaps` recorded a remediation recurrence and a lapsed attestation, and the untimed
+  case was attested afterwards, so its lapse stands with no note.
+
+### Changed
+
+- `cases list` adds its `CONTEXT KEY` column for a remediation recurrence or lapsed attestation case
+  too. ADR 0015 Decision 25's walk test finds five reserved source types, each with its kind name,
+  order remedy, and attestation clause. Exit 3 comes from five places (ADR 0017 amendment
+  2026-11-26).
+- No existing golden moved.
+
 ## 0.5.0a0 - 2026-11-14
 
 ### Added

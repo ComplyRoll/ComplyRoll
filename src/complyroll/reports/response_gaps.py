@@ -1,7 +1,7 @@
 # ******************************************************************************
 # *Title: Response Gaps*
 # *Author: Kyle Versluis*
-# *Description: Find remediations that did not hold and attestations that lapsed.*
+# *Description: Find remediations that did not hold and lapsed attestations.*
 # ******************************************************************************
 """Response gaps: a remediation that did not hold, and a lapsed attestation (ADR 0019)."""
 

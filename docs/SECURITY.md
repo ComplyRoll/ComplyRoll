@@ -309,12 +309,12 @@ those three match, and a test pins it.
   read from an untrusted store as untrusted text.
 - A clock an earlier build stored that no report can compute with is refused where it would
   overflow. A source clock whose UTC instant falls outside the years 1 to 9999 is
-  `clock_out_of_range` from a report, `cases coverage` or `cases changes` and `history_invalid`
-  from `cases correlate`. A detection time whose VER-TFR-EVU deadline overflows, or an evaluation
-  `completedAt` whose VDR-TFR-PVR or VER-TFR-MAV deadline does, is `clock_out_of_range` from a
-  report only, since no other command computes a deadline. `store verify` names all three with
-  the same predicate (ADR 0008 amendment 2026-10-25). A clock that computes, year 1 with no
-  offset among them, is never refused.
+  `clock_out_of_range` from a report, `cases coverage`, `cases changes` or `cases response-gaps`
+  and `history_invalid` from `cases correlate`. A detection time whose VER-TFR-EVU deadline
+  overflows, or an evaluation `completedAt` whose VDR-TFR-PVR or VER-TFR-MAV deadline does, is
+  `clock_out_of_range` from a report only, since no other command computes a deadline. `store
+  verify` names all three with the same predicate (ADR 0008 amendment 2026-10-25). A clock that
+  computes, year 1 with no offset among them, is never refused.
 - `store verify` names two current groups a report would publish under one tracking id as
   `tracking_id_collision`, by the report's own rule and in its words (ADR 0008 amendment
   2026-11-03). `cases evaluate` refuses to write such a store, and counts a group no case holds

@@ -1,7 +1,7 @@
 # ******************************************************************************
 # *Title: Response Gap Stream Tests*
 # *Author: Kyle Versluis*
-# *Description: Response gap streams, their contract, audits and store schema 7.*
+# *Description: Response gap streams, contract, audits and store schema 7.*
 # ******************************************************************************
 """Tests for the response gap stream kind and store schema 7 (ADR 0019)."""
 

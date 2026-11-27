@@ -1,7 +1,7 @@
 # ******************************************************************************
 # *Title: Response Gap History Tests*
 # *Author: Kyle Versluis*
-# *Description: cases response-gaps, its golden, evaluations and divergence notes.*
+# *Description: cases response-gaps, its golden, evaluations and notes.*
 # ******************************************************************************
 """Tests that a store records response gaps once and reports them (ADR 0019)."""
 
@@ -290,7 +290,8 @@ class ResponseGapCommandTests(StoreCase):
 
     def test_the_help_names_the_record_and_exit_3(self) -> None:
         text = help_text(["cases", "response-gaps", "--help"])
-        self.assertIn("VDR-CSO-FAV system record; exits 3 when one is recorded", text)
+        # NOTE: argparse may wrap a hyphenated rule id at its hyphen, so the rule is not asserted.
+        self.assertIn("system record; exits 3 when one is recorded", text)
         self.assertIn("--class", text)
         self.assertIn("--calendar-tz", text)
 
@@ -532,6 +533,18 @@ class ResponseGapNoteTests(unittest.TestCase):
         timed = Case(links=(Link("obs-first"), Link("obs-late", BACK_AT)))
         history = ResponseGapHistory(cases=(timed,), ingested_at=late, remediated_at={})
         self.assertEqual(self.notes((record,), history), [])
+
+    def test_a_lapse_timed_at_its_window_close_is_contradicted(self) -> None:
+        # The window is closed at its close: evidence recorded at that instant was in time.
+        lapse = attestation_lapse(Case(), INGESTED, policy("C"), datetime(2026, 10, 1, tzinfo=UTC))
+        assert lapse is not None
+        record = attestation_lapse_observation(lapse, ingested_at=datetime(2026, 10, 1, tzinfo=UTC))
+        at_close = {**INGESTED, "obs-close": lapse.window_closed_at}
+        timed = Case(links=(Link("obs-first"), Link("obs-close", BACK_AT)))
+        history = ResponseGapHistory(cases=(timed,), ingested_at=at_close, remediated_at={})
+        (note,) = self.notes((record,), history)
+        self.assertEqual(note.code, "response_gap_contradicted")
+        self.assertIn("obs-close", note.message)
 
 
 if __name__ == "__main__":

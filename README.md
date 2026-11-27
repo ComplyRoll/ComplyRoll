@@ -67,6 +67,7 @@ reports, SARIF, KEV, coverage and coverage gaps, HDF, failed imports, and the Py
 | `--record-failed-imports` | Records an artifact that cannot be parsed or holds no usable content, or a failed scanner invocation, as a vulnerability case of its own (`VDR-CSO-FAV`), and exits 3 |
 | `--record-coverage-gaps`, `complyroll cases coverage` | Record coverage windows that closed with no verification as vulnerability cases (`VDR-CSO-FAV`), on a report run or into a store, and exit 3 |
 | `--record-change-gaps`, `complyroll cases changes` | Record change windows that closed with no verification as vulnerability cases (`VDR-CSO-FAV`), one per change, on a report run or into a store, and exit 3 |
+| `complyroll cases response-gaps` | Records a remediation a later scan contradicts, which every report also warns about, and a case whose detection time was not attested in time, as vulnerability cases (`VDR-CSO-FAV`) in a store, and exits 3 |
 | `complyroll ingest`, `cases`, and `report --db` | Record the same work as append-only history and rebuild each report from it, byte-identical to the stateless report |
 | `complyroll changes record` | Records each declared change in a store as history, for `report --db`, `changes pending --db`, and `cases changes` to read back |
 | `complyroll store verify --db STORE` | Audits an event store's bytes and its domain, and exits non-zero on any fault |

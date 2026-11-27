@@ -491,3 +491,26 @@ The reference gate is unchanged. It passes no change file, so its exit 3 never c
 gap, and the probe of Decision 6 still tells a failure from a coverage gap. A gate policy that
 treats change gaps apart from failures, a `warn-changes` beside `warn-gaps`, is left for later.
 `tests/test_exit_contract.py` gains the `vdt-change-gaps` golden run among the runs that exit 3.
+
+## Amendment 2026-11-26: response gaps and a fifth place for exit 3
+
+ADR 0019 records two failures of the response process as system-generated `VDR-CSO-FAV` records,
+a remediation that did not hold and a lapsed attestation, in a store only. Exit 3 keeps the meaning
+Decision 3 gives it, that the output holds a system-generated record, now of any of five kinds. No
+exit code is added, for the reasons Decision 3 gives against a code per kind.
+
+- `cases response-gaps` records both kinds into a store. It exits 3 when it recorded one and 0 when
+  it recorded none, including a rerun and a store with nothing to record, as `cases coverage` and
+  `cases changes` do. No report flag records a response gap, so `report --db` still answers 0 or 1
+  only (I4), and a stateless report exits as before.
+- The WARNING `recurrence_after_remediation` that every report adds for a remediation a later open
+  observation contradicts never changes an exit code (I3).
+- I2 now reads: Exit 3 comes from five places only: a stateless `report` with one of its record
+  flags, `ingest --record-failed-imports`, `cases coverage`, `cases changes`, and `cases
+  response-gaps`. This supersedes I2's sentence as the amendment of 2026-11-14 last stated it.
+
+| Command | Path | 0 | 1 | 3 |
+|---|---|---|---|---|
+| `cases response-gaps` | store | this run recorded no response gap, including a rerun that finds every one already recorded and a store with nothing to record | a refusal, a missing store, an unreadable `--as-of`, an unknown calendar zone, `history_invalid` | this run recorded at least one response gap |
+
+The reference gate is unchanged. It compiles on the stateless path, which records no response gap.

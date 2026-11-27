@@ -1108,6 +1108,49 @@ observation with or without the flag, and records no failure. A SARIF log that y
 has a run with no `results` array, or a null one, is not a clean run: that run's results are
 unknown (`results_unknown`), so with the flag the log is a `content` failure.
 
+## Remediations that did not hold
+
+`examples/evaluations-recurrence.json` records one finding of a synthetic image scan as remediated
+on 5 September. The test fixtures hold two scans of that image: one before the remediation, and a
+rebuild on 12 September that still ships the flawed package. A report over both keeps the
+remediated disposition and warns (ADR 0019):
+
+```bash
+complyroll report vdt tests/fixtures/recurrence-api-before.sarif \
+  tests/fixtures/recurrence-api-after.sarif \
+  --evaluations examples/evaluations-recurrence.json \
+  --class C --package-uri https://example.test/cpo \
+  --as-of 2026-09-15T12:00:00Z --from 2026-09-01T00:00:00Z --to 2026-09-30T23:59:59Z \
+  -o report.json
+```
+
+```text
+warning: recurrence_after_remediation: case-748ec5056f5557ed is recorded remediated at 2026-09-05T15:00:00Z, and 1 open observation(s) of it were detected after that instant, the earliest at 2026-09-12T08:40:00Z on image:registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2; the remediation did not hold, and the record keeps its disposition until an evaluation changes it [CVE-2099-0101]
+```
+
+In a store, `cases response-gaps` records that failure as a case of its own, and records a lapsed
+attestation for a case that no source timestamp or attestation timed within `VER-TFR-EVU` of the
+store's first record of its evidence. `tests/fixtures/attestation-untimed.cklb` declares no
+timestamp:
+
+```bash
+complyroll ingest tests/fixtures/attestation-untimed.cklb --db history.db \
+  --as-of 2026-09-01T00:00:00Z
+complyroll ingest tests/fixtures/recurrence-api-before.sarif --db history.db \
+  --as-of 2026-09-03T00:00:00Z
+complyroll cases correlate --db history.db
+complyroll cases evaluate --db history.db --evaluations examples/evaluations-recurrence.json
+complyroll ingest tests/fixtures/recurrence-api-after.sarif --db history.db \
+  --as-of 2026-09-13T00:00:00Z
+complyroll cases response-gaps --db history.db --class C --as-of 2026-09-15T12:00:00Z
+complyroll cases correlate --db history.db
+```
+
+`cases response-gaps` prints both records and exits 3, and a rerun exits 0. After `cases
+correlate`, `cases list` names each new case's context key, which an evaluation entry states with
+the record id and source type. Attesting the untimed case afterwards does not erase its lapse:
+`tests/golden/historical-response-gaps.{json,md}` is that store's snapshot.
+
 ## Verifying the log
 
 `complyroll store verify --db complyroll.db` walks the whole log and exits non-zero on any
@@ -1126,7 +1169,9 @@ in a store marked below schema 4). Change streams are audited the same way, as
 `change_incomplete`, `change_overfull`, `change_stream_mismatch`, and `change_schema_unmarked`,
 and change gap streams as `changegap_incomplete`, `changegap_overfull`,
 `changegap_stream_mismatch`, `changegap_identity_breach`, and `changegap_schema_unmarked` (below
-schema 6); a change gap is also held to the recorded change its head names. A healthy store
+schema 6); a change gap is also held to the recorded change its head names. Response gap streams
+are audited as `responsegap_incomplete`, `responsegap_overfull`, `responsegap_stream_mismatch`,
+`responsegap_identity_breach`, and `responsegap_schema_unmarked` (below schema 7). A healthy store
 prints one line:
 
 ```text

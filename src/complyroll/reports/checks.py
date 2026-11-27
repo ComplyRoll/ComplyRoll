@@ -152,6 +152,15 @@ def evaluation_clock_message(tracking_id: str, clock: datetime, problem: str) ->
     )
 
 
+def first_sighting_clock_message(tracking_id: str, clock: datetime, problem: str) -> str:
+    """Word one case refused for its first sighting, as a report and verify both print it."""
+
+    return (
+        f"{tracking_id} was first recorded {clock.isoformat()} in history, which {problem}, so no "
+        "report can compute its lapsed attestation window"
+    )
+
+
 def observation_clock_message(observation_id: str, clock: datetime, problem: str) -> str:
     """Word one observation refused for its source time, wherever a reader converts it."""
 
@@ -372,6 +381,7 @@ __all__ = [
     "detection_clock_message",
     "evaluation_clock_message",
     "evaluation_order_diagnostic",
+    "first_sighting_clock_message",
     "observation_clock_message",
     "published_tracking_id",
     "resolve_detection_time",

@@ -861,11 +861,11 @@ decisions read wider from this date. Their text is not edited.
 
 - **Decision 23's kind names gain two.** The refusal names the records "remediation recurrence"
   and "lapsed attestation". A recurrence is matched by `sourceRecordId` `remediation-recurrence`,
-  `sourceType` `complyroll.recurrence`, and the context key `<tracking id>:remediated:<instant>`; a
-  lapse by `attestation-lapse`, `complyroll.attestation`, and the case's tracking id. A lone match
-  short of a key is refused as before, ending "a remediation recurrence is matched by
-  sourceRecordId, sourceType and contextKey together, so add" and the keys it leaves out, or the
-  same with "a lapsed attestation".
+  `sourceType` `complyroll.recurrence`, and the context key
+  `<tracking id>:remediated:<instant>:<episode>`; a lapse by `attestation-lapse`,
+  `complyroll.attestation`, and the case's tracking id. A lone match short of a key is refused as
+  before, ending "a remediation recurrence is matched by sourceRecordId, sourceType and contextKey
+  together, so add" and the keys it leaves out, or the same with "a lapsed attestation".
 - **Decision 24's remedies gain two.** A recurrence's `evaluation_before_detection` remedy reads
   "a remediation recurrence is detected when its recurring observation was detected, so evaluate it
   at or after that instant, or correct completedAt", and a lapse's "a lapsed attestation is
@@ -880,10 +880,11 @@ decisions read wider from this date. Their text is not edited.
 - **Decision 26 holds for response gaps.** A recorded response gap is a permanent fact. It closes
   only by a disposition from an evaluation matched on the full triple, and any disposition the
   evaluations file accepts applies.
-- **Decisions 38 to 40 have response twins.** `response_gap_unrecorded`,
+- **Decisions 38 to 40 have response twins, and a fourth note.** `response_gap_unrecorded`,
   `response_gap_contradicted`, and `response_gap_unmatched` read each recorded gap against its own
-  record, as Decision 40 does a stored gap's window (ADR 0019 Decision 11).
-  `REPORT_DIAGNOSTIC_CODES` holds them and `recurrence_after_remediation`, 76 codes in all.
+  record, as Decision 40 does a stored gap's window, and `response_gap_earlier_detection` names
+  a recorded recurrence the run finds detected earlier, which stands (ADR 0019 Decision 11).
+  `REPORT_DIAGNOSTIC_CODES` holds the four and `recurrence_after_remediation`, 77 codes in all.
 - **The `cases list` column covers response gaps.** The `CONTEXT KEY` column appears once the store
   holds a coverage gap, change detection gap, remediation recurrence, or lapsed attestation case,
   with `-` for every other case, and a listing with none of them keeps its seven columns byte for

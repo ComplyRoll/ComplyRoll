@@ -9,32 +9,42 @@ All notable project changes will be documented here.
 - Every report, stateless and from a store, adds one WARNING `recurrence_after_remediation` for a
   record whose disposition resolves to `remediated` and whose group holds an open artifact
   observation detected strictly after the remediation, or an open member that declares no source
-  timestamp. It names the remediation instant and the earliest detection after it. The record keeps
-  its `finalDisposition`: ComplyRoll never sets a disposition. The instant is the evaluation's
-  `completedAt`; from a store, that of the evaluation in force when the current remediated
-  disposition was first recorded, so a re-evaluation that keeps it does not move it (ADR 0019).
+  timestamp. A detection at the remediation instant raises none, and an untimed member raises
+  none when the record's detection time is an attestation at or before the remediation, so a new
+  untimed scan of such a record is not flagged. It names the remediation instant and the earliest
+  detection after it. The record keeps its `finalDisposition`: ComplyRoll never sets a
+  disposition. The instant is the evaluation's `completedAt`; from a store, that of the evaluation
+  in force when the current remediated disposition was first recorded, so a re-evaluation that
+  keeps it does not move it (ADR 0019). The warning changes the bytes of a report whose input
+  carries such a record, with or without a response gap stream.
 - `cases response-gaps --db STORE --class C --as-of T [--calendar-tz NAME]` records two failures
   of the response process as `VDR-CSO-FAV` system observations, in a store only: a remediation
   that did not hold, one record per resource that came back (source type
   `complyroll.recurrence`, record id `remediation-recurrence`, context key `<tracking
-  id>:remediated:<instant>`), so one failed remediation is one case; and a case with linked
-  evidence, no source timestamp and no attestation once the `VER-TFR-EVU` window from the earliest
-  ingest `--as-of` of that evidence has closed (source type `complyroll.attestation`, record id
-  `attestation-lapse`, resource `logical:case/<tracking id>`). It exits 3 when it records one and 0
-  otherwise, so a rerun exits 0. Each record is a `response-gap/<fingerprint>` stream of a
-  `response_gap.recorded` head and the record, written whole, and the first marks the store schema
-  7, which 0.5.0a0 refuses to open; a store that never records one stays at its version and reads
-  unchanged in both builds (ADR 0019).
+  id>:remediated:<instant>:<episode>`, the episode the remediated run's 1-based position in the
+  case), so one failed remediation is one case and the first record of a resource stands; and a
+  case with linked evidence, no source timestamp on any link or current reading, and no
+  attestation, found by a run at or past the `VER-TFR-EVU` deadline from the earliest ingest
+  instant of that evidence (source type `complyroll.attestation`, record id `attestation-lapse`,
+  resource `logical:case/<tracking id>`). An ingest's instant is its `--as-of`, or its run time
+  when none is given, so byte identity across stores needs `--as-of` on every ingest. It exits 3
+  when it records one and 0 otherwise, so a rerun exits 0. Each record is a
+  `response-gap/<fingerprint>` stream of a `response_gap.recorded` head and the record, written
+  whole, and the first marks the store schema 7, which 0.5.0a0 refuses to open; a store that never
+  records one stays at its version and reads unchanged in both builds (ADR 0019).
 - `store verify` gains `responsegap_incomplete`, `responsegap_overfull`,
   `responsegap_stream_mismatch`, `responsegap_identity_breach`, and `responsegap_schema_unmarked`,
   and every command that reads a store's observations refuses the first four as `history_invalid`
-  with the audit's text (ADR 0019).
+  with the audit's text. A lapse's force must be the one the pinned rules give `VER-TFR-EVU`. In a
+  store that holds a response gap stream, a first sighting whose deadline no timestamp holds is
+  `clock_out_of_range` in the audit and the report alike (ADR 0019).
 - A report from a store that holds a response gap names each one the run derives that no record
   carries (`response_gap_unrecorded`), and each recorded one it cannot rebuild from its own record,
   as `response_gap_contradicted` when the store holds evidence against it and
-  `response_gap_unmatched` when it holds none. A recorded gap it rebuilds writes no note, so an
-  attestation after a lapse, or a re-evaluation after a recurrence, leaves the report quiet (ADR
-  0019).
+  `response_gap_unmatched` when it holds none. A recorded recurrence the run finds detected
+  earlier stands, with an INFO `response_gap_earlier_detection` note naming the earlier instant. A
+  recorded gap it rebuilds writes no note, so an attestation after a lapse, or a re-evaluation
+  after a recurrence, leaves the report quiet (ADR 0019).
 - `tests/golden/vdt-recurrence-warning.{json,md}`: a stateless run over two scans of one image, the
   second after the remediation recorded in `examples/evaluations-recurrence.json`, carrying only the
   new warning. A store built from the same scans reports the same bytes before `cases correlate`.

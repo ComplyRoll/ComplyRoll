@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
@@ -56,7 +56,7 @@ RECURRENCE_METADATA_KEYS = (
     "recurrence.observationId",
     "recurrence.remediatedAt",
 )
-#: The fixed middle of a recurrence context key, `<tracking id>:remediated:<instant>`.
+#: The fixed middle of a recurrence context key, `<tracking id>:remediated:<instant>:<episode>`.
 RECURRENCE_KEY_MARK = "remediated"
 #: The identity of a lapsed attestation. Its resource is the case it names, its key that case's
 #: correlation tracking id, and its instant the close of the window measured from the case's
@@ -92,6 +92,8 @@ ATTESTATION_LAPSE_METADATA_KEYS = (
 # A correlation v0 tracking id, spelled here because the report layer cannot import the
 # event layer's pattern; a test holds the two equal.
 _TRACKING_ID = re.compile(r"case-[0-9a-f]{16}")
+# An episode ordinal as `str(int)` spells a positive integer.
+_EPISODE = re.compile(r"[1-9][0-9]*")
 
 
 # *--- Types ---*
@@ -136,17 +138,30 @@ class AttestationLapse:
 
 
 @dataclass(frozen=True, slots=True)
+class Remediation:
+    """One case's current remediated episode: its instant and its 1-based ordinal in the stream.
+
+    A new episode starts each time the case's resolved status becomes `remediated` after not
+    being remediated, so two episodes that share an evaluation instant still differ (K2).
+    """
+
+    instant: datetime
+    episode: int
+
+
+@dataclass(frozen=True, slots=True)
 class ResponseGapHistory:
     """What a store holds that a response gap reads (ADR 0019).
 
     `cases` are the folded cases, `ingested_at` maps every recorded artifact observation id to
-    the ingest `--as-of` that recorded it, and `remediated_at` maps each case recorded remediated
-    to its remediation instant. No wall-clock store instant is among them.
+    the instant its ingest recorded it (the ingest `--as-of`, or the run's time when none was
+    given, as ADR 0014 records a failure), and `remediations` maps each case recorded remediated
+    to its current episode. No store `recorded_at`, `createdAt` or `attestedAt` is among them.
     """
 
     cases: Sequence[CaseTiming]
     ingested_at: Mapping[str, datetime]
-    remediated_at: Mapping[str, datetime]
+    remediations: Mapping[str, Remediation]
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,19 +172,37 @@ class RemediationRecurrence:
     and then observation id, so the first is the earliest recurring detection. `untimed` holds
     each member that declares no source timestamp, by observation id: its time cannot be
     ordered against the remediation, so it is warned about and never recorded (ADR 0019).
+    `episode` is the remediation's ordinal in its case stream, 1 on the stateless path.
     """
 
     tracking_id: str
     remediated_at: datetime
     recurring: tuple[Observation, ...]
     untimed: tuple[Observation, ...]
+    episode: int = 1
+
+
+class LapseClockError(ValueError):
+    """A case's first sighting leaves no room for its `VER-TFR-EVU` deadline before year 9999.
+
+    The report layer turns it into the shared `clock_out_of_range` diagnostic, and `store
+    verify` names the same first sighting, so no reader ends in an uncaught OverflowError.
+    """
+
+    def __init__(self, tracking_id: str, first_seen_at: datetime) -> None:
+        self.tracking_id = tracking_id
+        self.first_seen_at = first_seen_at
+        super().__init__(
+            f"{tracking_id} was first recorded {first_seen_at.isoformat()}, which leaves no room "
+            f"for its {ATTESTATION_LAPSE_RULE} deadline"
+        )
 
 
 # *--- Core Logic ---*
 
 
 def remediation_recurrence(
-    group: VulnerabilityGroup, remediated_at: datetime
+    group: VulnerabilityGroup, remediated_at: datetime, *, episode: int = 1
 ) -> RemediationRecurrence | None:
     """Return what came back after one group's remediation, or None when nothing did.
 
@@ -180,6 +213,7 @@ def remediation_recurrence(
 
     if not isinstance(group, VulnerabilityGroup):
         raise TypeError("group must be a VulnerabilityGroup")
+    _require_episode(episode)
     remediated = _utc(remediated_at, "remediated_at")
     artifacts = [item for item in group.observations if item.origin is ObservationOrigin.ARTIFACT]
     recurring = sorted(
@@ -201,39 +235,50 @@ def remediation_recurrence(
         remediated_at=remediated,
         recurring=tuple(recurring),
         untimed=tuple(untimed),
+        episode=episode,
     )
 
 
 def remediation_recurrences(
-    groups: Sequence[VulnerabilityGroup], remediated_at: Mapping[str, datetime]
+    groups: Sequence[VulnerabilityGroup], remediations: Mapping[str, Remediation]
 ) -> tuple[RemediationRecurrence, ...]:
     """Return every group's recurrence, in group order, for the cases recorded remediated.
 
-    `remediated_at` maps a correlation tracking id to its remediation instant; a group whose
-    case is not remediated is not in it. The groups are the report's own, every current open
-    observation linked or not, so a run agrees with the report's warning before `cases
+    `remediations` maps a correlation tracking id to its current remediated episode; a group
+    whose case is not remediated is not in it. The groups are the report's own, every current
+    open observation linked or not, so a run agrees with the report's warning before `cases
     correlate` links what came back (ADR 0019).
     """
 
     found = []
     for group in groups:
-        instant = remediated_at.get(group.tracking_id)
-        recurrence = None if instant is None else remediation_recurrence(group, instant)
+        current = remediations.get(group.tracking_id)
+        recurrence = (
+            None
+            if current is None
+            else remediation_recurrence(group, current.instant, episode=current.episode)
+        )
         if recurrence is not None:
             found.append(recurrence)
     return tuple(found)
 
 
-def recurrence_context_key(tracking_id: str, remediated_at: datetime) -> str:
-    """Return `<tracking id>:remediated:<instant>`: one case per failed remediation."""
+def recurrence_context_key(tracking_id: str, remediated_at: datetime, episode: int) -> str:
+    """Return `<tracking id>:remediated:<instant>:<episode>`: one case per failed remediation."""
 
     if not isinstance(tracking_id, str) or _TRACKING_ID.fullmatch(tracking_id) is None:
         raise ValueError("tracking_id must be a correlation tracking id")
-    return f"{tracking_id}:{RECURRENCE_KEY_MARK}:{_instant(_utc(remediated_at, 'remediated_at'))}"
+    _require_episode(episode)
+    instant = _instant(_utc(remediated_at, "remediated_at"))
+    return f"{tracking_id}:{RECURRENCE_KEY_MARK}:{instant}:{episode}"
 
 
-def recurrence_case_tracking_id(context_key: str) -> str | None:
-    """Return the tracking id a recurrence key names, or None for any other key."""
+def recurrence_key_parts(context_key: str) -> tuple[str, str, int] | None:
+    """Return the tracking id, instant text and episode a recurrence key names, or None.
+
+    The instant holds colons of its own, so the episode is read from the last segment, and it
+    must be spelled as `str(int)` spells a positive integer.
+    """
 
     if not isinstance(context_key, str):
         raise TypeError("context_key must be text")
@@ -242,10 +287,19 @@ def recurrence_case_tracking_id(context_key: str) -> str | None:
         len(parts) != 3
         or _TRACKING_ID.fullmatch(parts[0]) is None
         or parts[1] != RECURRENCE_KEY_MARK
-        or not parts[2]
     ):
         return None
-    return parts[0]
+    instant, _, episode = parts[2].rpartition(":")
+    if not instant or _EPISODE.fullmatch(episode) is None:
+        return None
+    return parts[0], instant, int(episode)
+
+
+def recurrence_case_tracking_id(context_key: str) -> str | None:
+    """Return the tracking id a recurrence key names, or None for any other key."""
+
+    found = recurrence_key_parts(context_key)
+    return None if found is None else found[0]
 
 
 def recurrence_observations(
@@ -265,7 +319,9 @@ def recurrence_observations(
     for item in recurrence.recurring:
         earliest.setdefault(item.resource, item)
     built = [
-        _recurrence(item, recurrence.tracking_id, recurrence.remediated_at, ingested_at)
+        _recurrence(
+            item, recurrence.tracking_id, recurrence.remediated_at, recurrence.episode, ingested_at
+        )
         for item in earliest.values()
     ]
     return tuple(sorted(built, key=_record_order))
@@ -292,33 +348,42 @@ def attestation_lapse(
     ingested_at: Mapping[str, datetime],
     policy: SelectedPolicy,
     as_of: datetime,
+    *,
+    timed_groups: Collection[str] = (),
 ) -> AttestationLapse | None:
     """Return one case's lapse when a run at `as_of` finds it untimed past its window.
 
-    A case is untimed when no linked observation declares a source timestamp and no
-    attestation is recorded; a system record is always timed. Its window closes at the
-    `VER-TFR-EVU` deadline from its first sighting, and a run at or past that close records
-    the lapse once and for good. A detection time that arrives before any run sees the lapse
-    prevents it, which is why the record is only as frequent as the runs (ADR 0019).
+    A case is untimed when no linked observation declares a source timestamp, no attestation
+    is recorded, and the report's current group for it (`timed_groups` names every tracking id
+    whose current group carries a source time) declares none either, linked or not; a system
+    record is always timed. Its window closes at the `VER-TFR-EVU` deadline from its first
+    sighting, and a run at or past that close records the lapse once and for good. A run
+    before the first sighting records nothing and computes no deadline. A detection time that
+    arrives before any run sees the lapse prevents it, which is why the record is only as
+    frequent as the runs (ADR 0019).
     """
 
     if not isinstance(policy, SelectedPolicy):
         raise TypeError("policy must be a SelectedPolicy")
     now = _utc(as_of, "as_of")
-    if case.attestation is not None or any(link.observed_at is not None for link in case.links):
+    if (
+        case.attestation is not None
+        or case.tracking_id in timed_groups
+        or any(link.observed_at is not None for link in case.links)
+    ):
         return None
     seen = first_sighting(case, ingested_at)
-    if seen is None:
+    # Checked before any day is added, so a run can never reach an unrepresentable close.
+    if seen is None or now < seen:
         return None
-    deadline = policy.deadline_for_rule(ATTESTATION_LAPSE_RULE, seen)
-    closed = deadline.due_at.astimezone(UTC)
+    closed, force = _lapse_window(case.tracking_id, seen, policy)
     if now < closed:
         return None
     return AttestationLapse(
         tracking_id=case.tracking_id,
         first_seen_at=seen,
         window_closed_at=closed,
-        force=deadline.force.value,
+        force=force,
     )
 
 
@@ -327,10 +392,15 @@ def attestation_lapses(
     ingested_at: Mapping[str, datetime],
     policy: SelectedPolicy,
     as_of: datetime,
+    *,
+    timed_groups: Collection[str] = (),
 ) -> tuple[AttestationLapse, ...]:
     """Return every case's lapse at `as_of`, in tracking id order."""
 
-    found = (attestation_lapse(case, ingested_at, policy, as_of) for case in cases)
+    found = (
+        attestation_lapse(case, ingested_at, policy, as_of, timed_groups=timed_groups)
+        for case in cases
+    )
     return tuple(sorted((item for item in found if item is not None), key=_lapse_order))
 
 
@@ -417,14 +487,36 @@ def derive_response_gaps(
         raise TypeError("history must be a ResponseGapHistory")
     records = [
         record
-        for recurrence in remediation_recurrences(groups, history.remediated_at)
+        for recurrence in remediation_recurrences(groups, history.remediations)
         for record in recurrence_observations(recurrence, ingested_at=ingested_at)
     ]
+    timed = timed_group_ids(groups)
     records.extend(
         attestation_lapse_observation(lapse, ingested_at=ingested_at)
-        for lapse in attestation_lapses(history.cases, history.ingested_at, policy, as_of)
+        for lapse in attestation_lapses(
+            history.cases, history.ingested_at, policy, as_of, timed_groups=timed
+        )
     )
     return tuple(records)
+
+
+def timed_group_ids(groups: Sequence[VulnerabilityGroup]) -> frozenset[str]:
+    """Return every group whose current members carry a source time, linked or not (F03)."""
+
+    return frozenset(
+        group.tracking_id for group in groups if group.earliest_observed_at is not None
+    )
+
+
+def recurrence_slot(record: Observation) -> tuple[str, ResourceRef]:
+    """Return what one recorded recurrence holds once: its remediation key and its resource (K1).
+
+    The first record of a failed remediation and resource stands, written once, so a later
+    reading of an earlier detection on that resource appends nothing; the slot, not the
+    detection instant, says whether a recurrence is already recorded.
+    """
+
+    return record.context_key, record.resource
 
 
 def rebuilt_recurrence(
@@ -432,24 +524,28 @@ def rebuilt_recurrence(
 ) -> Observation | None:
     """Rebuild a recorded recurrence from its own remediation instant, or None for no backing.
 
-    The rebuild reads the record's case and remediation instant, never the case's current ones:
-    a recorded failure of a remediation is a permanent fact, so a later re-evaluation does not
-    unmake it (ADR 0015 Decision 40, applied here). It is the earliest current open artifact
-    observation of that case on the record's resource detected after that instant.
+    The rebuild reads the record's case, remediation instant and episode, never the case's
+    current ones: a recorded failure of a remediation is a permanent fact, so a later
+    re-evaluation does not unmake it (ADR 0015 Decision 40, applied here). It is the earliest
+    current open artifact observation of that case on the record's resource detected after
+    that instant, which may be earlier than the recorded one when an earlier scan arrived since.
     """
 
-    tracking_id = record.metadata_value("recurrence.caseTrackingId")
+    parts = recurrence_key_parts(record.context_key)
+    if parts is None:  # pragma: no cover - the reader holds every recurrence key to its form
+        return None
+    tracking_id, _, episode = parts
     remediated_at = datetime.fromisoformat(record.metadata_value("recurrence.remediatedAt"))
     group = next((item for item in groups if item.tracking_id == tracking_id), None)
     if group is None:
         return None
-    found = remediation_recurrence(group, remediated_at)
+    found = remediation_recurrence(group, remediated_at, episode=episode)
     if found is None:
         return None
     backing = [item for item in found.recurring if item.resource == record.resource]
     if not backing:
         return None
-    return _recurrence(backing[0], tracking_id, remediated_at, record.ingested_at)
+    return _recurrence(backing[0], tracking_id, remediated_at, episode, record.ingested_at)
 
 
 def rebuilt_lapse(
@@ -467,12 +563,9 @@ def rebuilt_lapse(
     seen = None if case is None else first_sighting(case, history.ingested_at)
     if seen is None:
         return None
-    deadline = policy.deadline_for_rule(ATTESTATION_LAPSE_RULE, seen)
+    closed, force = _lapse_window(tracking_id, seen, policy)
     lapse = AttestationLapse(
-        tracking_id=tracking_id,
-        first_seen_at=seen,
-        window_closed_at=deadline.due_at.astimezone(UTC),
-        force=deadline.force.value,
+        tracking_id=tracking_id, first_seen_at=seen, window_closed_at=closed, force=force
     )
     return attestation_lapse_observation(lapse, ingested_at=record.ingested_at)
 
@@ -510,6 +603,7 @@ def _recurrence(
     recurring: Observation,
     tracking_id: str,
     remediated_at: datetime,
+    episode: int,
     ingested_at: datetime,
 ) -> Observation:
     """Build one recurrence record, named by the id it derives for itself."""
@@ -561,12 +655,14 @@ def _recurrence(
         source_identifiers=(),
         source_metadata=tuple(sorted(metadata.items())),
         evidence_ids=(recurring.observation_id,),
-        context_key=recurrence_context_key(tracking_id, remediated),
+        context_key=recurrence_context_key(tracking_id, remediated, episode),
         origin=ObservationOrigin.SYSTEM,
     )
     return replace(observation, observation_id=observation.derived_observation_id)
 
 
+# NOTE: Correlation already orders a group's members totally, so on the public path the id only
+# breaks a tie a hand-built `RemediationRecurrence` can present; it is kept as a defence.
 def _detection_order(observation: Observation) -> tuple[datetime, str]:
     """Order timed observations by detection time, then by the lowest observation id."""
 
@@ -588,6 +684,28 @@ def _record_order(record: Observation) -> tuple[datetime, str, str, str]:
         record.resource.resource_id,
         record.observation_id,
     )
+
+
+def _lapse_window(tracking_id: str, seen: datetime, policy: SelectedPolicy) -> tuple[datetime, str]:
+    """Return a lapse's window close and the rule's force, read from the selected rule.
+
+    A first sighting so late that the deadline leaves the years `datetime` holds raises
+    `LapseClockError`, which the report layer names as `clock_out_of_range`.
+    """
+
+    try:
+        deadline = policy.deadline_for_rule(ATTESTATION_LAPSE_RULE, seen)
+        closed = deadline.due_at.astimezone(UTC)
+    except OverflowError as exc:
+        raise LapseClockError(tracking_id, seen) from exc
+    return closed, deadline.force.value
+
+
+def _require_episode(episode: object) -> None:
+    """Refuse an episode ordinal that is not a positive integer."""
+
+    if not isinstance(episode, int) or isinstance(episode, bool) or episode < 1:
+        raise ValueError("episode must be a positive integer")
 
 
 def _lapse_order(lapse: AttestationLapse) -> tuple[str, datetime]:
@@ -624,6 +742,7 @@ __all__ = [
     "ATTESTATION_LAPSE_TITLE",
     "AttestationLapse",
     "CaseTiming",
+    "LapseClockError",
     "LinkedEvidence",
     "RECURRENCE_DESCRIPTION",
     "RECURRENCE_KEY_MARK",
@@ -635,6 +754,7 @@ __all__ = [
     "RECURRENCE_SOURCE_TYPE",
     "RECURRENCE_TITLE",
     "RESPONSE_GAP_RULE",
+    "Remediation",
     "RemediationRecurrence",
     "ResponseGapHistory",
     "attestation_lapse",
@@ -645,10 +765,13 @@ __all__ = [
     "first_sighting",
     "lapse_disproof",
     "recurrence_case_tracking_id",
+    "recurrence_key_parts",
+    "recurrence_slot",
     "recurrence_context_key",
     "rebuilt_lapse",
     "rebuilt_recurrence",
     "recurrence_observations",
     "remediation_recurrence",
     "remediation_recurrences",
+    "timed_group_ids",
 ]

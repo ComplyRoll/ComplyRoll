@@ -154,6 +154,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "report_read_failed",
     "report_too_large",
     "response_gap_contradicted",
+    "response_gap_earlier_detection",
     "response_gap_unmatched",
     "response_gap_unrecorded",
     "schema_invalid",

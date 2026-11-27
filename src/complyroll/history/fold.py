@@ -82,7 +82,7 @@ from complyroll.reports.changes_input import Change, ChangeKind, ChangeSource
 from complyroll.reports.checks import CLOCK_OUT_OF_RANGE, observation_clock_message
 from complyroll.reports.evaluations import PainReductionEvent, ProjectedReduction, record_label
 from complyroll.reports.replay import disposition_without_evaluation_message
-from complyroll.reports.response_gaps import ResponseGapHistory
+from complyroll.reports.response_gaps import Remediation, ResponseGapHistory
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 
@@ -366,6 +366,9 @@ class CaseState:
     #: `completedAt` of the evaluation in force when that disposition was first recorded, so a
     #: re-evaluation that keeps it does not move the instant (ADR 0019). None otherwise.
     remediated_at: datetime | None = None
+    #: The 1-based ordinal of that remediated episode in the case stream: a new episode starts
+    #: each time the resolved status becomes `remediated` after not being remediated (K2).
+    remediation_episode: int | None = None
 
     @property
     def stream_id(self) -> str:
@@ -440,19 +443,33 @@ def observation_ingest_instants(repository: EventRepository) -> dict[str, dateti
 
     Every artifact stream is read, current or superseded, because a case's first sighting is the
     first time the store saw any of its evidence (ADR 0019). The instant is the observation's own
-    `ingested_at`, the ingest `--as-of` an operator set, never the store's wall-clock recording
-    time. An id recorded twice keeps its earliest instant.
+    `ingested_at`: the ingest `--as-of`, or the run's time at second precision when none was
+    given, the instant ComplyRoll saw the reading, as ADR 0014 records a failure's. It is never
+    the store's `recorded_at`. An id recorded twice keeps its earliest instant.
     """
 
-    instants: dict[str, datetime] = {}
+    return {
+        observation_id: instant
+        for observation_id, (instant, _) in observation_ingest_records(repository).items()
+    }
+
+
+def observation_ingest_records(repository: EventRepository) -> dict[str, tuple[datetime, int]]:
+    """Map every artifact observation to its earliest ingest instant and that event's sequence.
+
+    `observation_ingest_instants` without the sequences; `store verify` names a first sighting
+    at the event that recorded it.
+    """
+
+    found: dict[str, tuple[datetime, int]] = {}
     for view in _read_artifact_streams(repository):
         for record in view.observations:
             observation_id = str(record.payload.get(OBSERVATION_ID_KEY))
             ingested_at = datetime.fromisoformat(str(record.payload.get("ingested_at")))
-            known = instants.get(observation_id)
-            if known is None or ingested_at < known:
-                instants[observation_id] = ingested_at
-    return instants
+            known = found.get(observation_id)
+            if known is None or ingested_at < known[0]:
+                found[observation_id] = (ingested_at, record.sequence)
+    return found
 
 
 def response_gap_history(
@@ -463,8 +480,10 @@ def response_gap_history(
     return ResponseGapHistory(
         cases=tuple(cases),
         ingested_at=observation_ingest_instants(repository),
-        remediated_at={
-            case.tracking_id: case.remediated_at for case in cases if case.remediated_at is not None
+        remediations={
+            case.tracking_id: Remediation(case.remediated_at, case.remediation_episode)
+            for case in cases
+            if case.remediated_at is not None and case.remediation_episode is not None
         },
     )
 
@@ -1110,6 +1129,7 @@ def fold_case_records(
     reductions: list[PainReductionRecord] = []
     disposition: DispositionRecord | None = None
     remediated_at: datetime | None = None
+    episodes = 0
 
     for record in ordered[1:]:
         body = record.payload
@@ -1156,6 +1176,7 @@ def fold_case_records(
             if disposition.resolved_status is not CaseStatus.REMEDIATED:
                 remediated_at = None
             elif previous is None or previous.resolved_status is not CaseStatus.REMEDIATED:
+                episodes += 1
                 remediated_at = evaluations[-1].completed_at if evaluations else None
         elif record.event_type == CASE_IDENTIFIED:
             provider_tracking_id = _text(body, "providerTrackingId")
@@ -1189,6 +1210,7 @@ def fold_case_records(
         identified_sequence=identified_sequence,
         last_sequence=ordered[-1].sequence,
         remediated_at=remediated_at,
+        remediation_episode=None if remediated_at is None else episodes,
     )
 
 
@@ -3095,6 +3117,7 @@ __all__ = [
     "read_stored_changes",
     "reading_elsewhere",
     "observation_ingest_instants",
+    "observation_ingest_records",
     "rehydrate_observations",
     "response_gap_history",
     "summarize",

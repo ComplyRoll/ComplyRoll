@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import cache
 from typing import Any, Final
 from uuid import uuid4
 
@@ -46,7 +47,13 @@ from complyroll.models import (
     ObservationOrigin,
     SourceSeverity,
 )
-from complyroll.policy import RuleForce
+from complyroll.policy import (
+    CertificationClass,
+    CertificationProfile,
+    RuleForce,
+    load_bundled_rule_source_snapshot,
+    select_policy,
+)
 from complyroll.store import EventRecord, NewEvent, SQLiteEventStore
 from complyroll.store.sqlite import SHOWN_LIMIT, bounded, require_storable_payload, shown
 
@@ -400,6 +407,9 @@ _NOT_A_RESPONSE_GAP_RECORD: Final = (
 
 #: A size as `str(int)` spells it: digits only, no sign, no leading zero.
 _COUNT_TEXT: Final = re.compile(r"(?:0|[1-9][0-9]*)")
+
+#: A remediated episode ordinal as `str(int)` spells a positive integer (K2).
+_EPISODE_TEXT: Final = re.compile(r"[1-9][0-9]*")
 
 #: A SHA-256 digest as every writer spells one: sixty-four lowercase hex digits.
 _SHA256_TEXT: Final = re.compile(r"[0-9a-f]{64}")
@@ -2273,11 +2283,19 @@ def _recurrence_metadata_problem(payload: Mapping[str, Any], raw: Mapping[str, A
             f"its metadata recurrence.remediatedAt is {shown(remediated_text)}, not an instant "
             "as its writer spells one"
         )
-    keyed = f"{tracking_id}:remediated:{remediated_text}"
-    if payload.get("context_key") != keyed:
+    # K2: the key ends on the remediated episode's ordinal, a positive integer as `str(int)`
+    # spells one, so two episodes that share an instant are two keys.
+    keyed = f"{tracking_id}:remediated:{remediated_text}:"
+    context_key = payload.get("context_key")
+    episode = context_key[len(keyed) :] if isinstance(context_key, str) else ""
+    if (
+        not isinstance(context_key, str)
+        or not context_key.startswith(keyed)
+        or _EPISODE_TEXT.fullmatch(episode) is None
+    ):
         return (
-            f"its context key is {shown(payload.get('context_key'))}, where its metadata names "
-            f"{shown(keyed)}"
+            f"its context key is {shown(context_key)}, where its metadata names "
+            f"{shown(keyed + '<episode>')}"
         )
     observed = _utc_text(payload.get("observed_at"))
     detected_text = raw["recurrence.observationDetectedAt"]
@@ -2380,9 +2398,12 @@ def _attestation_lapse_metadata_problem(
             f"its metadata attestation.rule is {shown(raw['attestation.rule'])}, not "
             f"{RESPONSE_GAP_ATTESTATION_RULE!r}"
         )
-    if raw["attestation.force"] not in _RULE_FORCE_VALUES:
+    forces = _attestation_rule_forces()
+    if raw["attestation.force"] not in forces:
         return (
-            f"its metadata attestation.force is {shown(raw['attestation.force'])}, not a rule force"
+            f"its metadata attestation.force is {shown(raw['attestation.force'])}, not the force "
+            f"the pinned rules give {RESPONSE_GAP_ATTESTATION_RULE} "
+            f"({', '.join(sorted(forces))})"
         )
     if payload.get("evidence_ids") != [f"case:{tracking_id}"]:
         return (
@@ -2395,6 +2416,23 @@ def _attestation_lapse_metadata_problem(
     if payload.get("title") != title:
         return f"its title is {shown(payload.get('title'))}"
     return None
+
+
+@cache
+def _attestation_rule_forces() -> frozenset[str]:
+    """Return the force the pinned rules give `VER-TFR-EVU` in each supported class (F08).
+
+    A lapse records the force its run's policy read, so a stored lapse holds one of these and
+    no other member of the force vocabulary.
+    """
+
+    snapshot = load_bundled_rule_source_snapshot()
+    return frozenset(
+        select_policy(snapshot, CertificationProfile(certification_class=value))
+        .rule(RESPONSE_GAP_ATTESTATION_RULE)
+        .force.value
+        for value in CertificationClass
+    )
 
 
 def _utc_text(value: Any) -> str | None:

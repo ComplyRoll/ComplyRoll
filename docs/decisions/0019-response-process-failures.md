@@ -38,7 +38,10 @@ order, and a run of dispositions that each resolve to `remediated` keeps the ins
 evaluation in force at its first one, so a re-evaluation that keeps the disposition moves the
 current `completedAt` and not the remediation instant. A disposition that does not resolve to
 `remediated` ends the run, and a later `remediated` starts a new one. `CaseState.remediated_at`
-carries the instant. The store's `recordedAt` never reaches a report or an identity (ADR 0010).
+carries the instant, and `CaseState.remediation_episode` the run's 1-based position among the
+case's remediated runs (Kyle's ruling K2), so a run that starts at an instant an earlier run
+shared is still a new failed remediation. The store's `recordedAt` never reaches a report or an
+identity (ADR 0010).
 
 A disposition resolves to `remediated` when its status is `remediated`, or `closed` with
 `closedDisposition` `remediated`: both publish `finalDisposition: Remediated`. Re-detection after
@@ -70,6 +73,14 @@ came back, and "whether the remediation held cannot be told" when only untimed m
 then "and the record keeps its disposition until an evaluation changes it". The operator
 re-evaluates. `REPORT_DIAGNOSTIC_CODES` holds the code. A WARNING never moves an exit code (ADR
 0017 I3).
+
+The comparison is strict: a member detected at the remediation instant raises no warning. A
+change to `closed` with `closedDisposition` `remediated` keeps the warning, since that still
+resolves to `remediated`; a change to any disposition that does not clears it. An untimed member
+raises no warning when the record's detection time is an attestation at or before the remediation
+instant, since the attestation already dates the weakness before the remediation (Kyle's ruling
+K4). The trade-off: a new untimed scan of such a record is not flagged. A timed member detected
+after the remediation still is.
 Why: ComplyRoll has never set a disposition itself, and the slice keeps that line (Kyle's ruling
 D3a).
 
@@ -85,10 +96,12 @@ the SYSTEM identity recipe of the ADR 0002 amendment:
 | `parser_name`, `parser_version` | `complyroll.recurrence`, `1` |
 | `source_record_id` | `remediation-recurrence` |
 | `resource_type`, `resource_id` | The recurring observation's resource |
-| `context_key` | `<correlation tracking id>:remediated:<remediation instant>` |
+| `context_key` | `<correlation tracking id>:remediated:<remediation instant>:<episode>` |
 | `observed_at` | The earliest recurring detection on that resource, in UTC |
 
-Ties at one instant on one resource go to the lowest observation id, so they mint one record.
+The episode is the remediated run's position of Decision 1, written as `str(int)` writes a
+positive integer. Ties at one instant on one resource go to the lowest observation id, so they
+mint one record.
 The record is OPEN with severity UNKNOWN, no source identifiers, and no artifact name or digest;
 `evidence_ids` holds the recurring observation's id. The metadata always carries the same four
 keys: `recurrence.caseTrackingId`, `recurrence.remediatedAt`, `recurrence.observationId`, and
@@ -102,21 +115,36 @@ newer parser that rereads the same scan names the same record. The correlation t
 used, never an operator's provider tracking id, so an override does not move the identity.
 Correlation groups by source type, record id and context key, so one failed remediation is one
 case listing every resource that came back, and a second remediation that also fails is a second
-case.
+case, even at the same instant.
+
+The first record stands (Kyle's ruling K1). A failed remediation and resource, keyed by the
+record's context key and resource, is recorded once: when a scan dated earlier than the recorded
+detection is ingested later, `cases response-gaps` reports the stored record as already recorded
+and appends nothing, and a report notes the earlier detection (Decision 11).
 Why: the identity is fixed by the inputs, and one record per resource keeps each resource's
 evidence on the case without a same-instant collision.
 
 ## Decision 5: one lapse record per case and window
 
-A case's first sighting S is the earliest `ingested_at` of its linked observations: the ingest
-`--as-of` an operator set, read from every artifact stream, current or superseded. A case with no
-link has no first sighting and records nothing. Its window closes at the `VER-TFR-EVU` deadline
-from S under the run's class and calendar zone, selected from the pinned dataset: seven days for
-Class B and five for Class C today. A case is untimed when no linked observation declares a
-source timestamp and no attestation is recorded; a system record is always timed. A run of
-`cases response-gaps --as-of T` records a lapse when the case is untimed and T is at or past the
-close, and once recorded the lapse is permanent. Because the true detection time is at or before
-S, the window can only close after the true one, so a lapse never fires early.
+A case's first sighting S is the earliest `ingested_at` of its linked observations, read from
+every artifact stream, current or superseded. An ingest's `ingested_at` is its `--as-of`, or its
+run time at second precision when none is given: the instant ComplyRoll saw the reading, as ADR
+0014 reads a detection process failure (Kyle's ruling K3). A case with no link has no first
+sighting and records nothing. Its window closes at the `VER-TFR-EVU` deadline from S under the
+run's class and calendar zone, selected from the pinned dataset: seven days for Class B and five
+for Class C today. A case is untimed when no linked observation declares a source timestamp, no
+attestation is recorded, and the report's current group for the case holds no observation that
+declares one, linked or not; a system record is always timed. A run of `cases response-gaps
+--as-of T` records a lapse when the case is untimed, T is at or after S, and T is at or past the
+close, and once recorded the lapse is permanent. S stands in for the detection time: when the
+ingest instant is at or after the true detection, the window can only close after the true one,
+so the lapse is never early. ComplyRoll cannot check that condition, and an `--as-of` or a later
+attestation that dates detection after S can leave a recorded lapse before the deadline the
+attestation gives. The lapse records that the run found the case untimed at or after the first
+sighting's deadline, and an attestation entered after the deadline but before the first run that
+sees it prevents the record. A first sighting whose deadline falls past what a timestamp holds is
+an invalid store clock: a report refuses the store with `clock_out_of_range` and `store verify`
+rejects it, never an uncaught overflow.
 
 | Recipe input | Value |
 |---|---|
@@ -130,7 +158,8 @@ S, the window can only close after the true one, so a lapse never fires early.
 
 `evidence_ids` holds `case:<tracking id>`. The metadata always carries five keys:
 `attestation.caseTrackingId`, `attestation.firstSeenAt`, `attestation.windowClosedAt`,
-`attestation.rule` (`VER-TFR-EVU`), and `attestation.force`, the force the dataset states. The
+`attestation.rule` (`VER-TFR-EVU`), and `attestation.force`, the force the dataset states, which
+the repository holds to the force the pinned rules give `VER-TFR-EVU` in a supported class. The
 title is `detection time of <tracking id> was not attested within VER-TFR-EVU from <S>
 (VDR-CSO-FAV)`. The id moves with the case and the window close only. Lapses of one case under
 two profiles share its context key, so they are one case.
@@ -140,12 +169,14 @@ sees the lapse prevents it: the record is only as frequent as the runs.
 
 ## Decision 6: a store recording instant becomes a report instant here, and only here
 
-S is a recording instant, the operator's ingest `--as-of`, and it reaches a report through the
-lapse's title and window close. ADR 0014 already reports a detection process failure at its
-recording instant, so the precedent stands. The store's own `recorded_at`, a case's `createdAt`,
-and an attestation's `attestedAt` are wall-clock instants, and none of them reaches a report record
-or an identity.
-Why: the operator chose the instant, so a past period rebuilds to the same bytes.
+S is a recording instant, the ingest's `--as-of` or its run time when none is given, and it
+reaches a report through the lapse's title and window close. ADR 0014 already reports a detection
+process failure at its recording instant, so the precedent stands (Kyle's ruling K3). The store's
+own `recorded_at`, a case's `createdAt`, and an attestation's `attestedAt` are wall-clock
+instants, and none of them reaches a report record or an identity.
+Why: the instant is fixed once the reading is recorded, so a past period rebuilds to the same
+bytes. Byte identity across stores built from the same scans needs `--as-of` on every ingest, since
+an ingest without one records its own run time.
 
 ## Decision 7: detection time and clocks
 
@@ -209,7 +240,7 @@ a case missing or moved since is not a fault, since a gap recorded before `cases
 legal (ADR 0015 Decision 36). Whatever a report from the store refuses, `store verify` rejects.
 Why: one text per fault keeps the reader and the audit from drifting apart.
 
-## Decision 11: three notes name where a store and its run disagree
+## Decision 11: four notes name where a store and its run disagree
 
 A report from a store that holds a response gap stream reads the store's response gaps against the
 run, each disagreement an INFO note, the twins of ADR 0015 Decisions 38 to 40:
@@ -222,14 +253,19 @@ run, each disagreement an INFO note, the twins of ADR 0015 Decisions 38 to 40:
   declares a source timestamp was recorded at or before its own window close.
 - `response_gap_unmatched`: a recorded gap the run derives no gap for, with nothing against it, so
   the evidence or the run's class or calendar zone may differ from the run that recorded it.
+- `response_gap_earlier_detection`: a recorded recurrence whose failed remediation and resource
+  the run finds detected earlier than the record says. The record stands as written (Decision 4),
+  so the note names the earlier instant and no second record is made.
 
 A recorded gap the run does not derive stands, with no note, when the run rebuilds it from its own
 record: a recurrence from its own remediation instant, whatever the case's disposition now, and a
 lapse from its case's first sighting, whether or not the case is timed now. So an attestation
-after a lapse, or a re-evaluation after a recurrence, writes no note. Each note is located
-`<record id> <case tracking id>` and read against the other recorded gaps of its case: a
+after a lapse, or a re-evaluation after a recurrence, writes no note. A derived recurrence whose
+context key and resource a stored record holds is that record, never unrecorded. Each note is
+located `<record id> <case tracking id>` and read against the other recorded gaps of its case: a
 contradicted note advises a false positive only when no other gap of the case stands (ADR 0015
-Decision 39). A store that holds no response gap stream reads as it did before, byte for byte.
+Decision 39). A store that holds no response gap stream writes none of these notes and reads as it
+did before, except for the recurrence WARNING of Decision 3, which every report carries.
 Why: a permanent fact must not turn every later report into a note, and an operator must tell
 "evidence disproves this" from "this run's inputs differ" without parsing a message.
 
@@ -239,7 +275,8 @@ No existing golden moved. Two pairs are new: `tests/golden/vdt-recurrence-warnin
 stateless run carrying only the warning, which a store built from the same scans reports byte for
 byte before `cases correlate`; and `tests/golden/historical-response-gaps.{json,md}`, cut from a
 store that recorded both kinds and then attested the untimed case, so its lapse stands with no
-note.
+note. The episode ordinal of Kyle's ruling K2 moved the second pair's recurrence context key, so
+its case tracking id and observation id were recut on 2026-11-27; the first pair did not move.
 
 ## Exit status
 

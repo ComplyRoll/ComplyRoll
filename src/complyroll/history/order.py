@@ -29,6 +29,7 @@ from complyroll.events import EventRepository
 from complyroll.policy import (
     CertificationClass,
     CertificationProfile,
+    SelectedPolicy,
     load_bundled_rule_source_snapshot,
     select_policy,
 )
@@ -40,6 +41,7 @@ from complyroll.reports.checks import (
     detection_clock_message,
     evaluation_clock_message,
     evaluation_order_diagnostic,
+    first_sighting_clock_message,
     observation_clock_message,
     published_tracking_id,
     resolve_detection_time,
@@ -48,12 +50,14 @@ from complyroll.reports.checks import (
 )
 from complyroll.reports.model import DetectionAttestation, ReportDiagnostic, evaluation_location
 from complyroll.reports.replay import case_evaluations
+from complyroll.reports.response_gaps import first_sighting
 
 from .fold import (
     CaseState,
     HistoryError,
     HistoryFault,
     fold_all_cases,
+    observation_ingest_records,
     rehydrate_observation_records,
     rehydrate_observations,
 )
@@ -308,7 +312,41 @@ def clock_faults(repository: EventRepository) -> tuple[HistoryFault, ...]:
             )
         message = detection_clock_message(label, clock, problem)
         faults.append(HistoryFault(sequence=sequence, code=CLOCK_OUT_OF_RANGE, message=message))
+    faults.extend(_first_sighting_faults(repository, tuple(cases.values()), policies))
     return tuple(sorted(faults, key=lambda fault: (fault.sequence, fault.code)))
+
+
+def _first_sighting_faults(
+    repository: EventRepository,
+    cases: Sequence[CaseState],
+    policies: Sequence[SelectedPolicy],
+) -> tuple[HistoryFault, ...]:
+    """Name each first sighting whose `VER-TFR-EVU` deadline overflows, in a store a report reads
+    for response gaps (ADR 0019, F06).
+
+    Only a store holding a response gap stream makes a report derive lapse windows, so only such
+    a store is checked; every case with a first sighting is, whatever its timing, which names
+    every first sighting some report refuses, at the observation event that recorded it.
+    """
+
+    if not repository.holds_response_gap_stream():
+        return ()
+    records = observation_ingest_records(repository)
+    instants = {observation_id: found[0] for observation_id, found in records.items()}
+    faults = []
+    for case in cases:
+        seen = first_sighting(case, instants)
+        problem = None if seen is None else clock_problem(seen, policies)
+        if seen is None or problem is None:
+            continue
+        sequence = min(
+            records[link.observation_id][1]
+            for link in case.links
+            if link.observation_id in records and records[link.observation_id][0] == seen
+        )
+        message = first_sighting_clock_message(case.tracking_id, seen, problem)
+        faults.append(HistoryFault(sequence=sequence, code=CLOCK_OUT_OF_RANGE, message=message))
+    return tuple(faults)
 
 
 __all__ = [

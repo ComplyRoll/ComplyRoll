@@ -63,7 +63,12 @@ from complyroll.events import (
     response_gap_stream_id_of,
 )
 from complyroll.events.contracts import TRACKING_ID_PATTERN
-from complyroll.models import RESERVED_SOURCE_TYPE_PREFIX, CaseStatus, Observation
+from complyroll.models import (
+    RESERVED_SOURCE_TYPE_PREFIX,
+    CaseStatus,
+    Observation,
+    ObservationOrigin,
+)
 from complyroll.policy import CertificationProfile
 from complyroll.reports.change_gaps import change_gap_observations
 from complyroll.reports.changes import ChangeProjection, StoredChangeSet
@@ -80,6 +85,7 @@ from complyroll.reports.records import (
     derive_report_coverage,
     derive_report_response_gaps,
 )
+from complyroll.reports.response_gaps import RECURRENCE_SOURCE_TYPE, recurrence_slot
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
 
@@ -1021,10 +1027,23 @@ def _record_response_gaps(
     gaps = derive_report_response_gaps(
         observations, response_gap_history(repository, cases), profile, as_of
     )
+    # K1: a failed remediation and resource is recorded once, so a recurrence whose slot a stored
+    # record already holds is that record, whatever detection this run finds earliest.
+    slots = {
+        recurrence_slot(item): item
+        for item in observations
+        if item.origin is ObservationOrigin.SYSTEM and item.source_type == RECURRENCE_SOURCE_TYPE
+    }
     recorded: list[Observation] = []
     already: list[Observation] = []
     # Every stream is read and judged before the first append, so a refusal writes nothing.
     for gap in gaps:
+        stored = (
+            slots.get(recurrence_slot(gap)) if gap.source_type == RECURRENCE_SOURCE_TYPE else None
+        )
+        if stored is not None:
+            already.append(stored)
+            continue
         stream_id = response_gap_stream_id_of(gap)
         existing = repository.read_stream(stream_id)
         if not existing:

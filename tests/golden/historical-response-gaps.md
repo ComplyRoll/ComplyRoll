@@ -34,7 +34,7 @@
 |---|---|---:|---|---|---|---|---|---|---|---|
 | case-a28eeaac0789b5e2 | V-299001 | 1 | 2026-09-01T00:00:00Z | n/a | n/a | n/a | n/a | 2026-09-06T00:00:00Z (VER-TFR-EVU) | yes | active |
 | case-21e6bd73f9174969 | attestation-lapse | 1 | 2026-09-06T00:00:00Z | n/a | n/a | n/a | n/a | 2026-09-11T00:00:00Z (VER-TFR-EVU) | yes | active |
-| case-36313f6ed3164db8 | remediation-recurrence | 1 | 2026-09-12T08:40:00Z | n/a | n/a | n/a | n/a | 2026-09-17T08:40:00Z (VER-TFR-EVU) | no | active |
+| case-d89cd83626f1cb44 | remediation-recurrence | 1 | 2026-09-12T08:40:00Z | n/a | n/a | n/a | n/a | 2026-09-17T08:40:00Z (VER-TFR-EVU) | no | active |
 | case-748ec5056f5557ed | CVE-2099-0101 | 2 | 2026-09-02T10:15:00Z | 2026-09-05T15:00:00Z | yes | yes | N3 | n/a | no | Remediated |
 
 ## Active vulnerability details
@@ -71,12 +71,12 @@
 |---|---|---|---|---|---|---|
 | VER-TFR-EVU | Evaluate Vulnerabilities Quickly | SHOULD | detection | 2026-09-06T00:00:00Z | 2026-09-11T00:00:00Z | no |
 
-### case-36313f6ed3164db8: remediation-recurrence
+### case-d89cd83626f1cb44: remediation-recurrence
 
 - **Description:** remediation-recurrence: remediation of case-748ec5056f5557ed recorded 2026-09-05T15:00:00Z did not hold: image:registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2 detected again 2026-09-12T08:40:00Z (VDR-CSO-FAV)
 - **Detection source:** complyroll
 - **Detected at:** 2026-09-12T08:40:00Z (source: system)
-- **Observations:** obs-6567363ed96e0fffdf168fd13832f385e5e15d498b16bb2cf320600de0b086f1
+- **Observations:** obs-96b8956b3a49f8026796a7ef9c68a42448ada45873af753313b60c3d910b2806
 - **Affected resources:** image registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2
 - **Source identifiers:** n/a
 - **Evaluation:** not yet completed

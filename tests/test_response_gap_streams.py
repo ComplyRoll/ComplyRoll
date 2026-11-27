@@ -63,6 +63,7 @@ from complyroll.history import (
 from complyroll.models import Observation
 from complyroll.reports import response_gaps as builder
 from complyroll.reports.response_gaps import (
+    Remediation,
     attestation_lapse,
     attestation_lapse_observation,
     recurrence_observations,
@@ -96,7 +97,9 @@ RESPONSE_CODES = (
 def recurrence_record() -> Observation:
     """Return the recurrence a remediation of 5 August that a scan of 10 August contradicts."""
     (group,) = group_open_observations((fail("lab-01", FIRST_SEEN), fail("lab-01", BACK_AT)))
-    (recurrence,) = remediation_recurrences((group,), {group.tracking_id: REMEDIATED_AT})
+    (recurrence,) = remediation_recurrences(
+        (group,), {group.tracking_id: Remediation(REMEDIATED_AT, 1)}
+    )
     (record,) = recurrence_observations(recurrence, ingested_at=NOW)
     return record
 
@@ -419,7 +422,7 @@ class ResponseGapAppendTests(StoreCase):
         lapse_metadata = dict(lapse.source_metadata)
         for key, value, why in (
             ("attestation.firstSeenAt", "2026-09-07T08:00:00Z", "not before its window close"),
-            ("attestation.force", "MAYBE", "not a rule force"),
+            ("attestation.force", "MAYBE", "not the force the pinned rules give VER-TFR-EVU"),
         ):
             with self.subTest(key=key):
                 edited = rebuilt(
@@ -466,7 +469,7 @@ class ResponseGapSchemaTests(StoreCase):
             self.addCleanup(reopened.close)
             self.assertEqual(reopened.schema_version, 1)
 
-    def test_a_rolled_back_append_leaves_the_schema(self) -> None:
+    def test_a_refused_append_leaves_the_schema(self) -> None:
         record = recurrence_record()
         head = dict(response_gap_head_payload(record), observationId="obs-other")
         with self.assertRaises(EventContractError):
@@ -636,9 +639,18 @@ class ResponseGapStoreVerifyCommandTests(PersistedStoreTestCase):
         return err.splitlines()[:-1]
 
     def assert_refused_everywhere(self, message: str) -> None:
+        """Every reader of the store's observations, the response gap writer among them, refuses
+        the store by the audit's text and leaves it as it was."""
+        with closing(sqlite3.connect(self.database)) as connection:
+            before = connection.execute("SELECT COUNT(*), MAX(sequence) FROM events").fetchone()
         for label, argv in (
             ("report vdt", ["report", "vdt", "--db", str(self.database), *REPORT_OPTIONS]),
             ("cases correlate", ["cases", "correlate", "--db", str(self.database)]),
+            (
+                "cases response-gaps",
+                ["cases", "response-gaps", "--db", str(self.database), "--class", "C"]
+                + ["--as-of", KEV_AS_OF],
+            ),
         ):
             with self.subTest(label):
                 code, out, err = run(argv)
@@ -646,6 +658,9 @@ class ResponseGapStoreVerifyCommandTests(PersistedStoreTestCase):
                 self.assertIn("error: history_invalid: ", err)
                 self.assertIn(message, err)
                 self.assertNotIn("Traceback", err)
+        with closing(sqlite3.connect(self.database)) as connection:
+            after = connection.execute("SELECT COUNT(*), MAX(sequence) FROM events").fetchone()
+        self.assertEqual(after, before)
 
     def test_a_whole_stream_verifies(self) -> None:
         record = recurrence_record()

@@ -68,12 +68,14 @@ from complyroll.reports.response_gaps import (
     RECURRENCE_RECORD_ID,
     RECURRENCE_SOURCE_TYPE,
     AttestationLapse,
+    Remediation,
     attestation_lapse,
     attestation_lapse_observation,
     attestation_lapses,
     first_sighting,
     recurrence_case_tracking_id,
     recurrence_context_key,
+    recurrence_key_parts,
     recurrence_observations,
     remediation_recurrence,
     remediation_recurrences,
@@ -313,11 +315,16 @@ class RemediationRecurrenceTests(unittest.TestCase):
 
 
 def recurrence_records(
-    *found: Observation, remediated_at: datetime = REMEDIATED_AT, ingested_at: datetime = AS_OF
+    *found: Observation,
+    remediated_at: datetime = REMEDIATED_AT,
+    ingested_at: datetime = AS_OF,
+    episode: int = 1,
 ) -> tuple[Observation, ...]:
     """Return the records one remediated group's recurrence mints."""
     (group,) = group_open_observations(found)
-    (recurrence,) = remediation_recurrences((group,), {group.tracking_id: remediated_at})
+    (recurrence,) = remediation_recurrences(
+        (group,), {group.tracking_id: Remediation(remediated_at, episode)}
+    )
     return recurrence_observations(recurrence, ingested_at=ingested_at)
 
 
@@ -358,7 +365,7 @@ class RecurrenceIdentityTests(unittest.TestCase):
         self.assertEqual(first.source_identifiers, ())
         self.assertEqual(first.source_artifact_name, "")
         self.assertEqual(first.source_artifact_digest, "")
-        self.assertEqual(first.context_key, f"{case_id}:remediated:{REMEDIATED_TEXT}")
+        self.assertEqual(first.context_key, f"{case_id}:remediated:{REMEDIATED_TEXT}:1")
         self.assertEqual(first.observation_id, first.derived_observation_id)
         self.assertEqual(first.evidence_ids, (found[2].observation_id,))
         self.assertEqual(
@@ -436,29 +443,51 @@ class RecurrenceIdentityTests(unittest.TestCase):
                 fail("lab-01", BACK_AT, record="CVE-2099-0200"),
             )
         )
-        remediated = {groups[0].tracking_id: REMEDIATED_AT}
+        remediated = {groups[0].tracking_id: Remediation(REMEDIATED_AT, 1)}
         (found,) = remediation_recurrences(groups, remediated)
         self.assertEqual(found.tracking_id, groups[0].tracking_id)
         self.assertEqual(remediation_recurrences(groups, {}), ())
 
     def test_the_context_key_reads_back_and_refuses_other_keys(self) -> None:
-        key = recurrence_context_key("case-0123456789abcdef", REMEDIATED_AT)
-        self.assertEqual(key, f"case-0123456789abcdef:remediated:{REMEDIATED_TEXT}")
+        key = recurrence_context_key("case-0123456789abcdef", REMEDIATED_AT, 1)
+        self.assertEqual(key, f"case-0123456789abcdef:remediated:{REMEDIATED_TEXT}:1")
         self.assertEqual(recurrence_case_tracking_id(key), "case-0123456789abcdef")
+        self.assertEqual(
+            recurrence_key_parts(
+                recurrence_context_key("case-0123456789abcdef", REMEDIATED_AT, 12)
+            ),
+            ("case-0123456789abcdef", REMEDIATED_TEXT, 12),
+        )
         for other in (
             "synthetic",
             "case-0123456789abcdef",
             "case-0123456789abcdef:remediated:",
-            "case-0123456789ABCDEF:remediated:x",
-            "case-0123456789abcdef:accepted:x",
+            f"case-0123456789abcdef:remediated:{REMEDIATED_TEXT}",
+            f"case-0123456789abcdef:remediated:{REMEDIATED_TEXT}:0",
+            f"case-0123456789abcdef:remediated:{REMEDIATED_TEXT}:01",
+            "case-0123456789abcdef:remediated::1",
+            "case-0123456789ABCDEF:remediated:x:1",
+            "case-0123456789abcdef:accepted:x:1",
             "VDR-CSO-DAC:change:CHG-1",
         ):
             with self.subTest(key=other):
                 self.assertIsNone(recurrence_case_tracking_id(other))
+        for episode in (0, -1, True, 1.0):
+            with self.subTest(episode=episode), self.assertRaises(ValueError):
+                recurrence_context_key("case-0123456789abcdef", REMEDIATED_AT, episode)
         with self.assertRaises(ValueError):
-            recurrence_context_key("PROVIDER-0100", REMEDIATED_AT)
+            recurrence_context_key("PROVIDER-0100", REMEDIATED_AT, 1)
         with self.assertRaises(ValueError):
-            recurrence_context_key("case-0123456789abcdef", datetime(2026, 8, 5))
+            recurrence_context_key("case-0123456789abcdef", datetime(2026, 8, 5), 1)
+
+    def test_two_episodes_at_one_instant_are_two_cases(self) -> None:
+        # K2: the episode ordinal, not the instant alone, names a failed remediation.
+        found = (fail("lab-01", FIRST_SEEN), fail("lab-01", BACK_AT))
+        first = recurrence_records(*found)
+        second = recurrence_records(*found, episode=2)
+        self.assertNotEqual(first[0].observation_id, second[0].observation_id)
+        self.assertTrue(second[0].context_key.endswith(f"{REMEDIATED_TEXT}:2"))
+        self.assertEqual(len(group_open_observations((*first, *second))), 2)
 
     def test_the_builder_refuses_what_is_not_a_recurrence(self) -> None:
         (group,) = group_open_observations((fail("lab-01", BACK_AT),))

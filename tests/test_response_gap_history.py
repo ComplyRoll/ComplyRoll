@@ -50,6 +50,7 @@ from complyroll.reports import (
     compile_record_set,
 )
 from complyroll.reports.response_gaps import (
+    Remediation,
     ResponseGapHistory,
     attestation_lapse,
     attestation_lapse_observation,
@@ -80,9 +81,9 @@ REPORT = (
 #: The cases the golden store holds, by what they are.
 REMEDIATED_CASE = "case-748ec5056f5557ed"
 UNTIMED_CASE = "case-a28eeaac0789b5e2"
-RECURRENCE_CASE = "case-36313f6ed3164db8"
+RECURRENCE_CASE = "case-d89cd83626f1cb44"
 LAPSE_CASE = "case-21e6bd73f9174969"
-RECURRENCE_ID = "obs-6567363ed96e0fffdf168fd13832f385e5e15d498b16bb2cf320600de0b086f1"
+RECURRENCE_ID = "obs-96b8956b3a49f8026796a7ef9c68a42448ada45873af753313b60c3d910b2806"
 LAPSE_ID = "obs-5e1b2b5cf665b208a471fb68c878627a207694012c555f4472872516db3ac823"
 RECURRENCE_LINE = (
     f"remediation of {REMEDIATED_CASE} recorded 2026-09-05T15:00:00Z did not hold: "
@@ -248,11 +249,14 @@ class ResponseGapCommandTests(StoreCase):
         self.assertEqual(code, 3)
         self.assertIn(f"recorded {LAPSE_LINE}", out)
 
-    def test_a_case_that_was_never_correlated_has_no_first_sighting(self) -> None:
-        # F1: no links, no first sighting, no record, however late the run.
+    def test_an_uncorrelated_reading_opens_no_case_and_records_nothing(self) -> None:
+        # No case, so no link and no first sighting; the linkless case is in the fix tests.
         self.ingest(UNTIMED, SEEN_TEXT)
         code, out, _ = self.response_gaps("--class", "C", "--as-of", "2027-01-01T00:00:00Z")
-        self.assertEqual((code, out.splitlines()[-1]), (0, out.splitlines()[-1]))
+        self.assertEqual(
+            (code, out),
+            (0, "recorded 0 response gap(s), skipped 0 already-recorded response gap(s)\n"),
+        )
         self.assertNotIn("recorded detection time", out)
 
     def test_a_recurrence_is_recorded_before_correlate_links_what_came_back(self) -> None:
@@ -310,7 +314,7 @@ class ResponseGapCaseTests(StoreCase):
         self.assertTrue(any(line.endswith(f"active       {UNTIMED_CASE}") for line in lines))
         self.assertTrue(
             any(
-                line.endswith(f"{REMEDIATED_CASE}:remediated:2026-09-05T15:00:00Z")
+                line.endswith(f"{REMEDIATED_CASE}:remediated:2026-09-05T15:00:00Z:1")
                 for line in lines
             )
         )
@@ -320,7 +324,7 @@ class ResponseGapCaseTests(StoreCase):
 
     def test_an_evaluation_matches_a_recurrence_by_the_full_triple_alone(self) -> None:
         self.build_golden_store()
-        key = f"{REMEDIATED_CASE}:remediated:2026-09-05T15:00:00Z"
+        key = f"{REMEDIATED_CASE}:remediated:2026-09-05T15:00:00Z:1"
         short = {"sourceRecordId": "remediation-recurrence", "sourceType": "complyroll.recurrence"}
         code, _, err = self.evaluate({"match": short, **GAP_ENTRY})
         self.assertEqual(code, 1)
@@ -476,7 +480,9 @@ class ResponseGapNoteTests(unittest.TestCase):
         (record,) = recurrence_records(before, fail("lab-01", BACK_AT))
         (group,) = group_open_observations((before,))
         history = ResponseGapHistory(
-            cases=(), ingested_at={}, remediated_at={group.tracking_id: REMEDIATED_AT}
+            cases=(),
+            ingested_at={},
+            remediations={group.tracking_id: Remediation(REMEDIATED_AT, 1)},
         )
         (note,) = self.notes((before, record), history)
         self.assertEqual(note.code, "response_gap_contradicted")
@@ -493,14 +499,14 @@ class ResponseGapNoteTests(unittest.TestCase):
         found = (fail("lab-01", FIRST_SEEN), fail("lab-01", BACK_AT))
         (record,) = recurrence_records(*found)
         # The case is no longer remediated, so this run derives nothing, and the record stands.
-        history = ResponseGapHistory(cases=(), ingested_at={}, remediated_at={})
+        history = ResponseGapHistory(cases=(), ingested_at={}, remediations={})
         self.assertEqual(self.notes((*found, record), history), [])
 
     def test_a_contradicted_gap_names_a_sibling_that_keeps_the_case_open(self) -> None:
         before = fail("lab-01", FIRST_SEEN)
         records = recurrence_records(before, fail("lab-01", BACK_AT), fail("lab-02", LATER_AT))
         (group,) = group_open_observations((before,))
-        history = ResponseGapHistory(cases=(), ingested_at={}, remediated_at={})
+        history = ResponseGapHistory(cases=(), ingested_at={}, remediations={})
         kept = fail("lab-02", LATER_AT)
         (note,) = self.notes((before, kept, *records), history)
         self.assertEqual(note.code, "response_gap_contradicted")
@@ -515,7 +521,7 @@ class ResponseGapNoteTests(unittest.TestCase):
         assert lapse is not None
         record = attestation_lapse_observation(lapse, ingested_at=datetime(2026, 10, 1, tzinfo=UTC))
         timed = Case(links=(Link("obs-first"), Link("obs-second", BACK_AT)))
-        history = ResponseGapHistory(cases=(timed,), ingested_at=INGESTED, remediated_at={})
+        history = ResponseGapHistory(cases=(timed,), ingested_at=INGESTED, remediations={})
         (note,) = self.notes((record,), history)
         self.assertEqual(note.code, "response_gap_contradicted")
         self.assertEqual(note.location, f"attestation-lapse {CASE_ID}")
@@ -531,7 +537,7 @@ class ResponseGapNoteTests(unittest.TestCase):
         record = attestation_lapse_observation(lapse, ingested_at=datetime(2026, 10, 1, tzinfo=UTC))
         late = {**INGESTED, "obs-late": datetime(2026, 9, 20, tzinfo=UTC)}
         timed = Case(links=(Link("obs-first"), Link("obs-late", BACK_AT)))
-        history = ResponseGapHistory(cases=(timed,), ingested_at=late, remediated_at={})
+        history = ResponseGapHistory(cases=(timed,), ingested_at=late, remediations={})
         self.assertEqual(self.notes((record,), history), [])
 
     def test_a_lapse_timed_at_its_window_close_is_contradicted(self) -> None:
@@ -541,7 +547,7 @@ class ResponseGapNoteTests(unittest.TestCase):
         record = attestation_lapse_observation(lapse, ingested_at=datetime(2026, 10, 1, tzinfo=UTC))
         at_close = {**INGESTED, "obs-close": lapse.window_closed_at}
         timed = Case(links=(Link("obs-first"), Link("obs-close", BACK_AT)))
-        history = ResponseGapHistory(cases=(timed,), ingested_at=at_close, remediated_at={})
+        history = ResponseGapHistory(cases=(timed,), ingested_at=at_close, remediations={})
         (note,) = self.notes((record,), history)
         self.assertEqual(note.code, "response_gap_contradicted")
         self.assertIn("obs-close", note.message)

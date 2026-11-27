@@ -149,11 +149,12 @@ resource that came back, and every report, on both paths, warns about it while t
 the operator's `remediated` disposition: ComplyRoll never sets a disposition. A case whose
 detection time no source, attestation, or system clock gave it by the close of the `VER-TFR-EVU`
 window, read from the pinned dataset and measured from when the store first recorded its evidence,
-becomes a system record too. Because the true detection time is at or before that first record,
-this window closes only after the true one, so the record never fires early; and because a run
-reads whether the case is timed when it runs, an attestation made before any run prevents it, so
-the record is only as frequent as the runs. A lapsed planned response, which needs response
-action records, and the `VER-TFR-MHR` and `VER-TFR-MRH` recurrence clocks are still carried in
+becomes a system record too. The first record stands in for the detection time: when the ingest
+instant is at or after the true detection, this window closes only after the true one, so the
+record is never early, but ComplyRoll cannot check that condition. Because a run reads whether
+the case is timed when it runs, an attestation made before any run prevents it, so the record is
+only as frequent as the runs. A lapsed planned response, which needs response action records, and
+the `VER-TFR-MHR` and `VER-TFR-MRH` recurrence clocks are still carried in
 Phase 3. A recorded response gap is evidence that the provider's process failed and was noticed,
 not a determination that the provider meets `VDR-CSO-FAV`. Stale coverage and missing resources
 are measured by the coverage and freshness checks below, and become cases when the operator asks

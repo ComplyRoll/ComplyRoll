@@ -419,16 +419,20 @@ A remediated record that a later scan finds again keeps the operator's dispositi
 never sets one. Every report, on both paths, adds one WARNING `recurrence_after_remediation` per
 such record, naming the remediation instant and the earliest detection after it, and counting
 any open member that declares no source timestamp, whose time cannot be ordered against the
-remediation (ADR 0019). The instant is the `completedAt` of the record's evaluation; from a store,
-of the evaluation in force when the current remediated disposition was first recorded, so a
-re-evaluation that keeps the disposition does not move it. Only a disposition that resolves to
-`remediated` counts. Re-evaluate the record: the warning goes when its disposition changes.
+remediation (ADR 0019). A detection at the remediation instant raises no warning. An untimed
+member raises none when the record's detection time is an attestation at or before the
+remediation, so a new untimed scan of such a record is not flagged. The instant is the
+`completedAt` of the record's evaluation; from a store, of the evaluation in force when the
+current remediated disposition was first recorded, so a re-evaluation that keeps the disposition
+does not move it. Only a disposition that resolves to `remediated` counts, `closed` with
+`closedDisposition` `remediated` among them. Re-evaluate the record: the warning goes when its
+disposition changes to one that does not resolve to `remediated`.
 
 In a store, `cases response-gaps` records that failure, and one more, as `VDR-CSO-FAV` system
 records: a remediation that did not hold, one record per resource that came back, and a case whose
 detection time was not attested within the `VER-TFR-EVU` window from the earliest ingest of its
 linked evidence. No report flag records either. A report from a store that holds a response gap
-reads it against its own run with one of three INFO notes, each located at
+reads it against its own run with one of four INFO notes, each located at
 `<record id> <case tracking id>`:
 
 | Code | When | What to do |
@@ -436,6 +440,7 @@ reads it against its own run with one of three INFO notes, each located at
 | `response_gap_unrecorded` | The run derives a response gap the store holds no record for, so no case carries it | Run `cases response-gaps` with the report's `--as-of`, `--class`, and calendar zone, then `cases correlate` |
 | `response_gap_contradicted` | The store holds a response gap the run cannot rebuild from its own record, and the store holds evidence against it | Dispose the case as a false positive only when the note advises it, which it does when no other gap of the case still stands |
 | `response_gap_unmatched` | The store holds a response gap the run cannot rebuild, with nothing against it, so the evidence or the report's class or calendar zone may differ from the run that recorded it | Check the report's `--class` and calendar zone against the `cases response-gaps` run; no disposition answers this note |
+| `response_gap_earlier_detection` | The store holds a remediation recurrence the run finds detected earlier than its record says, from a scan ingested after it was recorded | Nothing to record: the first record stands, and the note names the earlier instant |
 
 A recorded gap the run rebuilds from its own record writes no note, so attesting a case after its
 lapse was recorded, or re-evaluating a case after its recurrence was recorded, leaves the report
@@ -443,9 +448,15 @@ quiet. An evaluation closes a response gap as it closes any record, matched on a
 the context key from the last column of `cases list`:
 
 ```json
-{"sourceRecordId": "remediation-recurrence", "sourceType": "complyroll.recurrence", "contextKey": "case-748ec5056f5557ed:remediated:2026-09-05T15:00:00Z"}
-{"sourceRecordId": "attestation-lapse", "sourceType": "complyroll.attestation", "contextKey": "case-a28eeaac0789b5e2"}
+{"sourceRecordId": "remediation-recurrence", "sourceType": "complyroll.recurrence",
+ "contextKey": "case-748ec5056f5557ed:remediated:2026-09-05T15:00:00Z:1"}
+{"sourceRecordId": "attestation-lapse", "sourceType": "complyroll.attestation",
+ "contextKey": "case-a28eeaac0789b5e2"}
 ```
+
+A recurrence's context key ends on the remediated episode, the 1-based position of that
+remediated run in the case, so a second remediation that fails is a second case even at the same
+instant.
 
 An entry short of a key is refused, and the message ends "a remediation recurrence is matched by
 sourceRecordId, sourceType and contextKey together, so add" or the same with "a lapsed
@@ -571,14 +582,22 @@ the store reads them, and appends one `response-gap/<fingerprint>` stream per re
 recorded, written whole in one batch: a `response_gap.recorded` event and the record's system
 observation (ADR 0019). A remediation that did not hold is read from the report's own grouping of
 every current open observation, linked or not, so it is recorded before `cases correlate` links
-what came back. A lapse is recorded when a case with linked evidence has no source timestamp on
-any link and no attestation, and `--as-of` is at or past the `VER-TFR-EVU` deadline, under
-`--class` and `--calendar-tz`, from the earliest ingest `--as-of` of that evidence. Once recorded
-it is permanent, and an attestation made before any run sees the lapse prevents it. It prints one
-line per record, first those it recorded and then those already recorded, and a count:
+what came back. A failed remediation and resource is recorded once: a scan dated earlier than the
+recorded detection and ingested after it appends nothing, and the stored record is listed as
+already recorded. A lapse is recorded when a case with linked evidence has no source timestamp on
+any link or on any current reading of it, linked or not, and no attestation, and `--as-of` is at
+or past the `VER-TFR-EVU` deadline, under `--class` and `--calendar-tz`, from the case's first
+sighting: the earliest ingest instant of that evidence, which is the ingest's `--as-of`, or its
+run time at second precision when none was given. Stores built from the same scans give the same
+bytes only when every ingest names `--as-of`. A run whose `--as-of` is before the first sighting
+records no lapse. The first sighting stands in for the detection time, so the lapse is never early
+only when the ingest instant is at or after the true detection; ComplyRoll cannot check that.
+Once recorded a lapse is permanent, and an attestation made before any run sees the lapse
+prevents it. It prints one line per record, first those it recorded and then those already
+recorded, and a count. The two record lines below are output and cannot wrap:
 
 ```text
-obs-6567363ed96e0fffdf168fd13832f385e5e15d498b16bb2cf320600de0b086f1: recorded remediation of case-748ec5056f5557ed recorded 2026-09-05T15:00:00Z did not hold: image:registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2 detected again 2026-09-12T08:40:00Z
+obs-96b8956b3a49f8026796a7ef9c68a42448ada45873af753313b60c3d910b2806: recorded remediation of case-748ec5056f5557ed recorded 2026-09-05T15:00:00Z did not hold: image:registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2 detected again 2026-09-12T08:40:00Z
 obs-5e1b2b5cf665b208a471fb68c878627a207694012c555f4472872516db3ac823: recorded detection time of case-a28eeaac0789b5e2 was not attested within VER-TFR-EVU from 2026-09-01T00:00:00Z
 recorded 2 response gap(s), skipped 0 already-recorded response gap(s)
 ```

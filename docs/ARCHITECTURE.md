@@ -369,4 +369,5 @@ change detection gap (ADR 0018) is observed at its change's `detectBy`, the wind
 provider stated, because the dataset states no timeframe for `VDR-CSO-DAC`. A remediation
 recurrence (ADR 0019) is observed at the source timestamp of the observation that came back, and
 a lapsed attestation at its window close, the `VER-TFR-EVU` deadline from the earliest ingest
-`--as-of` of the case's evidence: an operator-set instant, never a wall-clock store time.
+instant of the case's evidence: the ingest's `--as-of`, or its run time when none was given, the
+instant ComplyRoll saw the reading as ADR 0014 reads a failure, never the store's own `recorded_at`.

@@ -601,10 +601,12 @@ the response process failed.
 A remediation that did not hold is a case whose disposition resolves to `remediated` (`remediated`,
 or `closed` as `remediated`) with an open artifact observation of its group detected strictly after
 the remediation instant: the `completedAt` of the evaluation in force when that disposition was
-first recorded. A detection at the instant itself, and a member with no source timestamp, are
-never recorded; every report warns about either as `recurrence_after_remediation`, and the case
-keeps its disposition. One record is built per resource that came back, observed at that
-resource's earliest recurring detection:
+first recorded. A detection at the instant itself is never recorded and raises no warning. A
+member with no source timestamp is never recorded either; every report warns about it as
+`recurrence_after_remediation`, unless the record's detection time is an attestation at or before
+the remediation, and the case keeps its disposition. One record is built per resource that came
+back, observed at that resource's earliest recurring detection, and the first record of a failed
+remediation and resource stands: a scan dated earlier and ingested later appends none.
 
 | Recipe input | Value |
 |---|---|
@@ -613,17 +615,21 @@ resource's earliest recurring detection:
 | `parser_name`, `parser_version` | `complyroll.recurrence`, `1` |
 | `source_record_id` | `remediation-recurrence` |
 | `resource_type`, `resource_id` | The recurring observation's resource |
-| `context_key` | `<correlation tracking id>:remediated:<remediation instant>` |
+| `context_key` | `<correlation tracking id>:remediated:<remediation instant>:<episode>` |
 | `observed_at` | The earliest recurring detection on that resource, in UTC |
 
-Its metadata always carries `recurrence.caseTrackingId`, `recurrence.remediatedAt`,
-`recurrence.observationId` (the lowest id at a tie), and `recurrence.observationDetectedAt`, and
-its one evidence id is that observation's id.
+The episode is the 1-based position of that remediated run among the case's remediated runs, so a
+second remediation that fails is a second case even at the same instant. Its metadata always
+carries `recurrence.caseTrackingId`, `recurrence.remediatedAt`, `recurrence.observationId` (the
+lowest id at a tie), and `recurrence.observationDetectedAt`, and its one evidence id is that
+observation's id.
 
-A lapsed attestation is a case with linked evidence, no source timestamp on any link, and no
-attestation, found by a run whose `--as-of` is at or past the `VER-TFR-EVU` deadline from the
-case's first sighting: the earliest `ingested_at`, the ingest `--as-of`, of its linked observations.
-It is permanent once recorded.
+A lapsed attestation is a case with linked evidence, no source timestamp on any link or on any
+current reading of it, and no attestation, found by a run whose `--as-of` is at or after the
+case's first sighting and at or past the `VER-TFR-EVU` deadline from it. The first sighting is the
+earliest `ingested_at` of its linked observations: the ingest's `--as-of`, or its run time when
+none was given. It stands in for the detection time, so the lapse is never early only when that
+instant is at or after the true detection. It is permanent once recorded.
 
 | Recipe input | Value |
 |---|---|
@@ -859,6 +865,7 @@ adds to it.
 | `pain_reductions` | PAIN reductions and when they took effect (`case.pain_reduced`) |
 | `disposition` | The latest recorded status, closed disposition and acceptance rationale (`case.disposition_recorded`) |
 | `remediated_at` | While the disposition resolves to `remediated`, the `completedAt` of the evaluation in force when it was first recorded (ADR 0019); otherwise none |
+| `remediation_episode` | While `remediated_at` is set, the 1-based position of that remediated run among the case's remediated runs, the last part of a recurrence's context key (ADR 0019); otherwise none |
 
 Response actions and an owner are not recorded; see `ResponseAction (planned)` below.
 

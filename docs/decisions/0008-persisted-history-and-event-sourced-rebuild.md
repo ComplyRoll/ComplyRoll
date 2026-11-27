@@ -1219,8 +1219,11 @@ print alike. These rules bind from this date.
   that holds a `response-gap/` stream is aware: a response gap the run derives that no record
   carries is INFO `response_gap_unrecorded`, and a recorded gap the run derives no gap for and
   cannot rebuild from its own record is INFO `response_gap_contradicted` when the store holds
-  evidence against it, or INFO `response_gap_unmatched` when it holds none. A store that never
-  recorded a response gap compiles as it did before this date.
+  evidence against it, or INFO `response_gap_unmatched` when it holds none. A recorded recurrence
+  the run finds detected earlier stands, with INFO `response_gap_earlier_detection`. A store that
+  never recorded a response gap writes none of these notes and compiles as it did before this
+  date, except for the `recurrence_after_remediation` WARNING, which every report from a store or
+  not carries for a remediated record that came back.
 - **A seventh stream kind, `response-gap/<fingerprint>`.** It is named for the record's SYSTEM
   identity hash and holds exactly one `response_gap.recorded` head and one `observation.recorded`
   carrying the record. The repository accepts it only whole, in one batch at version 0, and holds

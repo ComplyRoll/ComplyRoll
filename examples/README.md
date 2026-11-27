@@ -1146,10 +1146,12 @@ complyroll cases response-gaps --db history.db --class C --as-of 2026-09-15T12:0
 complyroll cases correlate --db history.db
 ```
 
-`cases response-gaps` prints both records and exits 3, and a rerun exits 0. After `cases
-correlate`, `cases list` names each new case's context key, which an evaluation entry states with
-the record id and source type. Attesting the untimed case afterwards does not erase its lapse:
-`tests/golden/historical-response-gaps.{json,md}` is that store's snapshot.
+Every ingest names `--as-of`, the instant the store records it saw the reading; without it the
+ingest records its own run time, and a store built again from the same scans would not give the
+same bytes. `cases response-gaps` prints both records and exits 3, and a rerun exits 0. After
+`cases correlate`, `cases list` names each new case's context key, which an evaluation entry
+states with the record id and source type. Attesting the untimed case afterwards does not erase
+its lapse: `tests/golden/historical-response-gaps.{json,md}` is that store's snapshot.
 
 ## Verifying the log
 

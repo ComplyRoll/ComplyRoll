@@ -42,6 +42,7 @@ from test_events import (
     GOOD_PAYLOADS,
     HELD_STREAM_ID,
     NOW,
+    POINTER_PAYLOADS,
     STREAM_ID,
     metadata,
     with_value,
@@ -56,6 +57,7 @@ from complyroll.events import (
     EVENT_CONTRACTS,
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
+    RESPONSE_GAP_STREAM_SCHEMA_VERSION,
     EventContractError,
     EventRepository,
     change_stream_id,
@@ -101,6 +103,13 @@ ANCHORED_FIELDS: dict[str, tuple[str, ...]] = {
         "/changesSha256",
         "/inventorySha256",
     ),
+    "response_gap.recorded": (
+        "/caseTrackingId",
+        "/remediatedAt",
+        "/observationDetectedAt",
+        "/firstSeenAt",
+        "/windowClosedAt",
+    ),
 }
 
 #: A value the field holds when the good payload leaves it null.
@@ -124,6 +133,7 @@ STREAMS: dict[str, tuple[str, int]] = {
     "coverage.recorded": (COVERAGE_STREAM_ID, COVERAGE_STREAM_SCHEMA_VERSION),
     "change.recorded": (change_stream_id("CHG-1001"), CHANGE_STREAM_SCHEMA_VERSION),
     "change.gap_recorded": (f"changegap/{DIGEST}", CHANGE_GAP_STREAM_SCHEMA_VERSION),
+    "response_gap.recorded": (f"response-gap/{DIGEST}", RESPONSE_GAP_STREAM_SCHEMA_VERSION),
 }
 
 #: The twelve fields `store verify` passed with a final newline before this change, each left in
@@ -174,13 +184,19 @@ def anchored_fields(schema: Mapping[str, Any], prefix: str = "") -> list[str]:
     return found
 
 
+def base_payload(event_type: str, pointer: str) -> dict[str, Any]:
+    """Return the good payload a field is read on: another kind's where the default nulls it."""
+
+    return POINTER_PAYLOADS.get((event_type, pointer), GOOD_PAYLOADS[event_type])
+
+
 def good_value(event_type: str, pointer: str) -> str:
     """Return the text one anchored field holds in the good payload."""
 
     value = NON_NULL_VALUES.get((event_type, pointer))
     if value is not None:
         return value
-    current: Any = GOOD_PAYLOADS[event_type]
+    current: Any = base_payload(event_type, pointer)
     for part in pointer.split("/")[1:]:
         current = current[part]
     assert isinstance(current, str), (event_type, pointer)
@@ -190,7 +206,9 @@ def good_value(event_type: str, pointer: str) -> str:
 def with_newline(event_type: str, pointer: str) -> dict[str, Any]:
     """Return the good payload with one anchored field followed by a final newline."""
 
-    return with_value(GOOD_PAYLOADS[event_type], pointer, f"{good_value(event_type, pointer)}\n")
+    return with_value(
+        base_payload(event_type, pointer), pointer, f"{good_value(event_type, pointer)}\n"
+    )
 
 
 def rows() -> Iterator[tuple[str, str]]:
@@ -249,7 +267,7 @@ class ContractPatternAnchorTests(unittest.TestCase):
         for event_type, pointer in rows():
             with self.subTest(event_type=event_type, pointer=pointer):
                 payload = with_value(
-                    GOOD_PAYLOADS[event_type], pointer, good_value(event_type, pointer)
+                    base_payload(event_type, pointer), pointer, good_value(event_type, pointer)
                 )
                 schema = EVENT_CONTRACTS[(event_type, 1)]
                 self.assertEqual(list(Draft202012Validator(schema).iter_errors(payload)), [])

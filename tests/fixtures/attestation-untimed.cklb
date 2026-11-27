@@ -1,0 +1,10 @@
+{
+  "title": "Synthetic PostgreSQL STIG",
+  "target_data": {"host_name": "lab-db-01", "ip_address": "10.0.0.31"},
+  "stigs": [{
+    "stig_name": "Synthetic PostgreSQL 16 STIG",
+    "rules": [
+      {"group_id":"V-299001","rule_title":"SYNTHETIC. PostgreSQL must log every failed connection attempt","severity":"medium","status":"open","ccis":["CCI-000172"]}
+    ]
+  }]
+}

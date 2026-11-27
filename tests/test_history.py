@@ -2769,6 +2769,7 @@ class FoldContractSweepTests(unittest.TestCase):
                 "coverage.recorded",
                 "change.recorded",
                 "change.gap_recorded",
+                "response_gap.recorded",
             ):
                 continue
             self.fold(event_type, GOOD_PAYLOADS[event_type])
@@ -2836,7 +2837,8 @@ class AuditHistoryTests(WriterFixture):
         # A store carrying it is not folded: the check would raise on it and be swallowed, so
         # the ADR 0008 amendment 2026-10-26 keeps it outside this set (CL6A-D-07).
         self.assertNotIn("case_stream_mismatch", _ORDER_CHECKED_BESIDE)
-        # Moved on purpose in change PR 3 task 4: a change gap marker left low joins the set.
+        # Moved on purpose in change PR 3 task 4: a change gap marker left low joins the set,
+        # and again in ADR 0019: a response gap marker left low joins it too.
         self.assertEqual(
             _ORDER_CHECKED_BESIDE,
             {
@@ -2845,6 +2847,7 @@ class AuditHistoryTests(WriterFixture):
                 "coverage_schema_unmarked",
                 "change_schema_unmarked",
                 "changegap_schema_unmarked",
+                "responsegap_schema_unmarked",
             },
         )
 

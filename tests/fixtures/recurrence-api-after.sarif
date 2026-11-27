@@ -1,0 +1,94 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "informationUri": "https://example.test/trivy",
+          "name": "Trivy",
+          "rules": [
+            {
+              "id": "CVE-2099-0101",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "example-json: synthetic flaw for recurrence tests"
+              },
+              "fullDescription": {
+                "text": "SYNTHETIC. example-json before 2.6.3 has an invented flaw used only by the ComplyRoll recurrence tests."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://example.test/advisories/cve-2099-0101",
+              "help": {
+                "text": "Vulnerability CVE-2099-0101\nSeverity: HIGH\nPackage: example-json\nFixed Version: 2.6.3\nLink: [CVE-2099-0101](https://example.test/advisories/cve-2099-0101)"
+              },
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            }
+          ],
+          "version": "0.55.2"
+        }
+      },
+      "automationDetails": {
+        "id": "images/api/run-2"
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "startTimeUtc": "2026-09-12T08:40:00Z",
+          "endTimeUtc": "2026-09-12T08:41:10Z"
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "CVE-2099-0101",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Package: example-json\nInstalled Version: 2.6.2\nVulnerability CVE-2099-0101\nSeverity: HIGH\nFixed Version: 2.6.3\nLink: [CVE-2099-0101](https://example.test/advisories/cve-2099-0101)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "usr/lib/libexample-json.so.2",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "usr/lib/libexample-json.so.2: example-json@2.6.2"
+              }
+            }
+          ]
+        }
+      ],
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "ROOTPATH": {
+          "uri": "file:///"
+        }
+      },
+      "properties": {
+        "imageName": "registry.example.test/recurrence/api:1.4.2",
+        "repoTags": [
+          "registry.example.test/recurrence/api:1.4.2"
+        ]
+      }
+    }
+  ]
+}

@@ -74,3 +74,8 @@ read a record's amendments before relying on it.
   changes in a schema 5 store, and a change window that closes with no verification becomes a
   `VDR-CSO-FAV` system observation and one case per change, with `--record-change-gaps` on a
   report or `cases changes` into a schema 6 store.
+- [ADR 0019: Response-process and attestation failures](0019-response-process-failures.md): a
+  remediated case that a later open observation contradicts keeps its disposition and every
+  report warns, and `cases response-gaps` records it, and a case whose detection time was not
+  attested within `VER-TFR-EVU` of its first sighting, as `VDR-CSO-FAV` system observations and
+  cases in a schema 7 store.

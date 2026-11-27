@@ -152,6 +152,15 @@ whose window closed also becomes a `VDR-CSO-FAV` system observation, built in
 function from the store's recorded changes and stores those observations instead. The projection
 reads only artifact observations, so no gap of either kind satisfies an obligation.
 
+Response gaps (ADR 0019) are recorded in a store only. A report warns about a remediated record
+whose group holds an open artifact observation detected after the remediation, on both paths, and
+never changes its disposition. `cases response-gaps` derives, in `reports/response_gaps.py`, one
+`VDR-CSO-FAV` system observation per resource that came back after a remediation, from the
+report's own grouping of the store's observations, and one per case whose detection time was not
+attested within `VER-TFR-EVU` of the store's first record of its evidence, from the folded cases.
+The remediation instant comes from the fold: the `completedAt` of the evaluation in force when the
+current remediated disposition was first recorded.
+
 Shipped projections:
 
 - Vulnerability Detail Report
@@ -244,6 +253,16 @@ with `database schema 6 is newer than supported schema 5`, and its `store verify
 `schema_version_unsupported` ("database is marked schema 6; this build opens schemas 1 to 5").
 0.4.0a0 already refuses such a store as newer than schema 4.
 
+Schema version 7 (ADR 0019) changes no schema object either. It marks a store that holds a
+response gap stream. The first `cases response-gaps` append that records one (`requires_schema=7`)
+inserts migration record 7 ("response gap streams, ADR 0019"), and every lower record the store
+lacks, and sets `user_version` to 7 inside its own transaction. A store that never records a
+response gap stays at its version, and response gap awareness follows a response gap stream, not
+the marker. This build opens versions 1 to 7 (`SUPPORTED_SCHEMA_VERSION`). 0.5.0a0 refuses a
+version 7 store at open with `database schema 7 is newer than supported schema 6`, and its `store
+verify` reports `schema_version_unsupported` ("database is marked schema 7; this build opens
+schemas 1 to 6").
+
 Projection checkpoints are mutable compare-and-swap cursors over the global sequence. Projection
 rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
 will own their query tables and must update those rows and their checkpoint in one transaction.
@@ -261,7 +280,11 @@ observation. ADR 0015 adds `coverage.recorded` v1 and a fourth stream kind,
 `change.recorded` and nothing else, then `change.gap_recorded` v1 and a sixth stream kind,
 `changegap/<fingerprint>`, named for its gap record's SYSTEM identity hash, which holds one
 `change.gap_recorded` head and the one `observation.recorded` carrying that gap record, written
-together and never extended. Candidates for later slices: `case.action_planned`,
+together and never extended. ADR 0019 adds `response_gap.recorded` v1 and a seventh stream kind,
+`response-gap/<fingerprint>`, named for its record's SYSTEM identity hash, which holds one
+`response_gap.recorded` head and the one `observation.recorded` carrying a remediation recurrence
+or a lapsed attestation, written together and never extended. Candidates for later slices:
+`case.action_planned`,
 `case.action_completed`, `validation.completed`, `evidence.attached`.
 
 ## Package layout
@@ -325,6 +348,11 @@ available for when that stops being enough. The domain model remains independent
 - No detection after a declared change: status `lapsed` in the changes block once the change's
   `detectBy` passes. With `--record-change-gaps`, or `cases changes` into a store, each closed
   window becomes a `VDR-CSO-FAV` system observation, and each change one case (ADR 0018).
+- A remediation that did not hold: WARNING `recurrence_after_remediation` on every report, the
+  disposition unchanged; with `cases response-gaps` a `VDR-CSO-FAV` system observation per resource
+  that came back, and each failed remediation one case (ADR 0019).
+- A detection time never attested: with `cases response-gaps`, a lapsed attestation once
+  `VER-TFR-EVU` from the store's first record of the evidence has passed (ADR 0019).
 - Policy unavailable or unverified: block deadline/report certification claims.
 - Schema mismatch: report generation failure with actionable paths.
 - Unknown evaluation factor: preserve unknown; do not invent a default.
@@ -338,4 +366,8 @@ records which (`invocation` or `as-of`). It never lends that instant to an artif
 A coverage gap (ADR 0015) is not one either: its `observed_at` is the close of its window, a due
 date the pinned rules dataset computes from the window's anchor, never as-of or ingest time. A
 change detection gap (ADR 0018) is observed at its change's `detectBy`, the window close the
-provider stated, because the dataset states no timeframe for `VDR-CSO-DAC`.
+provider stated, because the dataset states no timeframe for `VDR-CSO-DAC`. A remediation
+recurrence (ADR 0019) is observed at the source timestamp of the observation that came back, and
+a lapsed attestation at its window close, the `VER-TFR-EVU` deadline from the earliest ingest
+instant of the case's evidence: the ingest's `--as-of`, or its run time when none was given, the
+instant ComplyRoll saw the reading as ADR 0014 reads a failure, never the store's own `recorded_at`.

@@ -1,0 +1,301 @@
+{
+  "acceptedVulnerabilities": [],
+  "activeVulnerabilities": [
+    {
+      "detection": {
+        "detectedAt": "2026-09-01T00:00:00Z",
+        "detectionSource": "stig-viewer-3"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-01T00:00:00Z and closed 2026-09-06T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-a28eeaac0789b5e2",
+      "vulnerabilityDescription": "V-299001: SYNTHETIC. PostgreSQL must log every failed connection attempt",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-06T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-01T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "attestation",
+        "evaluator": null,
+        "observationIds": [
+          "obs-7fe10c3abc6d8a5704f17e0da1d895602bf7cedc12245f1c1f34b0478a6125ca"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "lab-db-01",
+            "resourceType": "host"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CCI-000172"
+        ],
+        "untimestampedObservationIds": [
+          "obs-7fe10c3abc6d8a5704f17e0da1d895602bf7cedc12245f1c1f34b0478a6125ca"
+        ]
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-06T00:00:00Z",
+        "detectionSource": "complyroll"
+      },
+      "overdueStatus": {
+        "explanation": "VER-TFR-EVU (SHOULD, Class C): the evaluation window opened at detection 2026-09-06T00:00:00Z and closed 2026-09-11T00:00:00Z with no evaluation recorded. Rules dataset commit 58487bda77d76d9ce334304ec2e779ece7cc7d54. The VDR and VER rulesets are in their optional-adoption period until 2026-12-07.",
+        "isOverdue": true
+      },
+      "providerTrackingId": "case-21e6bd73f9174969",
+      "vulnerabilityDescription": "attestation-lapse: detection time of case-a28eeaac0789b5e2 was not attested within VER-TFR-EVU from 2026-09-01T00:00:00Z (VDR-CSO-FAV)",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-11T00:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-06T00:00:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "system",
+        "evaluator": null,
+        "observationIds": [
+          "obs-5e1b2b5cf665b208a471fb68c878627a207694012c555f4472872516db3ac823"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "case/case-a28eeaac0789b5e2",
+            "resourceType": "logical"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "detection": {
+        "detectedAt": "2026-09-12T08:40:00Z",
+        "detectionSource": "complyroll"
+      },
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "providerTrackingId": "case-d89cd83626f1cb44",
+      "vulnerabilityDescription": "remediation-recurrence: remediation of case-748ec5056f5557ed recorded 2026-09-05T15:00:00Z did not hold: image:registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2 detected again 2026-09-12T08:40:00Z (VDR-CSO-FAV)",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-17T08:40:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": false,
+            "startAt": "2026-09-12T08:40:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "system",
+        "evaluator": null,
+        "observationIds": [
+          "obs-96b8956b3a49f8026796a7ef9c68a42448ada45873af753313b60c3d910b2806"
+        ],
+        "rationale": null,
+        "remediated": false,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [],
+        "untimestampedObservationIds": []
+      }
+    },
+    {
+      "currentRating": 3,
+      "detection": {
+        "detectedAt": "2026-09-02T10:15:00Z",
+        "detectionSource": "Trivy"
+      },
+      "evaluationCompletedAt": "2026-09-05T15:00:00Z",
+      "finalDisposition": "Remediated",
+      "isInternetReachable": true,
+      "isLikelyExploitable": true,
+      "overdueStatus": {
+        "isOverdue": false
+      },
+      "potentialAgencyImpact": "SYNTHETIC. The API image parses tenant-supplied JSON with the flawed package, so a crafted request could crash the service that serves agency data.",
+      "providerTrackingId": "case-748ec5056f5557ed",
+      "vulnerabilityDescription": "CVE-2099-0101: example-json: synthetic flaw for recurrence tests",
+      "x-complyroll": {
+        "deadlines": [
+          {
+            "anchor": "detection",
+            "dueAt": "2026-09-07T10:15:00Z",
+            "force": "SHOULD",
+            "ruleId": "VER-TFR-EVU",
+            "ruleName": "Evaluate Vulnerabilities Quickly",
+            "satisfied": true,
+            "startAt": "2026-09-02T10:15:00Z",
+            "timeframe": {
+              "amount": 5,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2026-09-21T15:00:00Z",
+            "force": "SHOULD",
+            "ruleId": "VDR-TFR-PVR",
+            "ruleName": "Mitigation and Remediation Expectations",
+            "satisfied": true,
+            "startAt": "2026-09-05T15:00:00Z",
+            "timeframe": {
+              "amount": 16,
+              "unit": "days"
+            }
+          },
+          {
+            "anchor": "evaluation",
+            "dueAt": "2027-03-16T15:00:00Z",
+            "force": "MUST",
+            "ruleId": "VER-TFR-MAV",
+            "ruleName": "Mark Accepted Vulnerabilities",
+            "satisfied": true,
+            "startAt": "2026-09-05T15:00:00Z",
+            "timeframe": {
+              "amount": 192,
+              "unit": "days"
+            }
+          }
+        ],
+        "detectedAtSource": "artifact",
+        "evaluator": "Example Provider vulnerability team (synthetic recurrence fixture)",
+        "observationIds": [
+          "obs-5d3d36f638f2f652f25ede282b6db91fa395458f6d5619a69a678387da78d28c",
+          "obs-dec9d12f79d8a7f3c56f96b44085a7e1ac0174c43076f3630ea626fb25d31e94"
+        ],
+        "rationale": "SYNTHETIC. The image was rebuilt with the package pinned above the fixed version, and the build log for the rebuilt image showed the upgrade.",
+        "remediated": true,
+        "resources": [
+          {
+            "resourceId": "registry.example.test/recurrence/api:1.4.0/usr/lib/libexample-json.so.2",
+            "resourceType": "image"
+          },
+          {
+            "resourceId": "registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2",
+            "resourceType": "image"
+          }
+        ],
+        "sourceIdentifiers": [
+          "CVE-2099-0101"
+        ],
+        "untimestampedObservationIds": []
+      }
+    }
+  ],
+  "certificationPackageOverviewUri": "https://example.test/cpo",
+  "generatedAt": "2026-09-15T12:00:00Z",
+  "x-complyroll": {
+    "artifacts": [
+      {
+        "name": "attestation-untimed.cklb",
+        "observationCount": 1,
+        "parser": "complyroll.cklb",
+        "parserVersion": "1",
+        "sha256": "326a343eb64ca9b4b8d2f125d9fbdde7747584a1acdfd4d8b8e39e20ba31068b",
+        "sizeBytes": 371
+      },
+      {
+        "name": "recurrence-api-after.sarif",
+        "observationCount": 1,
+        "parser": "complyroll.sarif",
+        "parserVersion": "2",
+        "sha256": "a9cf6dddcb8635d960a132bc7c3d8dac77ec7cff395e7c80ffd8040f394f0256",
+        "sizeBytes": 2944
+      },
+      {
+        "name": "recurrence-api-before.sarif",
+        "observationCount": 1,
+        "parser": "complyroll.sarif",
+        "parserVersion": "2",
+        "sha256": "064a704afcef4ade8dc0dc3fa1c126f24298e1fc1f9f4d831f086be5a4966b05",
+        "sizeBytes": 2944
+      }
+    ],
+    "calendarTimezone": "UTC",
+    "certificationClass": "C",
+    "detectionTimeAttestation": {
+      "appliedTo": [
+        "case-a28eeaac0789b5e2"
+      ],
+      "count": 1,
+      "detectedAt": "2026-09-01T00:00:00Z"
+    },
+    "diagnostics": [
+      {
+        "code": "source_timestamp_missing",
+        "level": "warning",
+        "location": "attestation-untimed.cklb",
+        "message": "source artifact does not declare an observation timestamp; observed_at is unknown"
+      },
+      {
+        "code": "recurrence_after_remediation",
+        "level": "warning",
+        "location": "CVE-2099-0101",
+        "message": "case-748ec5056f5557ed is recorded remediated at 2026-09-05T15:00:00Z, and 1 open observation(s) of it were detected after that instant, the earliest at 2026-09-12T08:40:00Z on image:registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2; the remediation did not hold, and the record keeps its disposition until an evaluation changes it"
+      }
+    ],
+    "disclaimer": "Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.",
+    "generatedAt": "2026-09-15T12:00:00Z",
+    "generator": {
+      "name": "complyroll",
+      "version": "0.5.0a0"
+    },
+    "parserVersions": {
+      "complyroll.attestation": "1",
+      "complyroll.cklb": "1",
+      "complyroll.recurrence": "1",
+      "complyroll.sarif": "2"
+    },
+    "rulesSource": {
+      "commit": "58487bda77d76d9ce334304ec2e779ece7cc7d54",
+      "datasetLastUpdated": "2026-09-13",
+      "datasetVersion": "2026.09.13.02",
+      "repository": "https://github.com/FedRAMP/rules",
+      "sha256": "64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8"
+    },
+    "schemaSource": {
+      "commit": "5156719aa7d0def16cf66f6197db9d6c0024e0e7",
+      "repository": "https://github.com/FedRAMP/schemas",
+      "schemaId": "https://fedramp.gov/schemas/fedramp-historical-ver-activity-schema-2026-06-24.json",
+      "schemaVersion": "0.1.1",
+      "sha256": "dbbddb51ee25bfe9568c1dcfe1047ea206539dc91dad1fd2658f1a5accf2a6fb"
+    }
+  }
+}

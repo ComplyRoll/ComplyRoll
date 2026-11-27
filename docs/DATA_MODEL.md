@@ -592,6 +592,77 @@ record it heads, and holds the head to the change it names: the store must hold 
 same change file digest. `store verify` checks the same. A store that holds a change gap stream is
 schema version 6, and one that never records a change gap stays at its version.
 
+## Response gaps
+
+Two failures of the response process become `VDR-CSO-FAV` system observations in a store, recorded
+by `cases response-gaps` (ADR 0019). Neither is a weakness found on a resource; each records that
+the response process failed.
+
+A remediation that did not hold is a case whose disposition resolves to `remediated` (`remediated`,
+or `closed` as `remediated`) with an open artifact observation of its group detected strictly after
+the remediation instant: the `completedAt` of the evaluation in force when that disposition was
+first recorded. A detection at the instant itself is never recorded and raises no warning. A
+member with no source timestamp is never recorded either; every report warns about it as
+`recurrence_after_remediation`, unless the record's detection time is an attestation at or before
+the remediation, and the case keeps its disposition. One record is built per resource that came
+back, observed at that resource's earliest recurring detection, and the first record of a failed
+remediation and resource stands: a scan dated earlier and ingested later appends none.
+
+| Recipe input | Value |
+|---|---|
+| `source_type` | `complyroll.recurrence` |
+| `source_tool` | `complyroll` |
+| `parser_name`, `parser_version` | `complyroll.recurrence`, `1` |
+| `source_record_id` | `remediation-recurrence` |
+| `resource_type`, `resource_id` | The recurring observation's resource |
+| `context_key` | `<correlation tracking id>:remediated:<remediation instant>:<episode>` |
+| `observed_at` | The earliest recurring detection on that resource, in UTC |
+
+The episode is the 1-based position of that remediated run among the case's remediated runs, so a
+second remediation that fails is a second case even at the same instant. Its metadata always
+carries `recurrence.caseTrackingId`, `recurrence.remediatedAt`, `recurrence.observationId` (the
+lowest id at a tie), and `recurrence.observationDetectedAt`, and its one evidence id is that
+observation's id.
+
+A lapsed attestation is a case with linked evidence, no source timestamp on any link or on any
+current reading of it, and no attestation, found by a run whose `--as-of` is at or after the
+case's first sighting and at or past the `VER-TFR-EVU` deadline from it. The first sighting is the
+earliest `ingested_at` of its linked observations: the ingest's `--as-of`, or its run time when
+none was given. It stands in for the detection time, so the lapse is never early only when that
+instant is at or after the true detection. It is permanent once recorded.
+
+| Recipe input | Value |
+|---|---|
+| `source_type` | `complyroll.attestation` |
+| `source_tool` | `complyroll` |
+| `parser_name`, `parser_version` | `complyroll.attestation`, `1` |
+| `source_record_id` | `attestation-lapse` |
+| `resource_type`, `resource_id` | `logical`, `case/<correlation tracking id>` |
+| `context_key` | `<correlation tracking id>` |
+| `observed_at` | The window close |
+
+Its metadata always carries `attestation.caseTrackingId`, `attestation.firstSeenAt`,
+`attestation.windowClosedAt`, `attestation.rule` (`VER-TFR-EVU`), and `attestation.force`, and its
+one evidence id is `case:<tracking id>`. Both kinds are OPEN with severity UNKNOWN and no source
+identifiers, carry `detectedAtSource` `system`, and are detected at their observed instant.
+
+Each record is on its own stream, `response-gap/<fingerprint>`, named for its SYSTEM identity hash
+and written once in one batch at version 0: a `response_gap.recorded` v1 head and one
+`observation.recorded` carrying the record.
+
+| `response_gap.recorded` field | Purpose |
+|---|---|
+| `kind` | `recurrence` or `attestation`, the record's source type |
+| `caseTrackingId` | The case the record names, by correlation tracking id |
+| `contextKey` | The record's context key |
+| `remediatedAt`, `observationId`, `observationDetectedAt` | A recurrence's metadata; null on a lapse |
+| `firstSeenAt`, `windowClosedAt`, `rule` | A lapse's metadata; null on a recurrence |
+
+Every field is required and no other is allowed. At append the repository holds the head to the
+record it heads, and to nothing else: a case's current state moves, so a missing or changed case is
+not a fault. A store that holds a response gap stream is schema version 7, and one that never
+records a response gap stays at its version.
+
 ## Report extension (x-complyroll)
 
 Everything ComplyRoll adds beyond the official minimum structure lives under one `x-complyroll`
@@ -692,7 +763,7 @@ Planned fields not carried yet: `service_id` (cloud service or component members
 | `disposition` | Open, pass, not applicable, not reviewed, error, or unknown |
 | `evidence_ids` | Content-addressed supporting evidence |
 | `source_artifact_digest` | Integrity and idempotency anchor (lowercase hex; blank for system observations) |
-| `origin` | `artifact` for observations parsed from a source file; `system` for observations ComplyRoll generates about its own detection and response process: detection process failures since ADR 0014, coverage gaps since ADR 0015, and change detection gaps since ADR 0018 |
+| `origin` | `artifact` for observations parsed from a source file; `system` for observations ComplyRoll generates about its own detection and response process: detection process failures since ADR 0014, coverage gaps since ADR 0015, change detection gaps since ADR 0018, and remediation recurrences and lapsed attestations since ADR 0019 |
 
 `observed_at` may be unknown when a source format does not declare an assessment timestamp.
 ComplyRoll records that absence and emits a diagnostic; it does not treat file modification or
@@ -709,8 +780,9 @@ production recipe, for detection process failures, uses the failed artifact's di
 context key, because ComplyRoll has no inventory of detection jobs yet; see Detection process
 failures above and the ADR 0002 amendment of 2026-09-30. The second, for coverage gaps (ADR
 0015), keys on the inventory entry's `job` when it names one; see Coverage gaps above. The third,
-for change detection gaps (ADR 0018), keys on the change id; see Change gaps above. Failure cases
-stay keyed on the digest.
+for change detection gaps (ADR 0018), keys on the change id; see Change gaps above. The fourth
+and fifth, for response gaps (ADR 0019), key on the case they name; see Response gaps above.
+Failure cases stay keyed on the digest.
 
 A SARIF observation (ADR 0011) takes its identity from the literal source type `sarif`, the
 driver name as `source_tool`, the rule identifier resolved in the spec's order as
@@ -792,6 +864,8 @@ adds to it.
 | `evaluations` | Every evaluation, in order; the latest is current (`case.evaluated`) |
 | `pain_reductions` | PAIN reductions and when they took effect (`case.pain_reduced`) |
 | `disposition` | The latest recorded status, closed disposition and acceptance rationale (`case.disposition_recorded`) |
+| `remediated_at` | While the disposition resolves to `remediated`, the `completedAt` of the evaluation in force when it was first recorded (ADR 0019); otherwise none |
+| `remediation_episode` | While `remediated_at` is set, the 1-based position of that remediated run among the case's remediated runs, the last part of a recurrence's context key (ADR 0019); otherwise none |
 
 Response actions and an owner are not recorded; see `ResponseAction (planned)` below.
 
@@ -814,7 +888,8 @@ evaluation is its latest. Durable history lives in the event log.
 
 `completedAt` is ordered against `detectedAt`. A report refuses a record whose evaluation completed
 strictly before a detection time that is the record's own (an artifact timestamp, an attestation,
-a recorded detection process failure, or the window close of a coverage or change detection gap)
+a recorded detection process failure, the window close of a coverage or change detection gap or
+of a lapsed attestation, or the detection a remediation recurrence records)
 with the ERROR `evaluation_before_detection`. A group
 with only some timestamps keeps its record and gets the WARNING
 `evaluation_before_partial_detection`, because an untimed observation may have detected the

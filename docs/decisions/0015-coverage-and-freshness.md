@@ -852,3 +852,40 @@ from this date. Their text is not edited.
 A stored gap whose window closed after a past as-of is still not filtered out of a run at that
 as-of, so it reads `coverage_gap_unmatched` or `change_gap_unmatched` and its record stays in the
 report. That is left for later for both kinds.
+
+## Amendment (2026-11-26): response gaps join the system record tables
+
+ADR 0019 records a remediation that did not hold under a fourth reserved source type,
+`complyroll.recurrence`, and a lapsed attestation under a fifth, `complyroll.attestation`. These
+decisions read wider from this date. Their text is not edited.
+
+- **Decision 23's kind names gain two.** The refusal names the records "remediation recurrence"
+  and "lapsed attestation". A recurrence is matched by `sourceRecordId` `remediation-recurrence`,
+  `sourceType` `complyroll.recurrence`, and the context key
+  `<tracking id>:remediated:<instant>:<episode>`; a lapse by `attestation-lapse`,
+  `complyroll.attestation`, and the case's tracking id. A lone match short of a key is refused as
+  before, ending "a remediation recurrence is matched by sourceRecordId, sourceType and contextKey
+  together, so add" and the keys it leaves out, or the same with "a lapsed attestation".
+- **Decision 24's remedies gain two.** A recurrence's `evaluation_before_detection` remedy reads
+  "a remediation recurrence is detected when its recurring observation was detected, so evaluate it
+  at or after that instant, or correct completedAt", and a lapse's "a lapsed attestation is
+  detected when its evaluation window closed, so evaluate it at or after that instant, or correct
+  completedAt".
+- **Decision 25's walk test finds five reserved types.** Each has its kind name, its order remedy,
+  and its attestation clause: "for a remediation recurrence, from the instant its recurring
+  observation was detected" and "for a lapsed attestation, from the instant its evaluation window
+  closed". The three tables gained both types with their builder. The test in
+  `tests/test_change_gaps.py` that pinned the walk to exactly three types now asks for at least
+  those three, and `tests/test_response_gaps.py` pins all five.
+- **Decision 26 holds for response gaps.** A recorded response gap is a permanent fact. It closes
+  only by a disposition from an evaluation matched on the full triple, and any disposition the
+  evaluations file accepts applies.
+- **Decisions 38 to 40 have response twins, and a fourth note.** `response_gap_unrecorded`,
+  `response_gap_contradicted`, and `response_gap_unmatched` read each recorded gap against its own
+  record, as Decision 40 does a stored gap's window, and `response_gap_earlier_detection` names
+  a recorded recurrence the run finds detected earlier, which stands (ADR 0019 Decision 11).
+  `REPORT_DIAGNOSTIC_CODES` holds the four and `recurrence_after_remediation`, 77 codes in all.
+- **The `cases list` column covers response gaps.** The `CONTEXT KEY` column appears once the store
+  holds a coverage gap, change detection gap, remediation recurrence, or lapsed attestation case,
+  with `-` for every other case, and a listing with none of them keeps its seven columns byte for
+  byte.

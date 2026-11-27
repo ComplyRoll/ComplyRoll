@@ -23,6 +23,7 @@ from .change_gaps import CHANGE_GAP_SOURCE_TYPE
 from .evaluations import EvaluationInput
 from .gaps import COVERAGE_GAP_SOURCE_TYPE
 from .model import DetectionAttestation, ReportDiagnostic, iso
+from .response_gaps import ATTESTATION_LAPSE_SOURCE_TYPE, RECURRENCE_SOURCE_TYPE
 
 # *--- Configuration ---*
 
@@ -38,6 +39,8 @@ _SYSTEM_RECORD_KINDS = {
     DETECTION_FAILURE_SOURCE_TYPE: "detection process failure",
     COVERAGE_GAP_SOURCE_TYPE: "coverage gap",
     CHANGE_GAP_SOURCE_TYPE: "change detection gap",
+    RECURRENCE_SOURCE_TYPE: "remediation recurrence",
+    ATTESTATION_LAPSE_SOURCE_TYPE: "lapsed attestation",
 }
 
 
@@ -149,6 +152,15 @@ def evaluation_clock_message(tracking_id: str, clock: datetime, problem: str) ->
     )
 
 
+def first_sighting_clock_message(tracking_id: str, clock: datetime, problem: str) -> str:
+    """Word one case refused for its first sighting, as a report and verify both print it."""
+
+    return (
+        f"{tracking_id} was first recorded {clock.isoformat()} in history, which {problem}, so no "
+        "report can compute its lapsed attestation window"
+    )
+
+
 def observation_clock_message(observation_id: str, clock: datetime, problem: str) -> str:
     """Word one observation refused for its source time, wherever a reader converts it."""
 
@@ -223,6 +235,14 @@ _SYSTEM_ORDER_REMEDIES = {
     CHANGE_GAP_SOURCE_TYPE: (
         "a change detection gap is detected when its window closed, so evaluate it at or "
         "after that instant, or correct completedAt"
+    ),
+    RECURRENCE_SOURCE_TYPE: (
+        "a remediation recurrence is detected when its recurring observation was detected, so "
+        "evaluate it at or after that instant, or correct completedAt"
+    ),
+    ATTESTATION_LAPSE_SOURCE_TYPE: (
+        "a lapsed attestation is detected when its evaluation window closed, so evaluate it at "
+        "or after that instant, or correct completedAt"
     ),
 }
 
@@ -361,6 +381,7 @@ __all__ = [
     "detection_clock_message",
     "evaluation_clock_message",
     "evaluation_order_diagnostic",
+    "first_sighting_clock_message",
     "observation_clock_message",
     "published_tracking_id",
     "resolve_detection_time",

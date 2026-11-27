@@ -43,9 +43,20 @@ from .model import (
     iso,
 )
 from .projection import attestation_groups
+from .response_gaps import ATTESTATION_LAPSE_SOURCE_TYPE, RECURRENCE_SOURCE_TYPE
 
 # *--- Configuration ---*
 
+#: The reserved source types whose records the attestation sentence names by a clause of their
+#: own; any other reserved type reads as a detection process failure (ADR 0015 Decision 25).
+_OWN_SENTENCE_SOURCE_TYPES = frozenset(
+    {
+        COVERAGE_GAP_SOURCE_TYPE,
+        CHANGE_GAP_SOURCE_TYPE,
+        RECURRENCE_SOURCE_TYPE,
+        ATTESTATION_LAPSE_SOURCE_TYPE,
+    }
+)
 #: The Windows subsection of a gap-aware run opens with this, since a recorded window can
 #: name a record the report does not list (ADR 0015).
 _RECORDED_WINDOW_NOTE = (
@@ -245,8 +256,8 @@ def _system_detection_sentence(source_types: set[str]) -> str:
     """Say what timed each kind of system record; a failure-only run reads as it always has."""
 
     clauses = []
-    # Any type that is not a gap reads as a failure, as the other two tables fall back.
-    if source_types - {COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE}:
+    # Any type without a clause of its own reads as a failure, as the other two tables fall back.
+    if source_types - _OWN_SENTENCE_SOURCE_TYPES:
         clauses.append(
             "for a detection process failure, from the instant ComplyRoll or the scanner "
             "recorded it"
@@ -255,6 +266,12 @@ def _system_detection_sentence(source_types: set[str]) -> str:
         clauses.append("for a coverage gap, from the instant its coverage window closed")
     if CHANGE_GAP_SOURCE_TYPE in source_types:
         clauses.append("for a change detection gap, from the instant its change window closed")
+    if RECURRENCE_SOURCE_TYPE in source_types:
+        clauses.append(
+            "for a remediation recurrence, from the instant its recurring observation was detected"
+        )
+    if ATTESTATION_LAPSE_SOURCE_TYPE in source_types:
+        clauses.append("for a lapsed attestation, from the instant its evaluation window closed")
     return (
         "Every reported vulnerability carried a detection time from its source artifact or, "
         + " and, ".join(clauses)

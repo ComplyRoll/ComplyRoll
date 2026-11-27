@@ -17,11 +17,12 @@ nothing stops the run with diagnostics and no output.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from complyroll import __version__
 from complyroll.adapters import (
@@ -80,6 +81,7 @@ from .checks import (
     detection_clock_message,
     evaluation_clock_message,
     evaluation_order_diagnostic,
+    first_sighting_clock_message,
     observation_clock_message,
     published_tracking_id,
     resolve_detection_time,
@@ -120,11 +122,28 @@ from .model import (
     iso,
     require_aware,
 )
+from .response_gaps import (
+    ATTESTATION_LAPSE_RECORD_ID,
+    ATTESTATION_LAPSE_SOURCE_TYPE,
+    RECURRENCE_SOURCE_TYPE,
+    LapseClockError,
+    RemediationRecurrence,
+    ResponseGapHistory,
+    derive_response_gaps,
+    lapse_disproof,
+    rebuilt_lapse,
+    rebuilt_recurrence,
+    recurrence_slot,
+    remediation_recurrence,
+)
 
 # *--- Configuration ---*
 
 _KEV_RULE = "VDR-TFR-KEV"
+_T = TypeVar("_T")
 _CVE_PREFIX = "CVE-"
+#: The two reserved source types a response gap stream records (ADR 0019).
+_RESPONSE_GAP_SOURCE_TYPES = frozenset({RECURRENCE_SOURCE_TYPE, ATTESTATION_LAPSE_SOURCE_TYPE})
 
 
 # *--- Core Logic ---*
@@ -275,6 +294,8 @@ def compile_record_set(
     stored_changes: StoredChangeSet | None = None,
     changes: ChangeProjection | None = None,
     change_gap_aware: bool = False,
+    remediated_at: Mapping[str, datetime] | None = None,
+    response_gap_history: ResponseGapHistory | None = None,
 ) -> CompiledRecordSet:
     """Compile the period-agnostic record set from already-normalized inputs.
 
@@ -296,6 +317,12 @@ def compile_record_set(
     None when none does, and each closed window no record carries and each change gap record no
     window derives is named in an INFO note, which only a compile from history can meet (ADR
     0018 Decision 13).
+    `remediated_at` is each remediated case's remediation instant by correlation tracking id,
+    which history reads from the evaluation in force when the disposition was first recorded;
+    without it, as on the stateless path, a remediated evaluation's `completedAt` is the
+    instant (ADR 0019). With `response_gap_history`, which only a compile from a store that
+    recorded a response gap passes, each response gap this run derives that no record carries,
+    and each recorded one this run derives no gap for, is named in an INFO note (ADR 0019).
     """
 
     if not isinstance(options, ReportOptions):
@@ -376,6 +403,9 @@ def compile_record_set(
     # the record as a diagnostic names it.
     change_gap_tracking: dict[str, str] = {}
     change_gap_labels: dict[str, str] = {}
+    # Each response gap observation's id, to the published id and the label of its record.
+    response_gap_tracking: dict[str, str] = {}
+    response_gap_labels: dict[str, str] = {}
 
     for group in groups:
         evaluation = evaluations_by_tracking_id.get(group.tracking_id)
@@ -458,6 +488,23 @@ def compile_record_set(
             errors.extend(record_errors)
             continue
         compiled.append(record)
+        # A remediation the scanner contradicts keeps the operator's disposition: ComplyRoll
+        # warns and never sets one (ADR 0019).
+        remediation = _remediation_instant(group.tracking_id, evaluation, remediated_at)
+        recurrence = None if remediation is None else remediation_recurrence(group, remediation)
+        # K4: a record timed by an attestation at or before its remediation explains its own
+        # untimed members, so only a timed member that came back is warned about then.
+        if (
+            recurrence is not None
+            and remediation is not None
+            and detected_source == "attestation"
+            and detected_at <= remediation
+        ):
+            # NOTE: the `replace` arm is defensive and unreachable today: a record detected from
+            # an attestation has no timed member, so nothing in it can have recurred.
+            recurrence = replace(recurrence, untimed=()) if recurrence.recurring else None
+        if recurrence is not None:
+            diagnostics.append(_recurrence_warning(recurrence, label, group.source_record_id))
         # Only the failure type carries the metadata `_detection_failure` reads; any other
         # reserved source type is a record like any other and is never listed (ADR 0015).
         detection_failures.extend(
@@ -482,6 +529,14 @@ def compile_record_set(
         ]
         change_gap_tracking.update((gap_id, record.tracking_id) for gap_id in change_gaps)
         change_gap_labels.update((gap_id, record.label) for gap_id in change_gaps)
+        response_gaps = [
+            item.observation_id
+            for item in group.observations
+            if item.origin is ObservationOrigin.SYSTEM
+            and item.source_type in _RESPONSE_GAP_SOURCE_TYPES
+        ]
+        response_gap_tracking.update((gap_id, record.tracking_id) for gap_id in response_gaps)
+        response_gap_labels.update((gap_id, record.label) for gap_id in response_gaps)
         if kev_rule is not None and any(cve_may_be_missing(item) for item in group.observations):
             kev_incomplete.append(record)
 
@@ -532,6 +587,18 @@ def compile_record_set(
         diagnostics.extend(changes.warnings)
     # After the block's own warnings, as the coverage notes follow the coverage warnings.
     diagnostics.extend(change_gap_notes)
+    if response_gap_history is not None:
+        diagnostics.extend(
+            _response_gap_divergences(
+                groups,
+                response_gap_history,
+                policy,
+                options.as_of,
+                response_gap_tracking,
+                response_gap_labels,
+                observations,
+            )
+        )
     return CompiledRecordSet(
         records=tuple(compiled),
         artifacts=tuple(sorted(artifacts, key=_artifact_order)),
@@ -1854,6 +1921,383 @@ def coverage_diagnostics(coverage: CoverageResult) -> list[ReportDiagnostic]:
 
 def _records_carry(count: int) -> str:
     return "1 compiled record carries" if count == 1 else f"{count} compiled records carry"
+
+
+# *--- Response Gaps ---*
+
+
+def derive_report_response_gaps(
+    observations: Sequence[Observation],
+    history: ResponseGapHistory,
+    profile: CertificationProfile,
+    as_of: datetime,
+) -> tuple[Observation, ...]:
+    """Derive the response gaps a report of this store reads, as the report reads them.
+
+    `cases response-gaps` records exactly these (ADR 0019): the report's own grouping of the
+    observations, the policy the profile selects from the pinned dataset, and the same refusal
+    of an unusable clock. Each record is ingested at `as_of`, which reaches neither its id nor a
+    report.
+    """
+
+    if not isinstance(history, ResponseGapHistory):
+        raise TypeError("history must be a ResponseGapHistory")
+    if not isinstance(profile, CertificationProfile):
+        raise TypeError("profile must be a CertificationProfile")
+    require_aware(as_of, "as_of")
+    _refuse_unusable_clocks(observations)
+    policy = select_policy(load_bundled_rule_source_snapshot(), profile)
+    groups = group_open_observations(observations)
+    return _lapse_clocked(
+        lambda: derive_response_gaps(groups, history, policy, as_of, ingested_at=as_of), policy
+    )
+
+
+def _response_gap_divergences(
+    groups: Sequence[VulnerabilityGroup],
+    history: ResponseGapHistory,
+    policy: SelectedPolicy,
+    as_of: datetime,
+    gap_tracking: Mapping[str, str],
+    gap_labels: Mapping[str, str],
+    observations: Sequence[Observation],
+) -> list[ReportDiagnostic]:
+    """Name each response gap no record carries, then each recorded one this run cannot rebuild.
+
+    The twin of `_change_gap_divergences` (ADR 0019, F4). A recorded response gap is a
+    permanent fact and keeps its case. A recurrence is held once per remediation key and
+    resource (K1), so a derived recurrence whose slot a record already holds is not unrecorded,
+    and a recorded one stands while its case still holds an open member on its resource after
+    its own remediation instant; when that member is earlier than the recorded detection, the
+    note `response_gap_earlier_detection` says so and no second record is made. A recorded lapse
+    stands when rebuilt from its case's first sighting, whether or not the case is timed now.
+    Otherwise the note says why: `response_gap_contradicted` when the store holds evidence
+    against it, and `response_gap_unmatched` when it holds none. A disposition answers a whole
+    case, so each note is read against the other recorded gaps of its case, as ADR 0015
+    Decision 39 reads them.
+    """
+
+    derived = _lapse_clocked(
+        lambda: derive_response_gaps(groups, history, policy, as_of, ingested_at=as_of), policy
+    )
+    recorded = sorted(
+        (
+            item
+            for item in observations
+            if item.origin is ObservationOrigin.SYSTEM
+            and item.source_type in _RESPONSE_GAP_SOURCE_TYPES
+            and item.observation_id in gap_tracking
+        ),
+        key=_response_gap_order,
+    )
+    held = {
+        recurrence_slot(item) for item in recorded if item.source_type == RECURRENCE_SOURCE_TYPE
+    }
+    notes = [
+        _unrecorded_response_gap(gap)
+        for gap in derived
+        if gap.observation_id not in gap_tracking
+        and not (gap.source_type == RECURRENCE_SOURCE_TYPE and recurrence_slot(gap) in held)
+    ]
+    derived_ids = {gap.observation_id for gap in derived}
+    # Each underived gap's standing: "stands" when rebuilt from its own record, "earlier" when
+    # an earlier detection backs it now, else the evidence against it ("contradicted") or none
+    # ("unmatched"), each with the text that names it.
+    standing: dict[str, tuple[str, str]] = {}
+    for item in recorded:
+        if item.observation_id not in derived_ids:
+            standing[item.observation_id] = _lapse_clocked(
+                partial(_underived_standing, item, groups, history, policy), policy
+            )
+    cases: dict[str, list[Observation]] = {}
+    for item in recorded:
+        cases.setdefault(gap_tracking[item.observation_id], []).append(item)
+    for item in recorded:
+        status = standing.get(item.observation_id)
+        if status is None or status[0] == "stands":
+            continue
+        if status[0] == "earlier":
+            notes.append(_earlier_detection(item, gap_labels[item.observation_id], status[1]))
+            continue
+        siblings = [
+            other for other in cases[gap_tracking[item.observation_id]] if other is not item
+        ]
+        # A sibling still derived, or one that stands or that nothing disproves, keeps the case
+        # open; a contradicted sibling never does.
+        keeping = [
+            other
+            for other in siblings
+            if other.observation_id in derived_ids
+            or standing[other.observation_id][0] != "contradicted"
+        ]
+        notes.append(
+            _underived_response_gap(
+                item,
+                gap_labels[item.observation_id],
+                status,
+                keeping=keeping,
+                shared=bool(siblings),
+            )
+        )
+    return notes
+
+
+def _underived_standing(
+    gap: Observation,
+    groups: Sequence[VulnerabilityGroup],
+    history: ResponseGapHistory,
+    policy: SelectedPolicy,
+) -> tuple[str, str]:
+    """Return whether a recorded gap this run derives no gap for stands, and why when not."""
+
+    if gap.source_type == RECURRENCE_SOURCE_TYPE:
+        rebuilt = rebuilt_recurrence(gap, groups)
+        if rebuilt is None:
+            tracking_id = gap.metadata_value("recurrence.caseTrackingId")
+            remediated = gap.metadata_value("recurrence.remediatedAt")
+            return (
+                "contradicted",
+                f"no current open observation of {tracking_id} on "
+                f"{coverage_label(gap.resource)} was detected after {remediated}, so the "
+                "evidence it rests on is no longer in history",
+            )
+        rebuilt_at = rebuilt.observed_at
+        recorded_at = gap.observed_at
+        if rebuilt_at is not None and recorded_at is not None and rebuilt_at < recorded_at:
+            return (
+                "earlier",
+                f"{rebuilt.metadata_value('recurrence.observationId')} on "
+                f"{coverage_label(gap.resource)} was detected earlier, at {iso(rebuilt_at)}",
+            )
+        return ("stands", "")
+    disproof = lapse_disproof(gap, history)
+    if disproof is not None:
+        observation_id, seen = disproof
+        return (
+            "contradicted",
+            f"{observation_id}, linked to {gap.metadata_value('attestation.caseTrackingId')}, "
+            f"declares a source timestamp and was recorded {iso(seen)}, inside that window, so "
+            "the case had a detection time in time",
+        )
+    rebuilt = rebuilt_lapse(gap, history, policy)
+    if rebuilt is not None and rebuilt.observation_id == gap.observation_id:
+        return ("stands", "")
+    return ("unmatched", "")
+
+
+def _earlier_detection(gap: Observation, label: str, found: str) -> ReportDiagnostic:
+    """Name an earlier detection of a recorded recurrence's slot, which records nothing (K1)."""
+
+    tracking_id = gap.context_key.split(":", 1)[0]
+    return ReportDiagnostic(
+        level=DiagnosticLevel.INFO,
+        code="response_gap_earlier_detection",
+        message=(
+            f"{label} carries the recorded response gap {_response_gap_text(gap)}, and {found}, "
+            "after the same remediation; the first record of a failed remediation and resource "
+            "stands as written, so no second record is made and its detection time is unchanged"
+        ),
+        location=f"{gap.source_record_id} {tracking_id}",
+    )
+
+
+def _lapse_clocked(work: Callable[[], _T], policy: SelectedPolicy) -> _T:
+    """Run lapse work, naming a first sighting no deadline fits as `clock_out_of_range` (F06).
+
+    The predicate and the words are the ones `store verify` names the same first sighting with.
+    """
+
+    try:
+        return work()
+    except LapseClockError as exc:
+        problem = clock_problem(exc.first_seen_at, (policy,)) or "leaves no room for its deadline"
+        raise ReportCompileError(
+            (
+                ReportDiagnostic(
+                    level=DiagnosticLevel.ERROR,
+                    code=CLOCK_OUT_OF_RANGE,
+                    message=first_sighting_clock_message(
+                        exc.tracking_id, exc.first_seen_at, problem
+                    ),
+                    location=f"{ATTESTATION_LAPSE_RECORD_ID} {exc.tracking_id}",
+                ),
+            )
+        ) from exc
+
+
+def _unrecorded_response_gap(gap: Observation) -> ReportDiagnostic:
+    """Name a response gap this run derives that history records no record for."""
+
+    if gap.source_type == RECURRENCE_SOURCE_TYPE:
+        tracking_id = gap.metadata_value("recurrence.caseTrackingId")
+        message = (
+            f"the remediation of {tracking_id} recorded "
+            f"{gap.metadata_value('recurrence.remediatedAt')} did not hold on "
+            f"{coverage_label(gap.resource)}, detected again "
+            f"{gap.metadata_value('recurrence.observationDetectedAt')}, and history records no "
+            "response gap for it, so no case in this report carries it; cases response-gaps "
+            "with this run's as-of records it"
+        )
+    else:
+        tracking_id = gap.metadata_value("attestation.caseTrackingId")
+        message = (
+            f"{tracking_id} had no detection time from any source when its "
+            f"{gap.metadata_value('attestation.rule')} window from "
+            f"{gap.metadata_value('attestation.firstSeenAt')} closed "
+            f"{gap.metadata_value('attestation.windowClosedAt')}, and history records no "
+            "response gap for it, so no case in this report carries it; cases response-gaps "
+            "with this run's as-of, class and calendar zone records it"
+        )
+    return ReportDiagnostic(
+        level=DiagnosticLevel.INFO,
+        code="response_gap_unrecorded",
+        message=message,
+        location=f"{gap.source_record_id} {tracking_id}",
+    )
+
+
+def _underived_response_gap(
+    gap: Observation,
+    label: str,
+    status: tuple[str, str],
+    *,
+    keeping: Sequence[Observation],
+    shared: bool,
+) -> ReportDiagnostic:
+    """Name a recorded response gap this run derives no gap for and cannot rebuild, and why."""
+
+    described = f"{label} carries the recorded response gap {_response_gap_text(gap)}"
+    others = ", and ".join(f"the response gap {_response_gap_text(other)}" for other in keeping)
+    tracking_id = gap.context_key.split(":", 1)[0]
+    location = f"{gap.source_record_id} {tracking_id}"
+    if status[0] == "unmatched":
+        tail = "the gap stays recorded"
+        if others:
+            tail = f"{tail}, and the case also carries {others}"
+        return ReportDiagnostic(
+            level=DiagnosticLevel.INFO,
+            code="response_gap_unmatched",
+            message=(
+                f"{described}, and this run derives no such gap and holds nothing that "
+                "disproves it, so the evidence or this run's class or calendar zone may differ "
+                f"from the run that recorded it; {tail}"
+            ),
+            location=location,
+        )
+    if others:
+        advice = (
+            f"but the case also carries {others}, so it stays open until every other gap it "
+            "carries is contradicted or disposed on its own merits"
+        )
+    elif shared:
+        advice = (
+            "and every other recorded gap of the case is contradicted too, so an evaluation "
+            "can dispose the case as a false positive"
+        )
+    else:
+        advice = "and an evaluation can dispose it as a false positive"
+    return ReportDiagnostic(
+        level=DiagnosticLevel.INFO,
+        code="response_gap_contradicted",
+        message=(
+            f"{described}, but {status[1]}, so this run derives no such gap; the gap stays "
+            f"recorded, {advice}"
+        ),
+        location=location,
+    )
+
+
+def _response_gap_text(gap: Observation) -> str:
+    """Return a recorded response gap as its title reads, less the rule."""
+
+    if gap.source_type == RECURRENCE_SOURCE_TYPE:
+        return (
+            f"of the remediation of {gap.metadata_value('recurrence.caseTrackingId')} recorded "
+            f"{gap.metadata_value('recurrence.remediatedAt')} on {coverage_label(gap.resource)}, "
+            f"detected again {gap.metadata_value('recurrence.observationDetectedAt')}"
+        )
+    return (
+        f"of {gap.metadata_value('attestation.caseTrackingId')}'s "
+        f"{gap.metadata_value('attestation.rule')} window from "
+        f"{gap.metadata_value('attestation.firstSeenAt')} that closed "
+        f"{gap.metadata_value('attestation.windowClosedAt')}"
+    )
+
+
+def _response_gap_order(gap: Observation) -> tuple[str, str, str, str, str, str]:
+    """Order recorded response gaps by kind, case, instant, resource and id."""
+
+    closed = "" if gap.observed_at is None else iso(gap.observed_at)
+    return (
+        gap.source_type,
+        gap.context_key.split(":", 1)[0],
+        closed,
+        gap.resource.resource_type,
+        gap.resource.resource_id,
+        gap.observation_id,
+    )
+
+
+def _remediation_instant(
+    tracking_id: str,
+    evaluation: EvaluationInput | None,
+    remediated_at: Mapping[str, datetime] | None,
+) -> datetime | None:
+    """Return when a remediated record was remediated, or None for any other record.
+
+    The instant is an evaluation's `completedAt`, never a store's recording instant (ADR
+    0010): the record's own on the stateless path, and on the persisted path the one in force
+    when the disposition was first recorded, which `remediated_at` carries. Only a disposition
+    that resolves to `remediated` counts: a mitigated weakness still exists, and a false
+    positive or an accepted risk is the operator's standing ruling.
+    """
+
+    if evaluation is None or evaluation.resolved_status is not CaseStatus.REMEDIATED:
+        return None
+    if remediated_at is None:
+        return evaluation.completed_at
+    return remediated_at.get(tracking_id)
+
+
+def _recurrence_warning(
+    recurrence: RemediationRecurrence, label: str, location: str
+) -> ReportDiagnostic:
+    """Warn that open observations contradict a record's remediation (ADR 0019).
+
+    One WARNING per record, on both paths and whatever the run records: it names the
+    remediation instant and the earliest recurring detection, and counts the members whose
+    time cannot be ordered against the remediation at all.
+    """
+
+    clauses = [f"{label} is recorded remediated at {iso(recurrence.remediated_at)}"]
+    if recurrence.recurring:
+        earliest = recurrence.recurring[0]
+        detected_at = earliest.observed_at
+        if detected_at is None:  # pragma: no cover - recurring members are timed
+            raise AssertionError("a recurring observation is timed")
+        clauses.append(
+            f"{len(recurrence.recurring)} open observation(s) of it were detected after that "
+            f"instant, the earliest at {iso(detected_at)} on {coverage_label(earliest.resource)}"
+        )
+    if recurrence.untimed:
+        clauses.append(
+            f"{len(recurrence.untimed)} open observation(s) of it declare no source timestamp, "
+            "so they cannot be ordered against the remediation"
+        )
+    verdict = (
+        "the remediation did not hold"
+        if recurrence.recurring
+        else "whether the remediation held cannot be told"
+    )
+    return ReportDiagnostic(
+        level=DiagnosticLevel.WARNING,
+        code="recurrence_after_remediation",
+        message=(
+            ", and ".join(clauses)
+            + f"; {verdict}, and the record keeps its disposition until an evaluation changes it"
+        ),
+        location=location,
+    )
 
 
 # *--- Record Building ---*

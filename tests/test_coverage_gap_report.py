@@ -27,6 +27,7 @@ from test_cli import (
     CYCLONEDX_COVERAGE_ARGUMENTS,
     EXAMPLE_INVENTORY,
     HISTORICAL_ARGUMENTS,
+    RECURRENCE_ARGUMENTS,
     REPORT_ARGUMENTS,
     PersistedStoreTestCase,
     help_text,
@@ -722,6 +723,7 @@ class GoldenRegistryTests(unittest.TestCase):
             "vdt-cyclonedx-coverage": (CYCLONEDX_COVERAGE_ARGUMENTS, 0),
             "vdt-changes": (CHANGES_ARGUMENTS, 0),
             "vdt-changes-timed": (timed_changes_argv(), 0),
+            "vdt-recurrence-warning": (RECURRENCE_ARGUMENTS, 0),
             "vdt-failed": (failed_vdt, 3),
             "historical-failed": (failed_historical, 3),
         }
@@ -740,7 +742,9 @@ class GoldenRegistryTests(unittest.TestCase):
         # reproduces it. The change gap golden is `test_change_gap_report`'s, cut with its own
         # flag.
         self.assertEqual(
-            reports - set(GAP_GOLDENS) - {"vdt-changes-replay", "vdt-change-gaps"},
+            reports
+            - set(GAP_GOLDENS)
+            - {"vdt-changes-replay", "vdt-change-gaps", "historical-response-gaps"},
             {*runs, *compiled},
         )
         self.assertLessEqual(set(GAP_GOLDENS), reports)

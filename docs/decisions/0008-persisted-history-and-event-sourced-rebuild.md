@@ -1196,3 +1196,55 @@ before or after `cases correlate`.
 - **Unchanged.** Two groups under one correlation id hold one place in the writer's group map, as
   before, so the writer neither sees that pair nor refuses for it; verify names it, and no override
   parts it.
+
+## Amendment 2026-11-26: response gap streams and the response gap divergences
+
+ADR 0019 records two failures of the response process as system observations, in a store only:
+a remediation a later open observation contradicts, and a case whose detection time was not
+attested within `VER-TFR-EVU` of its first sighting. It adds a seventh stream kind and a new
+event, and a store's recorded response gaps can disagree with the gaps a run derives, so Decision
+5 gets the carve-out of the 2026-10-16 amendment a third time. It also adds a warning both paths
+print alike. These rules bind from this date.
+
+- **Both paths warn alike.** A remediated record with a later open observation, or with an open
+  member that declares no source timestamp, carries the WARNING `recurrence_after_remediation` on
+  both paths. The stateless instant is the record's evaluation's `completedAt`; the persisted one is
+  the `completedAt` of the evaluation in force when the current remediated disposition was first
+  recorded, which the fold reads from the stream. The two are one instant when the store was
+  evaluated once from the file the stateless run reads, and the persisted report then gives the
+  stateless bytes before `cases correlate` links what came back:
+  `tests/golden/vdt-recurrence-warning.{json,md}` is reproduced from a store.
+- **Decision 5 has a carve-out for response gaps.** No stateless run records one (ADR 0019 Decision
+  8), so a store holding a response gap holds a record no stateless run has. A report from a store
+  that holds a `response-gap/` stream is aware: a response gap the run derives that no record
+  carries is INFO `response_gap_unrecorded`, and a recorded gap the run derives no gap for and
+  cannot rebuild from its own record is INFO `response_gap_contradicted` when the store holds
+  evidence against it, or INFO `response_gap_unmatched` when it holds none. A recorded recurrence
+  the run finds detected earlier stands, with INFO `response_gap_earlier_detection`. A store that
+  never recorded a response gap writes none of these notes and compiles as it did before this
+  date, except for the `recurrence_after_remediation` WARNING, which every report from a store or
+  not carries for a remediated record that came back.
+- **A seventh stream kind, `response-gap/<fingerprint>`.** It is named for the record's SYSTEM
+  identity hash and holds exactly one `response_gap.recorded` head and one `observation.recorded`
+  carrying the record. The repository accepts it only whole, in one batch at version 0, and holds
+  the head to its own record at append; it names no other stream, so a missing case is not a fault.
+  `observation.recorded` is accepted on artifact, failure, coverage, change gap, and response gap
+  streams, and `response_gap.recorded` on response gap streams only. `rehydrate_observations`
+  reads each response gap stream's record in recorded order with every other observation, and no
+  rule supersedes it. The audit gains `responsegap_incomplete`, `responsegap_overfull`,
+  `responsegap_stream_mismatch`, `responsegap_identity_breach`, and `responsegap_schema_unmarked`,
+  and every reader of the store's observations refuses the shapes the first four name, and a
+  foreign event on a response gap stream, as `history_invalid` with the audit's text.
+- **`response_gap.recorded` v1.** The payload is `kind`, `caseTrackingId`, `contextKey`,
+  `remediatedAt`, `observationId`, `observationDetectedAt`, `firstSeenAt`, `windowClosedAt`, and
+  `rule`, every one required and no other allowed. A recurrence fills the first six and nulls the
+  last three; a lapse fills the first three and the last three and nulls the rest.
+- **A store that records a response gap is schema 7.** The first response gap append inserts
+  migration row 7 ("response gap streams, ADR 0019"), and every lower row the store lacks, and sets
+  `user_version` to 7 in the same transaction; a store that never records a response gap stays at
+  its version. This build opens 1 to 7. A build that opens only 1 to 6 refuses a schema 7 store at
+  open with `database schema 7 is newer than supported schema 6`, and its `store verify` reports
+  `schema_version_unsupported`.
+- **One more content-neutral fault.** `responsegap_schema_unmarked` joins the five codes no reader
+  and no case writer refuses; it changes no report's bytes, and `store verify` still checks
+  evaluation order beside it.

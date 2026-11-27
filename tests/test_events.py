@@ -43,6 +43,7 @@ from complyroll.events import (
     HELD_FAILURE_SCHEMA_VERSION,
     METHOD_VALUES,
     READ_PAGE_SIZE,
+    RESPONSE_GAP_STREAM_EVENT_TYPES,
     STREAM_EVENT_TYPES,
     TOOL_NAME,
     UNDISPOSED_STATUSES,
@@ -314,6 +315,37 @@ GOOD_PAYLOADS["change.gap_recorded"] = {
     "inventorySha256": DIGEST,
 }
 
+#: The head of a response gap stream: a remediation recorded 5 August that a scan of 10 August
+#: contradicts (ADR 0019). Every field is required, so the lapse fields are null.
+GOOD_PAYLOADS["response_gap.recorded"] = {
+    "kind": "recurrence",
+    "caseTrackingId": TRACKING_ID,
+    "contextKey": f"{TRACKING_ID}:remediated:2026-08-05T12:00:00Z",
+    "remediatedAt": "2026-08-05T12:00:00Z",
+    "observationId": "obs-recurring",
+    "observationDetectedAt": "2026-08-10T09:00:00Z",
+    "firstSeenAt": None,
+    "windowClosedAt": None,
+    "rule": None,
+}
+#: The other kind of response gap head, a lapsed attestation, whose recurrence fields are null.
+GOOD_LAPSE_HEAD: dict[str, Any] = {
+    "kind": "attestation",
+    "caseTrackingId": TRACKING_ID,
+    "contextKey": TRACKING_ID,
+    "remediatedAt": None,
+    "observationId": None,
+    "observationDetectedAt": None,
+    "firstSeenAt": "2026-08-01T00:00:00Z",
+    "windowClosedAt": "2026-08-06T00:00:00Z",
+    "rule": "VER-TFR-EVU",
+}
+#: The known-good payload a pointer is filled on when the default payload holds it as null.
+POINTER_PAYLOADS: dict[tuple[str, str], dict[str, Any]] = {
+    ("response_gap.recorded", "/firstSeenAt"): GOOD_LAPSE_HEAD,
+    ("response_gap.recorded", "/windowClosedAt"): GOOD_LAPSE_HEAD,
+}
+
 #: One field per contract that the schema requires in UTC `Z` form. The two contracts
 #: that accept a source offset are asserted separately below.
 UTC_ONLY_FIELDS: dict[str, str] = {
@@ -464,6 +496,12 @@ EXPECTED_TIMESTAMP_POINTERS: dict[str, tuple[str, ...]] = {
     "detection.attested": ("/attestedAt", "/detectedAt"),
     "failure.held": ("/ingestedAt",),
     "failure.recorded": ("/ingestedAt",),
+    "response_gap.recorded": (
+        "/firstSeenAt",
+        "/observationDetectedAt",
+        "/remediatedAt",
+        "/windowClosedAt",
+    ),
     # The two `observation.recorded` timestamps are read back through
     # `Observation.from_canonical_dict`, which is stricter than parsing, so they are
     # deliberately absent from the parsed set.
@@ -1234,7 +1272,8 @@ class TimestampSemanticsTests(unittest.TestCase):
         for event_type, pointers in EXPECTED_TIMESTAMP_POINTERS.items():
             for pointer in pointers:
                 with self.subTest(event_type=event_type, pointer=pointer):
-                    payload = with_value(GOOD_PAYLOADS[event_type], pointer, "2026-08-29T23:59:59Z")
+                    good = POINTER_PAYLOADS.get((event_type, pointer), GOOD_PAYLOADS[event_type])
+                    payload = with_value(good, pointer, "2026-08-29T23:59:59Z")
 
                     self.repository.validate_payload(event_type, payload)
 
@@ -1597,13 +1636,14 @@ class StreamCompatibilityTests(unittest.TestCase):
             expected_version=self.repository.current_version(stream_id),
         )
 
-    def test_the_six_stream_kinds_place_every_published_type(self) -> None:
+    def test_the_seven_stream_kinds_place_every_published_type(self) -> None:
         readings = (
             ARTIFACT_STREAM_EVENT_TYPES,
             FAILURE_STREAM_EVENT_TYPES,
             COVERAGE_STREAM_EVENT_TYPES,
             CHANGE_STREAM_EVENT_TYPES,
             CHANGE_GAP_STREAM_EVENT_TYPES,
+            RESPONSE_GAP_STREAM_EVENT_TYPES,
         )
         self.assertEqual(
             CASE_STREAM_EVENT_TYPES.union(*readings),
@@ -1630,6 +1670,7 @@ class StreamCompatibilityTests(unittest.TestCase):
                 "coverage": COVERAGE_STREAM_EVENT_TYPES,
                 "change": CHANGE_STREAM_EVENT_TYPES,
                 "changegap": CHANGE_GAP_STREAM_EVENT_TYPES,
+                "response-gap": RESPONSE_GAP_STREAM_EVENT_TYPES,
             },
         )
 
@@ -1642,9 +1683,12 @@ class StreamCompatibilityTests(unittest.TestCase):
         coverage = frozenset(COVERAGE_STREAM_EVENT_TYPES)
         change = frozenset(CHANGE_STREAM_EVENT_TYPES)
         change_gap = frozenset(CHANGE_GAP_STREAM_EVENT_TYPES)
+        response_gap = frozenset(RESPONSE_GAP_STREAM_EVENT_TYPES)
         published = frozenset(EVENT_TYPES)
         self.assertIsNone(
-            _placement_problem(artifact, case, failure, coverage, change, change_gap, published)
+            _placement_problem(
+                artifact, case, failure, coverage, change, change_gap, response_gap, published
+            )
         )
         for label, tables, expected in (
             (
@@ -1699,7 +1743,7 @@ class StreamCompatibilityTests(unittest.TestCase):
             ),
         ):
             with self.subTest(shape=label):
-                problem = _placement_problem(*tables, change, change_gap, published)
+                problem = _placement_problem(*tables, change, change_gap, response_gap, published)
                 self.assertIsNotNone(problem)
                 self.assertIn(expected, str(problem))
 
@@ -1745,7 +1789,8 @@ class StreamCompatibilityTests(unittest.TestCase):
                     self.append("projection/case-list", event_type)
 
                 self.assertIn(
-                    "not an artifact, case, failure, coverage, change, or change gap stream",
+                    "not an artifact, case, failure, coverage, change, change gap, or response gap "
+                    "stream",
                     str(caught.exception),
                 )
 
@@ -3373,7 +3418,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
             connection.execute(statement)
 
     def test_a_new_store_is_created_at_schema_1(self) -> None:
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 6)
+        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 7)
         self.assertEqual(HELD_FAILURE_SCHEMA_VERSION, 3)
         self.assertEqual(self.store.schema_version, 1)
         self.assertEqual(self.migrations(), [self.FIRST])
@@ -3587,16 +3632,16 @@ class FailureSchemaMarkingTests(unittest.TestCase):
 
     def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         self.record_failure()
-        self.damage("PRAGMA user_version = 7")
+        self.damage("PRAGMA user_version = 8")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 7 is newer than supported schema 6", str(caught.exception))
+        self.assertIn("database schema 8 is newer than supported schema 7", str(caught.exception))
 
     def test_the_required_schema_must_be_one_this_build_knows(self) -> None:
         event = NewEvent("failure.recorded", NOW, failure_head())
-        for value in (0, 7, True, "2"):
+        for value in (0, 8, True, "2"):
             with self.subTest(requires_schema=value):
                 with self.assertRaises(ValueError) as caught:
                     self.store.append(
@@ -3606,7 +3651,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
                         requires_schema=value,  # type: ignore[arg-type]
                     )
 
-                self.assertIn("requires_schema must be between 1 and 6", str(caught.exception))
+                self.assertIn("requires_schema must be between 1 and 7", str(caught.exception))
         self.assertEqual(self.store.latest_sequence, 0)
 
 

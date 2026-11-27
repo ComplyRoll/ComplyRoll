@@ -143,9 +143,20 @@ so automation that stops on a non-zero exit still stops while the failure is on 
 Without the flag a failed import exits 1 and writes nothing, and a failed invocation stays a
 warning, as before.
 
-The response half is not covered: a broken remediation or response workflow, and a vulnerability
-whose detection time is never attested, are the deliverable "Response-process and attestation
-failures", carried from Phase 2 into Phase 3 on 2026-11-14. Stale coverage and missing resources
+The response half is partly covered (ADR 0019), in a store only, by `cases response-gaps`. A
+remediation that a later open artifact observation contradicts becomes a system record for each
+resource that came back, and every report, on both paths, warns about it while the case keeps
+the operator's `remediated` disposition: ComplyRoll never sets a disposition. A case whose
+detection time no source, attestation, or system clock gave it by the close of the `VER-TFR-EVU`
+window, read from the pinned dataset and measured from when the store first recorded its evidence,
+becomes a system record too. The first record stands in for the detection time: when the ingest
+instant is at or after the true detection, this window closes only after the true one, so the
+record is never early, but ComplyRoll cannot check that condition. Because a run reads whether
+the case is timed when it runs, an attestation made before any run prevents it, so the record is
+only as frequent as the runs. A lapsed planned response, which needs response action records, and
+the `VER-TFR-MHR` and `VER-TFR-MRH` recurrence clocks are still carried in
+Phase 3. A recorded response gap is evidence that the provider's process failed and was noticed,
+not a determination that the provider meets `VDR-CSO-FAV`. Stale coverage and missing resources
 are measured by the coverage and freshness checks below, and become cases when the operator asks
 for them. A clean SARIF run is
 evidence, as a PASS observation of its scope (ADR 0015 decision 1). Some detection failures still
@@ -453,6 +464,11 @@ can publish them with authorization, logging, redaction, and availability contro
   violation. The same holds for a change detection gap case, whose window the provider stated.
 - Do not read an SBOM as a detection, an empty vulnerability list as a clean scan, or a
   supplier's VEX statement as the provider's disposition.
+- Do not read a remediation recurrence as ComplyRoll reopening the case, or a lapsed attestation
+  as a weakness. The first records that a remediation the operator recorded did not hold, and the
+  case keeps its disposition until the operator re-evaluates it; the second records that a case
+  had no detection time when its evaluation window closed, measured from when ComplyRoll first
+  recorded its evidence, not from when the weakness was found.
 
 ## Sources
 

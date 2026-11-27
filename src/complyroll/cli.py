@@ -55,6 +55,7 @@ from .history import (
     record_coverage_gaps,
     record_failure,
     record_ingest,
+    record_response_gaps,
     tracking_id_refusals,
 )
 from .models import Observation
@@ -82,6 +83,11 @@ from .reports.changes import ChangeProjection, detection_request
 from .reports.gaps import COVERAGE_GAP_SOURCE_TYPE
 from .reports.records import derive_changes_from_artifacts
 from .reports.replay import derive_changes_from_history
+from .reports.response_gaps import (
+    ATTESTATION_LAPSE_SOURCE_TYPE,
+    RECURRENCE_SOURCE_TYPE,
+    RESPONSE_GAP_RULE,
+)
 from .schemas import (
     MAX_REPORT_BYTES,
     ReportDocumentError,
@@ -122,8 +128,9 @@ def _default_actor() -> str:
 DEFAULT_ACTOR = _default_actor()
 
 #: The status of a run that recorded a system-generated VDR-CSO-FAV record and still wrote
-#: its output: a detection process failure (ADR 0014), a coverage gap (ADR 0015) or a change
-#: gap (ADR 0018), so a pipeline can tell it from a clean run (0) and a refusal (1).
+#: its output: a detection process failure (ADR 0014), a coverage gap (ADR 0015), a change
+#: gap (ADR 0018) or a response gap (ADR 0019), so a pipeline can tell it from a clean run (0)
+#: and a refusal (1).
 EXIT_DETECTION_FAILURES = 3
 
 #: `ReportOptions` requires a package URI and a request document has no use for one, so this
@@ -140,13 +147,21 @@ CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
     ("PAIN", False),
     ("DISPOSITION", False),
 )
-#: The column a listing adds once it lists a gap case of either kind: the gap's context key,
+#: The column a listing adds once it lists a case of any kind below: its context key,
 #: which an evaluation entry must state and no report document carries ("-" for every other
 #: case).
 GAP_CONTEXT_COLUMN: tuple[str, bool] = ("CONTEXT KEY", False)
 #: The reserved source types whose cases the listing names by context key: a coverage gap
-#: (ADR 0015) and a change detection gap (ADR 0018).
-_GAP_CASE_SOURCE_TYPES = frozenset({COVERAGE_GAP_SOURCE_TYPE, CHANGE_GAP_SOURCE_TYPE})
+#: (ADR 0015), a change detection gap (ADR 0018), and both response gaps (ADR 0019), each matched
+#: by the full triple.
+_GAP_CASE_SOURCE_TYPES = frozenset(
+    {
+        COVERAGE_GAP_SOURCE_TYPE,
+        CHANGE_GAP_SOURCE_TYPE,
+        RECURRENCE_SOURCE_TYPE,
+        ATTESTATION_LAPSE_SOURCE_TYPE,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,6 +404,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_actor_option(change_gaps)
+
+    response_gaps_help = (
+        "record each remediation a later open observation contradicts, and each case whose "
+        "detection time was not attested within its evaluation window, as a VDR-CSO-FAV system "
+        "record; exits 3 when one is recorded"
+    )
+    response_gaps = case_commands.add_parser(
+        "response-gaps", help=response_gaps_help, description=response_gaps_help
+    )
+    _add_database_option(response_gaps, "event store holding the cases and evidence")
+    response_gaps.add_argument(
+        "--class",
+        dest="certification_class",
+        required=True,
+        choices=[item.value for item in CertificationClass],
+        help="certification class whose VER-TFR-EVU window a lapse is read against",
+    )
+    response_gaps.add_argument(
+        "--as-of",
+        required=True,
+        metavar="RFC3339",
+        help="instant the windows are closed against, and each record's ingestion time",
+    )
+    response_gaps.add_argument(
+        "--calendar-tz",
+        default="UTC",
+        metavar="NAME",
+        help="IANA calendar used for month and year arithmetic (default: UTC)",
+    )
+    _add_actor_option(response_gaps)
 
     listing = case_commands.add_parser("list", help="list every recorded case")
     _add_database_option(listing, "event store to read")
@@ -1064,6 +1109,8 @@ def _run_cases(args: argparse.Namespace) -> int:
         return _run_cases_coverage(args)
     if args.cases_command == "changes":
         return _run_cases_changes(args)
+    if args.cases_command == "response-gaps":
+        return _run_cases_response_gaps(args)
     if args.cases_command == "list":
         return _run_cases_list(args)
     if args.cases_command == "history":
@@ -1293,6 +1340,49 @@ def _run_cases_changes(args: argparse.Namespace) -> int:
         return EXIT_DETECTION_FAILURES if outcome.recorded else 0
 
     return _persisted_run(stderr, record)
+
+
+def _run_cases_response_gaps(args: argparse.Namespace) -> int:
+    stderr = sys.stderr
+    database = Path(args.db)
+    missing = _refuse_missing_store(stderr, database)
+    if missing is not None:
+        return missing
+    try:
+        as_of = parse_rfc3339(args.as_of, "--as-of")
+        profile = CertificationProfile(
+            CertificationClass(args.certification_class), calendar_timezone=args.calendar_tz
+        )
+        metadata = _metadata(args)
+    except ReportInputError as exc:
+        return _fail(stderr, "invalid_input", str(exc))
+    except (TypeError, ValueError) as exc:
+        return _fail(stderr, "invalid_option", str(exc))
+
+    def record() -> int:
+        with _open_repository(database) as repository:
+            outcome = record_response_gaps(
+                repository, profile=profile, as_of=as_of, metadata=metadata
+            )
+        # Each list is in derivation order: what this run recorded, then what history held.
+        for gap in outcome.recorded:
+            _say(f"{gap.observation_id}: recorded {_response_gap_line(gap)}")
+        for gap in outcome.already_recorded:
+            _say(f"{gap.observation_id}: already_recorded {_response_gap_line(gap)}")
+        _say(
+            f"recorded {len(outcome.recorded)} response gap(s), "
+            f"skipped {len(outcome.already_recorded)} already-recorded response gap(s)"
+        )
+        # A recorded gap is a system-generated VDR-CSO-FAV record, so the run says so (ADR 0019).
+        return EXIT_DETECTION_FAILURES if outcome.recorded else 0
+
+    return _persisted_run(stderr, record)
+
+
+def _response_gap_line(gap: Observation) -> str:
+    """Name what a response gap records, as its title does, less the rule it is recorded under."""
+
+    return gap.title.removesuffix(f" ({RESPONSE_GAP_RULE})")
 
 
 def _change_gap_window(gap: Observation) -> str:

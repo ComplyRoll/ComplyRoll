@@ -1139,3 +1139,16 @@ again from this date; their text is not edited.
 - **Decision 18 applies to change gaps.** A change gap detected after the report period ends is
   left out of the official VDT with INFO `excluded_by_period`, still counts for exit 3, is listed
   by the historical snapshot, and keeps its tracking id on its obligation row.
+
+## Amendment 2026-11-26: the response half of VDR-CSO-FAV is partly built
+
+Decision 17 recorded missing attestations and response-process failures as a scope change, owned
+by the deliverable "Response-process and attestation failures". ADR 0019 builds two of them in a
+store, with no new operator input: a remediation a later open observation contradicts, and a case
+whose detection time was not attested within `VER-TFR-EVU` of its first sighting. Each is a system
+observation and, once grouped, a case, under the reserved source types `complyroll.recurrence` and
+`complyroll.attestation`, recorded by `cases response-gaps` and listed in no `detectionFailures`
+entry, as Decision 4's metadata is the failure type's alone. `detection_time_missing` stays fatal:
+a lapse records that a case had no detection time when its window closed, and the operator remedy
+for the report is still `--detected-at` or `cases attest-detection`. A lapsed planned response,
+which needs `ResponseAction` records, and the recurrence clocks remain with the deliverable.

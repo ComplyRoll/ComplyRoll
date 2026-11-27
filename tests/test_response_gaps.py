@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import unittest
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
@@ -26,8 +26,8 @@ from test_cli import (
     PersistedStoreTestCase,
     run,
 )
-from test_coverage import observation
-from test_coverage_gap_evaluations import system_observation
+from test_coverage import observation, policy
+from test_coverage_gap_evaluations import minted_reserved_types, system_observation
 from test_reports import AS_OF, EXAMPLES, GOLDEN, options
 
 from complyroll.correlation import group_open_observations
@@ -40,7 +40,7 @@ from complyroll.models import (
     ObservationDisposition,
     ObservationOrigin,
 )
-from complyroll.policy import CertificationClass
+from complyroll.policy import CertificationClass, TimeframeUnit
 from complyroll.reports import (
     REPORT_DIAGNOSTIC_CODES,
     CompiledRecordSet,
@@ -53,15 +53,25 @@ from complyroll.reports import (
     project_vdt,
 )
 from complyroll.reports import checks as checks_module
+from complyroll.reports import markdown as markdown_module
 from complyroll.reports import records as records_module
 from complyroll.reports import response_gaps as response_gaps_module
 from complyroll.reports.response_gaps import (
+    ATTESTATION_LAPSE_DESCRIPTION,
+    ATTESTATION_LAPSE_METADATA_KEYS,
+    ATTESTATION_LAPSE_RECORD_ID,
+    ATTESTATION_LAPSE_SOURCE_TYPE,
     RECURRENCE_DESCRIPTION,
     RECURRENCE_METADATA_KEYS,
     RECURRENCE_PARSER_NAME,
     RECURRENCE_PARSER_VERSION,
     RECURRENCE_RECORD_ID,
     RECURRENCE_SOURCE_TYPE,
+    AttestationLapse,
+    attestation_lapse,
+    attestation_lapse_observation,
+    attestation_lapses,
+    first_sighting,
     recurrence_case_tracking_id,
     recurrence_context_key,
     recurrence_observations,
@@ -506,6 +516,214 @@ class RecurrenceRecordTests(unittest.TestCase):
                 "; a remediation recurrence is detected when its recurring observation was "
                 "detected, so evaluate it at or after that instant, or correct completedAt"
             )
+        )
+
+
+# *--- Lapsed Attestation ---*
+
+CASE_ID = "case-0123456789abcdef"
+OTHER_CASE_ID = "case-fedcba9876543210"
+#: The ingest `--as-of` of a case's first and second linked observations.
+SEEN_AT = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
+SEEN_LATER_AT = datetime(2026, 9, 3, 8, 0, tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class Link:
+    observation_id: str
+    observed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Case:
+    tracking_id: str = CASE_ID
+    links: tuple[Link, ...] = (Link("obs-first"), Link("obs-second"))
+    attestation: object | None = None
+
+
+#: When each linked observation was ingested, as a store records it.
+INGESTED = {"obs-first": SEEN_AT, "obs-second": SEEN_LATER_AT, "obs-unlinked": AS_OF}
+
+
+def evu_close(class_name: str, start: datetime = SEEN_AT) -> datetime:
+    """Return the VER-TFR-EVU deadline the pinned dataset gives one class."""
+    return policy(class_name).deadline_for_rule("VER-TFR-EVU", start).due_at
+
+
+class AttestationLapseTests(unittest.TestCase):
+    """A run records a lapse when a case is untimed at or past its window close (D5, F1)."""
+
+    def test_the_window_is_read_from_the_dataset_for_each_class(self) -> None:
+        for class_name, days in (("B", 7), ("C", 5)):
+            with self.subTest(certification_class=class_name):
+                timeframe = policy(class_name).rule("VER-TFR-EVU").timeframe
+                assert timeframe is not None
+                self.assertEqual(timeframe.unit, TimeframeUnit.DAYS)
+                self.assertEqual(evu_close(class_name), SEEN_AT + timedelta(days=days))
+
+    def test_an_untimed_case_lapses_at_the_close_and_not_before(self) -> None:
+        for class_name in ("B", "C"):
+            closed = evu_close(class_name)
+            selected = policy(class_name)
+            with self.subTest(certification_class=class_name):
+                early = closed - timedelta(seconds=1)
+                self.assertIsNone(attestation_lapse(Case(), INGESTED, selected, early))
+                for as_of in (closed, closed + timedelta(days=30)):
+                    found = attestation_lapse(Case(), INGESTED, selected, as_of)
+                    self.assertEqual(
+                        found,
+                        AttestationLapse(
+                            tracking_id=CASE_ID,
+                            first_seen_at=SEEN_AT,
+                            window_closed_at=closed,
+                            force="SHOULD",
+                        ),
+                    )
+
+    def test_a_case_with_no_links_has_no_first_sighting_and_records_nothing(self) -> None:
+        late = AS_OF + timedelta(days=365)
+        self.assertIsNone(attestation_lapse(Case(links=()), INGESTED, policy("C"), late))
+        unread = Case(links=(Link("obs-never-recorded"),))
+        self.assertIsNone(first_sighting(unread, INGESTED))
+        self.assertIsNone(attestation_lapse(unread, INGESTED, policy("C"), late))
+
+    def test_the_first_sighting_is_the_earliest_linked_ingest(self) -> None:
+        case = Case(links=(Link("obs-second"), Link("obs-first"), Link("obs-never-recorded")))
+        self.assertEqual(first_sighting(case, INGESTED), SEEN_AT)
+        self.assertEqual(first_sighting(Case(links=(Link("obs-second"),)), INGESTED), SEEN_LATER_AT)
+
+    def test_any_timed_link_makes_the_case_timed_inside_or_after_the_window(self) -> None:
+        late = evu_close("C") + timedelta(days=30)
+        for observed_at in (SEEN_AT, late):
+            with self.subTest(observed_at=observed_at):
+                case = Case(links=(Link("obs-first"), Link("obs-second", observed_at)))
+                self.assertIsNone(attestation_lapse(case, INGESTED, policy("C"), late))
+
+    def test_an_attestation_made_before_any_run_prevents_the_lapse(self) -> None:
+        late = evu_close("C") + timedelta(days=30)
+        case = Case(attestation=object())
+        self.assertIsNone(attestation_lapse(case, INGESTED, policy("C"), late))
+
+    def test_every_case_is_read_in_tracking_id_order(self) -> None:
+        late = evu_close("B")
+        cases = (Case(tracking_id=OTHER_CASE_ID), Case(links=()), Case())
+        found = attestation_lapses(cases, INGESTED, policy("B"), late)
+        self.assertEqual([item.tracking_id for item in found], [CASE_ID, OTHER_CASE_ID])
+
+    def test_a_naive_as_of_and_a_non_policy_are_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            attestation_lapse(Case(), INGESTED, policy("C"), datetime(2026, 9, 30))
+        with self.assertRaises(TypeError):
+            attestation_lapse(Case(), INGESTED, object(), AS_OF)  # type: ignore[arg-type]
+
+
+class AttestationLapseIdentityTests(unittest.TestCase):
+    """One system record per lapsed case, named by the case and its window close (D5)."""
+
+    def lapse(self, class_name: str = "C") -> AttestationLapse:
+        found = attestation_lapse(Case(), INGESTED, policy(class_name), AS_OF + timedelta(days=60))
+        assert found is not None
+        return found
+
+    def test_the_record_is_the_recorded_decision(self) -> None:
+        record = attestation_lapse_observation(self.lapse(), ingested_at=AS_OF)
+        closed = evu_close("C")
+        self.assertEqual(ATTESTATION_LAPSE_SOURCE_TYPE, "complyroll.attestation")
+        self.assertEqual(record.source_type, ATTESTATION_LAPSE_SOURCE_TYPE)
+        self.assertEqual(record.source_tool, "complyroll")
+        self.assertEqual(record.parser_name, "complyroll.attestation")
+        self.assertEqual(record.parser_version, "1")
+        self.assertEqual(record.source_record_id, ATTESTATION_LAPSE_RECORD_ID)
+        self.assertEqual(record.source_record_id, "attestation-lapse")
+        self.assertEqual(record.origin, ObservationOrigin.SYSTEM)
+        self.assertEqual(
+            (record.resource.resource_type, record.resource.resource_id),
+            ("logical", f"case/{CASE_ID}"),
+        )
+        self.assertEqual(record.context_key, CASE_ID)
+        self.assertEqual(record.observed_at, closed)
+        self.assertEqual(record.observation_id, record.derived_observation_id)
+        self.assertEqual(record.evidence_ids, (f"case:{CASE_ID}",))
+        self.assertEqual(record.source_identifiers, ())
+        self.assertEqual(
+            dict(record.source_metadata),
+            {
+                "attestation.caseTrackingId": CASE_ID,
+                "attestation.firstSeenAt": "2026-09-01T08:00:00Z",
+                "attestation.force": "SHOULD",
+                "attestation.rule": "VER-TFR-EVU",
+                "attestation.windowClosedAt": "2026-09-06T08:00:00Z",
+            },
+        )
+        self.assertEqual(
+            tuple(sorted(dict(record.source_metadata))), ATTESTATION_LAPSE_METADATA_KEYS
+        )
+        self.assertEqual(
+            record.title,
+            f"detection time of {CASE_ID} was not attested within VER-TFR-EVU from "
+            "2026-09-01T08:00:00Z (VDR-CSO-FAV)",
+        )
+        self.assertEqual(record.description, ATTESTATION_LAPSE_DESCRIPTION)
+
+    def test_the_id_ignores_the_ingest_time_and_moves_with_the_window(self) -> None:
+        first = attestation_lapse_observation(self.lapse(), ingested_at=AS_OF)
+        rerun = attestation_lapse_observation(self.lapse(), ingested_at=AS_OF + timedelta(days=90))
+        other_class = attestation_lapse_observation(self.lapse("B"), ingested_at=AS_OF)
+        self.assertEqual(first.observation_id, rerun.observation_id)
+        self.assertNotEqual(first.observation_id, other_class.observation_id)
+        # One case's lapses share its key, so a second profile's lapse joins the same case.
+        self.assertEqual(len(group_open_observations((first, other_class))), 1)
+
+    def test_each_case_is_its_own_lapse_case(self) -> None:
+        late = AS_OF + timedelta(days=60)
+        lapses = attestation_lapses(
+            (Case(), Case(tracking_id=OTHER_CASE_ID)), INGESTED, policy("C"), late
+        )
+        records = [attestation_lapse_observation(item, ingested_at=AS_OF) for item in lapses]
+        self.assertEqual(len(group_open_observations(records)), 2)
+
+    def test_a_window_that_does_not_close_after_the_sighting_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "closes after"):
+            attestation_lapse_observation(
+                AttestationLapse(CASE_ID, SEEN_AT, SEEN_AT, "SHOULD"), ingested_at=AS_OF
+            )
+        with self.assertRaisesRegex(ValueError, "correlation tracking id"):
+            attestation_lapse_observation(
+                AttestationLapse("PROVIDER-1", SEEN_AT, AS_OF, "SHOULD"), ingested_at=AS_OF
+            )
+
+    def test_its_case_compiles_as_a_lapsed_attestation(self) -> None:
+        record = attestation_lapse_observation(self.lapse(), ingested_at=AS_OF)
+        record_set = compile_record_set(
+            artifacts=(),
+            observations=(record,),
+            ingest_diagnostics=(),
+            evaluations_by_tracking_id={},
+            attestation=DetectionAttestation(),
+            options=options(detected_at=None, period_from=None, period_to=None),
+        )
+        (compiled,) = record_set.records
+        self.assertEqual(compiled.detected_at, evu_close("C"))
+        self.assertEqual(compiled.detected_at_source, "system")
+        self.assertEqual([item.rule_id for item in compiled.deadlines], ["VER-TFR-EVU"])
+        self.assertEqual(
+            checks_module.system_record_kind(ATTESTATION_LAPSE_SOURCE_TYPE), "lapsed attestation"
+        )
+        sentence = markdown_module._system_detection_sentence({ATTESTATION_LAPSE_SOURCE_TYPE})
+        self.assertIn(
+            "for a lapsed attestation, from the instant its evaluation window closed", sentence
+        )
+
+    def test_the_walk_finds_all_five_reserved_types(self) -> None:
+        self.assertEqual(
+            minted_reserved_types(),
+            {
+                "complyroll.detection-process",
+                "complyroll.coverage",
+                "complyroll.change",
+                RECURRENCE_SOURCE_TYPE,
+                ATTESTATION_LAPSE_SOURCE_TYPE,
+            },
         )
 
 

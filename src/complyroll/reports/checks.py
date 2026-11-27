@@ -23,7 +23,7 @@ from .change_gaps import CHANGE_GAP_SOURCE_TYPE
 from .evaluations import EvaluationInput
 from .gaps import COVERAGE_GAP_SOURCE_TYPE
 from .model import DetectionAttestation, ReportDiagnostic, iso
-from .response_gaps import RECURRENCE_SOURCE_TYPE
+from .response_gaps import ATTESTATION_LAPSE_SOURCE_TYPE, RECURRENCE_SOURCE_TYPE
 
 # *--- Configuration ---*
 
@@ -40,6 +40,7 @@ _SYSTEM_RECORD_KINDS = {
     COVERAGE_GAP_SOURCE_TYPE: "coverage gap",
     CHANGE_GAP_SOURCE_TYPE: "change detection gap",
     RECURRENCE_SOURCE_TYPE: "remediation recurrence",
+    ATTESTATION_LAPSE_SOURCE_TYPE: "lapsed attestation",
 }
 
 
@@ -229,6 +230,10 @@ _SYSTEM_ORDER_REMEDIES = {
     RECURRENCE_SOURCE_TYPE: (
         "a remediation recurrence is detected when its recurring observation was detected, so "
         "evaluate it at or after that instant, or correct completedAt"
+    ),
+    ATTESTATION_LAPSE_SOURCE_TYPE: (
+        "a lapsed attestation is detected when its evaluation window closed, so evaluate it at "
+        "or after that instant, or correct completedAt"
     ),
 }
 

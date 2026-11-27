@@ -13,6 +13,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Protocol
 
 from complyroll.correlation import VulnerabilityGroup
 from complyroll.models import (
@@ -22,6 +23,7 @@ from complyroll.models import (
     ResourceRef,
     SourceSeverity,
 )
+from complyroll.policy import SelectedPolicy
 
 # *--- Configuration ---*
 
@@ -56,6 +58,36 @@ RECURRENCE_METADATA_KEYS = (
 )
 #: The fixed middle of a recurrence context key, `<tracking id>:remediated:<instant>`.
 RECURRENCE_KEY_MARK = "remediated"
+#: The identity of a lapsed attestation. Its resource is the case it names, its key that case's
+#: correlation tracking id, and its instant the close of the window measured from the case's
+#: first sighting, so one case's lapses under one profile are one record.
+ATTESTATION_LAPSE_SOURCE_TYPE = "complyroll.attestation"
+ATTESTATION_LAPSE_SOURCE_TOOL = "complyroll"
+ATTESTATION_LAPSE_PARSER_NAME = "complyroll.attestation"
+ATTESTATION_LAPSE_PARSER_VERSION = "1"
+ATTESTATION_LAPSE_RECORD_ID = "attestation-lapse"
+#: The window a case's detection time had to arrive in, selected from the pinned dataset.
+ATTESTATION_LAPSE_RULE = "VER-TFR-EVU"
+ATTESTATION_LAPSE_RESOURCE_TYPE = "logical"
+ATTESTATION_LAPSE_RESOURCE_PREFIX = "case/"
+ATTESTATION_LAPSE_TITLE = (
+    "detection time of {tracking_id} was not attested within {rule} from {first_seen_at} "
+    f"({RESPONSE_GAP_RULE})"
+)
+ATTESTATION_LAPSE_DESCRIPTION = (
+    "No source timestamp, attestation or system time gave this case a detection time by the "
+    "close of its evaluation window, measured from when ComplyRoll first recorded its evidence, "
+    "so its evaluation clock could not start; this records a failure of the response process, "
+    "not a vulnerability."
+)
+#: Always all five, so an audit checks one key set.
+ATTESTATION_LAPSE_METADATA_KEYS = (
+    "attestation.caseTrackingId",
+    "attestation.firstSeenAt",
+    "attestation.force",
+    "attestation.rule",
+    "attestation.windowClosedAt",
+)
 
 # A correlation v0 tracking id, spelled here because the report layer cannot import the
 # event layer's pattern; a test holds the two equal.
@@ -63,6 +95,44 @@ _TRACKING_ID = re.compile(r"case-[0-9a-f]{16}")
 
 
 # *--- Types ---*
+
+
+class LinkedEvidence(Protocol):
+    """One observation linked to a case: its id, and its source timestamp when it declares one."""
+
+    @property
+    def observation_id(self) -> str: ...
+
+    @property
+    def observed_at(self) -> datetime | None: ...
+
+
+class CaseTiming(Protocol):
+    """What a lapse reads of a case: its id, its linked evidence, and any attestation."""
+
+    @property
+    def tracking_id(self) -> str: ...
+
+    @property
+    def links(self) -> Sequence[LinkedEvidence]: ...
+
+    @property
+    def attestation(self) -> object | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AttestationLapse:
+    """One case with no detection time by the close of its evaluation window (ADR 0019).
+
+    `first_seen_at` is the earliest `ingested_at` of the case's linked observations, the ingest
+    `--as-of` an operator set, and `window_closed_at` the `VER-TFR-EVU` deadline from it under
+    the run's profile. `force` is the rule's force as the pinned dataset states it.
+    """
+
+    tracking_id: str
+    first_seen_at: datetime
+    window_closed_at: datetime
+    force: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +257,133 @@ def recurrence_observations(
     return tuple(sorted(built, key=_record_order))
 
 
+def first_sighting(case: CaseTiming, ingested_at: Mapping[str, datetime]) -> datetime | None:
+    """Return the earliest `ingested_at` of a case's linked observations, or None for none.
+
+    `ingested_at` maps an observation id to the instant its ingest recorded it, which is the
+    operator's `--as-of`, never a wall-clock store instant. A link the map does not hold is
+    skipped, so a case with no readable link has no first sighting.
+    """
+
+    seen = [
+        ingested_at[link.observation_id]
+        for link in case.links
+        if link.observation_id in ingested_at
+    ]
+    return None if not seen else min(_utc(item, "ingested_at") for item in seen)
+
+
+def attestation_lapse(
+    case: CaseTiming,
+    ingested_at: Mapping[str, datetime],
+    policy: SelectedPolicy,
+    as_of: datetime,
+) -> AttestationLapse | None:
+    """Return one case's lapse when a run at `as_of` finds it untimed past its window.
+
+    A case is untimed when no linked observation declares a source timestamp and no
+    attestation is recorded; a system record is always timed. Its window closes at the
+    `VER-TFR-EVU` deadline from its first sighting, and a run at or past that close records
+    the lapse once and for good. A detection time that arrives before any run sees the lapse
+    prevents it, which is why the record is only as frequent as the runs (ADR 0019).
+    """
+
+    if not isinstance(policy, SelectedPolicy):
+        raise TypeError("policy must be a SelectedPolicy")
+    now = _utc(as_of, "as_of")
+    if case.attestation is not None or any(link.observed_at is not None for link in case.links):
+        return None
+    seen = first_sighting(case, ingested_at)
+    if seen is None:
+        return None
+    deadline = policy.deadline_for_rule(ATTESTATION_LAPSE_RULE, seen)
+    closed = deadline.due_at.astimezone(UTC)
+    if now < closed:
+        return None
+    return AttestationLapse(
+        tracking_id=case.tracking_id,
+        first_seen_at=seen,
+        window_closed_at=closed,
+        force=deadline.force.value,
+    )
+
+
+def attestation_lapses(
+    cases: Sequence[CaseTiming],
+    ingested_at: Mapping[str, datetime],
+    policy: SelectedPolicy,
+    as_of: datetime,
+) -> tuple[AttestationLapse, ...]:
+    """Return every case's lapse at `as_of`, in tracking id order."""
+
+    found = (attestation_lapse(case, ingested_at, policy, as_of) for case in cases)
+    return tuple(sorted((item for item in found if item is not None), key=_lapse_order))
+
+
+def attestation_lapse_observation(lapse: AttestationLapse, *, ingested_at: datetime) -> Observation:
+    """Build the one system record of a lapse, named by the id it derives for itself.
+
+    Identity depends on the case and the window close only: never on the ingest time, the
+    first sighting apart from the close it fixes, or the force.
+    """
+
+    if not isinstance(lapse, AttestationLapse):
+        raise TypeError("lapse must be an AttestationLapse")
+    if _TRACKING_ID.fullmatch(lapse.tracking_id) is None:
+        raise ValueError("the lapse must name a correlation tracking id")
+    seen = _utc(lapse.first_seen_at, "first_seen_at")
+    closed = _utc(lapse.window_closed_at, "window_closed_at")
+    if closed <= seen:
+        raise ValueError("a lapse window closes after the case was first seen")
+    seen_text = _instant(seen)
+    closed_text = _instant(closed)
+    metadata = {
+        "attestation.caseTrackingId": lapse.tracking_id,
+        "attestation.firstSeenAt": seen_text,
+        "attestation.windowClosedAt": closed_text,
+        "attestation.rule": ATTESTATION_LAPSE_RULE,
+        "attestation.force": lapse.force,
+    }
+    observation = Observation(
+        observation_id="pending",
+        source_type=ATTESTATION_LAPSE_SOURCE_TYPE,
+        source_tool=ATTESTATION_LAPSE_SOURCE_TOOL,
+        parser_name=ATTESTATION_LAPSE_PARSER_NAME,
+        parser_version=ATTESTATION_LAPSE_PARSER_VERSION,
+        source_record_id=ATTESTATION_LAPSE_RECORD_ID,
+        resource=attestation_lapse_resource(lapse.tracking_id),
+        observed_at=closed,
+        ingested_at=ingested_at,
+        disposition=ObservationDisposition.OPEN,
+        source_severity=SourceSeverity.UNKNOWN,
+        title=ATTESTATION_LAPSE_TITLE.format(
+            tracking_id=lapse.tracking_id,
+            rule=ATTESTATION_LAPSE_RULE,
+            first_seen_at=seen_text,
+        ),
+        description=ATTESTATION_LAPSE_DESCRIPTION,
+        source_artifact_digest="",
+        source_artifact_name="",
+        source_identifiers=(),
+        source_metadata=tuple(sorted(metadata.items())),
+        evidence_ids=(f"case:{lapse.tracking_id}",),
+        context_key=lapse.tracking_id,
+        origin=ObservationOrigin.SYSTEM,
+    )
+    return replace(observation, observation_id=observation.derived_observation_id)
+
+
+def attestation_lapse_resource(tracking_id: str) -> ResourceRef:
+    """Return the resource a lapse names: `logical:case/<tracking id>`."""
+
+    if not isinstance(tracking_id, str) or _TRACKING_ID.fullmatch(tracking_id) is None:
+        raise ValueError("tracking_id must be a correlation tracking id")
+    return ResourceRef(
+        resource_id=f"{ATTESTATION_LAPSE_RESOURCE_PREFIX}{tracking_id}",
+        resource_type=ATTESTATION_LAPSE_RESOURCE_TYPE,
+    )
+
+
 # *--- Helper Functions ---*
 
 
@@ -274,6 +471,12 @@ def _record_order(record: Observation) -> tuple[datetime, str, str, str]:
     )
 
 
+def _lapse_order(lapse: AttestationLapse) -> tuple[str, datetime]:
+    """Order lapses by the case they name, then by window close."""
+
+    return lapse.tracking_id, lapse.window_closed_at
+
+
 def _utc(value: datetime, name: str) -> datetime:
     """Return one aware instant in UTC, refusing a naive one."""
 
@@ -289,6 +492,20 @@ def _instant(value: datetime) -> str:
 
 
 __all__ = [
+    "ATTESTATION_LAPSE_DESCRIPTION",
+    "ATTESTATION_LAPSE_METADATA_KEYS",
+    "ATTESTATION_LAPSE_PARSER_NAME",
+    "ATTESTATION_LAPSE_PARSER_VERSION",
+    "ATTESTATION_LAPSE_RECORD_ID",
+    "ATTESTATION_LAPSE_RESOURCE_PREFIX",
+    "ATTESTATION_LAPSE_RESOURCE_TYPE",
+    "ATTESTATION_LAPSE_RULE",
+    "ATTESTATION_LAPSE_SOURCE_TOOL",
+    "ATTESTATION_LAPSE_SOURCE_TYPE",
+    "ATTESTATION_LAPSE_TITLE",
+    "AttestationLapse",
+    "CaseTiming",
+    "LinkedEvidence",
     "RECURRENCE_DESCRIPTION",
     "RECURRENCE_KEY_MARK",
     "RECURRENCE_METADATA_KEYS",
@@ -300,6 +517,11 @@ __all__ = [
     "RECURRENCE_TITLE",
     "RESPONSE_GAP_RULE",
     "RemediationRecurrence",
+    "attestation_lapse",
+    "attestation_lapse_observation",
+    "attestation_lapse_resource",
+    "attestation_lapses",
+    "first_sighting",
     "recurrence_case_tracking_id",
     "recurrence_context_key",
     "recurrence_observations",

@@ -78,4 +78,6 @@ read a record's amendments before relying on it.
   remediated case that a later open observation contradicts keeps its disposition and every
   report warns, and `cases response-gaps` records it, and a case whose detection time was not
   attested within `VER-TFR-EVU` of its first sighting, as `VDR-CSO-FAV` system observations and
-  cases in a schema 7 store.
+  cases in a schema 7 store. Its section of 2026-11-27 adds the lapsed planned response: every
+  report warns when a record's own planned reduction passed unrecorded, and `cases response-gaps`
+  records it in a schema 8 store; response action records are read from the evaluation.

@@ -2770,6 +2770,7 @@ class FoldContractSweepTests(unittest.TestCase):
                 "change.recorded",
                 "change.gap_recorded",
                 "response_gap.recorded",
+                "response_gap.plan_lapsed",
             ):
                 continue
             self.fold(event_type, GOOD_PAYLOADS[event_type])

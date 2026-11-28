@@ -748,7 +748,7 @@ class AttestationLapseIdentityTests(unittest.TestCase):
             "for a lapsed attestation, from the instant its evaluation window closed", sentence
         )
 
-    def test_the_walk_finds_all_five_reserved_types(self) -> None:
+    def test_the_walk_finds_all_six_reserved_types(self) -> None:
         self.assertEqual(
             minted_reserved_types(),
             {
@@ -757,6 +757,7 @@ class AttestationLapseIdentityTests(unittest.TestCase):
                 "complyroll.change",
                 RECURRENCE_SOURCE_TYPE,
                 ATTESTATION_LAPSE_SOURCE_TYPE,
+                "complyroll.response-plan",
             },
         )
 

@@ -39,7 +39,6 @@ from complyroll.events import (
     FAILURE_HELD,
     MAX_BATCH_EVENTS,
     OBSERVATION_ID_KEY,
-    RESPONSE_GAP_RECORDED,
     UNDISPOSED_STATUSES,
     EventContractError,
     EventMetadata,
@@ -60,6 +59,7 @@ from complyroll.events import (
     iso_utc,
     parse_utc,
     response_gap_head_payload,
+    response_gap_head_type,
     response_gap_stream_id_of,
 )
 from complyroll.events.contracts import TRACKING_ID_PATTERN
@@ -73,18 +73,27 @@ from complyroll.policy import CertificationProfile
 from complyroll.reports.change_gaps import change_gap_observations
 from complyroll.reports.changes import ChangeProjection, StoredChangeSet
 from complyroll.reports.changes_input import Change, ChangeSet
-from complyroll.reports.checks import clock_problem, observation_clock_message, system_record_kind
+from complyroll.reports.checks import (
+    TRACKING_ID_COLLISION,
+    clock_problem,
+    observation_clock_message,
+    published_tracking_id,
+    system_record_kind,
+    tracking_id_collision_message,
+    tracking_id_collisions,
+)
 from complyroll.reports.coverage import CoverageResult
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, record_label
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
-from complyroll.reports.model import ReportDiagnostic
+from complyroll.reports.model import ReportCompileError, ReportDiagnostic, evaluation_location
 from complyroll.reports.records import (
     coverage_diagnostics,
     derive_report_changes,
     derive_report_coverage,
     derive_report_response_gaps,
 )
+from complyroll.reports.replay import case_evaluations
 from complyroll.reports.response_gaps import RECURRENCE_SOURCE_TYPE, recurrence_slot
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
@@ -251,8 +260,9 @@ class ResponseGapOutcome:
 
     `recorded` is each response gap this call wrote and `already_recorded` each one whose stream
     the store already held, both in derivation order: recurrences by case and then by detection,
-    then lapses by case. A gap already recorded keeps the payload its stream was first written
-    with, so its entry here is this run's rebuild of it, under the same id.
+    then lapses by case, then lapsed plans by case and then by planned time. A gap already
+    recorded keeps the payload its stream was first written with, so its entry here is this
+    run's rebuild of it, under the same id.
     """
 
     recorded: tuple[Observation, ...]
@@ -994,13 +1004,15 @@ def record_response_gaps(
 
     The gaps are derived as a report from this store reads them (ADR 0019): a remediation that
     did not hold, from the report's own grouping of every current open observation and each
-    case's remediation instant, and a lapsed attestation, from each case's links, attestation
-    and first sighting under the profile's `VER-TFR-EVU` window. Each is ingested at `as_of`,
-    which reaches neither its id nor a report. A record's stream is named by the record, so the
-    stream id is the idempotence key: a stream already holding its head and record is left
-    alone and its first payload stands. A stream holding anything else is refused, not resumed.
-    A new stream is written head first, as one batch at version 0. A lapse is recorded only by
-    a run that finds its case untimed, so an attestation made before any run prevents it.
+    case's remediation instant, a lapsed attestation, from each case's links, attestation and
+    first sighting under the profile's `VER-TFR-EVU` window, and a lapsed planned response,
+    from the plan and reductions of the evaluation each case reports with. Each is ingested at
+    `as_of`, which reaches neither its id nor a report. A record's stream is named by the
+    record, so the stream id is the idempotence key: a stream already holding its head and
+    record is left alone and its first payload stands. A stream holding anything else is
+    refused, not resumed. A new stream is written head first, as one batch at version 0. A lapse
+    is recorded only by a run that finds its case untimed, so an attestation made before any run
+    prevents it, and a plan only by a run past its planned time that finds it unmet.
 
     The run is one store transaction, so a later failure rolls it back; a caller that supplies
     the transaction and catches the error owns that rollback.
@@ -1024,8 +1036,15 @@ def _record_response_gaps(
 
     observations = rehydrate_observations(repository)
     cases = fold_all_cases(repository)
+    evaluations = case_evaluations(cases)
+    # The evaluation each case reports with, so a plan lapses by the report's own rule, a record
+    # no report can compile yet included (Kyle's ruling B01).
     gaps = derive_report_response_gaps(
-        observations, response_gap_history(repository, cases), profile, as_of
+        observations,
+        response_gap_history(repository, cases),
+        profile,
+        as_of,
+        evaluations=evaluations,
     )
     # K1: a failed remediation and resource is recorded once, so a recurrence whose slot a stored
     # record already holds is that record, whatever detection this run finds earliest.
@@ -1050,26 +1069,113 @@ def _record_response_gaps(
             recorded.append(gap)
             continue
         held = [record.event_type for record in existing]
+        head_type = response_gap_head_type(gap)
         # NOTE: Unreachable today: `_read_response_gap_streams`, run by `rehydrate_observations`
         # above, refuses every such shape first. The check stays so this writer refuses a stream
         # it would resume on its own, whatever that reader comes to accept.
-        if held != [RESPONSE_GAP_RECORDED, OBSERVATION_RECORDED]:
+        if held != [head_type, OBSERVATION_RECORDED]:
             raise HistoryError(
                 f"response gap stream {stream_id!r} holds {len(held)} event(s) and not its "
-                f"{RESPONSE_GAP_RECORDED} head and then its record; a response gap stream is "
-                "written whole, so it is refused rather than resumed"
+                f"{head_type} head and then its record; a response gap stream is written whole, "
+                "so it is refused rather than resumed"
             )
         already.append(gap)
+    _refuse_response_gap_collisions(observations, recorded, evaluations)
     for gap in recorded:
+        # The head type is the record's kind's: a plan lapse opens with its own head, which
+        # marks the store schema 8 (ADR 0019, section of 2026-11-27).
         repository.append_batch(
             response_gap_stream_id_of(gap),
             (
-                _pending(RESPONSE_GAP_RECORDED, response_gap_head_payload(gap), as_of, metadata),
+                _pending(
+                    response_gap_head_type(gap), response_gap_head_payload(gap), as_of, metadata
+                ),
                 _pending(OBSERVATION_RECORDED, gap.to_canonical_dict(), as_of, metadata),
             ),
             expected_version=0,
         )
     return ResponseGapOutcome(recorded=tuple(recorded), already_recorded=tuple(already))
+
+
+@dataclass(frozen=True, slots=True)
+class _ResponseGapClaim:
+    """One current group's claim on a published id once a response gap run is written."""
+
+    tracking_id: str
+    original_tracking_id: str
+    evaluation_location: str
+    #: The group's full key, as correlation keys a group: source type, record id, context key.
+    key: tuple[str, str, str]
+
+
+def _group_key(group: VulnerabilityGroup) -> tuple[str, str, str]:
+    """Return the key correlation groups by, which a 64-bit correlation id only abbreviates."""
+
+    return group.source_type, group.source_record_id, group.context_key
+
+
+def _refuse_response_gap_collisions(
+    observations: Sequence[Observation],
+    pending: Sequence[Observation],
+    evaluations: Mapping[str, EvaluationInput],
+) -> None:
+    """Refuse a run whose new records would publish an id another record already publishes.
+
+    The claims are the ones `store verify` reads once the run is written: every current group
+    under the override its reported evaluation gives, else its correlation id. A collision that
+    names a group only this run's records open is refused, as `tracking_id_collision`, before the
+    first append, so the run writes nothing and the store stays one a report compiles (ADR 0019,
+    section of 2026-11-27). A collision the store held before the run is verify's to name.
+    Which groups the run opens is read by each group's full key, never by its correlation id,
+    which two keys can share; the published id stays the uniqueness key. When the two claimants
+    share a correlation id, the refusal names both by their keys so the text tells them apart.
+    """
+
+    if not pending:
+        return
+    before = {_group_key(group) for group in group_open_observations(observations)}
+    claims = [
+        _ResponseGapClaim(
+            tracking_id=published_tracking_id(group, evaluations.get(group.tracking_id)),
+            original_tracking_id=group.tracking_id,
+            evaluation_location=evaluation_location(evaluations.get(group.tracking_id)),
+            key=_group_key(group),
+        )
+        for group in group_open_observations([*observations, *pending])
+    ]
+    problems: list[ReportDiagnostic] = []
+    for previous, claim in tracking_id_collisions(claims):
+        opened = [item for item in (previous, claim) if item.key not in before]
+        if not opened:
+            continue
+        message = (
+            f"{tracking_id_collision_message(previous, claim)}; this run would record the "
+            f"response gap of {opened[0].original_tracking_id}"
+        )
+        if previous.original_tracking_id == claim.original_tracking_id:
+            message = (
+                f"{message}; the two share that correlation id, as the groups "
+                f"{_key_text(previous.key)} and {_key_text(claim.key)}"
+            )
+        problems.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.ERROR,
+                code=TRACKING_ID_COLLISION,
+                message=f"{message}, so it records nothing",
+            )
+        )
+    if problems:
+        raise ReportCompileError(problems)
+
+
+def _key_text(key: tuple[str, str, str]) -> str:
+    """Name a group by its key, as an evaluation entry matches it, each value shown as stored."""
+
+    source_type, record_id, context_key = key
+    return (
+        f"(sourceType {shown(source_type)}, sourceRecordId {shown(record_id)}, "
+        f"contextKey {shown(context_key)})"
+    )
 
 
 def record_changes(

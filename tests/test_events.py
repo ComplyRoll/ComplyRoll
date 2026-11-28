@@ -340,6 +340,14 @@ GOOD_LAPSE_HEAD: dict[str, Any] = {
     "windowClosedAt": "2026-08-06T00:00:00Z",
     "rule": "VER-TFR-EVU",
 }
+#: The head of a lapsed planned response's stream: a plan to reach N2 by 12 August that passed
+#: unrecorded (ADR 0019, section of 2026-11-27). The target is an integer, as a rating is.
+GOOD_PAYLOADS["response_gap.plan_lapsed"] = {
+    "caseTrackingId": TRACKING_ID,
+    "contextKey": f"{TRACKING_ID}:planned:2026-08-12T16:00:00Z:2",
+    "estimatedAt": "2026-08-12T16:00:00Z",
+    "targetRating": 2,
+}
 #: The known-good payload a pointer is filled on when the default payload holds it as null.
 POINTER_PAYLOADS: dict[tuple[str, str], dict[str, Any]] = {
     ("response_gap.recorded", "/firstSeenAt"): GOOD_LAPSE_HEAD,
@@ -502,6 +510,7 @@ EXPECTED_TIMESTAMP_POINTERS: dict[str, tuple[str, ...]] = {
         "/remediatedAt",
         "/windowClosedAt",
     ),
+    "response_gap.plan_lapsed": ("/estimatedAt",),
     # The two `observation.recorded` timestamps are read back through
     # `Observation.from_canonical_dict`, which is stricter than parsing, so they are
     # deliberately absent from the parsed set.
@@ -638,6 +647,7 @@ INTEGER_FIELDS: dict[str, tuple[str, ...]] = {
     "case.pain_reduced": ("/rating",),
     "failure.recorded": ("/sizeBytes",),
     "failure.held": ("/sizeBytes",),
+    "response_gap.plan_lapsed": ("/targetRating",),
 }
 
 
@@ -3418,7 +3428,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
             connection.execute(statement)
 
     def test_a_new_store_is_created_at_schema_1(self) -> None:
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 7)
+        self.assertEqual(SUPPORTED_SCHEMA_VERSION, 8)
         self.assertEqual(HELD_FAILURE_SCHEMA_VERSION, 3)
         self.assertEqual(self.store.schema_version, 1)
         self.assertEqual(self.migrations(), [self.FIRST])
@@ -3632,16 +3642,16 @@ class FailureSchemaMarkingTests(unittest.TestCase):
 
     def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         self.record_failure()
-        self.damage("PRAGMA user_version = 8")
+        self.damage("PRAGMA user_version = 9")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 8 is newer than supported schema 7", str(caught.exception))
+        self.assertIn("database schema 9 is newer than supported schema 8", str(caught.exception))
 
     def test_the_required_schema_must_be_one_this_build_knows(self) -> None:
         event = NewEvent("failure.recorded", NOW, failure_head())
-        for value in (0, 8, True, "2"):
+        for value in (0, 9, True, "2"):
             with self.subTest(requires_schema=value):
                 with self.assertRaises(ValueError) as caught:
                     self.store.append(
@@ -3651,7 +3661,7 @@ class FailureSchemaMarkingTests(unittest.TestCase):
                         requires_schema=value,  # type: ignore[arg-type]
                     )
 
-                self.assertIn("requires_schema must be between 1 and 7", str(caught.exception))
+                self.assertIn("requires_schema must be between 1 and 8", str(caught.exception))
         self.assertEqual(self.store.latest_sequence, 0)
 
 

@@ -85,6 +85,11 @@ CHANGE_GAP_STREAM_SCHEMA_VERSION: Final = 6
 #: transaction that first writes a `response_gap.recorded` stream, so a store that never records
 #: a response gap stays at its version and readable by a build that knows only schema 6.
 RESPONSE_GAP_STREAM_SCHEMA_VERSION: Final = 7
+#: The store schema a planned response gap head needs (ADR 0019, section of 2026-11-27). A store
+#: is marked 8 by the transaction that first writes a `response_gap.plan_lapsed` stream, so a
+#: store that records only the two earlier kinds stays at 7 and readable by a build that knows
+#: only schema 7, as a failure stream marks 2 and a hold 3.
+RESPONSE_GAP_PLAN_SCHEMA_VERSION: Final = 8
 TRACKING_ID_PATTERN: Final = re.compile(r"^case-[0-9a-f]{16}$")
 
 #: Stream-id components may not contain the separator, so a stream id parses back.
@@ -603,6 +608,28 @@ RESPONSE_GAP_RECORDED_V1: Final[dict[str, Any]] = {
     ],
 }
 
+#: The event type of a lapsed planned response's head (ADR 0019, section of 2026-11-27).
+RESPONSE_GAP_PLAN_LAPSED: Final = "response_gap.plan_lapsed"
+
+#: The head of a lapsed planned response's stream, followed by exactly one
+#: `observation.recorded`: the record of one case's planned reduction that passed unrecorded. A
+#: second head type on the same stream kind, as `failure.held` is beside `failure.recorded`, so
+#: `response_gap.recorded` keeps its bytes. Every field is required and restates a field of the
+#: record: the target as an integer, as `case.evaluated` holds a rating, where the record's
+#: metadata spells it as text.
+RESPONSE_GAP_PLAN_LAPSED_V1: Final[dict[str, Any]] = _schema(
+    RESPONSE_GAP_PLAN_LAPSED,
+    {
+        "caseTrackingId": _TRACKING_ID,
+        "contextKey": _NON_BLANK_TEXT,
+        "estimatedAt": _UTC_TIMESTAMP,
+        "targetRating": _PAIN,
+    },
+)
+
+#: The heads a response gap stream may open with; each names the kinds of record it carries.
+RESPONSE_GAP_HEAD_TYPES: Final[tuple[str, ...]] = (RESPONSE_GAP_RECORDED, RESPONSE_GAP_PLAN_LAPSED)
+
 #: The one registry every writer validates against (ADR 0008 Decision 1).
 EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     ("artifact.ingested", 1): ARTIFACT_INGESTED_V1,
@@ -620,6 +647,7 @@ EVENT_CONTRACTS: Final[dict[tuple[str, int], dict[str, Any]]] = {
     (CHANGE_RECORDED, 1): CHANGE_RECORDED_V1,
     (CHANGE_GAP_RECORDED, 1): CHANGE_GAP_RECORDED_V1,
     (RESPONSE_GAP_RECORDED, 1): RESPONSE_GAP_RECORDED_V1,
+    (RESPONSE_GAP_PLAN_LAPSED, 1): RESPONSE_GAP_PLAN_LAPSED_V1,
 }
 
 EVENT_TYPES: Final[tuple[str, ...]] = tuple(
@@ -652,7 +680,7 @@ CHANGE_GAP_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {CHANGE_GAP_RECORDED, "observation.recorded"}
 )
 RESPONSE_GAP_STREAM_EVENT_TYPES: Final[frozenset[str]] = frozenset(
-    {RESPONSE_GAP_RECORDED, "observation.recorded"}
+    {*RESPONSE_GAP_HEAD_TYPES, "observation.recorded"}
 )
 STREAM_EVENT_TYPES: Final[Mapping[str, frozenset[str]]] = {
     ARTIFACT_STREAM_PREFIX: ARTIFACT_STREAM_EVENT_TYPES,
@@ -1203,7 +1231,11 @@ __all__ = [
     "HELD_FAILURE_SCHEMA_VERSION",
     "OBSERVATION_RECORDED_V1",
     "RESPONSE_GAP_ATTESTATION_RULE",
+    "RESPONSE_GAP_HEAD_TYPES",
     "RESPONSE_GAP_KIND_VALUES",
+    "RESPONSE_GAP_PLAN_LAPSED",
+    "RESPONSE_GAP_PLAN_LAPSED_V1",
+    "RESPONSE_GAP_PLAN_SCHEMA_VERSION",
     "RESPONSE_GAP_RECORDED",
     "RESPONSE_GAP_RECORDED_V1",
     "RESPONSE_GAP_STREAM_EVENT_TYPES",

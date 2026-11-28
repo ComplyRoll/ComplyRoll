@@ -1,9 +1,9 @@
 # ******************************************************************************
 # *Title: Response Gaps*
 # *Author: Kyle Versluis*
-# *Description: Find remediations that did not hold and lapsed attestations.*
+# *Description: Find failed remediations, lapsed attestations and lapsed plans.*
 # ******************************************************************************
-"""Response gaps: a remediation that did not hold, and a lapsed attestation (ADR 0019)."""
+"""Response gaps: a failed remediation, a lapsed attestation, a lapsed plan (ADR 0019)."""
 
 # *--- Imports ---*
 
@@ -17,13 +17,17 @@ from typing import Protocol
 
 from complyroll.correlation import VulnerabilityGroup
 from complyroll.models import (
+    CaseStatus,
     Observation,
     ObservationDisposition,
     ObservationOrigin,
+    PainRating,
     ResourceRef,
     SourceSeverity,
 )
 from complyroll.policy import SelectedPolicy
+
+from .evaluations import EvaluationInput, PainReductionEvent
 
 # *--- Configuration ---*
 
@@ -88,12 +92,47 @@ ATTESTATION_LAPSE_METADATA_KEYS = (
     "attestation.rule",
     "attestation.windowClosedAt",
 )
+#: The resolved statuses whose weakness has nothing left to reduce, so a plan stated on them
+#: never lapses (plan D3, Kyle's ruling 3a). Every other status can lapse, none included.
+PLAN_LAPSE_EXCLUDED_STATUSES = frozenset(
+    {CaseStatus.REMEDIATED, CaseStatus.FULLY_MITIGATED, CaseStatus.FALSE_POSITIVE}
+)
+#: The identity of a lapsed planned response (plan D5). Its resource is the case it names, as a
+#: lapsed attestation's is, and its key that case's correlation tracking id, the planned time
+#: and the target, so one case's plan is one record however often it is restated.
+PLAN_LAPSE_SOURCE_TYPE = "complyroll.response-plan"
+PLAN_LAPSE_SOURCE_TOOL = "complyroll"
+PLAN_LAPSE_PARSER_NAME = "complyroll.response-plan"
+PLAN_LAPSE_PARSER_VERSION = "1"
+PLAN_LAPSE_RECORD_ID = "planned-response-lapse"
+#: The fixed middle of a plan lapse context key, `<tracking id>:planned:<instant>:<rating>`.
+PLAN_LAPSE_KEY_MARK = "planned"
+# NOTE: "by" keeps the title true when a reduction is recorded after the planned time.
+PLAN_LAPSE_TITLE = (
+    "planned reduction of {tracking_id} to N{target_rating} was not recorded by {estimated_at} "
+    f"({RESPONSE_GAP_RULE})"
+)
+PLAN_LAPSE_DESCRIPTION = (
+    "The provider's evaluation of this case planned its next reduction to a target rating by a "
+    "stated time, and that time passed with the rating above the target and no reduction to it "
+    "recorded from that evaluation through the planned time; this records a failure of the "
+    "response process, not a new vulnerability."
+)
+#: Always all three, so an audit checks one key set. The current rating is never among them:
+#: it moves, and a record is held to its own inputs alone.
+PLAN_LAPSE_METADATA_KEYS = (
+    "plan.caseTrackingId",
+    "plan.estimatedAt",
+    "plan.targetRating",
+)
 
 # A correlation v0 tracking id, spelled here because the report layer cannot import the
 # event layer's pattern; a test holds the two equal.
 _TRACKING_ID = re.compile(r"case-[0-9a-f]{16}")
 # An episode ordinal as `str(int)` spells a positive integer.
 _EPISODE = re.compile(r"[1-9][0-9]*")
+# A target rating as `str(int)` spells one, `1` to `5` (plan D5, F9).
+_TARGET_RATING = re.compile(r"[1-5]")
 
 
 # *--- Types ---*
@@ -180,6 +219,23 @@ class RemediationRecurrence:
     recurring: tuple[Observation, ...]
     untimed: tuple[Observation, ...]
     episode: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class PlanLapse:
+    """One record whose own planned reduction was not recorded by its planned time (plan D2).
+
+    `estimated_at` and `target_rating` are the current evaluation's `projectedNextReduction`,
+    and `completed_at` that evaluation's `completedAt`, where the window a reduction had to
+    land in opens. `current_rating` is its `pain`: the warning names it, and no record holds
+    it, since it moves while the record is held to its own inputs alone.
+    """
+
+    tracking_id: str
+    completed_at: datetime
+    estimated_at: datetime
+    target_rating: PainRating
+    current_rating: PainRating
 
 
 class LapseClockError(ValueError):
@@ -475,12 +531,18 @@ def derive_response_gaps(
     as_of: datetime,
     *,
     ingested_at: datetime,
+    evaluations: Mapping[str, EvaluationInput],
 ) -> tuple[Observation, ...]:
-    """Return every response gap a store's state shows at `as_of`: recurrences, then lapses.
+    """Return every response gap a store's state shows at `as_of`: recurrences, then lapses,
+    then lapsed plans.
 
     `groups` are the report's own, every current open observation linked or not, so a run
-    agrees with the report's warning before `cases correlate` links what came back. Each
-    record is ingested at `ingested_at`, which reaches neither its id nor a report.
+    agrees with the report's warning before `cases correlate` links what came back, and
+    `evaluations` the evaluation the report reads for each correlation tracking id, so a plan
+    lapses by the same function over the same groups and evaluations as the report's warning
+    (plan F2). A report that refuses as a whole, such as for a record with no detection time,
+    prints no warning while the lapse is still recorded (Kyle's ruling B01). Each record is
+    ingested at `ingested_at`, which reaches neither its id nor a report.
     """
 
     if not isinstance(history, ResponseGapHistory):
@@ -497,7 +559,161 @@ def derive_response_gaps(
             history.cases, history.ingested_at, policy, as_of, timed_groups=timed
         )
     )
+    records.extend(
+        plan_lapse_observation(lapse, ingested_at=ingested_at)
+        for lapse in planned_reduction_lapses(groups, evaluations, as_of)
+    )
     return tuple(records)
+
+
+def planned_reduction_lapse(
+    group: VulnerabilityGroup, evaluation: EvaluationInput | None, as_of: datetime
+) -> PlanLapse | None:
+    """Return one record's lapsed planned reduction at `as_of`, or None (plan D2).
+
+    It lapses when all five hold: the record is ARTIFACT-origin and its evaluation states a
+    `projectedNextReduction` at E to target R; `as_of` is strictly after E, as every deadline
+    passes; its current rating is above R; no completed reduction to R or below is recorded
+    from the evaluation's `completedAt` through E, both ends included; and its resolved status
+    leaves a weakness to reduce (D3). The clock is the provider's own E, never the pinned
+    `VDR-TFR-PVR` target, which `overdueStatus` already publishes. A plan stated with E before
+    its own `completedAt` has an empty window, so it lapses once E has passed.
+    """
+
+    if not isinstance(group, VulnerabilityGroup):
+        raise TypeError("group must be a VulnerabilityGroup")
+    now = _utc(as_of, "as_of")
+    if evaluation is None:
+        return None
+    if not isinstance(evaluation, EvaluationInput):
+        raise TypeError("evaluation must be an EvaluationInput")
+    plan = evaluation.projected_next_reduction
+    # A system record never recurs and so never states a plan of its own that lapses here.
+    if (
+        plan is None
+        or any(item.origin is ObservationOrigin.SYSTEM for item in group.observations)
+        or evaluation.resolved_status in PLAN_LAPSE_EXCLUDED_STATUSES
+    ):
+        return None
+    planned = _utc(plan.estimated_at, "estimated_at")
+    if now <= planned or evaluation.pain <= plan.target_rating:
+        return None
+    opened = _utc(evaluation.completed_at, "completed_at")
+    target = plan.target_rating
+    if any(_meets_plan(item, target, opened, planned) for item in evaluation.pain_reduction_events):
+        return None
+    return PlanLapse(
+        tracking_id=group.tracking_id,
+        completed_at=opened,
+        estimated_at=planned,
+        target_rating=plan.target_rating,
+        current_rating=evaluation.pain,
+    )
+
+
+def planned_reduction_lapses(
+    groups: Sequence[VulnerabilityGroup],
+    evaluations: Mapping[str, EvaluationInput],
+    as_of: datetime,
+) -> tuple[PlanLapse, ...]:
+    """Return every group's lapsed plan at `as_of`, by tracking id and then planned time.
+
+    `groups` are the report's own, every current open observation, and `evaluations` maps a
+    correlation tracking id to the evaluation the report reads for it, so a case no current
+    open observation matches is in no report and lapses nowhere (plan F2).
+    """
+
+    found = (
+        planned_reduction_lapse(group, evaluations.get(group.tracking_id), as_of)
+        for group in groups
+    )
+    return tuple(sorted((item for item in found if item is not None), key=_plan_lapse_order))
+
+
+def plan_lapse_context_key(
+    tracking_id: str, estimated_at: datetime, target_rating: PainRating
+) -> str:
+    """Return `<tracking id>:planned:<instant>:<rating>`: one case per case and plan (D5).
+
+    The instant is written as every response gap instant is, so two offsets of one instant
+    are one key, and the rating as `str(int)` writes it, `1` to `5`.
+    """
+
+    if not isinstance(tracking_id, str) or _TRACKING_ID.fullmatch(tracking_id) is None:
+        raise ValueError("tracking_id must be a correlation tracking id")
+    if not isinstance(target_rating, PainRating):
+        raise ValueError("target_rating must be a PainRating")
+    instant = _instant(_utc(estimated_at, "estimated_at"))
+    return f"{tracking_id}:{PLAN_LAPSE_KEY_MARK}:{instant}:{int(target_rating)}"
+
+
+def plan_lapse_key_parts(context_key: str) -> tuple[str, str, int] | None:
+    """Return the tracking id, instant text and target rating a plan lapse key names, or None.
+
+    The instant holds colons of its own, so the rating is read from the last segment, and it
+    must be one digit from 1 to 5, as `str(int)` spells a rating.
+    """
+
+    if not isinstance(context_key, str):
+        raise TypeError("context_key must be text")
+    parts = context_key.split(":", 2)
+    if (
+        len(parts) != 3
+        or _TRACKING_ID.fullmatch(parts[0]) is None
+        or parts[1] != PLAN_LAPSE_KEY_MARK
+    ):
+        return None
+    instant, _, rating = parts[2].rpartition(":")
+    if not instant or _TARGET_RATING.fullmatch(rating) is None:
+        return None
+    return parts[0], instant, int(rating)
+
+
+def plan_lapse_observation(lapse: PlanLapse, *, ingested_at: datetime) -> Observation:
+    """Build the one system record of a lapsed planned response, named by its own id (D5).
+
+    Identity depends on the case, the planned time and the target only: never on the ingest
+    time, the current rating or the evaluation that stated the plan, so the same plan restated
+    by a later evaluation is the same record, and a new plan that also lapses is a second case.
+    """
+
+    if not isinstance(lapse, PlanLapse):
+        raise TypeError("lapse must be a PlanLapse")
+    planned = _utc(lapse.estimated_at, "estimated_at")
+    planned_text = _instant(planned)
+    target = str(int(lapse.target_rating))
+    metadata = {
+        "plan.caseTrackingId": lapse.tracking_id,
+        "plan.estimatedAt": planned_text,
+        "plan.targetRating": target,
+    }
+    observation = Observation(
+        observation_id="pending",
+        source_type=PLAN_LAPSE_SOURCE_TYPE,
+        source_tool=PLAN_LAPSE_SOURCE_TOOL,
+        parser_name=PLAN_LAPSE_PARSER_NAME,
+        parser_version=PLAN_LAPSE_PARSER_VERSION,
+        source_record_id=PLAN_LAPSE_RECORD_ID,
+        resource=attestation_lapse_resource(lapse.tracking_id),
+        observed_at=planned,
+        ingested_at=ingested_at,
+        disposition=ObservationDisposition.OPEN,
+        source_severity=SourceSeverity.UNKNOWN,
+        title=PLAN_LAPSE_TITLE.format(
+            tracking_id=lapse.tracking_id,
+            target_rating=target,
+            estimated_at=planned_text,
+        ),
+        description=PLAN_LAPSE_DESCRIPTION,
+        source_artifact_digest="",
+        source_artifact_name="",
+        source_identifiers=(),
+        source_metadata=tuple(sorted(metadata.items())),
+        evidence_ids=(f"case:{lapse.tracking_id}",),
+        context_key=plan_lapse_context_key(lapse.tracking_id, planned, lapse.target_rating),
+        origin=ObservationOrigin.SYSTEM,
+    )
+    return replace(observation, observation_id=observation.derived_observation_id)
 
 
 def timed_group_ids(groups: Sequence[VulnerabilityGroup]) -> frozenset[str]:
@@ -594,6 +810,41 @@ def lapse_disproof(record: Observation, history: ResponseGapHistory) -> tuple[st
         return None
     seen, observation_id = early[0]
     return observation_id, seen
+
+
+def plan_lapse_disproof(
+    record: Observation, evaluations: Mapping[str, EvaluationInput]
+) -> PainReductionEvent | None:
+    """Return a reduction that met a recorded plan lapse's plan in its window, or None (D10).
+
+    The case's current evaluation must still state the recorded plan, the same planned time
+    and target; then a completed reduction to the target or below, recorded from that
+    evaluation's `completedAt` through the planned time, both ends included, disproves the
+    lapse, and the earliest such reduction is returned. A plan revised, met late or closed
+    disproves nothing: the planned time passed all the same, so the record stands.
+    """
+
+    parts = plan_lapse_key_parts(record.context_key)
+    if parts is None:  # pragma: no cover - the reader holds every plan lapse key to its form
+        return None
+    tracking_id, _, target = parts
+    evaluation = evaluations.get(tracking_id)
+    plan = None if evaluation is None else evaluation.projected_next_reduction
+    planned = record.observed_at
+    if evaluation is None or plan is None or planned is None:
+        return None
+    if int(plan.target_rating) != target or _utc(plan.estimated_at, "estimated_at") != planned:
+        return None
+    opened = _utc(evaluation.completed_at, "completed_at")
+    met = sorted(
+        (
+            item
+            for item in evaluation.pain_reduction_events
+            if _meets_plan(item, plan.target_rating, opened, planned)
+        ),
+        key=lambda item: (_utc(item.reduced_at, "reduced_at"), int(item.rating)),
+    )
+    return met[0] if met else None
 
 
 # *--- Helper Functions ---*
@@ -714,6 +965,24 @@ def _lapse_order(lapse: AttestationLapse) -> tuple[str, datetime]:
     return lapse.tracking_id, lapse.window_closed_at
 
 
+def _meets_plan(
+    event: PainReductionEvent, target: PainRating, opened: datetime, planned: datetime
+) -> bool:
+    """Say whether one completed reduction reached the target inside the plan's window.
+
+    The window runs from the evaluation that states the plan through its planned time, both
+    ends included, since that evaluation asserts the rating and the plan together (plan F5).
+    """
+
+    return event.rating <= target and opened <= _utc(event.reduced_at, "reduced_at") <= planned
+
+
+def _plan_lapse_order(lapse: PlanLapse) -> tuple[str, datetime]:
+    """Order plan lapses by the case they name, then by planned time."""
+
+    return lapse.tracking_id, lapse.estimated_at
+
+
 def _utc(value: datetime, name: str) -> datetime:
     """Return one aware instant in UTC, refusing a naive one."""
 
@@ -744,6 +1013,17 @@ __all__ = [
     "CaseTiming",
     "LapseClockError",
     "LinkedEvidence",
+    "PLAN_LAPSE_DESCRIPTION",
+    "PLAN_LAPSE_EXCLUDED_STATUSES",
+    "PLAN_LAPSE_KEY_MARK",
+    "PLAN_LAPSE_METADATA_KEYS",
+    "PLAN_LAPSE_PARSER_NAME",
+    "PLAN_LAPSE_PARSER_VERSION",
+    "PLAN_LAPSE_RECORD_ID",
+    "PLAN_LAPSE_SOURCE_TOOL",
+    "PLAN_LAPSE_SOURCE_TYPE",
+    "PLAN_LAPSE_TITLE",
+    "PlanLapse",
     "RECURRENCE_DESCRIPTION",
     "RECURRENCE_KEY_MARK",
     "RECURRENCE_METADATA_KEYS",
@@ -764,6 +1044,12 @@ __all__ = [
     "derive_response_gaps",
     "first_sighting",
     "lapse_disproof",
+    "plan_lapse_context_key",
+    "plan_lapse_disproof",
+    "plan_lapse_key_parts",
+    "plan_lapse_observation",
+    "planned_reduction_lapse",
+    "planned_reduction_lapses",
     "recurrence_case_tracking_id",
     "recurrence_key_parts",
     "recurrence_slot",

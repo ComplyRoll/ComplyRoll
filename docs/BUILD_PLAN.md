@@ -123,11 +123,14 @@ accepted-vulnerability and historical-activity reports)
 
 Shipped as listed, with five exceptions carried into Phase 2 as a scope change rather than
 closed as done: information resource records and response action records (the
-`InformationResource` and `ResponseAction` entities in `docs/DATA_MODEL.md` are still planned),
-the KEV clock, the reporting recurrence clocks (the compiler emits no clock for `VER-TFR-MHR` or
-`VER-TFR-MRH`; ADR 0007 Decision 6 and ADR 0010 Decision 5 record that the cadence is the
-operator's), and HTML output (each report ships a Markdown twin only). The KEV clock has since
-landed with Phase 2's CISA KEV enrichment (ADR 0012), so four of the five are still carried.
+`InformationResource` and `ResponseAction` entities in `docs/DATA_MODEL.md` were still planned
+then), the KEV clock, the reporting recurrence clocks (the compiler emits no clock for
+`VER-TFR-MHR` or `VER-TFR-MRH`; ADR 0007 Decision 6 and ADR 0010 Decision 5 record that the
+cadence is the operator's), and HTML output (each report ships a Markdown twin only). The KEV
+clock has since landed with Phase 2's CISA KEV enrichment (ADR 0012), information resource
+records with ADR 0015, and response action records, read from the evaluation, with ADR 0019's
+section of 2026-11-27, so of the five only the reporting recurrence clocks (Phase 3) and HTML
+output (the unscheduled backlog) remain.
 Rating changes ship as the PAIN reduction events on each vulnerability detail rather than as a
 record of their own.
 
@@ -247,7 +250,8 @@ Target: 4 to 6 weeks
   attestation failures recorded as reviewable cases (a broken remediation or response workflow,
   and a vulnerability whose detection time is never attested; ADR 0014 Decision 17), with the
   information resource and response action records they need (the `InformationResource` and
-  `ResponseAction` entities in `docs/DATA_MODEL.md` are still planned), and the reporting
+  `ResponseAction` entities in `docs/DATA_MODEL.md` were still planned when this item was
+  written), and the reporting
   recurrence clocks. **Partly delivered, 2026-11-26** (ADR 0019), as a scope note and not a close:
   both failures are Met in a store, with no new operator input. `cases response-gaps` records a
   remediation that a later open observation contradicts, one case per failed remediation listing
@@ -255,7 +259,15 @@ Target: 4 to 6 weeks
   disposition; and a case whose detection time was not attested within `VER-TFR-EVU` of the
   store's first record of its evidence. `ResponseAction` records and a lapsed planned response
   are carried to the second pull request of the slice, and the `VER-TFR-MHR` and `VER-TFR-MRH`
-  recurrence clocks to the third.
+  recurrence clocks to the third. **Second pull request, 2026-11-27** (ADR 0019, section of
+  2026-11-27; Kyle's rulings D1 1a, D2 2a, D3 3a, D12 12a): a lapsed planned response is Met.
+  `cases response-gaps` records a record whose own planned reduction passed with its rating above
+  the target and no reduction to it recorded, and every report warns about it. Response action
+  records are delivered with named limits: carried as the evaluation's planned and completed
+  reductions (`projectedNextReduction`, `painReductionEvents`), with the action's kind, owner and
+  evidence not carried. Information resource records shipped with ADR 0015, with
+  `service_id`, `boundary_status` and `reachability_context` not carried because nothing reads
+  them yet. Only the recurrence clocks (the third pull request) stay open in this item.
 - Carried from Phase 2 as a scope change, 2026-11-14: an initial cloud, container, or CSPM JSON
   adapter selected from design-partner demand.
 - Versioned validation definitions with objectives, scope, schedule, code reference, and explicit

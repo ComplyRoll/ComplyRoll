@@ -514,3 +514,10 @@ exit code is added, for the reasons Decision 3 gives against a code per kind.
 | `cases response-gaps` | store | this run recorded no response gap, including a rerun that finds every one already recorded and a store with nothing to record | a refusal, a missing store, an unreadable `--as-of`, an unknown calendar zone, `history_invalid` | this run recorded at least one response gap |
 
 The reference gate is unchanged. It compiles on the stateless path, which records no response gap.
+
+## Amendment 2026-11-27: exit 3 covers six kinds
+
+ADR 0019's section of 2026-11-27 adds a third response gap, the lapsed planned response, recorded
+by `cases response-gaps` as before, so exit 3 now means a system-generated record of any of six
+kinds; no place it comes from is added, and the WARNING `planned_reduction_lapsed` never changes an
+exit code (I3).

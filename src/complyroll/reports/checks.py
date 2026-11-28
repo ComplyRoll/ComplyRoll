@@ -23,7 +23,11 @@ from .change_gaps import CHANGE_GAP_SOURCE_TYPE
 from .evaluations import EvaluationInput
 from .gaps import COVERAGE_GAP_SOURCE_TYPE
 from .model import DetectionAttestation, ReportDiagnostic, iso
-from .response_gaps import ATTESTATION_LAPSE_SOURCE_TYPE, RECURRENCE_SOURCE_TYPE
+from .response_gaps import (
+    ATTESTATION_LAPSE_SOURCE_TYPE,
+    PLAN_LAPSE_SOURCE_TYPE,
+    RECURRENCE_SOURCE_TYPE,
+)
 
 # *--- Configuration ---*
 
@@ -41,6 +45,7 @@ _SYSTEM_RECORD_KINDS = {
     CHANGE_GAP_SOURCE_TYPE: "change detection gap",
     RECURRENCE_SOURCE_TYPE: "remediation recurrence",
     ATTESTATION_LAPSE_SOURCE_TYPE: "lapsed attestation",
+    PLAN_LAPSE_SOURCE_TYPE: "lapsed planned response",
 }
 
 
@@ -244,6 +249,10 @@ _SYSTEM_ORDER_REMEDIES = {
         "a lapsed attestation is detected when its evaluation window closed, so evaluate it at "
         "or after that instant, or correct completedAt"
     ),
+    PLAN_LAPSE_SOURCE_TYPE: (
+        "a lapsed planned response is detected when its planned time passed, so evaluate it at "
+        "or after that instant, or correct completedAt"
+    ),
 }
 
 
@@ -264,7 +273,8 @@ def evaluation_order_diagnostic(
     detection time is only the earliest known timestamp, and an observation declaring
     none may have detected it earlier, so it gets the WARNING
     `evaluation_before_partial_detection` and the record is published. Only
-    `completedAt` is ordered: a reduction or a projection starts no clock. For a
+    `completedAt` is ordered: a reduction or a projection starts no clock on the record that
+    states it (a passed projection is the detection time of its own lapse record). For a
     `system` detection time, the record's `source_type` chooses the remedy. `tracking_id`
     is the record as a diagnostic names it, from `record_label`.
     """

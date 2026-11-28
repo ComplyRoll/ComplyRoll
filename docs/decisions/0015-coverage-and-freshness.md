@@ -889,3 +889,35 @@ decisions read wider from this date. Their text is not edited.
   holds a coverage gap, change detection gap, remediation recurrence, or lapsed attestation case,
   with `-` for every other case, and a listing with none of them keeps its seven columns byte for
   byte.
+
+## Amendment (2026-11-27): the lapsed planned response joins the system record tables
+
+ADR 0019's section of 2026-11-27 records a lapsed planned response under a sixth reserved source
+type, `complyroll.response-plan`. These decisions read wider from this date. Their text is not
+edited.
+
+- **Decision 23's kind names gain one.** The refusal names the record "lapsed planned response".
+  It is matched by `sourceRecordId` `planned-response-lapse`, `sourceType`
+  `complyroll.response-plan`, and the context key `<tracking id>:planned:<instant>:<rating>`. A
+  lone match short of a key is refused as before, ending "a lapsed planned response is matched by
+  sourceRecordId, sourceType and contextKey together, so add" and the keys it leaves out.
+- **Decision 24's remedies gain one.** Its `evaluation_before_detection` remedy reads "a lapsed
+  planned response is detected when its planned time passed, so evaluate it at or after that
+  instant, or correct completedAt".
+- **Decision 25's walk test finds six reserved types.** The new type has its kind name, its order
+  remedy, and its attestation clause, "for a lapsed planned response, from the instant its planned
+  reduction was expected". The three tables gained it with its builder. The walk test of this
+  record needed no change; `tests/test_response_gaps.py`, which pinned exactly five types, now pins
+  six.
+- **Decision 26 holds for the new kind.** A recorded lapsed planned response is a permanent fact,
+  closed only by a disposition from an evaluation matched on the full triple.
+- **Decisions 38 to 40 read the new kind.** `response_gap_unrecorded` names a plan lapse the run
+  derives and no record carries. `response_gap_contradicted` names a recorded one whose case's
+  current evaluation still states its plan and records a reduction that met it inside its window,
+  and that test comes first; a recorded one not contradicted stands with no note, derived or not.
+  `response_gap_unmatched` and `response_gap_earlier_detection` cannot arise for it. As for the
+  two earlier kinds, these notes are written only by a store that holds a response gap stream; a
+  store that holds none reads a lapsed plan with the warning alone.
+  `REPORT_DIAGNOSTIC_CODES` gains the WARNING `planned_reduction_lapsed`, 78 codes in all.
+- **The `cases list` column covers the new kind.** A lapsed planned response case shows its
+  context key in the `CONTEXT KEY` column, which also appears once the store holds one.

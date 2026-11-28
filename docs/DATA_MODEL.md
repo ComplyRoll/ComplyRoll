@@ -594,9 +594,10 @@ schema version 6, and one that never records a change gap stays at its version.
 
 ## Response gaps
 
-Two failures of the response process become `VDR-CSO-FAV` system observations in a store, recorded
-by `cases response-gaps` (ADR 0019). Neither is a weakness found on a resource; each records that
-the response process failed.
+Three failures of the response process become `VDR-CSO-FAV` system observations in a store,
+recorded by `cases response-gaps` (ADR 0019). None is a weakness found on a resource; each records
+that the response process failed. The third, the lapsed planned response, came with ADR 0019's
+section of 2026-11-27 and is described after the first two.
 
 A remediation that did not hold is a case whose disposition resolves to `remediated` (`remediated`,
 or `closed` as `remediated`) with an open artifact observation of its group detected strictly after
@@ -660,8 +661,47 @@ and written once in one batch at version 0: a `response_gap.recorded` v1 head an
 
 Every field is required and no other is allowed. At append the repository holds the head to the
 record it heads, and to nothing else: a case's current state moves, so a missing or changed case is
-not a fault. A store that holds a response gap stream is schema version 7, and one that never
-records a response gap stays at its version.
+not a fault. A store that holds a response gap stream is schema version 7, or 8 once it holds a
+lapsed planned response (below), whichever kinds it holds; one that never records a response gap
+stays at its version.
+
+A lapsed planned response is a record whose current evaluation states a `projectedNextReduction`
+at planned time E to target R, found by a run whose `--as-of` is strictly after E, while its
+current rating is above R, no completed reduction to R or below is recorded from that evaluation's
+`completedAt` through E (both ends included), and its disposition does not resolve to
+`remediated`, `fully_mitigated` or `false_positive`. Only an ARTIFACT-origin record lapses. The
+clock is the provider's own `estimatedAt`, never the `VDR-TFR-PVR` target, which `overdueStatus`
+already reports. Every report warns about the record as `planned_reduction_lapsed`, recorded or
+not, and publishes the projection unchanged. The record is permanent once recorded: a plan revised,
+met late or closed afterwards does not undo it.
+
+| Recipe input | Value |
+|---|---|
+| `source_type` | `complyroll.response-plan` |
+| `source_tool` | `complyroll` |
+| `parser_name`, `parser_version` | `complyroll.response-plan`, `1` |
+| `source_record_id` | `planned-response-lapse` |
+| `resource_type`, `resource_id` | `logical`, `case/<correlation tracking id>` |
+| `context_key` | `<correlation tracking id>:planned:<planned time>:<target rating>` |
+| `observed_at` | The planned time E, in UTC |
+
+The planned time is written as every response gap instant is, and the target as one digit from 1
+to 5. Its metadata always carries `plan.caseTrackingId`, `plan.estimatedAt` and
+`plan.targetRating`, never the current rating, and its one evidence id is `case:<tracking id>`.
+It is ingested at the recording run's `--as-of`, so strictly after its planned time; a record
+ingested at or before it is one its writer never mints.
+Its stream is a `response-gap/<fingerprint>` stream like the other two, opened by a second head
+type, `response_gap.plan_lapsed` v1, so `response_gap.recorded` keeps its bytes.
+
+| `response_gap.plan_lapsed` field | Purpose |
+|---|---|
+| `caseTrackingId` | The case the record names, by correlation tracking id |
+| `contextKey` | The record's context key |
+| `estimatedAt` | The planned time, as the record's `plan.estimatedAt` writes it |
+| `targetRating` | The target as an integer from 1 to 5, as `case.evaluated` holds a rating |
+
+A store that holds a `response_gap.plan_lapsed` head is schema version 8, and one that records only
+the two earlier kinds stays at 7.
 
 ## Report extension (x-complyroll)
 
@@ -715,8 +755,10 @@ in-memory `models.VulnerabilityCase` and `models.Evaluation`, which no productio
 removed before 1.0. `AcceptedVulnerability` predates
 ADR 0010 in `complyroll.reports`; ADR 0010 made the accepted-vulnerability and historical
 reports publish it, as described below. `InformationResource` shipped with ADR 0015 in
-`complyroll.reports.inventory`, beside the KEV reader. `ResponseAction`, `ValidationDefinition`,
-and `ValidationRun` remain planned entities; their tables describe intent, not shipped code.
+`complyroll.reports.inventory`, beside the KEV reader. `ResponseAction` has no class: the
+evaluation carries it, as its section below says (ADR 0019, section of 2026-11-27).
+`ValidationDefinition` and `ValidationRun` remain planned entities; their tables describe intent,
+not shipped code.
 
 ### InformationResource
 
@@ -763,7 +805,7 @@ Planned fields not carried yet: `service_id` (cloud service or component members
 | `disposition` | Open, pass, not applicable, not reviewed, error, or unknown |
 | `evidence_ids` | Content-addressed supporting evidence |
 | `source_artifact_digest` | Integrity and idempotency anchor (lowercase hex; blank for system observations) |
-| `origin` | `artifact` for observations parsed from a source file; `system` for observations ComplyRoll generates about its own detection and response process: detection process failures since ADR 0014, coverage gaps since ADR 0015, change detection gaps since ADR 0018, and remediation recurrences and lapsed attestations since ADR 0019 |
+| `origin` | `artifact` for observations parsed from a source file; `system` for observations ComplyRoll generates about its own detection and response process: detection process failures since ADR 0014, coverage gaps since ADR 0015, change detection gaps since ADR 0018, and remediation recurrences, lapsed attestations and lapsed planned responses since ADR 0019 |
 
 `observed_at` may be unknown when a source format does not declare an assessment timestamp.
 ComplyRoll records that absence and emits a diagnostic; it does not treat file modification or
@@ -780,8 +822,8 @@ production recipe, for detection process failures, uses the failed artifact's di
 context key, because ComplyRoll has no inventory of detection jobs yet; see Detection process
 failures above and the ADR 0002 amendment of 2026-09-30. The second, for coverage gaps (ADR
 0015), keys on the inventory entry's `job` when it names one; see Coverage gaps above. The third,
-for change detection gaps (ADR 0018), keys on the change id; see Change gaps above. The fourth
-and fifth, for response gaps (ADR 0019), key on the case they name; see Response gaps above.
+for change detection gaps (ADR 0018), keys on the change id; see Change gaps above. The fourth,
+fifth and sixth, for response gaps (ADR 0019), key on the case they name; see Response gaps above.
 Failure cases stay keyed on the digest.
 
 A SARIF observation (ADR 0011) takes its identity from the literal source type `sarif`, the
@@ -867,7 +909,8 @@ adds to it.
 | `remediated_at` | While the disposition resolves to `remediated`, the `completedAt` of the evaluation in force when it was first recorded (ADR 0019); otherwise none |
 | `remediation_episode` | While `remediated_at` is set, the 1-based position of that remediated run among the case's remediated runs, the last part of a recurrence's context key (ADR 0019); otherwise none |
 
-Response actions and an owner are not recorded; see `ResponseAction (planned)` below.
+A response action is carried by the current evaluation's planned reduction and the case's
+completed ones; its kind, owner and evidence are not recorded. See `ResponseAction` below.
 
 ### Evaluation
 
@@ -889,19 +932,36 @@ evaluation is its latest. Durable history lives in the event log.
 `completedAt` is ordered against `detectedAt`. A report refuses a record whose evaluation completed
 strictly before a detection time that is the record's own (an artifact timestamp, an attestation,
 a recorded detection process failure, the window close of a coverage or change detection gap or
-of a lapsed attestation, or the detection a remediation recurrence records)
-with the ERROR `evaluation_before_detection`. A group
+of a lapsed attestation, the detection a remediation recurrence records, or the planned time of a
+lapsed planned response) with the ERROR `evaluation_before_detection`. A group
 with only some timestamps keeps its record and gets the WARNING
 `evaluation_before_partial_detection`, because an untimed observation may have detected the
 weakness earlier. `cases evaluate` checks every entry it matches, refuses on the ERROR and prints
 the WARNING. `cases attest-detection` checks only a detection time its own attestation decides, and
 `store verify` reports only the ERROR, at the current evaluation. Reductions and projections are
-not ordered: `reducedAt` and `estimatedAt` start no clock.
+not ordered against detection, and `reducedAt` starts no clock. An `estimatedAt` starts none on
+its own record either, but once its plan lapses it is the detection time and the `VER-TFR-EVU`
+anchor of the lapsed planned response case (ADR 0019, section of 2026-11-27).
 
-### ResponseAction (planned)
+### ResponseAction
 
-Records a partial mitigation, full mitigation, remediation, validation, or other response. It
-includes planned time, completed time, target PAIN, actual result, owner, and evidence.
+A response action is a partial mitigation, full mitigation, remediation, validation, or other
+response, with a planned time, a completed time, a target PAIN, an actual result, an owner, and
+evidence. ComplyRoll has no record of its own for one (ADR 0019, section of 2026-11-27): the
+evaluation already carries what the response process needs, in the official fields of the pinned
+Common Definitions schema.
+
+| Planned field | Where ComplyRoll carries it |
+|---|---|
+| Planned time, target PAIN | The current evaluation's `projectedNextReduction` (`estimatedAt`, `targetRating`) |
+| Completed time, actual result | The case's `painReductionEvents` (`reducedAt`, `rating`), one event per instant and rating |
+| A completed remediation or full mitigation | The disposition, at its evaluation's `completedAt` (ADR 0019 Decision 1) |
+| Kind (mitigation, remediation, validation) | Not carried |
+| Owner | Not carried |
+| Evidence of its own | Not carried |
+
+A plan to remediate cannot be stated: the field holds a target rating, and none sits below N1. A
+planned reduction that passes unrecorded is a lapsed planned response; see Response gaps above.
 
 Mitigation and remediation are not interchangeable. A fully mitigated weakness can still exist
 until remediated.

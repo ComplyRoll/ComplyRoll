@@ -159,7 +159,11 @@ never changes its disposition. `cases response-gaps` derives, in `reports/respon
 report's own grouping of the store's observations, and one per case whose detection time was not
 attested within `VER-TFR-EVU` of the store's first record of its evidence, from the folded cases.
 The remediation instant comes from the fold: the `completedAt` of the evaluation in force when the
-current remediated disposition was first recorded.
+current remediated disposition was first recorded. A lapsed planned response (ADR 0019, section
+of 2026-11-27) is derived by one pure function over a record, the evaluation the report reads for
+it, and the as-of: the report's WARNING `planned_reduction_lapsed` on both paths, and in a store
+one `VDR-CSO-FAV` system observation per case and plan, from the report's own groups and each
+case's reported evaluation, so a case no current open observation matches lapses nowhere.
 
 Shipped projections:
 
@@ -258,10 +262,19 @@ response gap stream. The first `cases response-gaps` append that records one (`r
 inserts migration record 7 ("response gap streams, ADR 0019"), and every lower record the store
 lacks, and sets `user_version` to 7 inside its own transaction. A store that never records a
 response gap stays at its version, and response gap awareness follows a response gap stream, not
-the marker. This build opens versions 1 to 7 (`SUPPORTED_SCHEMA_VERSION`). 0.5.0a0 refuses a
-version 7 store at open with `database schema 7 is newer than supported schema 6`, and its `store
-verify` reports `schema_version_unsupported` ("database is marked schema 7; this build opens
-schemas 1 to 6").
+the marker. A build at `09193ab` opens versions 1 to 7; this one opens 1 to 8, below. 0.5.0a0
+refuses a version 7 store at open with `database schema 7 is newer than supported schema 6`, and
+its `store verify` reports `schema_version_unsupported` ("database is marked schema 7; this build
+opens schemas 1 to 6").
+
+Schema version 8 (ADR 0019, section of 2026-11-27) changes no schema object either. It marks a
+store that holds a `response_gap.plan_lapsed` head. The append that writes one
+(`requires_schema=8`, chosen by the head type, as a hold's is) inserts migration record 8
+("planned response gap heads, ADR 0019"), and every lower record the store lacks, and sets
+`user_version` to 8 inside its own transaction. A store that records only the two earlier response
+gap kinds stays at 7. This build opens versions 1 to 8 (`SUPPORTED_SCHEMA_VERSION`). A build at
+`09193ab` refuses a version 8 store at open with `database schema 8 is newer than supported schema
+7`, and 0.5.0a0 with `database schema 8 is newer than supported schema 6`.
 
 Projection checkpoints are mutable compare-and-swap cursors over the global sequence. Projection
 rows remain disposable and must be rebuildable from sequence zero. Concrete projection handlers
@@ -283,9 +296,12 @@ observation. ADR 0015 adds `coverage.recorded` v1 and a fourth stream kind,
 together and never extended. ADR 0019 adds `response_gap.recorded` v1 and a seventh stream kind,
 `response-gap/<fingerprint>`, named for its record's SYSTEM identity hash, which holds one
 `response_gap.recorded` head and the one `observation.recorded` carrying a remediation recurrence
-or a lapsed attestation, written together and never extended. Candidates for later slices:
-`case.action_planned`,
-`case.action_completed`, `validation.completed`, `evidence.attached`.
+or a lapsed attestation, written together and never extended. Its section of 2026-11-27 adds
+`response_gap.plan_lapsed` v1, a second head type on the same stream kind, which opens the stream
+of a lapsed planned response. Candidates for later slices: `validation.completed`,
+`evidence.attached`. `case.action_planned` and `case.action_completed` were candidates until ADR
+0019's section of 2026-11-27 read a response action from the evaluation's planned and completed
+reductions instead.
 
 ## Package layout
 
@@ -353,6 +369,9 @@ available for when that stops being enough. The domain model remains independent
   that came back, and each failed remediation one case (ADR 0019).
 - A detection time never attested: with `cases response-gaps`, a lapsed attestation once
   `VER-TFR-EVU` from the store's first record of the evidence has passed (ADR 0019).
+- A planned reduction that passed unrecorded: WARNING `planned_reduction_lapsed` on every report,
+  the projection unchanged; with `cases response-gaps` a `VDR-CSO-FAV` system observation and
+  case per case and plan (ADR 0019, section of 2026-11-27).
 - Policy unavailable or unverified: block deadline/report certification claims.
 - Schema mismatch: report generation failure with actionable paths.
 - Unknown evaluation factor: preserve unknown; do not invent a default.
@@ -371,3 +390,5 @@ recurrence (ADR 0019) is observed at the source timestamp of the observation tha
 a lapsed attestation at its window close, the `VER-TFR-EVU` deadline from the earliest ingest
 instant of the case's evidence: the ingest's `--as-of`, or its run time when none was given, the
 instant ComplyRoll saw the reading as ADR 0014 reads a failure, never the store's own `recorded_at`.
+A lapsed planned response is observed at its plan's `estimatedAt`, the instant the provider's own
+evaluation stated, never the run's as-of.

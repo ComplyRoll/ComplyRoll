@@ -1,0 +1,29 @@
+{
+  "evaluations": [
+    {
+      "match": {
+        "sourceRecordId": "CVE-2099-0101",
+        "contextKey": "Trivy|images/api",
+        "sourceType": "sarif"
+      },
+      "completedAt": "2026-09-04T15:00:00Z",
+      "isInternetReachable": true,
+      "isLikelyExploitable": true,
+      "pain": 3,
+      "potentialAgencyImpact": "SYNTHETIC. The API image parses tenant-supplied JSON with the flawed package, so a crafted request could crash the service that serves agency data.",
+      "rationale": "SYNTHETIC. A request size limit at the gateway reduced the exposure; the image rebuild with the fixed package is planned for the next release window.",
+      "evaluator": "Example Provider vulnerability team (synthetic planned response fixture)",
+      "disposition": "partially_mitigated",
+      "projectedNextReduction": {
+        "estimatedAt": "2026-09-11T16:00:00Z",
+        "targetRating": 2
+      },
+      "painReductionEvents": [
+        {
+          "reducedAt": "2026-09-04T15:00:00Z",
+          "rating": 3
+        }
+      ]
+    }
+  ]
+}

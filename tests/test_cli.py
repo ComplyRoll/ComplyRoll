@@ -247,6 +247,21 @@ RECURRENCE_ARGUMENTS = (
     KEV_AS_OF,
     *KEV_PERIOD,
 )
+#: The `vdt-planned-reduction-warning` run: a partly mitigated finding whose planned next
+#: reduction passed unrecorded (ADR 0019, 2026-11-27 section).
+PLANNED_EVALUATIONS = EXAMPLES / "evaluations-planned.json"
+PLANNED_ARTIFACT = RECURRENCE_ARTIFACTS[0]
+PLANNED_ARGUMENTS = (
+    "report",
+    "vdt",
+    PLANNED_ARTIFACT,
+    "--evaluations",
+    str(PLANNED_EVALUATIONS),
+    *KEV_ARGUMENTS,
+    "--as-of",
+    KEV_AS_OF,
+    *KEV_PERIOD,
+)
 
 
 def kev_argv(
@@ -1332,6 +1347,7 @@ class RecordFailedImportsTests(unittest.TestCase):
             "vdt-changes": CHANGES_ARGUMENTS,
             "vdt-changes-timed": timed_changes_argv(),
             "vdt-recurrence-warning": RECURRENCE_ARGUMENTS,
+            "vdt-planned-reduction-warning": PLANNED_ARGUMENTS,
         }
         compiled = {
             "vdt-sarif": compile_sarif_golden(record_failed_imports=True),
@@ -1357,6 +1373,8 @@ class RecordFailedImportsTests(unittest.TestCase):
             "vdt-change-gaps",
             # Cut from a store by `cases response-gaps`; `test_response_gap_history` reproduces it.
             "historical-response-gaps",
+            # Cut from a store by `cases response-gaps`; `test_plan_lapse_history` reproduces it.
+            "historical-planned-response",
         }
         self.assertEqual(reports - system_goldens, {*runs, *compiled})
         for name, argv in runs.items():
@@ -7987,7 +8005,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
                 self.assertEqual(code, 1, err[:500])
                 self.assertIn(
                     "error: store_unavailable: database schema -1 is outside supported "
-                    "schemas 1 to 7",
+                    "schemas 1 to 8",
                     err,
                 )
                 self.assert_bounded(out, err)
@@ -7999,7 +8017,7 @@ class StoredValueRefusalCommandTests(PersistedStoreTestCase):
         self.assertEqual(code, 1, err[:500])
         self.assertIn(
             "schema_version_unsupported: database is marked schema -1; this build opens "
-            "schemas 1 to 7",
+            "schemas 1 to 8",
             out + err,
         )
         self.assert_bounded(out, err)

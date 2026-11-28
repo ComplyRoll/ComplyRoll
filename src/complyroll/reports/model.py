@@ -147,6 +147,7 @@ REPORT_DIAGNOSTIC_CODES: Final[tuple[str, ...]] = (
     "output_rollback_failed",
     "output_write_failed",
     "payload_contracts_unchecked",
+    "planned_reduction_lapsed",
     "recurrence_after_remediation",
     "reduction_retained",
     "report_malformed",

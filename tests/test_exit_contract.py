@@ -33,6 +33,7 @@ from test_cli import (
     HISTORICAL_ARGUMENTS,
     INGESTED_AT,
     PERSISTED_ARTIFACTS,
+    PLANNED_ARGUMENTS,
     RECURRENCE_ARGUMENTS,
     REPORT_ARGUMENTS,
     PersistedStoreTestCase,
@@ -84,6 +85,7 @@ GOLDEN_RUNS: dict[str, Sequence[str]] = {
     "vdt-changes": CHANGES_ARGUMENTS,
     "vdt-changes-timed": timed_changes_argv(),
     "vdt-recurrence-warning": RECURRENCE_ARGUMENTS,
+    "vdt-planned-reduction-warning": PLANNED_ARGUMENTS,
 }
 #: The five system goldens, each cut by a run that records its records and exits 3.
 SYSTEM_RUNS: dict[str, Sequence[str]] = {
@@ -104,7 +106,11 @@ SYSTEM_RUNS: dict[str, Sequence[str]] = {
 #: The report goldens compiled through the library, which no command-line run cuts.
 LIBRARY_GOLDENS = {"vdt-sarif", "vdt-hdf", "vdt-cyclonedx", "historical-cyclonedx"}
 #: The goldens cut from a store rather than from artifacts; each has its own reproduction.
-STORE_GOLDENS = {"vdt-changes-replay", "historical-response-gaps"}
+STORE_GOLDENS = {
+    "vdt-changes-replay",
+    "historical-response-gaps",
+    "historical-planned-response",
+}
 #: Each stateless report command's golden run, whose artifacts are argv[2:5].
 COMMANDS = (
     ("vdt", REPORT_ARGUMENTS),

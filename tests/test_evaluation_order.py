@@ -467,7 +467,8 @@ class CompilerOrderTests(unittest.TestCase):
 
     def test_a_pain_reduction_before_detection_is_not_ordered(self) -> None:
         # Only completedAt is ordered: a reduction and a projection dated before the
-        # detection time start no clock and are published as written.
+        # detection time are published as written. The projection starts no clock on this
+        # record; once passed, it is a lapsed planned response's own detection time (ADR 0019).
         path, _ = self.artifact("timed", [("lab-timed", TIMED_AT)])
 
         report = compile_fixtures(

@@ -85,6 +85,7 @@ from .reports.records import derive_changes_from_artifacts
 from .reports.replay import derive_changes_from_history
 from .reports.response_gaps import (
     ATTESTATION_LAPSE_SOURCE_TYPE,
+    PLAN_LAPSE_SOURCE_TYPE,
     RECURRENCE_SOURCE_TYPE,
     RESPONSE_GAP_RULE,
 )
@@ -152,14 +153,15 @@ CASE_COLUMNS: tuple[tuple[str, bool], ...] = (
 #: case).
 GAP_CONTEXT_COLUMN: tuple[str, bool] = ("CONTEXT KEY", False)
 #: The reserved source types whose cases the listing names by context key: a coverage gap
-#: (ADR 0015), a change detection gap (ADR 0018), and both response gaps (ADR 0019), each matched
-#: by the full triple.
+#: (ADR 0015), a change detection gap (ADR 0018), and the three response gaps (ADR 0019), each
+#: matched by the full triple.
 _GAP_CASE_SOURCE_TYPES = frozenset(
     {
         COVERAGE_GAP_SOURCE_TYPE,
         CHANGE_GAP_SOURCE_TYPE,
         RECURRENCE_SOURCE_TYPE,
         ATTESTATION_LAPSE_SOURCE_TYPE,
+        PLAN_LAPSE_SOURCE_TYPE,
     }
 )
 
@@ -406,9 +408,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_actor_option(change_gaps)
 
     response_gaps_help = (
-        "record each remediation a later open observation contradicts, and each case whose "
-        "detection time was not attested within its evaluation window, as a VDR-CSO-FAV system "
-        "record; exits 3 when one is recorded"
+        "record each remediation a later open observation contradicts, each case whose "
+        "detection time was not attested within its evaluation window, and each planned "
+        "reduction not recorded by its planned time, as a VDR-CSO-FAV system record; exits 3 "
+        "when one is recorded"
     )
     response_gaps = case_commands.add_parser(
         "response-gaps", help=response_gaps_help, description=response_gaps_help
@@ -425,7 +428,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--as-of",
         required=True,
         metavar="RFC3339",
-        help="instant the windows are closed against, and each record's ingestion time",
+        help=(
+            "instant the windows are closed and the plans are read against, and each record's "
+            "ingestion time"
+        ),
     )
     response_gaps.add_argument(
         "--calendar-tz",

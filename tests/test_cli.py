@@ -247,6 +247,21 @@ RECURRENCE_ARGUMENTS = (
     KEV_AS_OF,
     *KEV_PERIOD,
 )
+#: The `vdt-planned-reduction-warning` run: a partly mitigated finding whose planned next
+#: reduction passed unrecorded (ADR 0019, 2026-11-27 section).
+PLANNED_EVALUATIONS = EXAMPLES / "evaluations-planned.json"
+PLANNED_ARTIFACT = RECURRENCE_ARTIFACTS[0]
+PLANNED_ARGUMENTS = (
+    "report",
+    "vdt",
+    PLANNED_ARTIFACT,
+    "--evaluations",
+    str(PLANNED_EVALUATIONS),
+    *KEV_ARGUMENTS,
+    "--as-of",
+    KEV_AS_OF,
+    *KEV_PERIOD,
+)
 
 
 def kev_argv(
@@ -1332,6 +1347,7 @@ class RecordFailedImportsTests(unittest.TestCase):
             "vdt-changes": CHANGES_ARGUMENTS,
             "vdt-changes-timed": timed_changes_argv(),
             "vdt-recurrence-warning": RECURRENCE_ARGUMENTS,
+            "vdt-planned-reduction-warning": PLANNED_ARGUMENTS,
         }
         compiled = {
             "vdt-sarif": compile_sarif_golden(record_failed_imports=True),

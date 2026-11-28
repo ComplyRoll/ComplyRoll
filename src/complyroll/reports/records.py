@@ -127,10 +127,12 @@ from .response_gaps import (
     ATTESTATION_LAPSE_SOURCE_TYPE,
     RECURRENCE_SOURCE_TYPE,
     LapseClockError,
+    PlanLapse,
     RemediationRecurrence,
     ResponseGapHistory,
     derive_response_gaps,
     lapse_disproof,
+    planned_reduction_lapse,
     rebuilt_lapse,
     rebuilt_recurrence,
     recurrence_slot,
@@ -505,6 +507,11 @@ def compile_record_set(
             recurrence = replace(recurrence, untimed=()) if recurrence.recurring else None
         if recurrence is not None:
             diagnostics.append(_recurrence_warning(recurrence, label, group.source_record_id))
+        # A provider's own plan that passed unmet keeps its published projection: ComplyRoll
+        # warns on both paths and never rewrites it (plan D4).
+        plan_lapse = planned_reduction_lapse(group, evaluation, options.as_of)
+        if plan_lapse is not None:
+            diagnostics.append(_plan_lapse_warning(plan_lapse, label, group.source_record_id))
         # Only the failure type carries the metadata `_detection_failure` reads; any other
         # reserved source type is a record like any other and is never listed (ADR 0015).
         detection_failures.extend(
@@ -2295,6 +2302,29 @@ def _recurrence_warning(
         message=(
             ", and ".join(clauses)
             + f"; {verdict}, and the record keeps its disposition until an evaluation changes it"
+        ),
+        location=location,
+    )
+
+
+def _plan_lapse_warning(lapse: PlanLapse, label: str, location: str) -> ReportDiagnostic:
+    """Warn that a record's own planned reduction was not recorded by its planned time.
+
+    One WARNING per record, on both paths and whether or not a store recorded the lapse
+    (plan D4): it names the planned time, the target, the current rating and the evaluation
+    the window opens at.
+    """
+
+    target = lapse.target_rating.name
+    return ReportDiagnostic(
+        level=DiagnosticLevel.WARNING,
+        code="planned_reduction_lapsed",
+        message=(
+            f"{label} planned its next reduction to PAIN {target} by "
+            f"{iso(lapse.estimated_at)}, and that time has passed with its current rating PAIN "
+            f"{lapse.current_rating.name} and no reduction to {target} or below recorded from "
+            f"its evaluation at {iso(lapse.completed_at)} through it; the planned reduction is "
+            "not recorded, and the record keeps its plan until an evaluation changes it"
         ),
         location=location,
     )

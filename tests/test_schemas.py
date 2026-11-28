@@ -52,6 +52,10 @@ COMPILED_GOLDENS = (
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-change-gaps.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-failed.json"),
     (ReportSchema.VULNERABILITY_DETAIL, TEST_ROOT / "golden" / "vdt-recurrence-warning.json"),
+    (
+        ReportSchema.VULNERABILITY_DETAIL,
+        TEST_ROOT / "golden" / "vdt-planned-reduction-warning.json",
+    ),
     (ReportSchema.ACCEPTED_VULNERABILITY, TEST_ROOT / "golden" / "avi-fixtures.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-failed.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-coverage-gaps.json"),

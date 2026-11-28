@@ -1104,6 +1104,14 @@ class _ResponseGapClaim:
     tracking_id: str
     original_tracking_id: str
     evaluation_location: str
+    #: The group's full key, as correlation keys a group: source type, record id, context key.
+    key: tuple[str, str, str]
+
+
+def _group_key(group: VulnerabilityGroup) -> tuple[str, str, str]:
+    """Return the key correlation groups by, which a 64-bit correlation id only abbreviates."""
+
+    return group.source_type, group.source_record_id, group.context_key
 
 
 def _refuse_response_gap_collisions(
@@ -1118,40 +1126,56 @@ def _refuse_response_gap_collisions(
     names a group only this run's records open is refused, as `tracking_id_collision`, before the
     first append, so the run writes nothing and the store stays one a report compiles (ADR 0019,
     section of 2026-11-27). A collision the store held before the run is verify's to name.
+    Which groups the run opens is read by each group's full key, never by its correlation id,
+    which two keys can share; the published id stays the uniqueness key. When the two claimants
+    share a correlation id, the refusal names both by their keys so the text tells them apart.
     """
 
     if not pending:
         return
-    before = {group.tracking_id for group in group_open_observations(observations)}
+    before = {_group_key(group) for group in group_open_observations(observations)}
     claims = [
         _ResponseGapClaim(
             tracking_id=published_tracking_id(group, evaluations.get(group.tracking_id)),
             original_tracking_id=group.tracking_id,
             evaluation_location=evaluation_location(evaluations.get(group.tracking_id)),
+            key=_group_key(group),
         )
         for group in group_open_observations([*observations, *pending])
     ]
     problems: list[ReportDiagnostic] = []
     for previous, claim in tracking_id_collisions(claims):
-        opened = [
-            item.original_tracking_id
-            for item in (previous, claim)
-            if item.original_tracking_id not in before
-        ]
+        opened = [item for item in (previous, claim) if item.key not in before]
         if not opened:
             continue
+        message = (
+            f"{tracking_id_collision_message(previous, claim)}; this run would record the "
+            f"response gap of {opened[0].original_tracking_id}"
+        )
+        if previous.original_tracking_id == claim.original_tracking_id:
+            message = (
+                f"{message}; the two share that correlation id, as the groups "
+                f"{_key_text(previous.key)} and {_key_text(claim.key)}"
+            )
         problems.append(
             ReportDiagnostic(
                 level=DiagnosticLevel.ERROR,
                 code=TRACKING_ID_COLLISION,
-                message=(
-                    f"{tracking_id_collision_message(previous, claim)}; this run would record "
-                    f"the response gap of {opened[0]}, so it records nothing"
-                ),
+                message=f"{message}, so it records nothing",
             )
         )
     if problems:
         raise ReportCompileError(problems)
+
+
+def _key_text(key: tuple[str, str, str]) -> str:
+    """Name a group by its key, as an evaluation entry matches it, each value shown as stored."""
+
+    source_type, record_id, context_key = key
+    return (
+        f"(sourceType {shown(source_type)}, sourceRecordId {shown(record_id)}, "
+        f"contextKey {shown(context_key)})"
+    )
 
 
 def record_changes(

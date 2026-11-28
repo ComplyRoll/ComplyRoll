@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest import mock
 
-from test_cli import PLANNED_ARTIFACT, RECURRENCE_ARTIFACTS, RECURRENCE_EVALUATIONS
+from test_cli import PLANNED_ARTIFACT, RECURRENCE_ARTIFACTS, RECURRENCE_EVALUATIONS, run
 from test_coverage_streams import StoreCase as RepositoryCase
 from test_coverage_streams import metadata, pending, rebuilt
 from test_plan_lapse_history import (
@@ -29,8 +29,16 @@ from test_plan_lapse_history import (
 )
 from test_plan_lapse_history import StoreCase as CommandCase
 from test_plan_lapse_streams import plan_events
-from test_response_gap_history import LAPSE_CASE, LAPSE_LINE, SEEN_TEXT, UNTIMED
+from test_response_gap_history import (
+    LAPSE_CASE,
+    LAPSE_LINE,
+    RECURRENCE_CASE,
+    SEEN_TEXT,
+    UNTIMED,
+    UNTIMED_CASE,
+)
 
+from complyroll import correlation as correlation_module
 from complyroll.events import (
     EventContractError,
     EventRepository,
@@ -40,7 +48,11 @@ from complyroll.events import (
 from complyroll.events import repository as repository_module
 from complyroll.history import HistoryError, audit_history, rehydrate_observations
 from complyroll.models import PainRating
-from complyroll.reports.response_gaps import PlanLapse, plan_lapse_observation
+from complyroll.reports.response_gaps import (
+    PLAN_LAPSE_SOURCE_TYPE,
+    PlanLapse,
+    plan_lapse_observation,
+)
 from complyroll.store import SQLiteEventStore
 
 # *--- Fixtures ---*
@@ -134,6 +146,78 @@ class TrackingIdCollisionTests(FixCase):
         self.succeeds(["cases", "evaluate", "--db", str(self.database), "--evaluations", str(path)])
         self.assert_refused(LAPSE_CASE)
 
+    def test_a_provider_id_equal_to_a_recurrence_case_refuses_the_run(self) -> None:
+        before_scan, after_scan = RECURRENCE_ARTIFACTS
+        self.succeeds(["ingest", before_scan, "--db", str(self.database), "--as-of", INGEST_TEXT])
+        self.succeeds(["cases", "correlate", "--db", str(self.database)])
+        entry = dict(
+            json.loads(RECURRENCE_EVALUATIONS.read_text(encoding="utf-8"))["evaluations"][0]
+        )
+        entry["trackingId"] = RECURRENCE_CASE
+        path = self.workspace / "override.json"
+        path.write_text(json.dumps({"evaluations": [entry]}), encoding="utf-8")
+        self.succeeds(["cases", "evaluate", "--db", str(self.database), "--evaluations", str(path)])
+        self.succeeds(
+            ["ingest", after_scan, "--db", str(self.database), "--as-of", "2026-09-13T00:00:00Z"]
+        )
+        self.assert_refused(RECURRENCE_CASE)
+
+    def test_a_collision_held_on_entry_does_not_stop_unrelated_work(self) -> None:
+        # The planned case already publishes the untimed case's id: a collision the store held
+        # before the run, written past the writers. It is verify's to name, and the run still
+        # records the untimed case's lapse and the plan's, neither of which joins it.
+        self.untimed_and_planned()
+        with SQLiteEventStore(self.database) as store:
+            repository = EventRepository(store)
+            stream = case_stream_id(PLANNED_CASE)
+            repository.append(
+                stream,
+                "case.identified",
+                {"providerTrackingId": UNTIMED_CASE},
+                occurred_at=datetime(2026, 9, 5, tzinfo=UTC),
+                metadata=metadata(),
+                expected_version=repository.current_version(stream),
+            )
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 1)
+        self.assertIn("tracking_id_collision", err)
+        before = self.store_bytes()
+        code, out, err = self.response_gaps()
+        self.assertEqual(code, 3, msg=err)
+        self.assertNotIn("tracking_id_collision", err)
+        self.assertEqual(len(self.recorded_ids(out)), 2)
+        self.assertNotEqual(self.store_bytes(), before)
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 1)
+        self.assertIn("tracking_id_collision", err)
+
+    def test_a_new_group_sharing_a_correlation_id_is_refused_and_named_by_its_key(self) -> None:
+        # Two group keys under one 64-bit correlation id, forced through the one function that
+        # names a group's id; report, verify and the run all read groups through it.
+        self.plan()
+        real = correlation_module.tracking_id_for
+
+        def shared(source_type: str, source_record_id: str, context_key: str) -> str:
+            if source_type == PLAN_LAPSE_SOURCE_TYPE:
+                return PLANNED_CASE
+            return real(source_type, source_record_id, context_key)
+
+        with mock.patch.object(correlation_module, "tracking_id_for", shared):
+            before = self.store_bytes()
+            code, out, err = self.response_gaps()
+            self.assertEqual((code, out), (1, ""), msg=err)
+            self.assertIn(
+                f"error: tracking_id_collision: effective tracking id '{PLANNED_CASE}' is claimed",
+                err,
+            )
+            self.assertIn("the two share that correlation id, as the groups (sourceType ", err)
+            self.assertIn("'complyroll.response-plan'", err)
+            self.assertIn("sourceRecordId 'CVE-2099-0101'", err)
+            self.assertIn(", so it records nothing", err)
+            self.assertEqual(self.store_bytes(), before)
+            out, err = self.succeeds(["store", "verify", "--db", str(self.database)])
+            self.assertTrue(out.startswith("ok: "), msg=err)
+
     def test_without_the_override_the_same_runs_record(self) -> None:
         self.plan()
         code, out, _ = self.response_gaps()
@@ -165,12 +249,12 @@ class PlanLapseIngestTimeTests(RepositoryCase):
             expected_version=0,
         )
 
-    def test_one_second_after_the_planned_time_appends(self) -> None:
-        self.append(planned_record(PLANNED_AT + timedelta(seconds=1)))
+    def test_one_microsecond_after_the_planned_time_appends(self) -> None:
+        self.append(planned_record(PLANNED_AT + timedelta(microseconds=1)))
         self.assertEqual(audit_history(self.repository), ())
 
     def test_at_or_before_the_planned_time_is_refused_at_append(self) -> None:
-        for ingested_at in (PLANNED_AT, PLANNED_AT - timedelta(seconds=1)):
+        for ingested_at in (PLANNED_AT, PLANNED_AT - timedelta(microseconds=1)):
             with self.subTest(ingested_at=ingested_at):
                 with self.assertRaisesRegex(EventContractError, "not after its planned time"):
                     self.append(planned_record(ingested_at))
@@ -205,6 +289,23 @@ class PlanLapseIngestTimeTests(RepositoryCase):
         )
         assert problem is not None
         self.assertEqual(problem[0], "responsegap_identity_breach")
+
+
+class PlanLapseIngestTimeCommandTests(FixCase):
+    """A real run one microsecond past the planned time, spelled with an offset, records."""
+
+    def test_a_run_one_microsecond_past_the_planned_time_records_and_verifies(self) -> None:
+        self.plan()
+        # 2026-09-11T16:00:00Z is the planned time; the same instant at -07:00 records nothing.
+        code, out, _ = self.response_gaps("--class", "C", "--as-of", "2026-09-11T09:00:00-07:00")
+        self.assertEqual(code, 0, msg=out)
+        code, out, err = self.response_gaps(
+            "--class", "C", "--as-of", "2026-09-11T09:00:00.000001-07:00"
+        )
+        self.assertEqual(code, 3, msg=err)
+        self.assertIn(f": recorded {PLAN_LINE}", out)
+        out, err = self.succeeds(["store", "verify", "--db", str(self.database)])
+        self.assertTrue(out.startswith("ok: "), msg=err)
 
 
 # *--- F01: the contradiction reads the plan and ignores the disposition ---*
@@ -288,18 +389,27 @@ class MixedRunTests(FixCase):
         schema = self.schema_version()
         original = EventRepository.append_batch
         calls: list[str] = []
+        # The schema each append left visible inside the run's transaction.
+        marked: list[int] = []
 
-        def refuse_second(repository: EventRepository, stream_id: str, *args: Any, **kw: Any):
+        # The second append reaches the store and marks schema 8 before the refusal, so the
+        # rollback has to undo the marker too.
+        def refuse_after_second(
+            repository: EventRepository, stream_id: str, *args: Any, **kw: Any
+        ) -> Any:
             calls.append(stream_id)
+            appended = original(repository, stream_id, *args, **kw)
+            marked.append(repository.store.schema_version)
             if len(calls) == 2:
-                raise EventContractError("planted refusal at the second append")
-            return original(repository, stream_id, *args, **kw)
+                raise EventContractError("planted refusal after the second append")
+            return appended
 
-        with mock.patch.object(EventRepository, "append_batch", refuse_second):
+        with mock.patch.object(EventRepository, "append_batch", refuse_after_second):
             code, out, err = self.response_gaps()
         self.assertEqual((code, out), (1, ""), msg=err)
-        self.assertIn("planted refusal at the second append", err)
+        self.assertIn("planted refusal after the second append", err)
         self.assertEqual(len(calls), 2)
+        self.assertEqual(marked, [7, 8])
         self.assertEqual(self.response_gap_streams(), [])
         self.assertEqual(self.schema_version(), schema)
         self.assertEqual(self.store_bytes(), before)
@@ -399,6 +509,7 @@ class UntimedPlanTests(FixCase):
             "2026-09-09T16:00:00Z",
             lines[1],
         )
+        plan_id = self.recorded_ids(out)[1]
         code, _, err = self.report()
         self.assertEqual(code, 1)
         self.assertIn("error: detection_time_missing: ", err)
@@ -408,6 +519,18 @@ class UntimedPlanTests(FixCase):
         codes = self.codes()
         self.assertIn(WARNING, codes)
         self.assertEqual(self.notes(), [])
+        # The recorded lapse itself is in the report once it compiles, not only its warning.
+        path = self.workspace / "attested.json"
+        code, _, err = self.report("-o", str(path))
+        self.assertEqual(code, 0, msg=err)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        carried = [
+            item
+            for item in document["activeVulnerabilities"]
+            if plan_id in item["x-complyroll"]["observationIds"]
+        ]
+        self.assertEqual(len(carried), 1)
+        self.assertEqual(carried[0]["x-complyroll"]["observationIds"], [plan_id])
 
 
 if __name__ == "__main__":

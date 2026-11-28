@@ -629,14 +629,18 @@ prevents it. A lapsed planned response is recorded when a run whose `--as-of` is
 the planned time finds the plan unmet, as the `planned_reduction_lapsed` warning above reads it,
 from the evaluation each case reports with: a case no current open observation matches is in no
 report and records nothing. No class or calendar zone enters it. The run can record a plan lapse
-for a record no report can compile yet: a case with no detection time has its plan lapse, and its
-lapsed attestation, recorded while every report from the store refuses with
+for a record no report can compile yet: a case with no detection time has its plan lapse
+recorded, and its lapsed attestation too once that case's own `VER-TFR-EVU` window has closed
+(either can close first), while every report from the store refuses with
 `detection_time_missing`; once the case is attested, the report warns and the record stands with
 no note. The lapse depends only on the case, the planned time and the target, never on the
-detection time (ADR 0019, Kyle's ruling B01). A plan revised, met, or resolved
-to one of the three excluded statuses before any run sees the lapse leaves no record, so the
-record is only as frequent as the runs. It
-prints one line per record, first those it recorded and then those already recorded, and a count.
+detection time (ADR 0019, Kyle's ruling B01). No record is made when, by the first run past the
+planned time, the store holds a reduction to the target or below inside the window, the current
+rating is at or below the target, or the record resolves to `remediated`, `fully_mitigated` or
+`false_positive`. A revised plan is a
+new plan read on its own terms, and may itself be overdue and unmet; closing as `accepted` or
+`partially_mitigated` prevents nothing. So the record is only as frequent as the runs. It prints
+one line per record, first those it recorded and then those already recorded, and a count.
 Each record line is the record's id and its title less the rule. The record lines below are
 output and cannot wrap. The first block is the golden store of `historical-response-gaps`, the
 second that of `historical-planned-response`:

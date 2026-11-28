@@ -2554,6 +2554,9 @@ def _plan_lapse_metadata_problem(payload: Mapping[str, Any], raw: Mapping[str, A
             f"observed at {shown(observed)}"
         )
     # The writer ingests a lapse at its run's as-of, which is strictly after the planned time.
+    # NOTE: A missing or unreadable `ingested_at` never reaches here on a store path: the
+    # observation contract refuses it at append, and `response_gap_record_problem` reads the
+    # record back before this check, so the `None` arm answers only a direct call.
     ingested = _utc_text(payload.get("ingested_at"))
     if ingested is None or parse_utc(ingested) <= parse_utc(planned_text):
         return (

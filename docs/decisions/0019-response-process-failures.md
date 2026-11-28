@@ -429,15 +429,18 @@ disposition and no evaluation (`disposition_without_evaluation`). A build at `09
 that case. It also refuses, as `tracking_id_collision` and before the first append, a run whose
 new records would open a group under an id another record already publishes, such as a provider
 override equal to the new record's correlation id; the text names the id, both records and the
-group the run would open. This holds for all three kinds, since each record's correlation id is a
-function of its inputs that an override can name, so no run turns a store a report compiles into
-one that `report --db` and `store verify` refuse.
+group the run would open. Which groups are new is read by each group's full key (source type,
+record id, context key), never by its 64-bit correlation id, which two keys can share; when the two
+claimants share one, the text also names both by their keys. This holds for all three kinds,
+since each record's correlation id is a function of its inputs that an override can name, so no
+run turns a store a report compiles into one that `report --db` and `store verify` refuse.
 
 The run can record a plan lapse for a record no report can compile yet (Kyle's ruling on audit
 finding B01, 2026-11-27: keep, and say so). A case with no detection time, no source timestamp and
 no attestation, that carries an evaluation with a passed, unmet plan, has its plan lapse recorded,
-beside that case's lapsed attestation, while every report from the store refuses with
-`detection_time_missing` and so prints no warning. Once the case is attested, the report compiles,
+and that case's lapsed attestation too only once its own `VER-TFR-EVU` window has closed (either
+can close first), while every report from the store refuses with `detection_time_missing` and so
+prints no warning. Once the case is attested, the report compiles,
 warns, and reads the recorded lapse with no note. The lapse depends only on the case, the planned
 time and the target, never on the detection time, and the derivation is the same function over the
 same groups and evaluations as the warning; a report that refuses as a whole prints nothing.
@@ -511,8 +514,12 @@ Decision 1, which would move this record's earlier identities.
 
 ### Limits
 
-- The record is only as frequent as the runs. A plan revised, met or closed before any run sees
-  the lapse leaves no record.
+- The record is only as frequent as the runs. No record is made when, by the first run past the
+  planned time, the store holds a reduction to the target or below inside the window, the current
+  rating is at or below the target, or the record resolves to `remediated`, `fully_mitigated` or
+  `false_positive`. A
+  revised plan is a new plan read on its own terms, and may itself be overdue and unmet; closing
+  as `accepted` or `partially_mitigated` prevents nothing.
 - A projection stated with a planned time before its own `completedAt` has an empty window: it
   warns on the first report past its time and is recorded by the first run. That is a stale plan
   carried into a new evaluation, and it is read as one.
@@ -524,8 +531,8 @@ Decision 1, which would move this record's earlier identities.
 - A projection whose target is not below the current rating never lapses. Whether to warn about
   one is left out.
 - Instants are read to the microsecond, as `docs/SECURITY.md` and `docs/DATA_MODEL.md` already
-  say of every clock: two planned times, or a planned time and a reduction, less than a
-  microsecond apart compare equal, so they are one plan, or a reduction at the planned time. This
+  say of every clock: two planned times, or a planned time and a reduction, that truncate to the
+  same microsecond compare equal, so they are one plan, or a reduction at the planned time. This
   is a documented limit with no code change (Kyle's ruling on audit finding C01, 2026-11-27).
 
 ### Compatibility (2026-11-27)

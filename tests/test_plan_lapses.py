@@ -34,6 +34,7 @@ from complyroll.correlation import VulnerabilityGroup, group_open_observations
 from complyroll.models import (
     CaseStatus,
     ObservationDisposition,
+    ObservationOrigin,
     PainRating,
 )
 from complyroll.reports import (
@@ -44,6 +45,7 @@ from complyroll.reports import (
     compile_record_set,
     project_vdt,
 )
+from complyroll.reports import checks as checks_module
 from complyroll.reports.evaluations import (
     EvaluationInput,
     EvaluationMatch,
@@ -51,8 +53,14 @@ from complyroll.reports.evaluations import (
     ProjectedReduction,
 )
 from complyroll.reports.response_gaps import (
+    PLAN_LAPSE_DESCRIPTION,
     PLAN_LAPSE_EXCLUDED_STATUSES,
+    PLAN_LAPSE_METADATA_KEYS,
+    PLAN_LAPSE_SOURCE_TYPE,
     PlanLapse,
+    plan_lapse_context_key,
+    plan_lapse_key_parts,
+    plan_lapse_observation,
     planned_reduction_lapse,
     planned_reduction_lapses,
 )
@@ -284,6 +292,177 @@ class PlanLapseSetTests(unittest.TestCase):
 
     def test_a_group_with_no_evaluation_is_skipped(self) -> None:
         self.assertEqual(planned_reduction_lapses([found()], {}, AFTER), ())
+
+
+# *--- Identity ---*
+
+
+def lapse_record(
+    *, ingested_at: datetime = AFTER, planned_at: datetime = PLANNED_AT, **overrides: Any
+) -> Any:
+    """Return the system record of the fixture's lapse, built at `ingested_at`."""
+    found_lapse = lapse_at(planned_at + timedelta(days=1), planned_at=planned_at, **overrides)
+    assert found_lapse is not None
+    return plan_lapse_observation(found_lapse, ingested_at=ingested_at)
+
+
+class PlanLapseIdentityTests(unittest.TestCase):
+    """One system record per case and plan, its spellings pinned as record bytes (D5)."""
+
+    def test_the_record_is_the_recorded_decision(self) -> None:
+        record = lapse_record()
+        case = found().tracking_id
+        self.assertEqual(PLAN_LAPSE_SOURCE_TYPE, "complyroll.response-plan")
+        self.assertEqual(record.source_type, PLAN_LAPSE_SOURCE_TYPE)
+        self.assertEqual(record.source_tool, "complyroll")
+        self.assertEqual(record.parser_name, "complyroll.response-plan")
+        self.assertEqual(record.parser_version, "1")
+        self.assertEqual(record.source_record_id, "planned-response-lapse")
+        self.assertEqual(record.origin, ObservationOrigin.SYSTEM)
+        self.assertEqual(record.disposition, ObservationDisposition.OPEN)
+        self.assertEqual(record.source_severity.value, "unknown")
+        self.assertEqual(
+            (record.resource.resource_type, record.resource.resource_id),
+            ("logical", f"case/{case}"),
+        )
+        self.assertEqual(record.context_key, f"{case}:planned:2026-08-12T16:00:00Z:2")
+        self.assertEqual(record.observed_at, PLANNED_AT)
+        self.assertEqual(record.observation_id, record.derived_observation_id)
+        self.assertEqual(record.evidence_ids, (f"case:{case}",))
+        self.assertEqual(record.source_identifiers, ())
+        self.assertEqual((record.source_artifact_name, record.source_artifact_digest), ("", ""))
+        self.assertEqual(
+            dict(record.source_metadata),
+            {
+                "plan.caseTrackingId": case,
+                "plan.estimatedAt": "2026-08-12T16:00:00Z",
+                "plan.targetRating": "2",
+            },
+        )
+        self.assertEqual(tuple(sorted(dict(record.source_metadata))), PLAN_LAPSE_METADATA_KEYS)
+        self.assertEqual(
+            record.title,
+            f"planned reduction of {case} to N2 was not recorded by 2026-08-12T16:00:00Z "
+            "(VDR-CSO-FAV)",
+        )
+        self.assertEqual(record.description, PLAN_LAPSE_DESCRIPTION)
+
+    def test_the_id_ignores_the_ingest_time_the_rating_and_the_evaluation(self) -> None:
+        first = lapse_record()
+        self.assertEqual(
+            {
+                first.observation_id,
+                lapse_record(ingested_at=AFTER + timedelta(days=90)).observation_id,
+                lapse_record(pain=PainRating.N5).observation_id,
+                lapse_record(completed_at=COMPLETED_AT - timedelta(days=2)).observation_id,
+                lapse_record(disposition=CaseStatus.ACCEPTED).observation_id,
+            },
+            {first.observation_id},
+        )
+
+    def test_two_offsets_of_one_planned_time_are_one_record(self) -> None:
+        zone = timezone(timedelta(hours=-7))
+        moved = lapse_record(planned_at=PLANNED_AT.astimezone(zone))
+        self.assertEqual(moved.observation_id, lapse_record().observation_id)
+        self.assertEqual(moved.metadata_value("plan.estimatedAt"), "2026-08-12T16:00:00Z")
+
+    def test_a_new_plan_is_a_second_case_and_a_restated_plan_is_the_same_one(self) -> None:
+        first = lapse_record()
+        later = lapse_record(planned_at=PLANNED_AT + timedelta(days=7))
+        lower = lapse_record(target=PainRating.N1)
+        self.assertEqual(len({first.observation_id, later.observation_id, lower.observation_id}), 3)
+        self.assertEqual(len(group_open_observations((first, later, lower))), 3)
+        self.assertEqual(len(group_open_observations((first, lapse_record()))), 1)
+
+    def test_the_identity_names_the_correlation_id_not_a_provider_override(self) -> None:
+        renamed = lapse_record(tracking_id="PROVIDER-7")
+        self.assertEqual(renamed.observation_id, lapse_record().observation_id)
+        self.assertTrue(renamed.context_key.startswith(f"{found().tracking_id}:planned:"))
+
+    def test_every_target_rating_is_spelled_as_one_digit(self) -> None:
+        for target in (PainRating.N1, PainRating.N2, PainRating.N3, PainRating.N4):
+            with self.subTest(target=target):
+                record = lapse_record(pain=PainRating.N5, target=target)
+                self.assertEqual(record.metadata_value("plan.targetRating"), str(int(target)))
+                self.assertTrue(record.context_key.endswith(f":{int(target)}"))
+                self.assertIn(f" to N{int(target)} was not recorded by ", record.title)
+
+    def test_the_context_key_reads_back_and_refuses_other_keys(self) -> None:
+        case = found().tracking_id
+        key = plan_lapse_context_key(case, PLANNED_AT, TARGET)
+        self.assertEqual(plan_lapse_key_parts(key), (case, "2026-08-12T16:00:00Z", 2))
+        for other in (
+            case,
+            f"{case}:remediated:2026-08-12T16:00:00Z:2",
+            f"{case}:planned:2026-08-12T16:00:00Z:0",
+            f"{case}:planned:2026-08-12T16:00:00Z:6",
+            f"{case}:planned:2026-08-12T16:00:00Z:02",
+            f"{case}:planned:2026-08-12T16:00:00Z:",
+            f"{case}:planned::2",
+            f"{case}:planned:2",
+            "PROVIDER-7:planned:2026-08-12T16:00:00Z:2",
+        ):
+            with self.subTest(key=other):
+                self.assertIsNone(plan_lapse_key_parts(other))
+        with self.assertRaises(TypeError):
+            plan_lapse_key_parts(None)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "correlation tracking id"):
+            plan_lapse_context_key("PROVIDER-7", PLANNED_AT, TARGET)
+        with self.assertRaisesRegex(ValueError, "PainRating"):
+            plan_lapse_context_key(case, PLANNED_AT, 2)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "aware"):
+            plan_lapse_context_key(case, datetime(2026, 8, 12), TARGET)
+
+    def test_the_builder_refuses_what_is_not_a_lapse(self) -> None:
+        with self.assertRaises(TypeError):
+            plan_lapse_observation(object(), ingested_at=AFTER)  # type: ignore[arg-type]
+        stray = PlanLapse("PROVIDER-7", COMPLETED_AT, PLANNED_AT, TARGET, PainRating.N3)
+        with self.assertRaisesRegex(ValueError, "correlation tracking id"):
+            plan_lapse_observation(stray, ingested_at=AFTER)
+
+
+class PlanLapseRecordTests(unittest.TestCase):
+    """A lapsed planned response compiles as a system record of its own kind (D6)."""
+
+    def test_its_case_is_detected_at_the_planned_time_with_one_deadline(self) -> None:
+        record_set = compile_record_set(
+            artifacts=(),
+            observations=(lapse_record(),),
+            ingest_diagnostics=(),
+            evaluations_by_tracking_id={},
+            attestation=DetectionAttestation(),
+            options=options(as_of=datetime(2026, 8, 20, tzinfo=UTC), detected_at=None),
+        )
+        (record,) = record_set.records
+        self.assertEqual(record.detected_at, PLANNED_AT)
+        self.assertEqual(record.detected_at_source, "system")
+        self.assertEqual([item.rule_id for item in record.deadlines], ["VER-TFR-EVU"])
+        self.assertEqual([item.anchor for item in record.deadlines], ["detection"])
+        markdown = project_vdt(record_set).to_markdown()
+        self.assertIn(
+            "for a lapsed planned response, from the instant its planned reduction was expected",
+            markdown,
+        )
+
+    def test_the_kind_tables_name_it(self) -> None:
+        self.assertEqual(
+            checks_module.system_record_kind(PLAN_LAPSE_SOURCE_TYPE), "lapsed planned response"
+        )
+        diagnostic = checks_module.evaluation_order_diagnostic(
+            tracking_id="case-0000000000000000",
+            location="here",
+            detected_at=PLANNED_AT,
+            detected_source="system",
+            completed_at=COMPLETED_AT,
+            source_type=PLAN_LAPSE_SOURCE_TYPE,
+        )
+        assert diagnostic is not None
+        self.assertTrue(
+            diagnostic.message.endswith(
+                "; a lapsed planned response is detected when its planned time passed, so "
+                "evaluate it at or after that instant, or correct completedAt"
+            )
+        )
 
 
 # *--- Warning ---*

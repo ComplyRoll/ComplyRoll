@@ -97,12 +97,42 @@ ATTESTATION_LAPSE_METADATA_KEYS = (
 PLAN_LAPSE_EXCLUDED_STATUSES = frozenset(
     {CaseStatus.REMEDIATED, CaseStatus.FULLY_MITIGATED, CaseStatus.FALSE_POSITIVE}
 )
+#: The identity of a lapsed planned response (plan D5). Its resource is the case it names, as a
+#: lapsed attestation's is, and its key that case's correlation tracking id, the planned time
+#: and the target, so one case's plan is one record however often it is restated.
+PLAN_LAPSE_SOURCE_TYPE = "complyroll.response-plan"
+PLAN_LAPSE_SOURCE_TOOL = "complyroll"
+PLAN_LAPSE_PARSER_NAME = "complyroll.response-plan"
+PLAN_LAPSE_PARSER_VERSION = "1"
+PLAN_LAPSE_RECORD_ID = "planned-response-lapse"
+#: The fixed middle of a plan lapse context key, `<tracking id>:planned:<instant>:<rating>`.
+PLAN_LAPSE_KEY_MARK = "planned"
+# NOTE: "by" keeps the title true when a reduction is recorded after the planned time.
+PLAN_LAPSE_TITLE = (
+    "planned reduction of {tracking_id} to N{target_rating} was not recorded by {estimated_at} "
+    f"({RESPONSE_GAP_RULE})"
+)
+PLAN_LAPSE_DESCRIPTION = (
+    "The provider's evaluation of this case planned its next reduction to a target rating by a "
+    "stated time, and that time passed with the rating above the target and no reduction to it "
+    "recorded from that evaluation through the planned time; this records a failure of the "
+    "response process, not a new vulnerability."
+)
+#: Always all three, so an audit checks one key set. The current rating is never among them:
+#: it moves, and a record is held to its own inputs alone.
+PLAN_LAPSE_METADATA_KEYS = (
+    "plan.caseTrackingId",
+    "plan.estimatedAt",
+    "plan.targetRating",
+)
 
 # A correlation v0 tracking id, spelled here because the report layer cannot import the
 # event layer's pattern; a test holds the two equal.
 _TRACKING_ID = re.compile(r"case-[0-9a-f]{16}")
 # An episode ordinal as `str(int)` spells a positive integer.
 _EPISODE = re.compile(r"[1-9][0-9]*")
+# A target rating as `str(int)` spells one, `1` to `5` (plan D5, F9).
+_TARGET_RATING = re.compile(r"[1-5]")
 
 
 # *--- Types ---*
@@ -590,6 +620,92 @@ def planned_reduction_lapses(
     return tuple(sorted((item for item in found if item is not None), key=_plan_lapse_order))
 
 
+def plan_lapse_context_key(
+    tracking_id: str, estimated_at: datetime, target_rating: PainRating
+) -> str:
+    """Return `<tracking id>:planned:<instant>:<rating>`: one case per case and plan (D5).
+
+    The instant is written as every response gap instant is, so two offsets of one instant
+    are one key, and the rating as `str(int)` writes it, `1` to `5`.
+    """
+
+    if not isinstance(tracking_id, str) or _TRACKING_ID.fullmatch(tracking_id) is None:
+        raise ValueError("tracking_id must be a correlation tracking id")
+    if not isinstance(target_rating, PainRating):
+        raise ValueError("target_rating must be a PainRating")
+    instant = _instant(_utc(estimated_at, "estimated_at"))
+    return f"{tracking_id}:{PLAN_LAPSE_KEY_MARK}:{instant}:{int(target_rating)}"
+
+
+def plan_lapse_key_parts(context_key: str) -> tuple[str, str, int] | None:
+    """Return the tracking id, instant text and target rating a plan lapse key names, or None.
+
+    The instant holds colons of its own, so the rating is read from the last segment, and it
+    must be one digit from 1 to 5, as `str(int)` spells a rating.
+    """
+
+    if not isinstance(context_key, str):
+        raise TypeError("context_key must be text")
+    parts = context_key.split(":", 2)
+    if (
+        len(parts) != 3
+        or _TRACKING_ID.fullmatch(parts[0]) is None
+        or parts[1] != PLAN_LAPSE_KEY_MARK
+    ):
+        return None
+    instant, _, rating = parts[2].rpartition(":")
+    if not instant or _TARGET_RATING.fullmatch(rating) is None:
+        return None
+    return parts[0], instant, int(rating)
+
+
+def plan_lapse_observation(lapse: PlanLapse, *, ingested_at: datetime) -> Observation:
+    """Build the one system record of a lapsed planned response, named by its own id (D5).
+
+    Identity depends on the case, the planned time and the target only: never on the ingest
+    time, the current rating or the evaluation that stated the plan, so the same plan restated
+    by a later evaluation is the same record, and a new plan that also lapses is a second case.
+    """
+
+    if not isinstance(lapse, PlanLapse):
+        raise TypeError("lapse must be a PlanLapse")
+    planned = _utc(lapse.estimated_at, "estimated_at")
+    planned_text = _instant(planned)
+    target = str(int(lapse.target_rating))
+    metadata = {
+        "plan.caseTrackingId": lapse.tracking_id,
+        "plan.estimatedAt": planned_text,
+        "plan.targetRating": target,
+    }
+    observation = Observation(
+        observation_id="pending",
+        source_type=PLAN_LAPSE_SOURCE_TYPE,
+        source_tool=PLAN_LAPSE_SOURCE_TOOL,
+        parser_name=PLAN_LAPSE_PARSER_NAME,
+        parser_version=PLAN_LAPSE_PARSER_VERSION,
+        source_record_id=PLAN_LAPSE_RECORD_ID,
+        resource=attestation_lapse_resource(lapse.tracking_id),
+        observed_at=planned,
+        ingested_at=ingested_at,
+        disposition=ObservationDisposition.OPEN,
+        source_severity=SourceSeverity.UNKNOWN,
+        title=PLAN_LAPSE_TITLE.format(
+            tracking_id=lapse.tracking_id,
+            target_rating=target,
+            estimated_at=planned_text,
+        ),
+        description=PLAN_LAPSE_DESCRIPTION,
+        source_artifact_digest="",
+        source_artifact_name="",
+        source_identifiers=(),
+        source_metadata=tuple(sorted(metadata.items())),
+        evidence_ids=(f"case:{lapse.tracking_id}",),
+        context_key=plan_lapse_context_key(lapse.tracking_id, planned, lapse.target_rating),
+        origin=ObservationOrigin.SYSTEM,
+    )
+    return replace(observation, observation_id=observation.derived_observation_id)
+
+
 def timed_group_ids(groups: Sequence[VulnerabilityGroup]) -> frozenset[str]:
     """Return every group whose current members carry a source time, linked or not (F03)."""
 
@@ -852,7 +968,16 @@ __all__ = [
     "CaseTiming",
     "LapseClockError",
     "LinkedEvidence",
+    "PLAN_LAPSE_DESCRIPTION",
     "PLAN_LAPSE_EXCLUDED_STATUSES",
+    "PLAN_LAPSE_KEY_MARK",
+    "PLAN_LAPSE_METADATA_KEYS",
+    "PLAN_LAPSE_PARSER_NAME",
+    "PLAN_LAPSE_PARSER_VERSION",
+    "PLAN_LAPSE_RECORD_ID",
+    "PLAN_LAPSE_SOURCE_TOOL",
+    "PLAN_LAPSE_SOURCE_TYPE",
+    "PLAN_LAPSE_TITLE",
     "PlanLapse",
     "RECURRENCE_DESCRIPTION",
     "RECURRENCE_KEY_MARK",
@@ -874,6 +999,9 @@ __all__ = [
     "derive_response_gaps",
     "first_sighting",
     "lapse_disproof",
+    "plan_lapse_context_key",
+    "plan_lapse_key_parts",
+    "plan_lapse_observation",
     "planned_reduction_lapse",
     "planned_reduction_lapses",
     "recurrence_case_tracking_id",

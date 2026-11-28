@@ -43,7 +43,11 @@ from .model import (
     iso,
 )
 from .projection import attestation_groups
-from .response_gaps import ATTESTATION_LAPSE_SOURCE_TYPE, RECURRENCE_SOURCE_TYPE
+from .response_gaps import (
+    ATTESTATION_LAPSE_SOURCE_TYPE,
+    PLAN_LAPSE_SOURCE_TYPE,
+    RECURRENCE_SOURCE_TYPE,
+)
 
 # *--- Configuration ---*
 
@@ -55,6 +59,7 @@ _OWN_SENTENCE_SOURCE_TYPES = frozenset(
         CHANGE_GAP_SOURCE_TYPE,
         RECURRENCE_SOURCE_TYPE,
         ATTESTATION_LAPSE_SOURCE_TYPE,
+        PLAN_LAPSE_SOURCE_TYPE,
     }
 )
 #: The Windows subsection of a gap-aware run opens with this, since a recorded window can
@@ -272,6 +277,10 @@ def _system_detection_sentence(source_types: set[str]) -> str:
         )
     if ATTESTATION_LAPSE_SOURCE_TYPE in source_types:
         clauses.append("for a lapsed attestation, from the instant its evaluation window closed")
+    if PLAN_LAPSE_SOURCE_TYPE in source_types:
+        clauses.append(
+            "for a lapsed planned response, from the instant its planned reduction was expected"
+        )
     return (
         "Every reported vulnerability carried a detection time from its source artifact or, "
         + " and, ".join(clauses)

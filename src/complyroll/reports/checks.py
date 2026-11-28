@@ -23,7 +23,11 @@ from .change_gaps import CHANGE_GAP_SOURCE_TYPE
 from .evaluations import EvaluationInput
 from .gaps import COVERAGE_GAP_SOURCE_TYPE
 from .model import DetectionAttestation, ReportDiagnostic, iso
-from .response_gaps import ATTESTATION_LAPSE_SOURCE_TYPE, RECURRENCE_SOURCE_TYPE
+from .response_gaps import (
+    ATTESTATION_LAPSE_SOURCE_TYPE,
+    PLAN_LAPSE_SOURCE_TYPE,
+    RECURRENCE_SOURCE_TYPE,
+)
 
 # *--- Configuration ---*
 
@@ -41,6 +45,7 @@ _SYSTEM_RECORD_KINDS = {
     CHANGE_GAP_SOURCE_TYPE: "change detection gap",
     RECURRENCE_SOURCE_TYPE: "remediation recurrence",
     ATTESTATION_LAPSE_SOURCE_TYPE: "lapsed attestation",
+    PLAN_LAPSE_SOURCE_TYPE: "lapsed planned response",
 }
 
 
@@ -242,6 +247,10 @@ _SYSTEM_ORDER_REMEDIES = {
     ),
     ATTESTATION_LAPSE_SOURCE_TYPE: (
         "a lapsed attestation is detected when its evaluation window closed, so evaluate it at "
+        "or after that instant, or correct completedAt"
+    ),
+    PLAN_LAPSE_SOURCE_TYPE: (
+        "a lapsed planned response is detected when its planned time passed, so evaluate it at "
         "or after that instant, or correct completedAt"
     ),
 }

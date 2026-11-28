@@ -125,6 +125,7 @@ from .model import (
 from .response_gaps import (
     ATTESTATION_LAPSE_RECORD_ID,
     ATTESTATION_LAPSE_SOURCE_TYPE,
+    PLAN_LAPSE_SOURCE_TYPE,
     RECURRENCE_SOURCE_TYPE,
     LapseClockError,
     PlanLapse,
@@ -132,6 +133,7 @@ from .response_gaps import (
     ResponseGapHistory,
     derive_response_gaps,
     lapse_disproof,
+    plan_lapse_disproof,
     planned_reduction_lapse,
     rebuilt_lapse,
     rebuilt_recurrence,
@@ -145,7 +147,9 @@ _KEV_RULE = "VDR-TFR-KEV"
 _T = TypeVar("_T")
 _CVE_PREFIX = "CVE-"
 #: The two reserved source types a response gap stream records (ADR 0019).
-_RESPONSE_GAP_SOURCE_TYPES = frozenset({RECURRENCE_SOURCE_TYPE, ATTESTATION_LAPSE_SOURCE_TYPE})
+_RESPONSE_GAP_SOURCE_TYPES = frozenset(
+    {RECURRENCE_SOURCE_TYPE, ATTESTATION_LAPSE_SOURCE_TYPE, PLAN_LAPSE_SOURCE_TYPE}
+)
 
 
 # *--- Core Logic ---*
@@ -604,6 +608,7 @@ def compile_record_set(
                 response_gap_tracking,
                 response_gap_labels,
                 observations,
+                evaluations_by_tracking_id,
             )
         )
     return CompiledRecordSet(
@@ -1938,11 +1943,14 @@ def derive_report_response_gaps(
     history: ResponseGapHistory,
     profile: CertificationProfile,
     as_of: datetime,
+    *,
+    evaluations: Mapping[str, EvaluationInput],
 ) -> tuple[Observation, ...]:
     """Derive the response gaps a report of this store reads, as the report reads them.
 
     `cases response-gaps` records exactly these (ADR 0019): the report's own grouping of the
-    observations, the policy the profile selects from the pinned dataset, and the same refusal
+    observations, the evaluation a report reads for each case (`evaluations`, by correlation
+    tracking id), the policy the profile selects from the pinned dataset, and the same refusal
     of an unusable clock. Each record is ingested at `as_of`, which reaches neither its id nor a
     report.
     """
@@ -1956,7 +1964,10 @@ def derive_report_response_gaps(
     policy = select_policy(load_bundled_rule_source_snapshot(), profile)
     groups = group_open_observations(observations)
     return _lapse_clocked(
-        lambda: derive_response_gaps(groups, history, policy, as_of, ingested_at=as_of), policy
+        lambda: derive_response_gaps(
+            groups, history, policy, as_of, ingested_at=as_of, evaluations=evaluations
+        ),
+        policy,
     )
 
 
@@ -1968,6 +1979,7 @@ def _response_gap_divergences(
     gap_tracking: Mapping[str, str],
     gap_labels: Mapping[str, str],
     observations: Sequence[Observation],
+    evaluations: Mapping[str, EvaluationInput],
 ) -> list[ReportDiagnostic]:
     """Name each response gap no record carries, then each recorded one this run cannot rebuild.
 
@@ -1979,13 +1991,19 @@ def _response_gap_divergences(
     note `response_gap_earlier_detection` says so and no second record is made. A recorded lapse
     stands when rebuilt from its case's first sighting, whether or not the case is timed now.
     Otherwise the note says why: `response_gap_contradicted` when the store holds evidence
-    against it, and `response_gap_unmatched` when it holds none. A disposition answers a whole
-    case, so each note is read against the other recorded gaps of its case, as ADR 0015
-    Decision 39 reads them.
+    against it, and `response_gap_unmatched` when it holds none. A recorded plan lapse is read
+    for a contradiction first: the case's current evaluation still states its plan and holds a
+    reduction that met it in its window. Otherwise it stands with no note, derived or not, since
+    a plan revised, met late or closed does not undo the planned time passing (plan D10). A
+    disposition answers a whole case, so each note is read against the other recorded gaps of
+    its case, as ADR 0015 Decision 39 reads them.
     """
 
     derived = _lapse_clocked(
-        lambda: derive_response_gaps(groups, history, policy, as_of, ingested_at=as_of), policy
+        lambda: derive_response_gaps(
+            groups, history, policy, as_of, ingested_at=as_of, evaluations=evaluations
+        ),
+        policy,
     )
     recorded = sorted(
         (
@@ -2014,7 +2032,7 @@ def _response_gap_divergences(
     for item in recorded:
         if item.observation_id not in derived_ids:
             standing[item.observation_id] = _lapse_clocked(
-                partial(_underived_standing, item, groups, history, policy), policy
+                partial(_underived_standing, item, groups, history, policy, evaluations), policy
             )
     cases: dict[str, list[Observation]] = {}
     for item in recorded:
@@ -2054,9 +2072,20 @@ def _underived_standing(
     groups: Sequence[VulnerabilityGroup],
     history: ResponseGapHistory,
     policy: SelectedPolicy,
+    evaluations: Mapping[str, EvaluationInput],
 ) -> tuple[str, str]:
     """Return whether a recorded gap this run derives no gap for stands, and why when not."""
 
+    if gap.source_type == PLAN_LAPSE_SOURCE_TYPE:
+        met = plan_lapse_disproof(gap, evaluations)
+        if met is None:
+            return ("stands", "")
+        return (
+            "contradicted",
+            f"the current evaluation of {gap.metadata_value('plan.caseTrackingId')} still "
+            f"states that plan and records a reduction to PAIN {met.rating.name} at "
+            f"{iso(met.reduced_at)}, inside its window, so the planned reduction happened in time",
+        )
     if gap.source_type == RECURRENCE_SOURCE_TYPE:
         rebuilt = rebuilt_recurrence(gap, groups)
         if rebuilt is None:
@@ -2145,6 +2174,15 @@ def _unrecorded_response_gap(gap: Observation) -> ReportDiagnostic:
             "response gap for it, so no case in this report carries it; cases response-gaps "
             "with this run's as-of records it"
         )
+    elif gap.source_type == PLAN_LAPSE_SOURCE_TYPE:
+        tracking_id = gap.metadata_value("plan.caseTrackingId")
+        message = (
+            f"the planned reduction of {tracking_id} to PAIN "
+            f"N{gap.metadata_value('plan.targetRating')} was not recorded by "
+            f"{gap.metadata_value('plan.estimatedAt')}, and history records no response gap for "
+            "it, so no case in this report carries it; cases response-gaps with this run's as-of "
+            "records it"
+        )
     else:
         tracking_id = gap.metadata_value("attestation.caseTrackingId")
         message = (
@@ -2222,6 +2260,12 @@ def _response_gap_text(gap: Observation) -> str:
             f"of the remediation of {gap.metadata_value('recurrence.caseTrackingId')} recorded "
             f"{gap.metadata_value('recurrence.remediatedAt')} on {coverage_label(gap.resource)}, "
             f"detected again {gap.metadata_value('recurrence.observationDetectedAt')}"
+        )
+    if gap.source_type == PLAN_LAPSE_SOURCE_TYPE:
+        return (
+            f"of {gap.metadata_value('plan.caseTrackingId')}'s planned reduction to PAIN "
+            f"N{gap.metadata_value('plan.targetRating')} by "
+            f"{gap.metadata_value('plan.estimatedAt')}"
         )
     return (
         f"of {gap.metadata_value('attestation.caseTrackingId')}'s "

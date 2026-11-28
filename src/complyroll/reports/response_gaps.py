@@ -531,12 +531,16 @@ def derive_response_gaps(
     as_of: datetime,
     *,
     ingested_at: datetime,
+    evaluations: Mapping[str, EvaluationInput],
 ) -> tuple[Observation, ...]:
-    """Return every response gap a store's state shows at `as_of`: recurrences, then lapses.
+    """Return every response gap a store's state shows at `as_of`: recurrences, then lapses,
+    then lapsed plans.
 
     `groups` are the report's own, every current open observation linked or not, so a run
-    agrees with the report's warning before `cases correlate` links what came back. Each
-    record is ingested at `ingested_at`, which reaches neither its id nor a report.
+    agrees with the report's warning before `cases correlate` links what came back, and
+    `evaluations` the evaluation the report reads for each correlation tracking id, so a plan
+    lapses exactly where the report warns about it (plan F2). Each record is ingested at
+    `ingested_at`, which reaches neither its id nor a report.
     """
 
     if not isinstance(history, ResponseGapHistory):
@@ -552,6 +556,10 @@ def derive_response_gaps(
         for lapse in attestation_lapses(
             history.cases, history.ingested_at, policy, as_of, timed_groups=timed
         )
+    )
+    records.extend(
+        plan_lapse_observation(lapse, ingested_at=ingested_at)
+        for lapse in planned_reduction_lapses(groups, evaluations, as_of)
     )
     return tuple(records)
 
@@ -802,6 +810,41 @@ def lapse_disproof(record: Observation, history: ResponseGapHistory) -> tuple[st
     return observation_id, seen
 
 
+def plan_lapse_disproof(
+    record: Observation, evaluations: Mapping[str, EvaluationInput]
+) -> PainReductionEvent | None:
+    """Return a reduction that met a recorded plan lapse's plan in its window, or None (D10).
+
+    The case's current evaluation must still state the recorded plan, the same planned time
+    and target; then a completed reduction to the target or below, recorded from that
+    evaluation's `completedAt` through the planned time, both ends included, disproves the
+    lapse, and the earliest such reduction is returned. A plan revised, met late or closed
+    disproves nothing: the planned time passed all the same, so the record stands.
+    """
+
+    parts = plan_lapse_key_parts(record.context_key)
+    if parts is None:  # pragma: no cover - the reader holds every plan lapse key to its form
+        return None
+    tracking_id, _, target = parts
+    evaluation = evaluations.get(tracking_id)
+    plan = None if evaluation is None else evaluation.projected_next_reduction
+    planned = record.observed_at
+    if evaluation is None or plan is None or planned is None:
+        return None
+    if int(plan.target_rating) != target or _utc(plan.estimated_at, "estimated_at") != planned:
+        return None
+    opened = _utc(evaluation.completed_at, "completed_at")
+    met = sorted(
+        (
+            item
+            for item in evaluation.pain_reduction_events
+            if _meets_plan(item, plan.target_rating, opened, planned)
+        ),
+        key=lambda item: (_utc(item.reduced_at, "reduced_at"), int(item.rating)),
+    )
+    return met[0] if met else None
+
+
 # *--- Helper Functions ---*
 
 
@@ -1000,6 +1043,7 @@ __all__ = [
     "first_sighting",
     "lapse_disproof",
     "plan_lapse_context_key",
+    "plan_lapse_disproof",
     "plan_lapse_key_parts",
     "plan_lapse_observation",
     "planned_reduction_lapse",

@@ -39,7 +39,6 @@ from complyroll.events import (
     FAILURE_HELD,
     MAX_BATCH_EVENTS,
     OBSERVATION_ID_KEY,
-    RESPONSE_GAP_RECORDED,
     UNDISPOSED_STATUSES,
     EventContractError,
     EventMetadata,
@@ -60,6 +59,7 @@ from complyroll.events import (
     iso_utc,
     parse_utc,
     response_gap_head_payload,
+    response_gap_head_type,
     response_gap_stream_id_of,
 )
 from complyroll.events.contracts import TRACKING_ID_PATTERN
@@ -85,6 +85,7 @@ from complyroll.reports.records import (
     derive_report_coverage,
     derive_report_response_gaps,
 )
+from complyroll.reports.replay import case_evaluations
 from complyroll.reports.response_gaps import RECURRENCE_SOURCE_TYPE, recurrence_slot
 from complyroll.store import EventRecord
 from complyroll.store.sqlite import shown
@@ -251,8 +252,9 @@ class ResponseGapOutcome:
 
     `recorded` is each response gap this call wrote and `already_recorded` each one whose stream
     the store already held, both in derivation order: recurrences by case and then by detection,
-    then lapses by case. A gap already recorded keeps the payload its stream was first written
-    with, so its entry here is this run's rebuild of it, under the same id.
+    then lapses by case, then lapsed plans by case and then by planned time. A gap already
+    recorded keeps the payload its stream was first written with, so its entry here is this
+    run's rebuild of it, under the same id.
     """
 
     recorded: tuple[Observation, ...]
@@ -994,13 +996,15 @@ def record_response_gaps(
 
     The gaps are derived as a report from this store reads them (ADR 0019): a remediation that
     did not hold, from the report's own grouping of every current open observation and each
-    case's remediation instant, and a lapsed attestation, from each case's links, attestation
-    and first sighting under the profile's `VER-TFR-EVU` window. Each is ingested at `as_of`,
-    which reaches neither its id nor a report. A record's stream is named by the record, so the
-    stream id is the idempotence key: a stream already holding its head and record is left
-    alone and its first payload stands. A stream holding anything else is refused, not resumed.
-    A new stream is written head first, as one batch at version 0. A lapse is recorded only by
-    a run that finds its case untimed, so an attestation made before any run prevents it.
+    case's remediation instant, a lapsed attestation, from each case's links, attestation and
+    first sighting under the profile's `VER-TFR-EVU` window, and a lapsed planned response,
+    from the plan and reductions of the evaluation each case reports with. Each is ingested at
+    `as_of`, which reaches neither its id nor a report. A record's stream is named by the
+    record, so the stream id is the idempotence key: a stream already holding its head and
+    record is left alone and its first payload stands. A stream holding anything else is
+    refused, not resumed. A new stream is written head first, as one batch at version 0. A lapse
+    is recorded only by a run that finds its case untimed, so an attestation made before any run
+    prevents it, and a plan only by a run past its planned time that finds it unmet.
 
     The run is one store transaction, so a later failure rolls it back; a caller that supplies
     the transaction and catches the error owns that rollback.
@@ -1024,8 +1028,13 @@ def _record_response_gaps(
 
     observations = rehydrate_observations(repository)
     cases = fold_all_cases(repository)
+    # The evaluation each case reports with, so a plan lapses exactly where a report warns.
     gaps = derive_report_response_gaps(
-        observations, response_gap_history(repository, cases), profile, as_of
+        observations,
+        response_gap_history(repository, cases),
+        profile,
+        as_of,
+        evaluations=case_evaluations(cases),
     )
     # K1: a failed remediation and resource is recorded once, so a recurrence whose slot a stored
     # record already holds is that record, whatever detection this run finds earliest.
@@ -1050,21 +1059,26 @@ def _record_response_gaps(
             recorded.append(gap)
             continue
         held = [record.event_type for record in existing]
+        head_type = response_gap_head_type(gap)
         # NOTE: Unreachable today: `_read_response_gap_streams`, run by `rehydrate_observations`
         # above, refuses every such shape first. The check stays so this writer refuses a stream
         # it would resume on its own, whatever that reader comes to accept.
-        if held != [RESPONSE_GAP_RECORDED, OBSERVATION_RECORDED]:
+        if held != [head_type, OBSERVATION_RECORDED]:
             raise HistoryError(
                 f"response gap stream {stream_id!r} holds {len(held)} event(s) and not its "
-                f"{RESPONSE_GAP_RECORDED} head and then its record; a response gap stream is "
-                "written whole, so it is refused rather than resumed"
+                f"{head_type} head and then its record; a response gap stream is written whole, "
+                "so it is refused rather than resumed"
             )
         already.append(gap)
     for gap in recorded:
+        # The head type is the record's kind's: a plan lapse opens with its own head, which
+        # marks the store schema 8 (ADR 0019, section of 2026-11-27).
         repository.append_batch(
             response_gap_stream_id_of(gap),
             (
-                _pending(RESPONSE_GAP_RECORDED, response_gap_head_payload(gap), as_of, metadata),
+                _pending(
+                    response_gap_head_type(gap), response_gap_head_payload(gap), as_of, metadata
+                ),
                 _pending(OBSERVATION_RECORDED, gap.to_canonical_dict(), as_of, metadata),
             ),
             expected_version=0,

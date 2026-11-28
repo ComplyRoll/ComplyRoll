@@ -1,0 +1,99 @@
+# Historical VER Activity Report
+
+- **Certification package:** https://example.test/cpo
+- **Certification class:** C
+- **Generated at:** 2026-09-15T12:00:00Z
+- **Calendar timezone:** UTC
+
+## Provenance
+
+| Source | Reference | Digest |
+|---|---|---|
+| Rules dataset | https://github.com/FedRAMP/rules at 58487bda77d76d9ce334304ec2e779ece7cc7d54 (version 2026.09.13.02, updated 2026-09-13) | 64915d88e72353c95f321ea4a9014516ac9441972cbd7f3d1abef7d1514c8fc8 |
+| Report schema | https://github.com/FedRAMP/schemas at 5156719aa7d0def16cf66f6197db9d6c0024e0e7 (https://fedramp.gov/schemas/fedramp-historical-ver-activity-schema-2026-06-24.json version 0.1.1) | dbbddb51ee25bfe9568c1dcfe1047ea206539dc91dad1fd2658f1a5accf2a6fb |
+| Generator | complyroll 0.5.0a0 | n/a |
+
+## Summary
+
+| Measure | Count |
+|---|---:|
+| Active vulnerabilities | 2 |
+| Accepted vulnerabilities | 0 |
+| Evaluated | 1 |
+| Not yet evaluated | 1 |
+| Overdue | 0 |
+| Current PAIN N1 | 0 |
+| Current PAIN N2 | 0 |
+| Current PAIN N3 | 1 |
+| Current PAIN N4 | 0 |
+| Current PAIN N5 | 0 |
+
+## Active vulnerabilities
+
+| Tracking ID | Source record | Resources | Detected | Evaluation completed | IRV | LEV | PAIN | Next due | Overdue | Disposition |
+|---|---|---:|---|---|---|---|---|---|---|---|
+| case-041a65e24f5b6d6d | planned-response-lapse | 1 | 2026-09-11T16:00:00Z | n/a | n/a | n/a | n/a | 2026-09-16T16:00:00Z (VER-TFR-EVU) | no | active |
+| case-748ec5056f5557ed | CVE-2099-0101 | 1 | 2026-09-02T10:15:00Z | 2026-09-04T15:00:00Z | yes | yes | N3 | n/a | no | Partially Mitigated |
+
+## Active vulnerability details
+
+### case-041a65e24f5b6d6d: planned-response-lapse
+
+- **Description:** planned-response-lapse: planned reduction of case-748ec5056f5557ed to N2 was not recorded by 2026-09-11T16:00:00Z (VDR-CSO-FAV)
+- **Detection source:** complyroll
+- **Detected at:** 2026-09-11T16:00:00Z (source: system)
+- **Observations:** obs-4bcc9691dc01e41d9981f1bb5ae812e64c2972b276b4179608c0fb5eace781e6
+- **Affected resources:** logical case/case-748ec5056f5557ed
+- **Source identifiers:** n/a
+- **Evaluation:** not yet completed
+- **Disposition:** active; **remediated:** no
+- **Overdue:** not overdue
+
+| Rule | Name | Force | Anchor | Start | Due | Satisfied |
+|---|---|---|---|---|---|---|
+| VER-TFR-EVU | Evaluate Vulnerabilities Quickly | SHOULD | detection | 2026-09-11T16:00:00Z | 2026-09-16T16:00:00Z | no |
+
+### case-748ec5056f5557ed: CVE-2099-0101
+
+- **Description:** CVE-2099-0101: example-json: synthetic flaw for recurrence tests
+- **Detection source:** Trivy
+- **Detected at:** 2026-09-02T10:15:00Z (source: artifact)
+- **Observations:** obs-5d3d36f638f2f652f25ede282b6db91fa395458f6d5619a69a678387da78d28c
+- **Affected resources:** image registry.example.test/recurrence/api:1.4.0/usr/lib/libexample-json.so.2
+- **Source identifiers:** CVE-2099-0101
+- **Evaluation completed:** 2026-09-04T15:00:00Z by Example Provider vulnerability team (synthetic planned response fixture)
+- **Internet reachable:** yes; **likely exploitable:** yes; **PAIN:** N3
+- **Potential agency impact:** SYNTHETIC. The API image parses tenant-supplied JSON with the flawed package, so a crafted request could crash the service that serves agency data.
+- **Rationale:** SYNTHETIC. A request size limit at the gateway reduced the exposure; the image rebuild with the fixed package is planned for the next release window.
+- **Projected next reduction:** N2 by 2026-09-11T16:00:00Z
+- **Completed PAIN reductions:** N3 at 2026-09-04T15:00:00Z
+- **Disposition:** Partially Mitigated; **remediated:** no
+- **Overdue:** not overdue
+
+| Rule | Name | Force | Anchor | Start | Due | Satisfied |
+|---|---|---|---|---|---|---|
+| VER-TFR-EVU | Evaluate Vulnerabilities Quickly | SHOULD | detection | 2026-09-02T10:15:00Z | 2026-09-07T10:15:00Z | yes |
+| VDR-TFR-PVR | Mitigation and Remediation Expectations | SHOULD | evaluation | 2026-09-04T15:00:00Z | 2026-09-20T15:00:00Z | yes |
+| VER-TFR-MAV | Mark Accepted Vulnerabilities | MUST | evaluation | 2026-09-04T15:00:00Z | 2027-03-15T15:00:00Z | yes |
+
+## Accepted vulnerabilities
+
+No accepted vulnerabilities are recorded.
+
+## Detection time attestation
+
+Every reported vulnerability carried a detection time from its source artifact or, for a lapsed planned response, from the instant its planned reduction was expected. No attestation was needed.
+
+## Inputs
+
+| Artifact | SHA-256 | Parser | Observations |
+|---|---|---|---:|
+| recurrence-api-before.sarif | 064a704afcef | complyroll.sarif 2 | 1 |
+
+## Diagnostics
+
+- **warning** planned_reduction_lapsed: case-748ec5056f5557ed planned its next reduction to PAIN N2 by 2026-09-11T16:00:00Z, and that time has passed with its current rating PAIN N3 and no reduction to N2 or below recorded from its evaluation at 2026-09-04T15:00:00Z through it; the planned reduction is not recorded, and the record keeps its plan until an evaluation changes it [CVE-2099-0101]
+
+---
+
+Generated by ComplyRoll; informational; not a FedRAMP® determination; the provider remains responsible for compliance with the FedRAMP Consolidated Rules for 2026.

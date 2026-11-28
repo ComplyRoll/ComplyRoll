@@ -79,7 +79,12 @@ SECOND = timedelta(seconds=1)
 AFTER = PLANNED_AT + SECOND
 #: The stateless golden pair carrying only the warning, and every golden that carries it.
 WARNING_GOLDEN = "vdt-planned-reduction-warning"
-WARNING_GOLDENS = (f"{WARNING_GOLDEN}.json", f"{WARNING_GOLDEN}.md")
+WARNING_GOLDENS = (
+    f"{WARNING_GOLDEN}.json",
+    f"{WARNING_GOLDEN}.md",
+    "historical-planned-response.json",
+    "historical-planned-response.md",
+)
 #: The resolved statuses a plan can lapse under (D3 3a), each with the fields it needs.
 ELIGIBLE: tuple[dict[str, Any], ...] = (
     {},
@@ -558,6 +563,7 @@ class GoldenCensusTests(unittest.TestCase):
                     *((name, "2026-08-28T16:00:00Z") for name in nine),
                     ("ver-schema-examples.json", "2026-08-25T10:00:00Z"),
                     (f"{WARNING_GOLDEN}.json", "2026-09-11T16:00:00Z"),
+                    ("historical-planned-response.json", "2026-09-11T16:00:00Z"),
                 ]
             ),
         )

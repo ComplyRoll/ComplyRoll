@@ -60,6 +60,10 @@ COMPILED_GOLDENS = (
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-failed.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-coverage-gaps.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-response-gaps.json"),
+    (
+        ReportSchema.HISTORICAL_ACTIVITY,
+        TEST_ROOT / "golden" / "historical-planned-response.json",
+    ),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-cyclonedx.json"),
     (ReportSchema.HISTORICAL_ACTIVITY, TEST_ROOT / "golden" / "historical-fixtures.json"),
 )

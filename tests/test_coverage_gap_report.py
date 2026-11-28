@@ -746,7 +746,12 @@ class GoldenRegistryTests(unittest.TestCase):
         self.assertEqual(
             reports
             - set(GAP_GOLDENS)
-            - {"vdt-changes-replay", "vdt-change-gaps", "historical-response-gaps"},
+            - {
+                "vdt-changes-replay",
+                "vdt-change-gaps",
+                "historical-response-gaps",
+                "historical-planned-response",
+            },
             {*runs, *compiled},
         )
         self.assertLessEqual(set(GAP_GOLDENS), reports)

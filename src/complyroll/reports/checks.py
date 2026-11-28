@@ -273,7 +273,8 @@ def evaluation_order_diagnostic(
     detection time is only the earliest known timestamp, and an observation declaring
     none may have detected it earlier, so it gets the WARNING
     `evaluation_before_partial_detection` and the record is published. Only
-    `completedAt` is ordered: a reduction or a projection starts no clock. For a
+    `completedAt` is ordered: a reduction or a projection starts no clock on the record that
+    states it (a passed projection is the detection time of its own lapse record). For a
     `system` detection time, the record's `source_type` chooses the remedy. `tracking_id`
     is the record as a diagnostic names it, from `record_label`.
     """

@@ -52,13 +52,13 @@ All notable project changes will be documented here.
 - `tests/golden/historical-response-gaps.{json,md}`: a historical snapshot of a store in which
   `cases response-gaps` recorded a remediation recurrence and a lapsed attestation, and the untimed
   case was attested afterwards, so its lapse stands with no note.
-- Every report, stateless and from a store, adds one WARNING `planned_reduction_lapsed` for a
-  record whose evaluation states a `projectedNextReduction` whose `estimatedAt` is strictly before
-  the as-of, while its rating is above the target, no reduction to the target or below is
-  recorded from the evaluation's `completedAt` through `estimatedAt`, and its disposition does not
-  resolve to `remediated`, `fully_mitigated` or `false_positive`. The projection is published
-  unchanged (ADR 0019, section of 2026-11-27). The warning changes the bytes of a report whose
-  input carries such a record.
+- Every report, stateless and from a store, adds one WARNING `planned_reduction_lapsed` for an
+  ARTIFACT-origin record whose evaluation states a `projectedNextReduction` whose `estimatedAt` is
+  strictly before the as-of, while its rating is above the target, no reduction to the target or
+  below is recorded from the evaluation's `completedAt` through `estimatedAt`, and its disposition
+  does not resolve to `remediated`, `fully_mitigated` or `false_positive`. The projection is
+  published unchanged (ADR 0019, section of 2026-11-27). The warning changes the bytes of a report
+  whose input carries such a record.
 - `cases response-gaps` records that lapse as a third kind of `VDR-CSO-FAV` system observation,
   one per case and plan (source type `complyroll.response-plan`, record id
   `planned-response-lapse`, resource `logical:case/<tracking id>`, context key `<tracking
@@ -67,7 +67,11 @@ All notable project changes will be documented here.
   marks the store schema 8, which 0.5.0a0 and a build at `09193ab` refuse to open; a store that
   records only the two earlier kinds stays at 7. A report reads a recorded plan lapse as
   `response_gap_contradicted` when the case's current evaluation still states the plan and records
-  a reduction that met it in its window, and otherwise with no note.
+  a reduction that met it in its window, and otherwise with no note. The run refuses, exit 1 and
+  nothing appended, a store a report also refuses for a case with a disposition and no evaluation,
+  and a run whose new record would publish an id another record already publishes
+  (`tracking_id_collision`), for all three kinds. A plan lapse ingested at or before its planned
+  time is `responsegap_identity_breach`.
 - `docs/DATA_MODEL.md` reads a response action from the evaluation's planned and completed
   reductions; its kind, owner and evidence are not carried (ADR 0019, section of 2026-11-27).
 - `tests/golden/vdt-planned-reduction-warning.{json,md}`: a stateless run of one partly mitigated

@@ -146,7 +146,7 @@ from .response_gaps import (
 _KEV_RULE = "VDR-TFR-KEV"
 _T = TypeVar("_T")
 _CVE_PREFIX = "CVE-"
-#: The two reserved source types a response gap stream records (ADR 0019).
+#: The reserved source types a response gap stream records (ADR 0019).
 _RESPONSE_GAP_SOURCE_TYPES = frozenset(
     {RECURRENCE_SOURCE_TYPE, ATTESTATION_LAPSE_SOURCE_TYPE, PLAN_LAPSE_SOURCE_TYPE}
 )

@@ -73,12 +73,20 @@ from complyroll.policy import CertificationProfile
 from complyroll.reports.change_gaps import change_gap_observations
 from complyroll.reports.changes import ChangeProjection, StoredChangeSet
 from complyroll.reports.changes_input import Change, ChangeSet
-from complyroll.reports.checks import clock_problem, observation_clock_message, system_record_kind
+from complyroll.reports.checks import (
+    TRACKING_ID_COLLISION,
+    clock_problem,
+    observation_clock_message,
+    published_tracking_id,
+    system_record_kind,
+    tracking_id_collision_message,
+    tracking_id_collisions,
+)
 from complyroll.reports.coverage import CoverageResult
 from complyroll.reports.evaluations import EvaluationInput, EvaluationSet, record_label
 from complyroll.reports.gaps import coverage_gap_observations
 from complyroll.reports.inventory import Inventory
-from complyroll.reports.model import ReportDiagnostic
+from complyroll.reports.model import ReportCompileError, ReportDiagnostic, evaluation_location
 from complyroll.reports.records import (
     coverage_diagnostics,
     derive_report_changes,
@@ -1028,13 +1036,15 @@ def _record_response_gaps(
 
     observations = rehydrate_observations(repository)
     cases = fold_all_cases(repository)
-    # The evaluation each case reports with, so a plan lapses exactly where a report warns.
+    evaluations = case_evaluations(cases)
+    # The evaluation each case reports with, so a plan lapses by the report's own rule, a record
+    # no report can compile yet included (Kyle's ruling B01).
     gaps = derive_report_response_gaps(
         observations,
         response_gap_history(repository, cases),
         profile,
         as_of,
-        evaluations=case_evaluations(cases),
+        evaluations=evaluations,
     )
     # K1: a failed remediation and resource is recorded once, so a recurrence whose slot a stored
     # record already holds is that record, whatever detection this run finds earliest.
@@ -1070,6 +1080,7 @@ def _record_response_gaps(
                 "so it is refused rather than resumed"
             )
         already.append(gap)
+    _refuse_response_gap_collisions(observations, recorded, evaluations)
     for gap in recorded:
         # The head type is the record's kind's: a plan lapse opens with its own head, which
         # marks the store schema 8 (ADR 0019, section of 2026-11-27).
@@ -1084,6 +1095,63 @@ def _record_response_gaps(
             expected_version=0,
         )
     return ResponseGapOutcome(recorded=tuple(recorded), already_recorded=tuple(already))
+
+
+@dataclass(frozen=True, slots=True)
+class _ResponseGapClaim:
+    """One current group's claim on a published id once a response gap run is written."""
+
+    tracking_id: str
+    original_tracking_id: str
+    evaluation_location: str
+
+
+def _refuse_response_gap_collisions(
+    observations: Sequence[Observation],
+    pending: Sequence[Observation],
+    evaluations: Mapping[str, EvaluationInput],
+) -> None:
+    """Refuse a run whose new records would publish an id another record already publishes.
+
+    The claims are the ones `store verify` reads once the run is written: every current group
+    under the override its reported evaluation gives, else its correlation id. A collision that
+    names a group only this run's records open is refused, as `tracking_id_collision`, before the
+    first append, so the run writes nothing and the store stays one a report compiles (ADR 0019,
+    section of 2026-11-27). A collision the store held before the run is verify's to name.
+    """
+
+    if not pending:
+        return
+    before = {group.tracking_id for group in group_open_observations(observations)}
+    claims = [
+        _ResponseGapClaim(
+            tracking_id=published_tracking_id(group, evaluations.get(group.tracking_id)),
+            original_tracking_id=group.tracking_id,
+            evaluation_location=evaluation_location(evaluations.get(group.tracking_id)),
+        )
+        for group in group_open_observations([*observations, *pending])
+    ]
+    problems: list[ReportDiagnostic] = []
+    for previous, claim in tracking_id_collisions(claims):
+        opened = [
+            item.original_tracking_id
+            for item in (previous, claim)
+            if item.original_tracking_id not in before
+        ]
+        if not opened:
+            continue
+        problems.append(
+            ReportDiagnostic(
+                level=DiagnosticLevel.ERROR,
+                code=TRACKING_ID_COLLISION,
+                message=(
+                    f"{tracking_id_collision_message(previous, claim)}; this run would record "
+                    f"the response gap of {opened[0]}, so it records nothing"
+                ),
+            )
+        )
+    if problems:
+        raise ReportCompileError(problems)
 
 
 def record_changes(

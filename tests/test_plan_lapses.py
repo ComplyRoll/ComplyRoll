@@ -289,6 +289,24 @@ class PlanLapseSetTests(unittest.TestCase):
             [item.tracking_id for item in lapses], sorted(group.tracking_id for group in groups)
         )
 
+    def test_the_tracking_id_orders_before_the_planned_time(self) -> None:
+        # The lower tracking id has the later plan, so an order by planned time first would
+        # put it second.
+        groups = sorted(
+            (found(record=record) for record in ("CVE-2099-0201", "CVE-2099-0202")),
+            key=lambda group: group.tracking_id,
+        )
+        later = PLANNED_AT + timedelta(days=2)
+        evaluations = {
+            groups[0].tracking_id: evaluation(planned_at=later),
+            groups[1].tracking_id: evaluation(),
+        }
+        lapses = planned_reduction_lapses(groups, evaluations, later + SECOND)
+        self.assertEqual(
+            [(item.tracking_id, item.estimated_at) for item in lapses],
+            [(groups[0].tracking_id, later), (groups[1].tracking_id, PLANNED_AT)],
+        )
+
     def test_a_case_no_current_group_matches_lapses_nowhere(self) -> None:
         # A stale case is in no report, so it neither warns nor records.
         self.assertEqual(

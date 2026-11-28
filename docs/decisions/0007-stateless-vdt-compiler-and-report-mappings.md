@@ -486,3 +486,10 @@ when a disposition or an acceptance was decided. A disposition event's `recorded
 whether `VDR-TFR-PVR` or `VER-TFR-MAV` was met in time.
 Why: the flag says whether the clock still runs, the fact `overdueStatus` is computed from and the
 Markdown Next due column reads, and a lateness value would change it for every reader.
+
+## Note 2026-11-27: a passed projection starts the clock of its own lapse record
+
+The 2026-10-14 amendment says `projectedNextReduction.estimatedAt` starts no clock. That holds
+for the record that states the plan. ADR 0019's section of 2026-11-27 makes a passed, unmet
+projection the detection time and `VER-TFR-EVU` anchor of a separate lapsed planned response
+record. The amendment's text is not edited.

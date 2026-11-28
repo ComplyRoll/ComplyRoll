@@ -661,8 +661,9 @@ and written once in one batch at version 0: a `response_gap.recorded` v1 head an
 
 Every field is required and no other is allowed. At append the repository holds the head to the
 record it heads, and to nothing else: a case's current state moves, so a missing or changed case is
-not a fault. A store that holds a response gap stream is schema version 7, and one that never
-records a response gap stays at its version.
+not a fault. A store that holds a `response_gap.recorded` stream is schema version 7 (8 once it
+also holds a lapsed planned response, below), and one that never records a response gap stays at
+its version.
 
 A lapsed planned response is a record whose current evaluation states a `projectedNextReduction`
 at planned time E to target R, found by a run whose `--as-of` is strictly after E, while its
@@ -687,6 +688,8 @@ met late or closed afterwards does not undo it.
 The planned time is written as every response gap instant is, and the target as one digit from 1
 to 5. Its metadata always carries `plan.caseTrackingId`, `plan.estimatedAt` and
 `plan.targetRating`, never the current rating, and its one evidence id is `case:<tracking id>`.
+It is ingested at the recording run's `--as-of`, so strictly after its planned time; a record
+ingested at or before it is one its writer never mints.
 Its stream is a `response-gap/<fingerprint>` stream like the other two, opened by a second head
 type, `response_gap.plan_lapsed` v1, so `response_gap.recorded` keeps its bytes.
 

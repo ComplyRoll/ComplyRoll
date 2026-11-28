@@ -1173,8 +1173,8 @@ warning: planned_reduction_lapsed: case-748ec5056f5557ed planned its next reduct
 ```
 
 That run is `tests/golden/vdt-planned-reduction-warning.{json,md}`. In a store, `cases
-response-gaps` records the lapse as a case of its own, keyed on the plan, and marks the store
-schema 8:
+response-gaps` records the lapse as a system observation keyed on the plan, exits 3 and marks the
+store schema 8; the next `cases correlate` opens its case:
 
 ```bash
 complyroll ingest tests/fixtures/recurrence-api-before.sarif --db history.db \
@@ -1211,8 +1211,8 @@ and change gap streams as `changegap_incomplete`, `changegap_overfull`,
 `changegap_stream_mismatch`, `changegap_identity_breach`, and `changegap_schema_unmarked` (below
 schema 6); a change gap is also held to the recorded change its head names. Response gap streams
 are audited as `responsegap_incomplete`, `responsegap_overfull`, `responsegap_stream_mismatch`,
-`responsegap_identity_breach`, and `responsegap_schema_unmarked` (below schema 7). A healthy store
-prints one line:
+`responsegap_identity_breach`, and `responsegap_schema_unmarked` (below schema 7, or below
+schema 8 for a `response_gap.plan_lapsed` head). A healthy store prints one line:
 
 ```text
 ok: 36 event(s) verified

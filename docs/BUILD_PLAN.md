@@ -123,11 +123,14 @@ accepted-vulnerability and historical-activity reports)
 
 Shipped as listed, with five exceptions carried into Phase 2 as a scope change rather than
 closed as done: information resource records and response action records (the
-`InformationResource` and `ResponseAction` entities in `docs/DATA_MODEL.md` are still planned),
-the KEV clock, the reporting recurrence clocks (the compiler emits no clock for `VER-TFR-MHR` or
-`VER-TFR-MRH`; ADR 0007 Decision 6 and ADR 0010 Decision 5 record that the cadence is the
-operator's), and HTML output (each report ships a Markdown twin only). The KEV clock has since
-landed with Phase 2's CISA KEV enrichment (ADR 0012), so four of the five are still carried.
+`InformationResource` and `ResponseAction` entities in `docs/DATA_MODEL.md` were still planned
+then), the KEV clock, the reporting recurrence clocks (the compiler emits no clock for
+`VER-TFR-MHR` or `VER-TFR-MRH`; ADR 0007 Decision 6 and ADR 0010 Decision 5 record that the
+cadence is the operator's), and HTML output (each report ships a Markdown twin only). The KEV
+clock has since landed with Phase 2's CISA KEV enrichment (ADR 0012), information resource
+records with ADR 0015, and response action records, read from the evaluation, with ADR 0019's
+section of 2026-11-27, so of the five only the reporting recurrence clocks (Phase 3) and HTML
+output (the unscheduled backlog) remain.
 Rating changes ship as the PAIN reduction events on each vulnerability detail rather than as a
 record of their own.
 
@@ -247,7 +250,8 @@ Target: 4 to 6 weeks
   attestation failures recorded as reviewable cases (a broken remediation or response workflow,
   and a vulnerability whose detection time is never attested; ADR 0014 Decision 17), with the
   information resource and response action records they need (the `InformationResource` and
-  `ResponseAction` entities in `docs/DATA_MODEL.md` are still planned), and the reporting
+  `ResponseAction` entities in `docs/DATA_MODEL.md` were still planned when this item was
+  written), and the reporting
   recurrence clocks. **Partly delivered, 2026-11-26** (ADR 0019), as a scope note and not a close:
   both failures are Met in a store, with no new operator input. `cases response-gaps` records a
   remediation that a later open observation contradicts, one case per failed remediation listing

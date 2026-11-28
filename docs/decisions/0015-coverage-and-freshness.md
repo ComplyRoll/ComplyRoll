@@ -915,7 +915,9 @@ edited.
   derives and no record carries. `response_gap_contradicted` names a recorded one whose case's
   current evaluation still states its plan and records a reduction that met it inside its window,
   and that test comes first; a recorded one not contradicted stands with no note, derived or not.
-  `response_gap_unmatched` and `response_gap_earlier_detection` cannot arise for it.
+  `response_gap_unmatched` and `response_gap_earlier_detection` cannot arise for it. As for the
+  two earlier kinds, these notes are written only by a store that holds a response gap stream; a
+  store that holds none reads a lapsed plan with the warning alone.
   `REPORT_DIAGNOSTIC_CODES` gains the WARNING `planned_reduction_lapsed`, 78 codes in all.
 - **The `cases list` column covers the new kind.** A lapsed planned response case shows its
   context key in the `CONTEXT KEY` column, which also appears once the store holds one.

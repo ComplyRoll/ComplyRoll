@@ -539,8 +539,10 @@ def derive_response_gaps(
     `groups` are the report's own, every current open observation linked or not, so a run
     agrees with the report's warning before `cases correlate` links what came back, and
     `evaluations` the evaluation the report reads for each correlation tracking id, so a plan
-    lapses exactly where the report warns about it (plan F2). Each record is ingested at
-    `ingested_at`, which reaches neither its id nor a report.
+    lapses by the same function over the same groups and evaluations as the report's warning
+    (plan F2). A report that refuses as a whole, such as for a record with no detection time,
+    prints no warning while the lapse is still recorded (Kyle's ruling B01). Each record is
+    ingested at `ingested_at`, which reaches neither its id nor a report.
     """
 
     if not isinstance(history, ResponseGapHistory):

@@ -423,6 +423,25 @@ the store lacks, and prints the same two line shapes. It exits 3 when it records
 otherwise. No class or calendar zone enters the kind's identity. No report flag records a plan
 lapse; the stateless path keeps the warning of Decision 15.
 
+The run reads every case's reported evaluation, so it refuses with exit 1 and appends nothing
+where a report from the store refuses for the same reason: a case, stale or not, that records a
+disposition and no evaluation (`disposition_without_evaluation`). A build at `09193ab` ran past
+that case. It also refuses, as `tracking_id_collision` and before the first append, a run whose
+new records would open a group under an id another record already publishes, such as a provider
+override equal to the new record's correlation id; the text names the id, both records and the
+group the run would open. This holds for all three kinds, since each record's correlation id is a
+function of its inputs that an override can name, so no run turns a store a report compiles into
+one that `report --db` and `store verify` refuse.
+
+The run can record a plan lapse for a record no report can compile yet (Kyle's ruling on audit
+finding B01, 2026-11-27: keep, and say so). A case with no detection time, no source timestamp and
+no attestation, that carries an evaluation with a passed, unmet plan, has its plan lapse recorded,
+beside that case's lapsed attestation, while every report from the store refuses with
+`detection_time_missing` and so prints no warning. Once the case is attested, the report compiles,
+warns, and reads the recorded lapse with no note. The lapse depends only on the case, the planned
+time and the target, never on the detection time, and the derivation is the same function over the
+same groups and evaluations as the warning; a report that refuses as a whole prints nothing.
+
 ### Decision 19: a second head type on the same stream kind, schema 8 (plan D8)
 
 The stream kind stays `response-gap/<fingerprint>`. A plan lapse opens its stream with a new head
@@ -441,12 +460,17 @@ contract fault.
 
 The five `responsegap_*` audit codes cover the new kind with no new code. Incomplete and overfull
 count heads of either type together; a stream mismatch includes a stream that opens with neither
-head; an identity breach includes a record its writer does not mint, metadata that is not exactly
-the three keys with the values its head states, a head of the other type, and a head that names
-another case, key, instant or rating. `responsegap_schema_unmarked` gains a second text, as the
-failure fault has: a `response_gap.plan_lapsed` head in a store below schema 8 names 8, at the
-first such stream, before the schema 7 check. The head is held to its own record alone. Whatever a
-report from the store refuses, `store verify` rejects.
+head; an identity breach includes a record its writer does not mint, among them one ingested at or
+before its planned time (the run ingests at its as-of, strictly after E), metadata that is not
+exactly the three keys with the values its head states, a head of the other type, and a head that
+names another case, key, instant or rating. `responsegap_schema_unmarked` gains a second text, as
+the failure fault has: a `response_gap.plan_lapsed` head in a store below schema 8 names 8, at the
+first such stream, before the schema 7 check. The incomplete, overfull, head order and write-once
+texts now name both head types for every response gap stream, a PR 1 one included; the codes do not
+change. The head is held to its own record alone. Whatever a report from the store refuses as a
+fault of the log, `store verify` rejects. A missing detection time is not one: a report refuses an
+untimed record with `detection_time_missing` until an attestation supplies the input it waits for,
+and `store verify` passes the store, as it did before this record.
 
 ### Decision 21: notes where a store and its run disagree (plan D10)
 
@@ -458,7 +482,11 @@ note names the earliest such reduction. The contradiction test comes first. A re
 that is not contradicted stands with no note, whether or not the run still derives it: a plan
 revised, met late or closed does not undo the fact that the planned time passed.
 `response_gap_unmatched` and `response_gap_earlier_detection` cannot arise for this kind, since no
-class, calendar zone or scan order enters its identity.
+class, calendar zone or scan order enters its identity. Decision 11's gate holds: a store that
+holds no response gap stream writes none of these notes, so the first plan lapse of such a store
+reads with the warning alone until `cases response-gaps` records something, which is why a store
+built from the warning golden's scan reports that golden byte for byte. Once the store holds a
+response gap of any kind, a derived plan lapse no record carries is `response_gap_unrecorded`.
 
 ### Decision 22: goldens (plan D11)
 
@@ -495,6 +523,10 @@ Decision 1, which would move this record's earlier identities.
 - A plan to remediate cannot be stated, so it cannot lapse.
 - A projection whose target is not below the current rating never lapses. Whether to warn about
   one is left out.
+- Instants are read to the microsecond, as `docs/SECURITY.md` and `docs/DATA_MODEL.md` already
+  say of every clock: two planned times, or a planned time and a reduction, less than a
+  microsecond apart compare equal, so they are one plan, or a reduction at the planned time. This
+  is a documented limit with no code change (Kyle's ruling on audit finding C01, 2026-11-27).
 
 ### Compatibility (2026-11-27)
 
@@ -503,9 +535,11 @@ before a plan lapse is recorded. The trial built a schema 6 store with 0.5.0a0 (
 PyPI) holding a failure, coverage gaps, changes and change gaps, and a schema 7 store with
 `09193ab` holding the same plus a recurrence and a lapsed attestation. `store verify`, `cases
 list`, and `report vdt` with and without an inventory, `report historical` and `report avi` gave
-the same bytes under the old and the new build at an as-of equal to the stores' one planned time,
-and differed only by the new warning at a later as-of; the new build's reads left each store's
-bytes and version unchanged. `cases response-gaps` from the new build at the planned time recorded
+the same bytes under the old and the new build at an as-of equal to the stores' one planned time.
+At a later as-of the schema 6 store's reports differed only by the new warning; the schema 7
+store, which already holds a response gap, also gained `response_gap_unrecorded` for the unrecorded
+plan, as Decision 21's gate says. The new build's reads left each store's bytes and version
+unchanged. `cases response-gaps` from the new build at the planned time recorded
 nothing and kept each store's version; past it, it recorded the plan lapse and marked the store 8
 (from 6, migration records 7 and 8). Both older builds refuse a schema 8 store at open ("database
 schema 8 is newer than supported schema 6" and "... schema 7"), and their `store verify` reports

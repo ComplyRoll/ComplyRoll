@@ -429,16 +429,19 @@ does not move it. Only a disposition that resolves to `remediated` counts, `clos
 disposition changes to one that does not resolve to `remediated`.
 
 Every report also warns `planned_reduction_lapsed` once per record whose own planned reduction
-passed unrecorded (ADR 0019, section of 2026-11-27): its evaluation states a
-`projectedNextReduction` whose `estimatedAt` is strictly before the report's `--as-of`, its
-current rating is above the `targetRating`, no completed reduction to the target or below is
-recorded from the evaluation's `completedAt` through `estimatedAt`, and its disposition does not
-resolve to `remediated`, `fully_mitigated` or `false_positive`. The warning names the planned time,
-the target, the current rating and the evaluation, and the report publishes the projection
-unchanged. From a store, a reduction an earlier evaluation stated and a later one dropped still
-counts, since history keeps it. Re-evaluate the record: the warning goes when the evaluation
-lowers the rating to the target, records the reduction inside the window, states a new plan, or
-closes the record.
+passed unrecorded (ADR 0019, section of 2026-11-27): the record is ARTIFACT-origin (a system
+record never warns), its evaluation states a `projectedNextReduction` whose `estimatedAt` is
+strictly before the report's `--as-of`, its current rating is above the `targetRating`, no
+completed reduction to the target or below is recorded from the evaluation's `completedAt`
+through `estimatedAt`, and its disposition does not resolve to `remediated`, `fully_mitigated` or
+`false_positive`. The warning names the planned time, the target, the current rating and the
+evaluation, and the report publishes the projection unchanged. From a store, a reduction an
+earlier evaluation stated and a later one dropped still counts, since history keeps it.
+Re-evaluate the record: the warning goes when the evaluation lowers the rating to the target,
+records the reduction inside the window, resolves the record to `remediated`, `fully_mitigated`
+or `false_positive`, or states a new plan that is not itself overdue and unmet; a new plan is
+read on its own terms. Closing the record as `partially_mitigated` or `accepted` keeps the
+warning.
 
 In a store, `cases response-gaps` records those failures, and one more, as `VDR-CSO-FAV` system
 records: a remediation that did not hold, one record per resource that came back; a case whose
@@ -625,8 +628,14 @@ Once recorded a lapse is permanent, and an attestation made before any run sees 
 prevents it. A lapsed planned response is recorded when a run whose `--as-of` is strictly after
 the planned time finds the plan unmet, as the `planned_reduction_lapsed` warning above reads it,
 from the evaluation each case reports with: a case no current open observation matches is in no
-report and records nothing. No class or calendar zone enters it. A plan revised, met or closed
-before any run sees the lapse leaves no record, so the record is only as frequent as the runs. It
+report and records nothing. No class or calendar zone enters it. The run can record a plan lapse
+for a record no report can compile yet: a case with no detection time has its plan lapse, and its
+lapsed attestation, recorded while every report from the store refuses with
+`detection_time_missing`; once the case is attested, the report warns and the record stands with
+no note. The lapse depends only on the case, the planned time and the target, never on the
+detection time (ADR 0019, Kyle's ruling B01). A plan revised, met, or resolved
+to one of the three excluded statuses before any run sees the lapse leaves no record, so the
+record is only as frequent as the runs. It
 prints one line per record, first those it recorded and then those already recorded, and a count.
 Each record line is the record's id and its title less the rule. The record lines below are
 output and cannot wrap. The first block is the golden store of `historical-response-gaps`, the
@@ -656,6 +665,8 @@ until `cases correlate` runs. These stop the run with exit 1 and append nothing:
 | An `--as-of` that does not parse or names an instant outside the years 1970 through 9000 UTC | `invalid_input` |
 | An unknown `--calendar-tz` | `invalid_option` |
 | A response gap stream that is not whole, or holds an event its kind does not carry | `history_invalid` |
+| A case, stale or not, that records a disposition and no evaluation, which a report from the store also refuses; a build at `09193ab` ran past it | `disposition_without_evaluation` |
+| A record this run would append that opens a group under an id another record already publishes, such as a provider override equal to its correlation id | `tracking_id_collision` |
 
 `--db`, `--class`, and `--as-of` are required, so leaving one out is a usage error with exit 2.
 

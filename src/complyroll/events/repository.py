@@ -2513,7 +2513,8 @@ def _plan_lapse_metadata_problem(payload: Mapping[str, Any], raw: Mapping[str, A
     """Return the first way a lapsed planned response's metadata is not what its writer stores.
 
     The case is a correlation tracking id, which names the record's resource; the planned time
-    is the instant the record is observed at, spelled as the writer spells an instant; the target
+    is the instant the record is observed at, spelled as the writer spells an instant, and the
+    record is ingested strictly after it, as the run that records a lapse is; the target
     is one digit from 1 to 5; the context key is the one those three spell; the one evidence id
     names the case; and the title is the one they build. The current rating and the evaluation
     that stated the plan are no part of the record, so nothing here reads a case (ADR 0019).
@@ -2551,6 +2552,13 @@ def _plan_lapse_metadata_problem(payload: Mapping[str, Any], raw: Mapping[str, A
         return (
             f"its metadata plan.estimatedAt is {shown(planned_text)}, where the record is "
             f"observed at {shown(observed)}"
+        )
+    # The writer ingests a lapse at its run's as-of, which is strictly after the planned time.
+    ingested = _utc_text(payload.get("ingested_at"))
+    if ingested is None or parse_utc(ingested) <= parse_utc(planned_text):
+        return (
+            f"it is ingested at {shown(payload.get('ingested_at'))}, not after its planned time "
+            f"{shown(planned_text)}; a lapse is recorded only by a run past its planned time"
         )
     target = raw["plan.targetRating"]
     if not isinstance(target, str) or _TARGET_RATING_TEXT.fullmatch(target) is None:

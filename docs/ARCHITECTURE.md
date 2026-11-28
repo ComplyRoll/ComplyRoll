@@ -262,10 +262,10 @@ response gap stream. The first `cases response-gaps` append that records one (`r
 inserts migration record 7 ("response gap streams, ADR 0019"), and every lower record the store
 lacks, and sets `user_version` to 7 inside its own transaction. A store that never records a
 response gap stays at its version, and response gap awareness follows a response gap stream, not
-the marker. This build opens versions 1 to 7 (`SUPPORTED_SCHEMA_VERSION`). 0.5.0a0 refuses a
-version 7 store at open with `database schema 7 is newer than supported schema 6`, and its `store
-verify` reports `schema_version_unsupported` ("database is marked schema 7; this build opens
-schemas 1 to 6").
+the marker. A build at `09193ab` opens versions 1 to 7; this one opens 1 to 8, below. 0.5.0a0
+refuses a version 7 store at open with `database schema 7 is newer than supported schema 6`, and
+its `store verify` reports `schema_version_unsupported` ("database is marked schema 7; this build
+opens schemas 1 to 6").
 
 Schema version 8 (ADR 0019, section of 2026-11-27) changes no schema object either. It marks a
 store that holds a `response_gap.plan_lapsed` head. The append that writes one

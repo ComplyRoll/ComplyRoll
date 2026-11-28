@@ -1153,6 +1153,44 @@ same bytes. `cases response-gaps` prints both records and exits 3, and a rerun e
 states with the record id and source type. Attesting the untimed case afterwards does not erase
 its lapse: `tests/golden/historical-response-gaps.{json,md}` is that store's snapshot.
 
+## Planned reductions that did not happen
+
+`examples/evaluations-planned.json` records the same image finding as partly mitigated on 4
+September, at PAIN N3, with its next reduction planned to N2 by 11 September 16:00. Nothing records
+that reduction, so a report past that time publishes the plan unchanged and warns (ADR 0019,
+section of 2026-11-27):
+
+```bash
+complyroll report vdt tests/fixtures/recurrence-api-before.sarif \
+  --evaluations examples/evaluations-planned.json \
+  --class C --package-uri https://example.test/cpo \
+  --as-of 2026-09-15T12:00:00Z --from 2026-09-01T00:00:00Z --to 2026-09-30T23:59:59Z \
+  -o report.json
+```
+
+```text
+warning: planned_reduction_lapsed: case-748ec5056f5557ed planned its next reduction to PAIN N2 by 2026-09-11T16:00:00Z, and that time has passed with its current rating PAIN N3 and no reduction to N2 or below recorded from its evaluation at 2026-09-04T15:00:00Z through it; the planned reduction is not recorded, and the record keeps its plan until an evaluation changes it [CVE-2099-0101]
+```
+
+That run is `tests/golden/vdt-planned-reduction-warning.{json,md}`. In a store, `cases
+response-gaps` records the lapse as a case of its own, keyed on the plan, and marks the store
+schema 8:
+
+```bash
+complyroll ingest tests/fixtures/recurrence-api-before.sarif --db history.db \
+  --as-of 2026-09-03T00:00:00Z
+complyroll cases correlate --db history.db
+complyroll cases evaluate --db history.db --evaluations examples/evaluations-planned.json
+complyroll cases response-gaps --db history.db --class C --as-of 2026-09-15T12:00:00Z
+complyroll cases correlate --db history.db
+```
+
+A run at 11 September 16:00 itself records nothing. An evaluation that records a reduction to N2
+inside the window, from 4 September 15:00 through 11 September 16:00, while still stating the plan,
+turns the recorded lapse into a `response_gap_contradicted` note; a plan revised or closed
+afterwards leaves it standing with no note. `tests/golden/historical-planned-response.{json,md}`
+is that store's snapshot.
+
 ## Verifying the log
 
 `complyroll store verify --db complyroll.db` walks the whole log and exits non-zero on any

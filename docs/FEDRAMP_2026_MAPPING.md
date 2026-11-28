@@ -153,10 +153,18 @@ becomes a system record too. The first record stands in for the detection time: 
 instant is at or after the true detection, this window closes only after the true one, so the
 record is never early, but ComplyRoll cannot check that condition. Because a run reads whether
 the case is timed when it runs, an attestation made before any run prevents it, so the record is
-only as frequent as the runs. A lapsed planned response, which needs response action records, and
-the `VER-TFR-MHR` and `VER-TFR-MRH` recurrence clocks are still carried in
-Phase 3. A recorded response gap is evidence that the provider's process failed and was noticed,
-not a determination that the provider meets `VDR-CSO-FAV`. Stale coverage and missing resources
+only as frequent as the runs. A lapsed planned response is covered too (ADR 0019, section of
+2026-11-27): a record whose current evaluation states a `projectedNextReduction` that passed with
+the rating still above its target, no reduction to the target recorded from that evaluation through
+the planned time, and a disposition that leaves a weakness to reduce, becomes a system record, and
+every report, on both paths, warns about it while publishing the plan unchanged. The clock is the
+provider's own `estimatedAt`, which carries no FedRAMP force of its own; the record's one rule is
+`VDR-CSO-FAV`. A passed `VDR-TFR-PVR` target is not recorded again: `overdueStatus` already
+publishes it. The response action it reads is the evaluation's planned and completed reductions,
+the official Common Definitions fields; the action's kind, owner and evidence are not carried. The
+`VER-TFR-MHR` and `VER-TFR-MRH` recurrence clocks are still carried in Phase 3. A recorded
+response gap is evidence that the provider's process failed and was noticed, not a determination
+that the provider meets `VDR-CSO-FAV`. Stale coverage and missing resources
 are measured by the coverage and freshness checks below, and become cases when the operator asks
 for them. A clean SARIF run is
 evidence, as a PASS observation of its scope (ADR 0015 decision 1). Some detection failures still

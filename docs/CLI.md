@@ -18,7 +18,7 @@ This page names `--db`'s argument `STORE` and an instant `T`, such as `2026-10-0
 | `complyroll changes pending --db STORE --inventory FILE --class C --as-of T [--calendar-tz NAME] [--kev FILE] [-o FILE]` | Writes the same request from the changes and the evidence a store holds. It refuses artifacts, `--changes`, and `--record-failed-imports`, and writes an empty request when the store recorded no change (ADR 0018) |
 | `complyroll changes record --db STORE --changes FILE [--as-of T] [--actor NAME]` | Appends each change the store lacks as a `change.recorded` event on a stream of its own, in one transaction, marking the store schema 5. A change already recorded is left alone; the same id with a different value is refused as `change_conflict` and nothing is written (ADR 0018). Exits 0 or 1 |
 | `complyroll ingest ARTIFACT... --db STORE [--as-of T] [--record-failed-imports] [--actor NAME]` | Records each artifact and its observations as typed events (`artifact.ingested`, `observation.recorded`) in an append-only SQLite store, validated against published contracts before they are written. Re-running over the same bytes appends nothing. With `--record-failed-imports`, each detection process failure is recorded on its own stream as a `failure.recorded` event and a system observation, and the run exits 3, while the readings ADR 0014 Decision 2 keeps fatal still stop it with exit 1 and nothing written, among them a standalone CycloneDX VEX document, a malformed CycloneDX inventory, and a malformed empty BOM, so one such file stops the whole glob; a failure another failure stream already holds is recorded as a hold on it, as a `failure.held` event; a failure whose bytes the store already holds an outranking reading of is refused with `failure_read_elsewhere`, and the run exits 1 with nothing appended (ADR 0014 Decision 13); a second identity under a tracking id the store or the run already holds is refused with `tracking_id_held`, with or without the flag, and the run exits 1 with nothing appended and, at a path with nothing behind it, no store published; an id the store already holds under two identities is closed, so a run bringing either side is refused the same way, a rerun included; a live pair, two current groups, is named by verify and refused by every report, and `cases correlate` says `store_conflict` when both groups meet in one correlate, and exits 0 and links the later side onto the first's case when the first was already correlated; every report and `cases correlate` name no collision in a latent pair, with at most one side current, and verify warns `tracking_id_latent_pair` and exits 0 on one when the store has no fault (ADR 0008 amendment 2026-11-04); and because that check reads the whole log, a log the read path refuses stops the run as `store_integrity` with nothing appended (ADR 0008 amendment 2026-11-03, second); a store that records a failure is marked schema 2, or 3 once it records a hold, which an earlier build's `ingest`, `cases`, and `report --db` refuse to open |
-| `complyroll cases correlate\|attest-detection\|evaluate\|coverage\|changes\|response-gaps\|list\|history --db STORE` | Opens one case per vulnerability, records attested detection times and operator evaluations as events, lists cases, and prints one case's full history. A changed evaluation appends a second `case.evaluated` event; the earlier one stays readable. `cases correlate` folds each existing case stream it may extend before it appends anything, and refuses a store where one does not fold with the error `report vdt --db` prints, appending nothing. `cases coverage` records each coverage window the store's evidence closed with no verification as a system observation on a stream of its own, marks the store schema 4, and exits 3 when it recorded one (ADR 0015). `cases changes` does the same for each change window the store's recorded changes and evidence closed with no verification, marks the store schema 6, and exits 3 when it recorded one (ADR 0018). `cases response-gaps` records each remediation a later open observation contradicts and each case whose detection time was not attested within its `VER-TFR-EVU` window, marks the store schema 7, and exits 3 when it recorded one (ADR 0019). `cases list` and `cases history` read only `case/` streams, so they print a case whose observations `store verify` faults; `store verify` is the check of the observations behind a case |
+| `complyroll cases correlate\|attest-detection\|evaluate\|coverage\|changes\|response-gaps\|list\|history --db STORE` | Opens one case per vulnerability, records attested detection times and operator evaluations as events, lists cases, and prints one case's full history. A changed evaluation appends a second `case.evaluated` event; the earlier one stays readable. `cases correlate` folds each existing case stream it may extend before it appends anything, and refuses a store where one does not fold with the error `report vdt --db` prints, appending nothing. `cases coverage` records each coverage window the store's evidence closed with no verification as a system observation on a stream of its own, marks the store schema 4, and exits 3 when it recorded one (ADR 0015). `cases changes` does the same for each change window the store's recorded changes and evidence closed with no verification, marks the store schema 6, and exits 3 when it recorded one (ADR 0018). `cases response-gaps` records each remediation a later open observation contradicts, each case whose detection time was not attested within its `VER-TFR-EVU` window, and each planned reduction not recorded by its planned time, marks the store schema 7, or 8 once it records a lapsed planned response, and exits 3 when it recorded one (ADR 0019). `cases list` and `cases history` read only `case/` streams, so they print a case whose observations `store verify` faults; `store verify` is the check of the observations behind a case |
 | `complyroll report vdt --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Vulnerability Detail Report from the event log through the same record compiler as the stateless path. The output is byte-identical to the stateless report for the same inputs, and that equality is a test; a store holding detection process failures matches the stateless run with `--record-failed-imports` when each failure was ingested at the report's `--as-of` or carries a scanner clock, no stream of its digest is superseded, no two input names share a digest, and no `ingest` reported `failure_held_by_another_stream` (ADR 0014). A store that recorded coverage gaps matches the stateless run with `--record-coverage-gaps` when `cases coverage` ran with the report's inventory, `--as-of`, class, and calendar zone and no evidence inside a recorded window arrived after it (ADR 0015). A store that recorded changes matches the stateless run with that change file but for the change block's `input` and its Markdown intro line (ADR 0008 amendment 2026-11-12). A store that recorded change gaps matches the stateless run with `--record-change-gaps` under the same carve-out when `cases changes` ran with the report's inventory, `--as-of`, and class and no evidence inside a recorded window arrived after it (ADR 0008 amendment 2026-11-14) |
 | `complyroll report avi --db STORE --class C --package-uri URI --from T --to T [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Accepted Vulnerability Information report from the same event log through the same record set. The output is byte-identical to the stateless report for the same inputs, and that equality is a test, including one that records the evaluations at two different instants and proves the recording instant never reaches the report. Detection process failures, coverage gaps, and change gaps carry the same conditions as `report vdt --db` (ADR 0014, ADR 0015, ADR 0018), and recorded changes the same carve-out (ADR 0008 amendment 2026-11-12) |
 | `complyroll report historical --db STORE --class C --package-uri URI [--kev FILE] [--inventory FILE] [--as-of T] [--calendar-tz NAME] [-o FILE] [--markdown FILE]` | Rebuilds the Historical VER Activity snapshot from the same event log; it takes no `--from` or `--to`. The output is byte-identical to the stateless snapshot for the same inputs, and that equality is a test. Detection process failures, coverage gaps, and change gaps carry the same conditions as `report vdt --db` (ADR 0014, ADR 0015, ADR 0018), and recorded changes the same carve-out (ADR 0008 amendment 2026-11-12) |
@@ -428,10 +428,23 @@ does not move it. Only a disposition that resolves to `remediated` counts, `clos
 `closedDisposition` `remediated` among them. Re-evaluate the record: the warning goes when its
 disposition changes to one that does not resolve to `remediated`.
 
-In a store, `cases response-gaps` records that failure, and one more, as `VDR-CSO-FAV` system
-records: a remediation that did not hold, one record per resource that came back, and a case whose
+Every report also warns `planned_reduction_lapsed` once per record whose own planned reduction
+passed unrecorded (ADR 0019, section of 2026-11-27): its evaluation states a
+`projectedNextReduction` whose `estimatedAt` is strictly before the report's `--as-of`, its
+current rating is above the `targetRating`, no completed reduction to the target or below is
+recorded from the evaluation's `completedAt` through `estimatedAt`, and its disposition does not
+resolve to `remediated`, `fully_mitigated` or `false_positive`. The warning names the planned time,
+the target, the current rating and the evaluation, and the report publishes the projection
+unchanged. From a store, a reduction an earlier evaluation stated and a later one dropped still
+counts, since history keeps it. Re-evaluate the record: the warning goes when the evaluation
+lowers the rating to the target, records the reduction inside the window, states a new plan, or
+closes the record.
+
+In a store, `cases response-gaps` records those failures, and one more, as `VDR-CSO-FAV` system
+records: a remediation that did not hold, one record per resource that came back; a case whose
 detection time was not attested within the `VER-TFR-EVU` window from the earliest ingest of its
-linked evidence. No report flag records either. A report from a store that holds a response gap
+linked evidence; and a lapsed planned response, one record per case and plan. No report flag
+records any of them. A report from a store that holds a response gap
 reads it against its own run with one of four INFO notes, each located at
 `<record id> <case tracking id>`:
 
@@ -444,7 +457,12 @@ reads it against its own run with one of four INFO notes, each located at
 
 A recorded gap the run rebuilds from its own record writes no note, so attesting a case after its
 lapse was recorded, or re-evaluating a case after its recurrence was recorded, leaves the report
-quiet. An evaluation closes a response gap as it closes any record, matched on all three keys; read
+quiet. A recorded lapsed planned response is read for a contradiction first: it is
+`response_gap_contradicted` when the case's current evaluation still states the recorded plan and
+records a reduction to the target or below inside its window. Otherwise it stands with no note,
+whether or not the run still derives it, so a plan revised, met late or closed leaves the report
+quiet, and neither `response_gap_unmatched` nor `response_gap_earlier_detection` arises for it.
+An evaluation closes a response gap as it closes any record, matched on all three keys; read
 the context key from the last column of `cases list`:
 
 ```json
@@ -452,7 +470,13 @@ the context key from the last column of `cases list`:
  "contextKey": "case-748ec5056f5557ed:remediated:2026-09-05T15:00:00Z:1"}
 {"sourceRecordId": "attestation-lapse", "sourceType": "complyroll.attestation",
  "contextKey": "case-a28eeaac0789b5e2"}
+{"sourceRecordId": "planned-response-lapse", "sourceType": "complyroll.response-plan",
+ "contextKey": "case-748ec5056f5557ed:planned:2026-09-11T16:00:00Z:2"}
 ```
+
+A lapsed planned response's context key ends on the planned time and the target rating, so the
+same plan restated by a later evaluation is the same case, and a new plan that also lapses is a
+second case.
 
 A recurrence's context key ends on the remediated episode, the 1-based position of that
 remediated run in the case, so a second remediation that fails is a second case even at the same
@@ -460,10 +484,12 @@ instant.
 
 An entry short of a key is refused, and the message ends "a remediation recurrence is matched by
 sourceRecordId, sourceType and contextKey together, so add" or the same with "a lapsed
-attestation". An evaluation completed before the record's detection time is refused as
-`evaluation_before_detection`, with the remedy "a remediation recurrence is detected when its
-recurring observation was detected" or "a lapsed attestation is detected when its evaluation
-window closed", each ending "so evaluate it at or after that instant, or correct completedAt".
+attestation" or "a lapsed planned response". An evaluation completed before the record's
+detection time is refused as `evaluation_before_detection`, with the remedy "a remediation
+recurrence is detected when its recurring observation was detected", "a lapsed attestation is
+detected when its evaluation window closed" or "a lapsed planned response is detected when its
+planned time passed", each ending "so evaluate it at or after that instant, or correct
+completedAt".
 
 ## The cases subcommands
 
@@ -485,7 +511,8 @@ complyroll cases history TRACKING_ID --db STORE
 ```
 
 `cases list` prints one row per case. Once the store holds a coverage gap, change detection gap,
-remediation recurrence, or lapsed attestation case it adds a last column, `CONTEXT KEY`, with that
+remediation recurrence, lapsed attestation, or lapsed planned response case it adds a last
+column, `CONTEXT KEY`, with that
 case's context key, and `-` for every other case; a listing with none of them is unchanged. A
 change id may hold spaces, so the key cell runs to the end of its line. It folds only the case
 streams, so it still lists the cases of a store that `store verify` rejects for damage elsewhere,
@@ -577,10 +604,12 @@ with exit 1 and append nothing:
 | A rules dataset without `VDR-CSO-DAC`, on a store that holds a change | `change_rule_unavailable` |
 | A change or change gap stream that is not whole, or holds an event its kind does not carry | `history_invalid` |
 
-`cases response-gaps` derives both kinds of response gap from the store exactly as a report from
-the store reads them, and appends one `response-gap/<fingerprint>` stream per record it has not
-recorded, written whole in one batch: a `response_gap.recorded` event and the record's system
-observation (ADR 0019). A remediation that did not hold is read from the report's own grouping of
+`cases response-gaps` derives the three kinds of response gap from the store exactly as a report
+from the store reads them, recurrences first, then lapsed attestations, then lapsed planned
+responses, and appends one `response-gap/<fingerprint>` stream per record it has not recorded,
+written whole in one batch: a head event and the record's system observation (ADR 0019). The head
+is `response_gap.recorded` for the first two kinds and `response_gap.plan_lapsed` for the third.
+A remediation that did not hold is read from the report's own grouping of
 every current open observation, linked or not, so it is recorded before `cases correlate` links
 what came back. A failed remediation and resource is recorded once: a scan dated earlier than the
 recorded detection and ingested after it appends nothing, and the stored record is listed as
@@ -593,8 +622,15 @@ bytes only when every ingest names `--as-of`. A run whose `--as-of` is before th
 records no lapse. The first sighting stands in for the detection time, so the lapse is never early
 only when the ingest instant is at or after the true detection; ComplyRoll cannot check that.
 Once recorded a lapse is permanent, and an attestation made before any run sees the lapse
-prevents it. It prints one line per record, first those it recorded and then those already
-recorded, and a count. The two record lines below are output and cannot wrap:
+prevents it. A lapsed planned response is recorded when a run whose `--as-of` is strictly after
+the planned time finds the plan unmet, as the `planned_reduction_lapsed` warning above reads it,
+from the evaluation each case reports with: a case no current open observation matches is in no
+report and records nothing. No class or calendar zone enters it. A plan revised, met or closed
+before any run sees the lapse leaves no record, so the record is only as frequent as the runs. It
+prints one line per record, first those it recorded and then those already recorded, and a count.
+Each record line is the record's id and its title less the rule. The record lines below are
+output and cannot wrap. The first block is the golden store of `historical-response-gaps`, the
+second that of `historical-planned-response`:
 
 ```text
 obs-96b8956b3a49f8026796a7ef9c68a42448ada45873af753313b60c3d910b2806: recorded remediation of case-748ec5056f5557ed recorded 2026-09-05T15:00:00Z did not hold: image:registry.example.test/recurrence/api:1.4.2/usr/lib/libexample-json.so.2 detected again 2026-09-12T08:40:00Z
@@ -602,9 +638,16 @@ obs-5e1b2b5cf665b208a471fb68c878627a207694012c555f4472872516db3ac823: recorded d
 recorded 2 response gap(s), skipped 0 already-recorded response gap(s)
 ```
 
+```text
+obs-4bcc9691dc01e41d9981f1bb5ae812e64c2972b276b4179608c0fb5eace781e6: recorded planned reduction of case-748ec5056f5557ed to N2 was not recorded by 2026-09-11T16:00:00Z
+recorded 1 response gap(s), skipped 0 already-recorded response gap(s)
+```
+
 It exits 3 when it recorded one and 0 otherwise, so a rerun appends nothing. A store with nothing
 to record exits 0 and marks no schema. The first record marks the store schema 7, which an earlier
-build refuses to open. A recorded gap reaches a report from the store at once, but it is not a case
+build refuses to open, and the first lapsed planned response marks it schema 8, which a build that
+knows only schema 7 refuses to open; a store that records only the two earlier kinds stays at 7.
+A recorded gap reaches a report from the store at once, but it is not a case
 until `cases correlate` runs. These stop the run with exit 1 and append nothing:
 
 | Refusal | Code |

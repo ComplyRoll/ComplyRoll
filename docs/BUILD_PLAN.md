@@ -255,7 +255,15 @@ Target: 4 to 6 weeks
   disposition; and a case whose detection time was not attested within `VER-TFR-EVU` of the
   store's first record of its evidence. `ResponseAction` records and a lapsed planned response
   are carried to the second pull request of the slice, and the `VER-TFR-MHR` and `VER-TFR-MRH`
-  recurrence clocks to the third.
+  recurrence clocks to the third. **Second pull request, 2026-11-27** (ADR 0019, section of
+  2026-11-27; Kyle's rulings D1 1a, D2 2a, D3 3a, D12 12a): a lapsed planned response is Met.
+  `cases response-gaps` records a record whose own planned reduction passed with its rating above
+  the target and no reduction to it recorded, and every report warns about it. Response action
+  records are delivered with named limits: carried as the evaluation's planned and completed
+  reductions (`projectedNextReduction`, `painReductionEvents`), with the action's kind, owner and
+  evidence not carried. Information resource records shipped with ADR 0015, with
+  `service_id`, `boundary_status` and `reachability_context` not carried because nothing reads
+  them yet. Only the recurrence clocks (the third pull request) stay open in this item.
 - Carried from Phase 2 as a scope change, 2026-11-14: an initial cloud, container, or CSPM JSON
   adapter selected from design-partner demand.
 - Versioned validation definitions with objectives, scope, schedule, code reference, and explicit

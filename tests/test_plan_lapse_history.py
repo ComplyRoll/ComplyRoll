@@ -283,6 +283,51 @@ class PlanLapseCommandTests(StoreCase):
         self.assertIn("stale_case", [item["code"] for item in diagnostics])
 
 
+class ReportedEvaluationRefusalTests(StoreCase):
+    """The run reads the evaluations a report reads, so it refuses what a report refuses."""
+
+    def test_a_disposition_with_no_evaluation_is_refused_by_the_run_and_named_by_verify(
+        self,
+    ) -> None:
+        self.plan()
+        written = datetime(2026, 9, 4, 15, 0, tzinfo=UTC)
+        with SQLiteEventStore(self.database) as store:
+            repository = EventRepository(store)
+            stream = case_stream_id(ORPHAN_CASE)
+            disposition = {
+                "status": "partially_mitigated",
+                "closedDisposition": None,
+                "acceptanceRationale": None,
+                "recordedAt": "2026-09-04T15:00:00Z",
+            }
+            for version, (event_type, payload) in enumerate(
+                (
+                    ("case.created", orphan_created(ORPHAN_CASE)),
+                    ("case.disposition_recorded", disposition),
+                )
+            ):
+                repository.append(
+                    stream,
+                    event_type,
+                    payload,
+                    occurred_at=written,
+                    metadata=metadata(),
+                    expected_version=version,
+                )
+        count = self.event_count()
+        code, out, err = self.response_gaps()
+        self.assertEqual((code, out), (1, ""), msg=err)
+        self.assertIn(
+            f"error: disposition_without_evaluation: {ORPHAN_CASE} records disposition "
+            "'partially_mitigated' with no evaluation",
+            err,
+        )
+        self.assertEqual(self.event_count(), count)
+        code, _, err = run(["store", "verify", "--db", str(self.database)])
+        self.assertEqual(code, 1)
+        self.assertIn("disposition_without_evaluation", err)
+
+
 # *--- Notes ---*
 
 
@@ -392,6 +437,42 @@ class PlanLapseNoteTests(StoreCase):
                 codes = self.codes()
                 self.assertEqual(WARNING in codes, warns)
                 self.assertEqual([code for code in codes if code.startswith("response_gap_")], [])
+
+    def test_a_reduction_that_meets_a_revised_plan_does_not_contradict_the_old_one(self) -> None:
+        # The contradiction reads the current evaluation only while it states the recorded plan.
+        self.build_golden_store()
+        self.reevaluate(
+            projectedNextReduction={"estimatedAt": "2026-09-30T16:00:00Z", "targetRating": 2},
+            painReductionEvents=[{"reducedAt": "2026-09-10T10:00:00Z", "rating": 2}],
+        )
+        codes = self.codes()
+        self.assertNotIn(WARNING, codes)
+        self.assertEqual([code for code in codes if code.startswith("response_gap_")], [])
+
+    def test_a_reduction_before_the_evaluation_does_not_contradict(self) -> None:
+        # The record is no longer derived once the rating meets the target, so only the
+        # contradiction's own window keeps a reduction before completedAt out of it.
+        self.build_golden_store()
+        self.reevaluate(
+            pain=2,
+            painReductionEvents=[{"reducedAt": "2026-09-03T10:00:00Z", "rating": 2}],
+        )
+        codes = self.codes()
+        self.assertNotIn(WARNING, codes)
+        self.assertEqual([code for code in codes if code.startswith("response_gap_")], [])
+
+    def test_the_contradiction_names_the_earliest_reduction_that_met_the_plan(self) -> None:
+        self.build_golden_store()
+        self.reevaluate(
+            painReductionEvents=[
+                {"reducedAt": "2026-09-09T10:00:00Z", "rating": 1},
+                {"reducedAt": "2026-09-06T10:00:00Z", "rating": 2},
+            ]
+        )
+        (note,) = [
+            item for item in self.diagnostics() if item["code"] == "response_gap_contradicted"
+        ]
+        self.assertIn("records a reduction to PAIN N2 at 2026-09-06T10:00:00Z", note["message"])
 
     def test_a_store_that_recorded_the_lapse_reads_with_no_note(self) -> None:
         self.build_golden_store()

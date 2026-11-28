@@ -316,3 +316,218 @@ reports `schema_version_unsupported`. No parser version moves.
   the close is after the sighting only.
 - A recurrence detected after a run's `--as-of` is still recorded by that run, as the report's
   warning names it whatever its as-of.
+
+## PR 2: the lapsed planned response (2026-11-27)
+
+The second pull request of the slice adds a third failure of the response process: a provider's
+own planned reduction that did not happen. A case whose current evaluation states a next planned
+reduction ("to N2 by 2026-09-11"), whose planned time has passed, and whose rating is still above
+the target with no reduction to the target recorded by then, is a response process that failed.
+Before this section every report kept publishing that `projectedNextReduction` with an
+`estimatedAt` in the past and said nothing. The approved plan is `Plans/response-actions-plan.md`
+(approved 2026-11-27, Kyle's rulings D1 1a, D2 2a, D3 3a, D12 12a); decision letters below follow
+it. Where the build departs from the plan, the decision says so.
+
+### Decision 13: the evaluation is the response action record (plan D1, ruling 1a)
+
+`projectedNextReduction` (`estimatedAt`, `targetRating`) is the planned action, its planned time
+and target PAIN, and `painReductionEvents` (`reducedAt`, `rating`) are the completed ones, their
+completed time and actual result. Both are official fields of the pinned Common Definitions schema
+and both are already in history. No new file, command, event type for the action, or stream kind
+is added. A completed remediation or full mitigation is carried as the disposition at its
+evaluation's `completedAt` (Decision 1). A plan to remediate cannot be stated, since the field
+holds a target rating and none sits below N1. The action's kind, an owner, and evidence of its
+own are not carried. `docs/DATA_MODEL.md` says where each planned field lives.
+Why: the failure is visible in data ComplyRoll already holds, as the first two were, and a second
+record of the same plan would be the generic tracker `AGENTS.md` warns against.
+
+### Decision 14: what lapses (plan D2 and D3, rulings 2a and 3a)
+
+A record has a lapsed planned response at a run's as-of T when all five hold:
+
+1. It is an ARTIFACT-origin record whose current evaluation carries `projectedNextReduction` with
+   planned time E and target R.
+2. T is strictly after E, the comparison every deadline uses. A run at E records nothing.
+3. Its current rating is above the target: `pain` > R.
+4. No completed reduction to R or below is recorded with `reducedAt` from the current evaluation's
+   `completedAt` through E, both ends included.
+5. Its resolved status is not `remediated`, `fully_mitigated` or `false_positive`, however reached
+   (`closed` with that `closedDisposition`, or `isFalsePositive` with no disposition). No
+   disposition, an active one, `partially_mitigated` and `accepted` can lapse, the last two also
+   when closed as such.
+
+The clock is the provider's own `estimatedAt`, never the pinned `VDR-TFR-PVR` target: a passed PVR
+target is already published as `overdueStatus`, so a case for each would report one lateness twice.
+The planned time carries no FedRAMP force of its own; the record's one rule is `VDR-CSO-FAV`.
+Condition 4's window opens at `completedAt` because the current evaluation asserts the rating and
+the plan together at that instant, so a reduction followed by a re-rating upward does not hide a
+lapse. The cost: an operator who files a new evaluation after an on-time reduction and leaves the
+rating and the plan as they were gets a record.
+
+`reports/response_gaps.py` holds the one pure function, over a group, the evaluation the report
+reads for it, and the as-of, that serves the warning on both paths and the record. A store reads
+the report's own groups and each case's reported evaluation, never the folded cases alone (plan
+F2), so a case no current open observation matches, a `stale_case`, is in no report and neither
+warns nor records.
+Why: Kyle's rulings 2a and 3a; a provider that revises its estimate before the time passes never
+sees a record.
+
+### Decision 15: a WARNING on every report (plan D4)
+
+Every report adds one WARNING `planned_reduction_lapsed` per record that meets Decision 14 at the
+report's as-of, on the stateless and persisted paths, whether or not a store has recorded the
+lapse, located at the record's source record id. It names the record, the planned time, the target,
+the current rating and the evaluation the window opens at, and ends "the planned reduction is not
+recorded, and the record keeps its plan until an evaluation changes it". `REPORT_DIAGNOSTIC_CODES`
+holds the code. A WARNING never moves an exit code (ADR 0017 I3). ComplyRoll does not remove or
+rewrite the published `projectedNextReduction`.
+
+### Decision 16: one record per case and plan (plan D5)
+
+| Recipe input | Value |
+|---|---|
+| `source_type` | `complyroll.response-plan`, a reserved type no adapter can emit |
+| `source_tool` | `complyroll` |
+| `parser_name`, `parser_version` | `complyroll.response-plan`, `1` |
+| `source_record_id` | `planned-response-lapse` |
+| `resource_type`, `resource_id` | `logical`, `case/<correlation tracking id>` |
+| `context_key` | `<correlation tracking id>:planned:<planned time>:<target rating>` |
+| `observed_at` | The planned time E, in UTC |
+
+The record is OPEN with severity UNKNOWN, no source identifiers, and no artifact name or digest;
+`evidence_ids` holds `case:<tracking id>`. Its metadata always carries the same three keys:
+`plan.caseTrackingId`, `plan.estimatedAt` and `plan.targetRating`. The current rating is not
+recorded: it moves, and a record is held to its own inputs alone. The title is `planned reduction
+of <tracking id> to N<R> was not recorded by <E> (VDR-CSO-FAV)`; "by" keeps it true when a
+reduction is recorded after E. The planned time is written as every response gap instant is, so
+two offsets of one instant are one record, and the target as `str(int)` writes a rating, `1` to
+`5`, in the context key and the metadata, with `N` before it in the title only. The same plan
+restated by a later evaluation is the same record, and a new plan that also lapses is a second
+case. The correlation tracking id is used, never a provider override.
+
+### Decision 17: detection time and clocks (plan D6)
+
+The record carries `detectedAtSource` `system` and is detected at E. `--detected-at` never
+applies. The one deadline of the unevaluated case is `VER-TFR-EVU` from E. ADR 0015 Decision 25's
+three tables gain the type: the kind name "lapsed planned response", the order remedy "a lapsed
+planned response is detected when its planned time passed, so evaluate it at or after that
+instant, or correct completedAt", and the attestation clause "for a lapsed planned response, from
+the instant its planned reduction was expected". The walk test finds six reserved types; the test
+of this record that pinned exactly five was updated to six, where the plan expected no test change.
+
+### Decision 18: recorded in a store only, by the same command (plan D7)
+
+`cases response-gaps --db STORE --as-of T --class B|C` gains the third kind with no new flag: it
+derives recurrences, then lapsed attestations, then lapsed plans, appends one stream per record
+the store lacks, and prints the same two line shapes. It exits 3 when it records one and 0
+otherwise. No class or calendar zone enters the kind's identity. No report flag records a plan
+lapse; the stateless path keeps the warning of Decision 15.
+
+### Decision 19: a second head type on the same stream kind, schema 8 (plan D8)
+
+The stream kind stays `response-gap/<fingerprint>`. A plan lapse opens its stream with a new head
+type, `response_gap.plan_lapsed` v1, followed by the one `observation.recorded` it mints. The head
+has four fields, all required: `caseTrackingId`, `contextKey`, `estimatedAt`, and `targetRating`
+as an integer from 1 to 5, as `case.evaluated` holds `pain`; the repository holds each to the
+record field it restates, the target to the text its record spells. The append that writes the
+head marks the store schema 8, migration record 8 ("planned response gap heads, ADR 0019"), chosen
+by head type as `failure.held` marks 3 where `failure.recorded` marks 2. The two earlier kinds keep
+`response_gap.recorded` v1 byte for byte, and a store that records only them stays at 7.
+`SUPPORTED_SCHEMA_VERSION` is 8. Every contract stays at version 1.
+Why: a build that cannot read the head must refuse the store at open rather than meet it as a
+contract fault.
+
+### Decision 20: store doctrine (plan D9)
+
+The five `responsegap_*` audit codes cover the new kind with no new code. Incomplete and overfull
+count heads of either type together; a stream mismatch includes a stream that opens with neither
+head; an identity breach includes a record its writer does not mint, metadata that is not exactly
+the three keys with the values its head states, a head of the other type, and a head that names
+another case, key, instant or rating. `responsegap_schema_unmarked` gains a second text, as the
+failure fault has: a `response_gap.plan_lapsed` head in a store below schema 8 names 8, at the
+first such stream, before the schema 7 check. The head is held to its own record alone. Whatever a
+report from the store refuses, `store verify` rejects.
+
+### Decision 21: notes where a store and its run disagree (plan D10)
+
+`response_gap_unrecorded` names a plan lapse the run derives that no record carries.
+`response_gap_contradicted` names a recorded plan lapse against which the store holds a reduction
+to its target or below, dated from the current evaluation's `completedAt` through its planned time,
+while the case's current evaluation still states that plan, the same planned time and target; the
+note names the earliest such reduction. The contradiction test comes first. A recorded plan lapse
+that is not contradicted stands with no note, whether or not the run still derives it: a plan
+revised, met late or closed does not undo the fact that the planned time passed.
+`response_gap_unmatched` and `response_gap_earlier_detection` cannot arise for this kind, since no
+class, calendar zone or scan order enters its identity.
+
+### Decision 22: goldens (plan D11)
+
+No existing golden moved; the first step proved it before anything else was built. Two pairs are
+new: `tests/golden/vdt-planned-reduction-warning.{json,md}`, a stateless run of one partly
+mitigated finding whose plan passed, carrying only the warning, which a store built from the same
+scan reports byte for byte; and `tests/golden/historical-planned-response.{json,md}`, cut from a
+store that recorded the lapse and then correlated it. The nine existing tests the plan names now
+carry the warning and pass unchanged.
+
+### Decision 23: how the deliverable reads (plan D12, ruling 12a)
+
+`docs/BUILD_PLAN.md` reads the lapsed planned response as Met and the response action records as
+delivered with named limits: carried as the evaluation's planned and completed reductions, with
+kind, owner and evidence not carried. Only the recurrence clocks, the third pull request, stay
+open in the item.
+
+### Decision 24: the remediation instant is untouched (plan D14)
+
+A completed reduction never replaces the evaluation's `completedAt` as the remediation instant of
+Decision 1, which would move this record's earlier identities.
+
+### Limits
+
+- The record is only as frequent as the runs. A plan revised, met or closed before any run sees
+  the lapse leaves no record.
+- A projection stated with a planned time before its own `completedAt` has an empty window: it
+  warns on the first report past its time and is recorded by the first run. That is a stale plan
+  carried into a new evaluation, and it is read as one.
+- On the store path a reduction an earlier file stated and a later one dropped is still in history
+  and still counts inside the window; a stateless run of the later file never sees it.
+- A system record's plan never lapses, as a system record never recurs (Decision 2). A lapse
+  about a failure record is left for a later ruling.
+- A plan to remediate cannot be stated, so it cannot lapse.
+- A projection whose target is not below the current rating never lapses. Whether to warn about
+  one is left out.
+
+### Compatibility (2026-11-27)
+
+A store a 0.5.0a0 build wrote, and one a build at `09193ab` wrote, open and read identically
+before a plan lapse is recorded. The trial built a schema 6 store with 0.5.0a0 (installed from
+PyPI) holding a failure, coverage gaps, changes and change gaps, and a schema 7 store with
+`09193ab` holding the same plus a recurrence and a lapsed attestation. `store verify`, `cases
+list`, and `report vdt` with and without an inventory, `report historical` and `report avi` gave
+the same bytes under the old and the new build at an as-of equal to the stores' one planned time,
+and differed only by the new warning at a later as-of; the new build's reads left each store's
+bytes and version unchanged. `cases response-gaps` from the new build at the planned time recorded
+nothing and kept each store's version; past it, it recorded the plan lapse and marked the store 8
+(from 6, migration records 7 and 8). Both older builds refuse a schema 8 store at open ("database
+schema 8 is newer than supported schema 6" and "... schema 7"), and their `store verify` reports
+`schema_version_unsupported`. No parser version moves.
+
+### Rejected alternatives (2026-11-27)
+
+- A new operator record of response actions, with a file, a command and an event (plan D1b). It
+  states the plan a second time beside the official field and needs a reconciliation rule.
+- Warning only, with no record (plan D2b). Kyle ruled the lapse a recorded case.
+- Leaving accepted records out (plan D3b), or every record that publishes a final disposition
+  (D3c). An accepted report still publishes the stale plan, and D3c skips the shipped example's own
+  pattern, a partly mitigated record with work still planned.
+- The pinned `VDR-TFR-PVR` target as the clock. Its lateness is already `overdueStatus`.
+- A `response_gap.recorded` v2 beside v1, the first versioned contract and one that never
+  replaces its v1; and adding the kind to v1 inside schema 7, which would make every new field
+  optional or fail stores written since `09193ab`, and meet a build at `09193ab` as a contract
+  fault instead of a refusal at open.
+
+### Left for later (2026-11-27)
+
+- The `VER-TFR-MHR` and `VER-TFR-MRH` recurrence clocks: the third pull request.
+- A warning for a projection whose target is not below the current rating, and for a published
+  projection on a remediated or fully mitigated record.
+- The action's kind, owner and evidence, when a user asks for one.

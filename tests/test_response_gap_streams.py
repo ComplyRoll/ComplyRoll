@@ -451,7 +451,7 @@ class ResponseGapSchemaTests(StoreCase):
             connection.execute(statement)
 
     def test_this_build_opens_schema_7(self) -> None:
-        self.assertEqual(SUPPORTED_SCHEMA_VERSION, RESPONSE_GAP_STREAM_SCHEMA_VERSION)
+        self.assertGreaterEqual(SUPPORTED_SCHEMA_VERSION, RESPONSE_GAP_STREAM_SCHEMA_VERSION)
         self.assertEqual(sqlite_module._MIGRATION_DESCRIPTIONS[7], SEVENTH[1])
 
     def test_a_schema_6_build_refuses_a_store_holding_a_response_gap(self) -> None:
@@ -482,10 +482,10 @@ class ResponseGapSchemaTests(StoreCase):
 
     def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         record_gap(self.repository, recurrence_record())
-        self.damage("PRAGMA user_version = 8")
+        self.damage("PRAGMA user_version = 9")
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
-        self.assertIn("database schema 8 is newer than supported schema 7", str(caught.exception))
+        self.assertIn("database schema 9 is newer than supported schema 8", str(caught.exception))
 
 
 # *--- Audit And Reader ---*

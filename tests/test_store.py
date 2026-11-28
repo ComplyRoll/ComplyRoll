@@ -3312,10 +3312,10 @@ class StoreHeaderTests(unittest.TestCase):
         # the first schema. `_mark_schema` writes neither: it inserts each record and moves
         # the marker in one transaction, and numbers from 1.
         cases = (
-            (1, (), [2, 3, 4, 5, 6, 7]),
-            (3, (), [4, 5, 6, 7]),
-            (7, (8,), [8]),
-            (7, (0,), [0]),
+            (1, (), [2, 3, 4, 5, 6, 7, 8]),
+            (3, (), [4, 5, 6, 7, 8]),
+            (8, (9,), [9]),
+            (8, (0,), [0]),
         )
         for marker, added, unexpected in cases:
             with self.subTest(marker=marker, added=added):
@@ -3401,6 +3401,7 @@ class StoreHeaderTests(unittest.TestCase):
                 ("migration_unexpected", "5"),
                 ("migration_unexpected", "6"),
                 ("migration_unexpected", "7"),
+                ("migration_unexpected", "8"),
             ],
         )
 
@@ -3445,7 +3446,9 @@ class StoreHeaderTests(unittest.TestCase):
         self.set_header(path, "user_version", 1)
         with SQLiteEventStore(path, clock=lambda: RECORDED_AT) as store:
             store.append("stream-h", [sample_event("evt-h-3")], expected_version=3)
-        self.assertEqual(self.state(path), (1, (4, 4), [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]))
+        self.assertEqual(
+            self.state(path), (1, (4, 4), [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)])
+        )
 
     def test_verify_reports_a_foreign_application_id(self) -> None:
         for application_id in (0, 1, -1):
@@ -3649,7 +3652,7 @@ class StoreHeaderTests(unittest.TestCase):
                 self.assertFalse(store._connection.in_transaction)
                 self.assertEqual(self.state(path), before)
                 self.assertEqual(
-                    before, (marker, (3, 3), [(1,), (2,), (3,), (4,), (5,), (6,), (7,)])
+                    before, (marker, (3, 3), [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)])
                 )
 
     def test_an_append_after_the_application_id_is_rewritten_is_refused(self) -> None:
@@ -3695,7 +3698,7 @@ class StoreHeaderTests(unittest.TestCase):
 
         self.assertEqual(
             self.state(path),
-            (SUPPORTED_SCHEMA_VERSION, (5, 5), [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]),
+            (SUPPORTED_SCHEMA_VERSION, (5, 5), [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]),
         )
 
 

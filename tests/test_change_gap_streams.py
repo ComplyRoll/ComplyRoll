@@ -1166,12 +1166,12 @@ class ChangeGapSchemaMarkingTests(StoreCase):
 
     def test_a_store_newer_than_the_supported_schema_is_refused(self) -> None:
         self.record_one_gap()
-        self.damage("PRAGMA user_version = 8")
+        self.damage("PRAGMA user_version = 9")
 
         with self.assertRaises(UnsupportedSchemaError) as caught:
             SQLiteEventStore(self.path)
 
-        self.assertIn("database schema 8 is newer than supported schema 7", str(caught.exception))
+        self.assertIn("database schema 9 is newer than supported schema 8", str(caught.exception))
 
 
 # *--- Reader ---*

@@ -28,13 +28,14 @@ SCHEMA_VERSION = 1
 #: so a store that never needs schema 2 stays readable by a build that knows only 1, one
 #: that never needs schema 3 by a build that knows only 2, one that never needs schema 4 by a
 #: build that knows only 3, one that never needs schema 5 by a build that knows only 4, one that
-#: never needs schema 6 by a build that knows only 5, and one that never needs schema 7 by a build
-#: that knows only 6. None adds a schema object: schema 2 marks a store that holds failure
-#: streams (ADR 0014), schema 3 one that holds a held failure (ADR 0014, amendment 2026-10-13),
-#: schema 4 one that holds a coverage gap (ADR 0015), schema 5 one that holds a change stream,
-#: schema 6 one that holds a change gap (both ADR 0018), and schema 7 one that holds a response
-#: gap (ADR 0019).
-SUPPORTED_SCHEMA_VERSION = 7
+#: never needs schema 6 by a build that knows only 5, one that never needs schema 7 by a build
+#: that knows only 6, and one that never needs schema 8 by a build that knows only 7. None adds a
+#: schema object: schema 2 marks a store that holds failure streams (ADR 0014), schema 3 one that
+#: holds a held failure (ADR 0014, amendment 2026-10-13), schema 4 one that holds a coverage gap
+#: (ADR 0015), schema 5 one that holds a change stream, schema 6 one that holds a change gap (both
+#: ADR 0018), schema 7 one that holds a response gap, and schema 8 one that holds a planned
+#: response gap head (both ADR 0019).
+SUPPORTED_SCHEMA_VERSION = 8
 _MIGRATION_DESCRIPTIONS: Mapping[int, str] = {
     1: "append-only event history and projection checkpoints",
     2: "failure streams, ADR 0014",
@@ -43,6 +44,7 @@ _MIGRATION_DESCRIPTIONS: Mapping[int, str] = {
     5: "change streams, ADR 0018",
     6: "change gap streams, ADR 0018",
     7: "response gap streams, ADR 0019",
+    8: "planned response gap heads, ADR 0019",
 }
 APPLICATION_ID = 0x43524F4C  # ASCII "CROL"
 MAX_EVENTS_PER_APPEND = 1_000

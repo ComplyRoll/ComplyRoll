@@ -75,6 +75,9 @@ from .contracts import (
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
     RESPONSE_GAP_ATTESTATION_RULE,
+    RESPONSE_GAP_HEAD_TYPES,
+    RESPONSE_GAP_PLAN_LAPSED,
+    RESPONSE_GAP_PLAN_SCHEMA_VERSION,
     RESPONSE_GAP_RECORDED,
     RESPONSE_GAP_STREAM_PREFIX,
     RESPONSE_GAP_STREAM_SCHEMA_VERSION,
@@ -346,6 +349,25 @@ ATTESTATION_LAPSE_METADATA_KEYS: Final[tuple[str, ...]] = (
     "attestation.rule",
     "attestation.windowClosedAt",
 )
+PLAN_LAPSE_SOURCE_TYPE: Final = "complyroll.response-plan"
+PLAN_LAPSE_PARSER_NAME: Final = "complyroll.response-plan"
+PLAN_LAPSE_PARSER_VERSION: Final = "1"
+PLAN_LAPSE_RECORD_ID: Final = "planned-response-lapse"
+PLAN_LAPSE_TITLE: Final = (
+    "planned reduction of {tracking_id} to N{target_rating} was not recorded by {estimated_at} "
+    f"({DETECTION_FAILURE_RULE})"
+)
+PLAN_LAPSE_DESCRIPTION: Final = (
+    "The provider's evaluation of this case planned its next reduction to a target rating by a "
+    "stated time, and that time passed with the rating above the target and no reduction to it "
+    "recorded from that evaluation through the planned time; this records a failure of the "
+    "response process, not a new vulnerability."
+)
+PLAN_LAPSE_METADATA_KEYS: Final[tuple[str, ...]] = (
+    "plan.caseTrackingId",
+    "plan.estimatedAt",
+    "plan.targetRating",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +375,8 @@ class _ResponseGapKind:
     """What one kind of response gap record fixes, and how its head restates the record."""
 
     kind: str
+    #: The head type a stream of this kind opens with, which also sets the schema it marks.
+    head_type: str
     source_type: str
     parser_name: str
     parser_version: str
@@ -367,6 +391,7 @@ class _ResponseGapKind:
 _RESPONSE_GAP_KINDS: Final[dict[str, _ResponseGapKind]] = {
     RECURRENCE_SOURCE_TYPE: _ResponseGapKind(
         kind="recurrence",
+        head_type=RESPONSE_GAP_RECORDED,
         source_type=RECURRENCE_SOURCE_TYPE,
         parser_name=RECURRENCE_PARSER_NAME,
         parser_version=RECURRENCE_PARSER_VERSION,
@@ -383,6 +408,7 @@ _RESPONSE_GAP_KINDS: Final[dict[str, _ResponseGapKind]] = {
     ),
     ATTESTATION_LAPSE_SOURCE_TYPE: _ResponseGapKind(
         kind="attestation",
+        head_type=RESPONSE_GAP_RECORDED,
         source_type=ATTESTATION_LAPSE_SOURCE_TYPE,
         parser_name=ATTESTATION_LAPSE_PARSER_NAME,
         parser_version=ATTESTATION_LAPSE_PARSER_VERSION,
@@ -397,13 +423,36 @@ _RESPONSE_GAP_KINDS: Final[dict[str, _ResponseGapKind]] = {
             ("rule", "attestation.rule"),
         ),
     ),
+    PLAN_LAPSE_SOURCE_TYPE: _ResponseGapKind(
+        kind="plan",
+        head_type=RESPONSE_GAP_PLAN_LAPSED,
+        source_type=PLAN_LAPSE_SOURCE_TYPE,
+        parser_name=PLAN_LAPSE_PARSER_NAME,
+        parser_version=PLAN_LAPSE_PARSER_VERSION,
+        record_id=PLAN_LAPSE_RECORD_ID,
+        description=PLAN_LAPSE_DESCRIPTION,
+        metadata_keys=PLAN_LAPSE_METADATA_KEYS,
+        # The head holds the target as an integer and the record's metadata as its text.
+        record_pairs=(
+            ("caseTrackingId", "plan.caseTrackingId"),
+            ("contextKey", "context_key"),
+            ("estimatedAt", "plan.estimatedAt"),
+            ("targetRating", "plan.targetRating"),
+        ),
+    ),
 }
+
+#: The head field a plan lapse holds as an integer, where its record holds the text.
+_PLAN_TARGET_FIELD: Final = "targetRating"
 
 #: Why a record of any other kind names no response gap stream, at append and in the audit.
 _NOT_A_RESPONSE_GAP_RECORD: Final = (
-    f"only a system record of source type {RECURRENCE_SOURCE_TYPE!r} or "
-    f"{ATTESTATION_LAPSE_SOURCE_TYPE!r} names a response gap stream"
+    f"only a system record of source type {RECURRENCE_SOURCE_TYPE!r}, "
+    f"{ATTESTATION_LAPSE_SOURCE_TYPE!r} or {PLAN_LAPSE_SOURCE_TYPE!r} names a response gap stream"
 )
+
+#: A target rating as `str(int)` spells one: a single digit from 1 to 5 (plan D5, F9).
+_TARGET_RATING_TEXT: Final = re.compile(r"[1-5]")
 
 #: A size as `str(int)` spells it: digits only, no sign, no leading zero.
 _COUNT_TEXT: Final = re.compile(r"(?:0|[1-9][0-9]*)")
@@ -711,7 +760,7 @@ class EventRepository:
                 if index > 0 and (index > 1 or event.event_type != OBSERVATION_RECORDED):
                     raise EventContractError(change_gap_write_once_message(stream_id))
             if is_response_gap_stream(stream_id):
-                if index == 0 and event.event_type != RESPONSE_GAP_RECORDED:
+                if index == 0 and event.event_type not in RESPONSE_GAP_HEAD_TYPES:
                     raise EventContractError(response_gap_head_order_message(stream_id))
                 if index > 0 and (index > 1 or event.event_type != OBSERVATION_RECORDED):
                     raise EventContractError(response_gap_write_once_message(stream_id))
@@ -745,7 +794,7 @@ class EventRepository:
             # Held to its own record alone: a case's current state moves, and the record is a
             # fact about the run that recorded it (ADR 0019).
             disagreement = response_gap_record_disagreement(
-                stream_id, pending[0].payload, pending[1].payload
+                stream_id, pending[0].payload, pending[1].payload, head_type=pending[0].event_type
             )
             if disagreement is not None:
                 raise EventContractError(disagreement)
@@ -793,13 +842,18 @@ class EventRepository:
                 requires_schema=CHANGE_GAP_STREAM_SCHEMA_VERSION,
             )
         if is_response_gap_stream(stream_id):
-            # A response gap stream needs schema 7, marked with its events in one transaction,
-            # so a rollback undoes both (ADR 0019).
+            # A response gap stream needs schema 7 and a plan lapse head 8, chosen by the head
+            # as a hold's is, and marked with its events in one transaction, so a rollback
+            # undoes both (ADR 0019). The batch is whole, so its first event is the head.
             return self._store.append(
                 stream_id,
                 prepared,
                 expected_version=expected_version,
-                requires_schema=RESPONSE_GAP_STREAM_SCHEMA_VERSION,
+                requires_schema=(
+                    RESPONSE_GAP_PLAN_SCHEMA_VERSION
+                    if pending[0].event_type == RESPONSE_GAP_PLAN_LAPSED
+                    else RESPONSE_GAP_STREAM_SCHEMA_VERSION
+                ),
             )
         return self._store.append(stream_id, prepared, expected_version=expected_version)
 
@@ -2057,11 +2111,22 @@ def response_gap_stream_id_of_payload(payload: Mapping[str, Any]) -> str:
     return response_gap_stream_id_of(observation)
 
 
-def response_gap_head_payload(observation: Observation) -> dict[str, str | None]:
-    """Return the `response_gap.recorded` head of one response gap record, read off the record.
+def response_gap_head_type(observation: Observation) -> str:
+    """Return the head type one response gap record's stream opens with.
+
+    A recurrence and a lapsed attestation open with `response_gap.recorded`, a lapsed planned
+    response with `response_gap.plan_lapsed` (ADR 0019, section of 2026-11-27).
+    """
+
+    response_gap_stream_id_of(observation)
+    return _RESPONSE_GAP_KINDS[observation.source_type].head_type
+
+
+def response_gap_head_payload(observation: Observation) -> dict[str, str | int | None]:
+    """Return the head of one response gap record, read off the record.
 
     Built from the record, so a head and its record agree by construction; the writer and every
-    test that stages a response gap stream share it.
+    test that stages a response gap stream share it. `response_gap_head_type` names its type.
     """
 
     response_gap_stream_id_of(observation)
@@ -2070,19 +2135,25 @@ def response_gap_head_payload(observation: Observation) -> dict[str, str | None]
     missing = [key for key in kind.metadata_keys if key not in metadata]
     if missing:
         raise ValueError(f"the response gap record's metadata has no {', '.join(missing)}")
-    # Every field is required, so the other kind's fields are written as null.
-    head: dict[str, str | None] = {
-        "kind": kind.kind,
-        **{
-            head_key: None
+    head: dict[str, str | int | None] = {}
+    if kind.head_type == RESPONSE_GAP_RECORDED:
+        # Every field is required, so the other kind's fields of this head are written as null.
+        head["kind"] = kind.kind
+        head.update(
+            (head_key, None)
             for other in _RESPONSE_GAP_KINDS.values()
+            if other.head_type == RESPONSE_GAP_RECORDED
             for head_key, _ in other.record_pairs
-        },
-    }
+        )
     for head_key, record_key in kind.record_pairs:
         head[head_key] = (
             observation.context_key if record_key == "context_key" else metadata[record_key]
         )
+    if kind.head_type == RESPONSE_GAP_PLAN_LAPSED:
+        text = metadata["plan.targetRating"]
+        if _TARGET_RATING_TEXT.fullmatch(text) is None:
+            raise ValueError(f"the plan lapse record's target rating {text!r} is not 1 to 5")
+        head[_PLAN_TARGET_FIELD] = int(text)
     return head
 
 
@@ -2096,12 +2167,12 @@ def response_gap_record_problem(
     A response gap stream id is its record's fingerprint (ADR 0019), so either event on a stream
     whose id names none is a `responsegap_stream_mismatch`, and so is a record whose fingerprint
     is another stream's. The record must be one a failed response mints, else a
-    `responsegap_identity_breach`: a system record of the recurrence or the lapsed attestation
-    source type, which a record of any other kind names no such stream by; that kind's tool,
-    parser and record id, its derived id, disposition `open`, severity `unknown`, no source
-    identifier or artifact, and the builder's description; and exactly that kind's metadata
-    keys, with the values `_response_gap_metadata_problem` holds, the title included. Whether
-    the head agrees with its record takes both events, which is
+    `responsegap_identity_breach`: a system record of the recurrence, lapsed attestation or
+    lapsed planned response source type, which a record of any other kind names no such stream
+    by; that kind's tool, parser and record id, its derived id, disposition `open`, severity
+    `unknown`, no source identifier or artifact, and the builder's description; and exactly that
+    kind's metadata keys, with the values `_response_gap_metadata_problem` holds, the title
+    included. Whether the head agrees with its record takes both events, which is
     `response_gap_record_disagreement`'s business.
 
     Returns None for an event no response gap stream carries and for a stream of another kind,
@@ -2109,7 +2180,7 @@ def response_gap_record_problem(
     """
 
     if not is_response_gap_stream(stream_id) or event_type not in (
-        RESPONSE_GAP_RECORDED,
+        *RESPONSE_GAP_HEAD_TYPES,
         OBSERVATION_RECORDED,
     ):
         return None
@@ -2117,7 +2188,7 @@ def response_gap_record_problem(
         response_gap_stream_fingerprint(stream_id)
     except ValueError as exc:
         return ("responsegap_stream_mismatch", f"stream {stream_id!r} names no record: {exc}")
-    if event_type == RESPONSE_GAP_RECORDED:
+    if event_type in RESPONSE_GAP_HEAD_TYPES:
         return None
     described = f"{OBSERVATION_RECORDED} on response gap stream {stream_id!r}"
     # A record of another kind is named as one first, in the words the stream id read gives.
@@ -2147,19 +2218,29 @@ def response_gap_record_disagreement(
     stream_id: str,
     head: Mapping[str, Any],
     observation: Mapping[str, Any],
+    *,
+    head_type: str,
 ) -> str | None:
     """Return why a response gap head and its record describe two different gaps.
 
-    The writer reads the head off the record (`response_gap_head_payload`), so its kind names the
-    record's source type and every other field restates one field of the record. The repository
-    asks this at append, where the batch carries both events, and so does any reader that reads
-    both. A record of neither kind is the record check's business, so it answers None here.
+    The writer reads the head off the record (`response_gap_head_payload`), so its type is the
+    one the record's kind opens with, a `response_gap.recorded` kind names the record's source
+    type, and every other field restates one field of the record; a plan lapse head holds the
+    target as the integer its record spells as text. The repository asks this at append, where
+    the batch carries both events, and so does any reader that reads both. A record of no kind
+    is the record check's business, so it answers None here.
     """
 
     kind = _RESPONSE_GAP_KINDS.get(str(observation.get("source_type")))
     if kind is None:
         return None
-    if head.get("kind") != kind.kind:
+    if head_type != kind.head_type:
+        return (
+            f"response gap stream {stream_id!r} opens with {shown(head_type)} and holds a record "
+            f"of source type {kind.source_type!r}, whose head is {kind.head_type}; the two "
+            "describe one gap"
+        )
+    if kind.head_type == RESPONSE_GAP_RECORDED and head.get("kind") != kind.kind:
         return (
             f"response gap stream {stream_id!r} records kind {shown(head.get('kind'))} in its "
             f"{RESPONSE_GAP_RECORDED} and a record of source type {kind.source_type!r}; the two "
@@ -2172,10 +2253,18 @@ def response_gap_record_disagreement(
         described = (
             observation.get(record_key) if record_key == "context_key" else metadata.get(record_key)
         )
-        if described != recorded:
+        if head_key == _PLAN_TARGET_FIELD:
+            agrees = (
+                isinstance(recorded, int)
+                and not isinstance(recorded, bool)
+                and described == str(recorded)
+            )
+        else:
+            agrees = described == recorded
+        if not agrees:
             return (
                 f"response gap stream {stream_id!r} records {head_key} {shown(recorded)} in its "
-                f"{RESPONSE_GAP_RECORDED} and {record_key} {shown(described)} in its record; the "
+                f"{kind.head_type} and {record_key} {shown(described)} in its record; the "
                 "two describe one gap"
             )
     return None
@@ -2185,8 +2274,8 @@ def response_gap_head_order_message(stream_id: str) -> str:
     """Word a response gap stream whose first event is not its head, wherever it is reported."""
 
     return (
-        f"response gap stream {stream_id!r} does not open with its {RESPONSE_GAP_RECORDED} head; "
-        "a response gap stream is written head first"
+        f"response gap stream {stream_id!r} does not open with its {RESPONSE_GAP_RECORDED} or "
+        f"{RESPONSE_GAP_PLAN_LAPSED} head; a response gap stream is written head first"
     )
 
 
@@ -2194,9 +2283,9 @@ def response_gap_write_once_message(stream_id: str) -> str:
     """Word a response gap stream being written as anything but its one whole batch (ADR 0019)."""
 
     return (
-        f"response gap stream {stream_id!r} is written once, as its {RESPONSE_GAP_RECORDED} head "
-        "and then its record in one batch; a recorded response gap is append-only history, so "
-        "the first payload stands"
+        f"response gap stream {stream_id!r} is written once, as its {RESPONSE_GAP_RECORDED} or "
+        f"{RESPONSE_GAP_PLAN_LAPSED} head and then its record in one batch; a recorded response "
+        "gap is append-only history, so the first payload stands"
     )
 
 
@@ -2258,6 +2347,8 @@ def _response_gap_metadata_problem(payload: Mapping[str, Any]) -> str | None:
             return f"its metadata carries {shown(key)}, which a {kind.kind} record does not"
     if kind.source_type == RECURRENCE_SOURCE_TYPE:
         return _recurrence_metadata_problem(payload, raw)
+    if kind.source_type == PLAN_LAPSE_SOURCE_TYPE:
+        return _plan_lapse_metadata_problem(payload, raw)
     return _attestation_lapse_metadata_problem(payload, raw)
 
 
@@ -2412,6 +2503,71 @@ def _attestation_lapse_metadata_problem(
         )
     title = ATTESTATION_LAPSE_TITLE.format(
         tracking_id=tracking_id, rule=RESPONSE_GAP_ATTESTATION_RULE, first_seen_at=seen_text
+    )
+    if payload.get("title") != title:
+        return f"its title is {shown(payload.get('title'))}"
+    return None
+
+
+def _plan_lapse_metadata_problem(payload: Mapping[str, Any], raw: Mapping[str, Any]) -> str | None:
+    """Return the first way a lapsed planned response's metadata is not what its writer stores.
+
+    The case is a correlation tracking id, which names the record's resource; the planned time
+    is the instant the record is observed at, spelled as the writer spells an instant; the target
+    is one digit from 1 to 5; the context key is the one those three spell; the one evidence id
+    names the case; and the title is the one they build. The current rating and the evaluation
+    that stated the plan are no part of the record, so nothing here reads a case (ADR 0019).
+    """
+
+    tracking_id = raw["plan.caseTrackingId"]
+    if not isinstance(tracking_id, str) or TRACKING_ID_PATTERN.fullmatch(tracking_id) is None:
+        return (
+            f"its metadata plan.caseTrackingId is {shown(tracking_id)}, not a correlation "
+            "tracking id"
+        )
+    resource = payload.get("resource")
+    subject = (
+        (resource.get("resource_type"), resource.get("resource_id"))
+        if isinstance(resource, Mapping)
+        else (None, None)
+    )
+    expected = (
+        ATTESTATION_LAPSE_RESOURCE_TYPE,
+        f"{ATTESTATION_LAPSE_RESOURCE_PREFIX}{tracking_id}",
+    )
+    if subject != expected:
+        return (
+            f"its resource is {shown(subject[0])}:{shown(subject[1])}, where its metadata names "
+            f"{expected[0]}:{expected[1]}"
+        )
+    planned_text = raw["plan.estimatedAt"]
+    if _canonical_instant(planned_text) is None:
+        return (
+            f"its metadata plan.estimatedAt is {shown(planned_text)}, not an instant as its "
+            "writer spells one"
+        )
+    observed = _utc_text(payload.get("observed_at"))
+    if planned_text != observed:
+        return (
+            f"its metadata plan.estimatedAt is {shown(planned_text)}, where the record is "
+            f"observed at {shown(observed)}"
+        )
+    target = raw["plan.targetRating"]
+    if not isinstance(target, str) or _TARGET_RATING_TEXT.fullmatch(target) is None:
+        return f"its metadata plan.targetRating is {shown(target)}, not a rating from 1 to 5"
+    keyed = f"{tracking_id}:planned:{planned_text}:{target}"
+    if payload.get("context_key") != keyed:
+        return (
+            f"its context key is {shown(payload.get('context_key'))}, where its metadata names "
+            f"{shown(keyed)}"
+        )
+    if payload.get("evidence_ids") != [f"case:{tracking_id}"]:
+        return (
+            f"its evidence ids are {shown(payload.get('evidence_ids'))}, where its metadata "
+            f"names case {shown(tracking_id)}"
+        )
+    title = PLAN_LAPSE_TITLE.format(
+        tracking_id=tracking_id, target_rating=target, estimated_at=planned_text
     )
     if payload.get("title") != title:
         return f"its title is {shown(payload.get('title'))}"

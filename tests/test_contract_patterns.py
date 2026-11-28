@@ -57,6 +57,7 @@ from complyroll.events import (
     EVENT_CONTRACTS,
     FAILURE_STREAM_SCHEMA_VERSION,
     HELD_FAILURE_SCHEMA_VERSION,
+    RESPONSE_GAP_PLAN_SCHEMA_VERSION,
     RESPONSE_GAP_STREAM_SCHEMA_VERSION,
     EventContractError,
     EventRepository,
@@ -110,6 +111,7 @@ ANCHORED_FIELDS: dict[str, tuple[str, ...]] = {
         "/firstSeenAt",
         "/windowClosedAt",
     ),
+    "response_gap.plan_lapsed": ("/caseTrackingId", "/estimatedAt"),
 }
 
 #: A value the field holds when the good payload leaves it null.
@@ -134,6 +136,7 @@ STREAMS: dict[str, tuple[str, int]] = {
     "change.recorded": (change_stream_id("CHG-1001"), CHANGE_STREAM_SCHEMA_VERSION),
     "change.gap_recorded": (f"changegap/{DIGEST}", CHANGE_GAP_STREAM_SCHEMA_VERSION),
     "response_gap.recorded": (f"response-gap/{DIGEST}", RESPONSE_GAP_STREAM_SCHEMA_VERSION),
+    "response_gap.plan_lapsed": (f"response-gap/{DIGEST}", RESPONSE_GAP_PLAN_SCHEMA_VERSION),
 }
 
 #: The twelve fields `store verify` passed with a final newline before this change, each left in
